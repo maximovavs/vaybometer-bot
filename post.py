@@ -1,24 +1,24 @@
-"""Automated daily VayboМетр poster
+"""Automated daily VayboМетр poster – v1.1 (HTML‑safe)
 
-1. Скачивает фактические данные (погода, воздух, пыльца, геомагнитика, резонанс Шумана,
-   температура моря) для Лимассола.
-2. Отдаёт эти данные OpenAI‑модели, чтобы получить красиво оформленный дайджест
-   с эмодзи‑заголовками (HTML для Telegram).
-3. Шлёт результат в канал @vaybometer.
+Схема:
+1. Собираем фактические данные (погода, AQI, пыльца, Kp, резонанс Шумана, SST).
+2. Отдаём их OpenAI для лаконичного HTML‑дайджеста.
+3. Скидываем в Telegram (@vaybometer).
 
-Требуемые переменные окружения (добавь в GitHub Secrets):
+Если какой‑то источник недоступен → пишем «нет данных».
+
+Переменные окружения (GitHub Secrets):
   OPENAI_API_KEY     – ключ OpenAI
   TELEGRAM_TOKEN     – токен бота
   CHANNEL_ID         – id или @username канала
   OWM_KEY            – OpenWeather One Call 3.0
-  AIRVISUAL_KEY      – IQAir / AirVisual (качество воздуха)
+  AIRVISUAL_KEY      – IQAir / AirVisual
   AMBEE_KEY          – Ambee (пыльца)              [опц.]
   COPERNICUS_USER    – Copernicus Marine (SST)     [опц.]
   COPERNICUS_PASS    – Copernicus Marine пароль    [опц.]
 
-Библиотеки: requests, python-dateutil, pendulum, astropy, openai, python-telegram-bot
+Depends: requests, python‑dateutil, pendulum, astropy, openai, python‑telegram‑bot
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -39,11 +39,11 @@ LON = 33.022
 LOCAL_TZ = tz.gettz("Asia/Nicosia")
 
 # ---------------------------------------------------------------------------
-# helpers to fetch raw data
+# helpers to fetch raw data --------------------------------------------------
 # ---------------------------------------------------------------------------
 
 def _get(url: str, **params) -> Optional[dict]:
-    """Universal tiny wrapper that returns parsed json or None."""
+    """HTTP GET → json | None (и печать warning)."""
     try:
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
@@ -85,15 +85,19 @@ def get_pollen() -> Optional[dict]:
         return None
     headers = {"x-api-key": key}
     url = "https://api.ambeedata.com/latest/pollen/by-lat-lng"
-    return _get(url, lat=LAT, lng=LON, **{"☯": ""}) if headers else None  # noqa: RUF100
+    try:
+        r = requests.get(url, params={"lat": LAT, "lng": LON}, headers=headers, timeout=15)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] ambee failed: {exc}", file=sys.stderr)
+        return None
 
 
 def get_geomagnetic() -> Optional[dict]:
-    url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
-    data = _get(url)
+    data = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
     if not data or len(data) < 2:
         return None
-    # last value is [timestamp, kp]
     try:
         ts, kp = data[-1]
         return {"kp": float(kp)}
@@ -102,8 +106,7 @@ def get_geomagnetic() -> Optional[dict]:
 
 
 def get_schumann() -> Optional[dict]:
-    url = "https://api.glcoherence.org/v1/earth"
-    return _get(url)
+    return _get("https://api.glcoherence.org/v1/earth")
 
 
 def get_sst() -> Optional[dict]:
@@ -111,46 +114,43 @@ def get_sst() -> Optional[dict]:
     pwd = os.getenv("COPERNICUS_PASS")
     if not user or not pwd:
         return None
-    try:
-        marine_url = (
-            "https://my.cmems-du.eu/motu-web/Motu"
-        )  # Copernicus extraction would need motuclient; placeholder
-        return {"sst": "unavailable (placeholder)"}
-    except Exception:
-        return None
+    # TODO: мотуклиент. Пока затычка.
+    return {"sst": "нет данных"}
 
 
 # ---------------------------------------------------------------------------
-# collect everything into one dict
+# gather --------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
-def collect_data() -> Dict[str, Any]:
+def collect() -> Dict[str, Any]:
     return {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "weather": get_weather(),
         "air": get_air_quality(),
         "pollen": get_pollen(),
         "geomagnetic": get_geomagnetic(),
         "schumann": get_schumann(),
         "sst": get_sst(),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
 
 
 # ---------------------------------------------------------------------------
-# OpenAI prettifier
+# prettify via OpenAI --------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 def prettify(raw: Dict[str, Any]) -> str:
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
     system_msg = (
-        "Ты — вайбометр‑поэт. Форматируй данные в строгом HTML шаблоне с тегом <b> в "
-        "заголовках и эмодзи, но числовые значения не менять. Если какого‑то блока нет, "
-        "напиши 'нет данных'."
+        "Ты — VayboМетр‑поэт. Сформатируй сообщение строго в HTML Telegram: "
+        "используй только <b> для заголовков, эмодзи как в шаблоне, никакого <!DOCTYPE>, "
+        "<html>, <body> и т.п. Цифры не искажай; если блока нет → 'нет данных'."
     )
 
-    user_msg = f"""Сформатируй красиво по шаблону:
-{json.dumps(raw, ensure_ascii=False, indent=2)}"""
+    user_msg = (
+        "Собери дайджест для Лимассола по этим данным и шаблону:\n" +
+        json.dumps(raw, ensure_ascii=False, indent=2)
+    )
 
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -160,39 +160,42 @@ def prettify(raw: Dict[str, Any]) -> str:
         ],
         temperature=0.4,
     )
+    text: str = resp.choices[0].message.content.strip()
 
-    text = resp.choices[0].message.content.strip()
-
-    # снять возможные ```
+    # ─── sanitation for Telegram HTML ───────────────────────────────────────
+    # 1) убрать возможные ```code```
     text = re.sub(r"^```[\s\S]*?\n|\n```$", "", text)
-    # заменить литеральные \n на реальные переводы строк
+    # 2) литеральные \n → реальные переводы
     text = text.replace("\\n", "\n")
-    return text
+    # 3) убрать <!DOCTYPE>, <html>, <body>, их закрывающие теги
+    text = re.sub(r"(?i)<!DOCTYPE[^>]*>", "", text)
+    text = re.sub(r"(?i)</?(html|body)[^>]*>", "", text)
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
-# Telegram sender
+# Telegram ------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
-async def send_to_telegram(html: str) -> None:
+async def send(html: str) -> None:
     bot = Bot(token=os.environ["TELEGRAM_TOKEN"])
     await bot.send_message(
         chat_id=os.environ["CHANNEL_ID"],
-        text=html,
+        text=html[:4096],  # safety cut
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
 
 
 # ---------------------------------------------------------------------------
-# main
+# main ----------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
-    raw = collect_data()
+    raw = collect()
     html = prettify(raw)
-    await send_to_telegram(html)
+    await send(html)
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     asyncio.run(main())
