@@ -61,12 +61,12 @@ def _get(url: str, **params) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def get_weather() -> Optional[dict]:
-    """Try One Call 3.0 → fallback на 2.5 → в крайнем случае Open‑Meteo."""
+    """One Call 3.0 → fallback 2.5 → fallback Open‑Meteo."""
     key = os.getenv("OWM_KEY")
     if not key:
         return None
 
-    # --- attempt: One Call 3.0 ------------------------------------------------
+    # Try One Call 3.0
     data = _get(
         "https://api.openweathermap.org/data/3.0/onecall",
         lat=LAT,
@@ -75,10 +75,10 @@ def get_weather() -> Optional[dict]:
         units="metric",
         exclude="minutely,hourly,alerts",
     )
-    if data and "current" in data:
-        return data  # успех 3.0
+    if data and data.get("current"):
+        return data
 
-    # --- fallback: One Call 2.5 (бесплатная) ----------------------------------
+    # Try One Call 2.5 (free tier)
     data = _get(
         "https://api.openweathermap.org/data/2.5/onecall",
         lat=LAT,
@@ -87,10 +87,10 @@ def get_weather() -> Optional[dict]:
         units="metric",
         exclude="minutely,hourly,alerts",
     )
-    if data and "current" in data:
+    if data and data.get("current"):
         return data
 
-    # --- ultimate fallback: Open‑Meteo (no key) ------------------------------
+    # Ultimate fallback — Open‑Meteo current weather
     return _get(
         "https://api.open-meteo.com/v1/forecast",
         latitude=LAT,
