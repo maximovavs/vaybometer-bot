@@ -1,2 +1,7 @@
 python-telegram-bot==20.0
 openai
+requests
+python-dateutil
+pendulum
+astropy
+
