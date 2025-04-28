@@ -1,23 +1,14 @@
-"""post.py – VayboМетр v2.3 (stable debug)
+"""post.py – VayboМетр v2.4 (no-<br> edition)
 
-Собирает данные о вайбе Лимассола и постит HTML‑дайджест в Telegram.
-Включает подробные принты, чтобы в логах Actions было видно:
-  • RAW‑JSON (обрезанный)   • первый фрагмент HTML   • успех/ошибку Telegram.
-
-Источники данных (все бесплатные):
-  ☀️  Погода             — OpenWeather One Call 3.0 ➜ 2.5 ➜ Open‑Meteo fallback
-  🌬️  Качество воздуха   — IQAir / AirVisual
-  🌿  Пыльца              — Tomorrow.io
-  🌊  Температура моря    — Open‑Meteo Marine
-  🌌  Kp‑индекс           — NOAA SWPC
-  📈  Шуман               — Global Coherence (может тайм‑аутиться)
-  🔮  Астрология          — Swiss‑Ephemeris (локально)
+Собирает данные по Лимассолу и публикует HTML‑дайджест в Telegram. Версия 2.4
+убирает все <br> и &nbsp; из ответа GPT, чтобы Telegram не ругался на «unsupported
+start tag». Также выводит RAW и HTML сниппет в логи, чтобы легче отлаживать.
 
 GitHub Secrets (обязательные):
-  OPENAI_API_KEY   TELEGRAM_TOKEN   CHANNEL_ID ("-100…")
-  OWM_KEY          AIRVISUAL_KEY    TOMORROW_KEY
+  OPENAI_API_KEY  TELEGRAM_TOKEN  CHANNEL_ID (-100…)
+  OWM_KEY         AIRVISUAL_KEY   TOMORROW_KEY
 
-requirements.txt должен содержать:
+requirements.txt:
   requests python-dateutil openai python-telegram-bot pyswisseph
 """
 from __future__ import annotations
@@ -41,40 +32,39 @@ LON = 33.022
 LOCAL_TZ = tz.gettz("Asia/Nicosia")
 
 # ---------------------------------------------------------------------------
-# Tiny HTTP helper -----------------------------------------------------------
+# HTTP helper
 # ---------------------------------------------------------------------------
 
 def _get(url: str, **params) -> Optional[dict]:
     try:
-        r = requests.get(url, params=params, timeout=20)
-        r.raise_for_status()
-        return r.json()
+        resp = requests.get(url, params=params, timeout=20)
+        resp.raise_for_status()
+        return resp.json()
     except Exception as exc:  # noqa: BLE001, S110
         print(f"[warn] {url} failed: {exc}", file=sys.stderr)
         return None
 
 
 # ---------------------------------------------------------------------------
-# External data fetchers -----------------------------------------------------
+# Data fetchers
 # ---------------------------------------------------------------------------
 
 def get_weather() -> Optional[dict]:
     key = os.getenv("OWM_KEY")
     if not key:
         return None
-    # 1) One Call 3.0
-    data = _get("https://api.openweathermap.org/data/3.0/onecall", lat=LAT, lon=LON,
-                appid=key, units="metric", exclude="minutely,hourly,alerts")
-    if data and data.get("current"):
-        return data
-    # 2) One Call 2.5
-    data = _get("https://api.openweathermap.org/data/2.5/onecall", lat=LAT, lon=LON,
-                appid=key, units="metric", exclude="minutely,hourly,alerts")
-    if data and data.get("current"):
-        return data
-    # 3) Open‑Meteo fallback
-    return _get("https://api.open-meteo.com/v1/forecast", latitude=LAT, longitude=LON,
-                 current_weather=True)
+    for ver in ("3.0", "2.5"):
+        data = _get(
+            f"https://api.openweathermap.org/data/{ver}/onecall",
+            lat=LAT, lon=LON, appid=key, units="metric", exclude="minutely,hourly,alerts"
+        )
+        if data and data.get("current"):
+            return data
+    # fallback Open‑Meteo
+    return _get(
+        "https://api.open-meteo.com/v1/forecast",
+        latitude=LAT, longitude=LON, current_weather=True,
+    )
 
 
 def get_air_quality() -> Optional[dict]:
@@ -88,8 +78,14 @@ def get_pollen() -> Optional[dict]:
     key = os.getenv("TOMORROW_KEY")
     if not key:
         return None
-    data = _get("https://api.tomorrow.io/v4/timelines", apikey=key, location=f"{LAT},{LON}",
-                fields="treeIndex,grassIndex,weedIndex", timesteps="1d", units="metric")
+    data = _get(
+        "https://api.tomorrow.io/v4/timelines",
+        apikey=key,
+        location=f"{LAT},{LON}",
+        fields="treeIndex,grassIndex,weedIndex",
+        timesteps="1d",
+        units="metric",
+    )
     try:
         vals = data["data"]["timelines"][0]["intervals"][0]["values"]
         return {"tree": vals.get("treeIndex"), "grass": vals.get("grassIndex"), "weed": vals.get("weedIndex")}
@@ -98,8 +94,10 @@ def get_pollen() -> Optional[dict]:
 
 
 def get_sst() -> Optional[dict]:
-    data = _get("https://marine-api.open-meteo.com/v1/marine", latitude=LAT, longitude=LON,
-                hourly="sea_surface_temperature", timezone="UTC")
+    data = _get(
+        "https://marine-api.open-meteo.com/v1/marine",
+        latitude=LAT, longitude=LON, hourly="sea_surface_temperature", timezone="UTC"
+    )
     try:
         temp = float(data["hourly"]["sea_surface_temperature"][0])
         return {"sst": round(temp, 1)}
@@ -123,21 +121,21 @@ def get_schumann() -> Optional[dict]:
         return None
 
 
-# 🔮 simple astro ------------------------------------------------------------
+# 🔮 simple astro
 
 def get_astro() -> Optional[dict]:
     today = datetime.utcnow()
     jd = swe.julday(today.year, today.month, today.day)
-    lon_ven = swe.calc_ut(jd, swe.VENUS)[0][0]  # first value of list
+    lon_ven = swe.calc_ut(jd, swe.VENUS)[0][0]  # first value
     lon_sat = swe.calc_ut(jd, swe.SATURN)[0][0]
-    diff = abs((lon_ven - lon_sat + 180) % 360 - 180)  # 0‒180
+    diff = abs((lon_ven - lon_sat + 180) % 360 - 180)
     if diff < 3:
         return {"event": "Конъюнкция Венеры и Сатурна — фокус на отношениях"}
     return None
 
 
 # ---------------------------------------------------------------------------
-# Collect raw bundle ---------------------------------------------------------
+# Collect
 # ---------------------------------------------------------------------------
 
 def collect() -> Dict[str, Any]:
@@ -154,14 +152,14 @@ def collect() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# GPT prettifier -------------------------------------------------------------
+# GPT prettify
 # ---------------------------------------------------------------------------
 
 def prettify(raw: Dict[str, Any]) -> str:
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     system_msg = (
-        "Ты — VayboМетр‑поэт. Сделай компактный HTML‑дайджест (только <b>, \n). "
-        "Если блока нет — опусти."
+        "Ты — VayboМетр-поэт. Дай HTML-дайджест. Используй <b> для заголовков, "
+        "\n для новых строк. Не вставляй <br>, &nbsp;, <html>. Пустых блоков не пиши."
     )
     prompt = "Сформатируй:\n" + json.dumps(raw, ensure_ascii=False, indent=2)
     resp = client.chat.completions.create(
@@ -170,15 +168,19 @@ def prettify(raw: Dict[str, Any]) -> str:
         temperature=0.35,
     )
     text = resp.choices[0].message.content.strip()
-    text = re.sub(r"^```[\s\S]*?\n|\n```$", "", text)
-    text = text.replace("\\n", "\n")
-    text = re.sub(r"(?i)<!DOCTYPE[^>]*>", "", text)
-    text = re.sub(r"(?i)</?(html|body)[^>]*>", "", text)
-    return text
+
+    # — sanitation —
+    text = re.sub(r"^```[\s\S]*?\n|\n```$", "", text)     # remove code fences
+    text = text.replace("\\n", "\n")                      # literal \n → NL
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)            # <br> → NL
+    text = re.sub(r"(?i)&nbsp;", " ", text)                 # nbsp
+    text = re.sub(r"(?i)<!DOCTYPE[^>]*>", "", text)         # doctype
+    text = re.sub(r"(?i)</?(html|body)[^>]*>", "", text)   # html/body tags
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
-# Telegram sender -----------------------------------------------------------
+# Telegram send
 # ---------------------------------------------------------------------------
 
 async def send(html: str) -> None:
@@ -188,7 +190,7 @@ async def send(html: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# main (with debug)
+# main with debug prints
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
