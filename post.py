@@ -61,10 +61,42 @@ def _get(url: str, **params) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def get_weather() -> Optional[dict]:
+    """Try One Call 3.0 → fallback на 2.5 → в крайнем случае Open‑Meteo."""
     key = os.getenv("OWM_KEY")
     if not key:
         return None
+
+    # --- attempt: One Call 3.0 ------------------------------------------------
+    data = _get(
+        "https://api.openweathermap.org/data/3.0/onecall",
+        lat=LAT,
+        lon=LON,
+        appid=key,
+        units="metric",
+        exclude="minutely,hourly,alerts",
+    )
+    if data and "current" in data:
+        return data  # успех 3.0
+
+    # --- fallback: One Call 2.5 (бесплатная) ----------------------------------
+    data = _get(
+        "https://api.openweathermap.org/data/2.5/onecall",
+        lat=LAT,
+        lon=LON,
+        appid=key,
+        units="metric",
+        exclude="minutely,hourly,alerts",
+    )
+    if data and "current" in data:
+        return data
+
+    # --- ultimate fallback: Open‑Meteo (no key) ------------------------------
     return _get(
+        "https://api.open-meteo.com/v1/forecast",
+        latitude=LAT,
+        longitude=LON,
+        current_weather=True,
+    )
         "https://api.openweathermap.org/data/3.0/onecall",
         lat=LAT,
         lon=LON,
@@ -146,13 +178,14 @@ def get_schumann() -> Optional[dict]:
 # 🔮 simple astro event ------------------------------------------------------
 
 def get_astro() -> Optional[dict]:
+    """Простейший пример: ловим соединение Венеры‑Сатурна ±3°."""
     today = datetime.utcnow()
     jd = swe.julday(today.year, today.month, today.day)
-    lon_ven = swe.calc_ut(jd, swe.VENUS)[0]
+    lon_ven = swe.calc_ut(jd, swe.VENUS)[0]  # долгота в °
     lon_sat = swe.calc_ut(jd, swe.SATURN)[0]
-    diff = abs((lon_ven - lon_sat + 180) % 360 - 180)  # 0..180
-    if diff < 3:  # соединение ±3°
-        return {"event": "Конъюнкция Венеры и Сатурна (усиливает фокус на отношениях)"}
+    diff = abs((lon_ven - lon_sat + 180) % 360 - 180)
+    if diff < 3:
+        return {"event": "Конъюнкция Венеры и Сатурна (фокус на отношениях)"}
     return None
 
 
