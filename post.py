@@ -1,27 +1,31 @@
-"""Automated daily VayboМетр poster – v1.4 (Open‑Meteo SST)
+"""Automated daily VayboМетр poster – v2.0  (full vibe‑stack)
 
-Собирает данные для Лимассола и шлёт оформленный дайджест в Telegram:
-  • Погода (OpenWeather One Call 3.0)
-  • Качество воздуха (IQAir / AirVisual)
-  • Пыльца (Tomorrow.io)
-  • Kp‑индекс (NOAA SWPC)
-  • Резонанс Шумана (HeartMath)
-  • Температура моря (Open‑Meteo Marine API)
+Собирает реальные данные по Лимассолу и выкатывает HTML‑дайджест в Telegram:
+
+  • ☀️  Погода          — OpenWeather One Call 3.0 (OWM_KEY)
+  • 🌬️  Качество воздуха — IQAir / AirVisual (AIRVISUAL_KEY)
+  • 🌿  Пыльца           — Tomorrow.io (TOMORROW_KEY)
+  • 🌊  Температура моря — Open‑Meteo marine API (без ключа)
+  • 🌌  Kp‑индекс        — NOAA SWPC JSON (без ключа)
+  • 📈  Резонанс Шумана  — Global Coherence API (без ключа)
+  • 🔮  Астрособытия     — Swiss Ephemeris (локально)
 
 GitHub Secrets (обязательные):
   OPENAI_API_KEY   – OpenAI
   TELEGRAM_TOKEN   – Telegram bot token
-  CHANNEL_ID       – @username или chat_id канала
+  CHANNEL_ID       – id/@ канала
   OWM_KEY          – OpenWeather
-  AIRVISUAL_KEY    – IQAir / AirVisual
+  AIRVISUAL_KEY    – IQAir
   TOMORROW_KEY     – Tomorrow.io
 
-Python deps (workflow уже ставит): requests, python-dateutil, openai, python-telegram-bot
+Python deps (добавь в requirements.txt / workflow):
+  requests python-dateutil openai python-telegram-bot pyswisseph
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import sys
@@ -29,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import requests
+import swisseph as swe  # pip install pyswisseph
 from dateutil import tz
 from telegram import Bot
 from openai import OpenAI
@@ -38,13 +43,12 @@ LON = 33.022
 LOCAL_TZ = tz.gettz("Asia/Nicosia")
 
 # ---------------------------------------------------------------------------
-# HTTP helper ----------------------------------------------------------------
+# tiny HTTP helper -----------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 def _get(url: str, **params) -> Optional[dict]:
-    """GET → .json | None, тихо логируя ошибку."""
     try:
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(url, params=params, timeout=20)
         r.raise_for_status()
         return r.json()
     except Exception as exc:  # noqa: BLE001, S110
@@ -86,7 +90,7 @@ def get_pollen() -> Optional[dict]:
     key = os.getenv("TOMORROW_KEY")
     if not key:
         return None
-    return _get(
+    data = _get(
         "https://api.tomorrow.io/v4/timelines",
         apikey=key,
         location=f"{LAT},{LON}",
@@ -94,24 +98,16 @@ def get_pollen() -> Optional[dict]:
         timesteps="1d",
         units="metric",
     )
-
-
-def get_geomagnetic() -> Optional[dict]:
-    data = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
-    if not data or len(data) < 2:
-        return None
     try:
-        ts, kp = data[-1]
-        return {"kp": float(kp)}
+        entry = data["data"]["timelines"][0]["intervals"][0]["values"]
+        return {
+            "tree": entry.get("treeIndex"),
+            "grass": entry.get("grassIndex"),
+            "weed": entry.get("weedIndex"),
+        }
     except Exception:
         return None
 
-
-def get_schumann() -> Optional[dict]:
-    return _get("https://api.glcoherence.org/v1/earth")
-
-
-# 🌊 Sea‑surface temperature via Open‑Meteo (free, no key) -------------------
 
 def get_sst() -> Optional[dict]:
     data = _get(
@@ -122,14 +118,46 @@ def get_sst() -> Optional[dict]:
         timezone="UTC",
     )
     try:
-        sst = data["hourly"]["sea_surface_temperature"][0]
-        return {"sst": round(float(sst), 1)}
+        temp = float(data["hourly"]["sea_surface_temperature"][0])
+        return {"sst": round(temp, 1)}
     except Exception:
         return None
 
 
+def get_geomagnetic() -> Optional[dict]:
+    data = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
+    if not data or len(data) < 2:
+        return None
+    try:
+        kp = float(data[-1][1])
+        return {"kp": kp}
+    except Exception:
+        return None
+
+
+def get_schumann() -> Optional[dict]:
+    data = _get("https://api.glcoherence.org/v1/earth")
+    try:
+        return {"amp": data["amplitude_1"], "freq": data["frequency_1"]}
+    except Exception:
+        return None
+
+
+# 🔮 simple astro event ------------------------------------------------------
+
+def get_astro() -> Optional[dict]:
+    today = datetime.utcnow()
+    jd = swe.julday(today.year, today.month, today.day)
+    lon_ven = swe.calc_ut(jd, swe.VENUS)[0]
+    lon_sat = swe.calc_ut(jd, swe.SATURN)[0]
+    diff = abs((lon_ven - lon_sat + 180) % 360 - 180)  # 0..180
+    if diff < 3:  # соединение ±3°
+        return {"event": "Конъюнкция Венеры и Сатурна (усиливает фокус на отношениях)"}
+    return None
+
+
 # ---------------------------------------------------------------------------
-# Collect all raw data -------------------------------------------------------
+# Collect raw ---------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 def collect() -> Dict[str, Any]:
@@ -138,9 +166,10 @@ def collect() -> Dict[str, Any]:
         "weather": get_weather(),
         "air": get_air_quality(),
         "pollen": get_pollen(),
+        "sst": get_sst(),
         "geomagnetic": get_geomagnetic(),
         "schumann": get_schumann(),
-        "sst": get_sst(),
+        "astro": get_astro(),
     }
 
 
@@ -152,14 +181,14 @@ def prettify(raw: Dict[str, Any]) -> str:
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
     system_msg = """
-Ты — VayboМетр‑поэт. Сделай HTML‑дайджест для Telegram. Формат строго такой:
+Ты — VayboМетр‑поэт. Сформатируй HTML‑дайджест для Telegram строго так:
 
 <b>🗺️ Локация</b>
 Город: Limassol
 Страна: Cyprus
 
 <b>🌬️ Качество воздуха</b>
-AQI (US): <число> (<главный загрязнитель>)
+AQI: <число> (<загрязнитель>)
 Комментарий: <коротко>
 
 <b>☀️ Погода</b>
@@ -169,36 +198,39 @@ AQI (US): <число> (<главный загрязнитель>)
 Ветер: <м/с> (<направление>)
 
 <b>🌊 Температура моря</b>
-Сейчас: <°C>  — если нет, опусти этот блок.
+Сейчас: <°C> — опусти блок, если данных нет
 
 <b>🌿 Пыльца</b>
-Деревья/Травы/Сорняки: <0‑5>/<0‑5>/<0‑5>  — если нет, опусти.
+Деревья/Травы/Сорняки: <0‑5>/<0‑5>/<0‑5> — опусти, если нет
 
 <b>🌌 Геомагнитика</b>
-Kp‑индекс: <число> (спокойно/буря) — если нет, опусти.
+Kp‑индекс: <число> — спокойная/буря — опусти, если нет
 
 <b>📈 Резонанс Шумана</b>
-Амплитуда: <значение> — если нет, опусти.
+Амплитуда: <значение> — опусти блок, если нет
+
+<b>🔮 Астрология</b>
+<событие> — опусти, если None
 
 <b>✅ Рекомендация</b>
 Короткая позитивная фраза.
 
-Правила: без ```code```, без <html>/<body>. Символ \n = новый абзац.
+Правила: только <b> теги, никаких <html>/<body>, символ \n = перенос.
 """
 
-    user_msg = "Сформатируй красиво:\n" + json.dumps(raw, ensure_ascii=False, indent=2)
+    prompt = "Сформатируй красиво на основе данных:\n" + json.dumps(raw, ensure_ascii=False, indent=2)
 
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg},
+            {"role": "user", "content": prompt},
         ],
-        temperature=0.4,
+        temperature=0.35,
     )
     text = resp.choices[0].message.content.strip()
 
-    # sanitation
+    # sanitize for Telegram
     text = re.sub(r"^```[\s\S]*?\n|\n```$", "", text)
     text = text.replace("\\n", "\n")
     text = re.sub(r"(?i)<!DOCTYPE[^>]*>", "", text)
@@ -207,7 +239,7 @@ Kp‑индекс: <число> (спокойно/буря) — если нет,
 
 
 # ---------------------------------------------------------------------------
-# Telegram ------------------------------------------------------------------
+# Telegram sender -----------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 async def send(html: str) -> None:
