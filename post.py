@@ -1,15 +1,23 @@
-"""post.py – VayboМетр v2.2 (debug build)
+"""post.py – VayboМетр v2.3 (stable debug)
 
-Полный скрипт: собирает реальные данные для Лимассола, превращает их в
-HTML‑дайджест и шлёт в Telegram‑канал. В эту версию добавлены отладочные
-print‑ы и глобальный try/except, чтобы любая ошибка всплывала в логах
-GitHub Actions, а не пряталась.
+Собирает данные о вайбе Лимассола и постит HTML‑дайджест в Telegram.
+Включает подробные принты, чтобы в логах Actions было видно:
+  • RAW‑JSON (обрезанный)   • первый фрагмент HTML   • успех/ошибку Telegram.
 
-Требуемые GitHub Secrets:
-  OPENAI_API_KEY, TELEGRAM_TOKEN, CHANNEL_ID ("-100…"),
-  OWM_KEY, AIRVISUAL_KEY, TOMORROW_KEY
+Источники данных (все бесплатные):
+  ☀️  Погода             — OpenWeather One Call 3.0 ➜ 2.5 ➜ Open‑Meteo fallback
+  🌬️  Качество воздуха   — IQAir / AirVisual
+  🌿  Пыльца              — Tomorrow.io
+  🌊  Температура моря    — Open‑Meteo Marine
+  🌌  Kp‑индекс           — NOAA SWPC
+  📈  Шуман               — Global Coherence (может тайм‑аутиться)
+  🔮  Астрология          — Swiss‑Ephemeris (локально)
 
-requirements.txt:
+GitHub Secrets (обязательные):
+  OPENAI_API_KEY   TELEGRAM_TOKEN   CHANNEL_ID ("-100…")
+  OWM_KEY          AIRVISUAL_KEY    TOMORROW_KEY
+
+requirements.txt должен содержать:
   requests python-dateutil openai python-telegram-bot pyswisseph
 """
 from __future__ import annotations
@@ -33,7 +41,7 @@ LON = 33.022
 LOCAL_TZ = tz.gettz("Asia/Nicosia")
 
 # ---------------------------------------------------------------------------
-# HTTP helper
+# Tiny HTTP helper -----------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 def _get(url: str, **params) -> Optional[dict]:
@@ -47,32 +55,26 @@ def _get(url: str, **params) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# External data
+# External data fetchers -----------------------------------------------------
 # ---------------------------------------------------------------------------
 
 def get_weather() -> Optional[dict]:
     key = os.getenv("OWM_KEY")
     if not key:
         return None
-    # 3.0
-    data = _get(
-        "https://api.openweathermap.org/data/3.0/onecall",
-        lat=LAT, lon=LON, appid=key, units="metric", exclude="minutely,hourly,alerts",
-    )
+    # 1) One Call 3.0
+    data = _get("https://api.openweathermap.org/data/3.0/onecall", lat=LAT, lon=LON,
+                appid=key, units="metric", exclude="minutely,hourly,alerts")
     if data and data.get("current"):
         return data
-    # 2.5
-    data = _get(
-        "https://api.openweathermap.org/data/2.5/onecall",
-        lat=LAT, lon=LON, appid=key, units="metric", exclude="minutely,hourly,alerts",
-    )
+    # 2) One Call 2.5
+    data = _get("https://api.openweathermap.org/data/2.5/onecall", lat=LAT, lon=LON,
+                appid=key, units="metric", exclude="minutely,hourly,alerts")
     if data and data.get("current"):
         return data
-    # fallback open‑meteo
-    return _get(
-        "https://api.open-meteo.com/v1/forecast",
-        latitude=LAT, longitude=LON, current_weather=True,
-    )
+    # 3) Open‑Meteo fallback
+    return _get("https://api.open-meteo.com/v1/forecast", latitude=LAT, longitude=LON,
+                 current_weather=True)
 
 
 def get_air_quality() -> Optional[dict]:
@@ -86,26 +88,18 @@ def get_pollen() -> Optional[dict]:
     key = os.getenv("TOMORROW_KEY")
     if not key:
         return None
-    data = _get(
-        "https://api.tomorrow.io/v4/timelines",
-        apikey=key,
-        location=f"{LAT},{LON}",
-        fields="treeIndex,grassIndex,weedIndex",
-        timesteps="1d",
-        units="metric",
-    )
+    data = _get("https://api.tomorrow.io/v4/timelines", apikey=key, location=f"{LAT},{LON}",
+                fields="treeIndex,grassIndex,weedIndex", timesteps="1d", units="metric")
     try:
-        values = data["data"]["timelines"][0]["intervals"][0]["values"]
-        return {"tree": values.get("treeIndex"), "grass": values.get("grassIndex"), "weed": values.get("weedIndex")}
+        vals = data["data"]["timelines"][0]["intervals"][0]["values"]
+        return {"tree": vals.get("treeIndex"), "grass": vals.get("grassIndex"), "weed": vals.get("weedIndex")}
     except Exception:
         return None
 
 
 def get_sst() -> Optional[dict]:
-    data = _get(
-        "https://marine-api.open-meteo.com/v1/marine",
-        latitude=LAT, longitude=LON, hourly="sea_surface_temperature", timezone="UTC",
-    )
+    data = _get("https://marine-api.open-meteo.com/v1/marine", latitude=LAT, longitude=LON,
+                hourly="sea_surface_temperature", timezone="UTC")
     try:
         temp = float(data["hourly"]["sea_surface_temperature"][0])
         return {"sst": round(temp, 1)}
@@ -116,8 +110,7 @@ def get_sst() -> Optional[dict]:
 def get_geomagnetic() -> Optional[dict]:
     arr = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
     try:
-        kp = float(arr[-1][1])
-        return {"kp": kp}
+        return {"kp": float(arr[-1][1])}
     except Exception:
         return None
 
@@ -130,19 +123,21 @@ def get_schumann() -> Optional[dict]:
         return None
 
 
+# 🔮 simple astro ------------------------------------------------------------
+
 def get_astro() -> Optional[dict]:
     today = datetime.utcnow()
     jd = swe.julday(today.year, today.month, today.day)
-    lon_ven = swe.calc_ut(jd, swe.VENUS)[0]
-    lon_sat = swe.calc_ut(jd, swe.SATURN)[0]
-    diff = abs((lon_ven - lon_sat + 180) % 360 - 180)
+    lon_ven = swe.calc_ut(jd, swe.VENUS)[0][0]  # first value of list
+    lon_sat = swe.calc_ut(jd, swe.SATURN)[0][0]
+    diff = abs((lon_ven - lon_sat + 180) % 360 - 180)  # 0‒180
     if diff < 3:
         return {"event": "Конъюнкция Венеры и Сатурна — фокус на отношениях"}
     return None
 
 
 # ---------------------------------------------------------------------------
-# Collect
+# Collect raw bundle ---------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 def collect() -> Dict[str, Any]:
@@ -159,45 +154,41 @@ def collect() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# GPT prettify
+# GPT prettifier -------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 def prettify(raw: Dict[str, Any]) -> str:
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     system_msg = (
-        "Ты — VayboМетр‑поэт. Сформатируй HTML‑дайджест для Telegram (только <b> и \n). "
-        "Убирай целиком блоки, если данных нет."
+        "Ты — VayboМетр‑поэт. Сделай компактный HTML‑дайджест (только <b>, \n). "
+        "Если блока нет — опусти."
     )
-    user_msg = "Сделай дайджест по этим данным:\n" + json.dumps(raw, ensure_ascii=False, indent=2)
+    prompt = "Сформатируй:\n" + json.dumps(raw, ensure_ascii=False, indent=2)
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+        messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
         temperature=0.35,
     )
     text = resp.choices[0].message.content.strip()
-    text = re.sub(r"^```[\s\S]*?\n|\n```$", "", text)  # drop code fences
+    text = re.sub(r"^```[\s\S]*?\n|\n```$", "", text)
     text = text.replace("\\n", "\n")
     text = re.sub(r"(?i)<!DOCTYPE[^>]*>", "", text)
     text = re.sub(r"(?i)</?(html|body)[^>]*>", "", text)
-    return text.strip()
+    return text
 
 
 # ---------------------------------------------------------------------------
-# Telegram send
+# Telegram sender -----------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 async def send(html: str) -> None:
     bot = Bot(token=os.environ["TELEGRAM_TOKEN"])
-    await bot.send_message(
-        chat_id=os.environ["CHANNEL_ID"],
-        text=html[:4096],
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
+    await bot.send_message(chat_id=os.environ["CHANNEL_ID"], text=html[:4096],
+                           parse_mode="HTML", disable_web_page_preview=True)
 
 
 # ---------------------------------------------------------------------------
-# main with debug
+# main (with debug)
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
