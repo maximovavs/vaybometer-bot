@@ -2,7 +2,9 @@ name: Daily VayboMeter Post
 
 on:
   schedule:
-    - cron: '0 4 * * *'  # 04:00 UTC = 07:00 Nicosia
+    - cron: '0 4 * * *'  # 03:00 UTC = 07:00 Nicosia
+  workflow_dispatch:
+
 
 jobs:
   post:
