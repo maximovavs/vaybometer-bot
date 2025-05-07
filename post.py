@@ -163,17 +163,29 @@ def astro_events() -> str:
     return "\n".join(parts)
 
 # ───────── GPT – fun block ────────────────────────────────────────────────
-def gpt_blurb(culprit:str)->tuple[str,str]:
-    prompt=(f"Одно предложение-вывод (вините {culprit}). "
-            "Затем 3 весёлых совета, emoji приветствуются, ≤12 слов каждый.")
-    rsp=OpenAI(api_key=os.environ["OPENAI_API_KEY"]).chat.completions.create(
-        model="gpt-4o-mini",temperature=0.6,
-        messages=[{"role":"user","content":prompt}]
-    ).choices[0].message.content.strip()
-    lines=[l.strip() for l in rsp.splitlines() if l.strip()]
-    summary=lines[0]
-    tips=[l.lstrip("-• ").strip() for l in lines[1:4]]
-    return summary,"\n".join(f"- {t}" for t in tips)
+@@
+-def gpt_blurb(culprit:str)->tuple[str,str]:
+-    prompt=(f"Одно предложение-вывод (вините {culprit}). "
+-            "Затем 3 весёлых совета, emoji приветствуются, ≤12 слов каждый.")
++def gpt_blurb(culprit: str) -> tuple[str, str]:
++    # требуем точный шаблон начала вывода
++    prompt = (
++        "Сформируй вывод РОВНО в одну строку и начинай его дословно: "
++        "«Если сегодня что-то пойдёт не так, вините …». "
++        f"Вместо многоточия подставь {culprit}. "
++        "Продолжи ещё одной короткой фразой (≤ 12 слов, позитивный тон). "
++        "После пустой строки дай ровно 3 советы-буллета, "
++        "каждый ≤ 12 слов, с эмодзи, без нумерации."
++    )
+@@
+-    lines=[l.strip() for l in rsp.splitlines() if l.strip()]
+-    summary=lines[0]
+-    tips=[l.lstrip("-• ").strip() for l in lines[1:4]]
++    lines=[l.strip() for l in rsp.splitlines() if l.strip()]
++    summary=lines[0]                      # гарантированно с нужным началом
++    tips=[l.lstrip("-• ").strip() for l in lines[1:4]]   # 3 bullets
+     return summary, "\n".join(f"- {t}" for t in tips)
+
 
 # ───────── digest builder ────────────────────────────────────────────────
 def build_md(d:Dict[str,Any]) -> str:
