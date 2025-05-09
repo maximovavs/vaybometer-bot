@@ -1,332 +1,38 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-post.py – VayboМетр Limassol v6.0  (evening–tomorrow edition)
+name: Daily VayboMeter Post
 
-Требуемые SECRET-ы в GitHub Actions:
-OPENAI_API_KEY, TELEGRAM_TOKEN, CHANNEL_ID,
-OWM_KEY, AIRVISUAL_KEY, TOMORROW_KEY (пыльца, опц.), COPERNICUS_USER/PASS (морская SST).
+on:
+  schedule:
+    # 18:00 UTC → 21:00 Asia/Nicosia
+    - cron: '0 18 * * *'
+  workflow_dispatch:
 
-cron в workflow: 0 18 * * *  →  21:00 Asia/Nicosia.
-"""
+jobs:
+  post:
+    runs-on: ubuntu-latest
 
-from __future__ import annotations
-import asyncio, os, sys, math, json
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+    steps:
+      - name: 📥 Checkout repo
+        uses: actions/checkout@v3
 
-import requests, swisseph as swe
-from openai import OpenAI
-from telegram import Bot, error as tg_err
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-# ──────────────── места ──────────────────────────────────────────────────
-HOME = ("Лимассол", 34.707, 33.022)
-CITIES = {
-    "Лимассол": (34.707, 33.022),
-    "Ларнака":  (34.916, 33.613),
-    "Никосия":  (35.166, 33.366),
-    "Пафос":    (34.776, 32.429),
-}
+      - name: 📦 Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt \
+              requests python-dateutil pendulum astropy
 
-# ──────────────── helpers ────────────────────────────────────────────────
-def _get(url: str, **params) -> Optional[dict]:
-    try:
-        r = requests.get(url, params=params, timeout=20)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"[warn] {url} → {e}", file=sys.stderr)
-        return None
-
-
-def deg2dir(d: float) -> str:
-    dirs = "N NE E SE S SW W NW".split()
-    return dirs[int((d + 22.5) % 360 // 45)]
-
-
-def wind_phrase(kmh: float) -> str:
-    return ("штиль" if kmh < 5 else
-            "слабый" if kmh < 15 else
-            "умеренный" if kmh < 30 else
-            "сильный")
-
-
-clouds_word = lambda pc: "ясно" if pc < 25 else "переменная" if pc < 70 else "облачно"
-
-# ──────────────── forecast для одной точки (завтра) ──────────────────────
-def forecast_tomorrow(lat: float, lon: float) -> dict:
-    tomorrow = datetime.utcnow().date() + timedelta(days=1)
-    d = _get(
-        "https://api.open-meteo.com/v1/forecast",
-        latitude=lat,
-        longitude=lon,
-        timezone="UTC",
-        hourly="temperature_2m,weathercode,cloud_cover,surface_pressure",
-        daily="temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
-              "precipitation_probability_max",
-        start_date=tomorrow.isoformat(),
-        end_date=(tomorrow + timedelta(days=1)).isoformat(),
-    )
-    if not d:
-        raise RuntimeError("No forecast")
-    return d
-
-
-def fog_risk(codes: list[int]) -> bool:
-    return sum(1 for c in codes if c in (45, 48)) / 24 >= 0.40
-
-
-# ──────────────── hot / cold по среднесуточной T° ────────────────────────
-def hot_cold_mean() -> tuple[str, float, str, float]:
-    results = []
-    for city, (lat, lon) in CITIES.items():
-        try:
-            t_mean = forecast_tomorrow(lat, lon)["daily"]["temperature_2m_mean"][0]
-            results.append((city, t_mean))
-        except Exception:
-            continue
-    hot = max(results, key=lambda x: x[1])
-    cold = min(results, key=lambda x: x[1])
-    return hot[0], hot[1], cold[0], cold[1]
-
-# ──────────────── дополнительные источники данных ────────────────────────
-def get_air() -> Optional[dict]:
-    k = os.getenv("AIRVISUAL_KEY")
-    if not k:
-        return None
-    return _get(
-        "https://api.airvisual.com/v2/nearest_city",
-        lat=HOME[1], lon=HOME[2], key=k)
-
-
-def pm10_openmeteo() -> Optional[float]:
-    d = _get(
-        "https://air-quality-api.open-meteo.com/v1/air-quality",
-        latitude=HOME[1], longitude=HOME[2],
-        hourly="pm10", timezone="UTC")
-    try:
-        return round(float(d["hourly"]["pm10"][0]), 1)
-    except Exception:
-        return None
-
-
-def get_pollen() -> Optional[dict]:
-    key = os.getenv("TOMORROW_KEY")
-    if not key:
-        return None
-    d = _get("https://api.tomorrow.io/v4/timelines",
-             apikey=key,
-             location=f"{HOME[1]},{HOME[2]}",
-             fields="treeIndex,grassIndex,weedIndex",
-             timesteps="1d")
-    try:
-        return d["data"]["timelines"][0]["intervals"][0]["values"]
-    except Exception:
-        return None
-
-
-def get_sst() -> Optional[float]:
-    d = _get(
-        "https://marine-api.open-meteo.com/v1/marine",
-        latitude=HOME[1], longitude=HOME[2],
-        hourly="sea_surface_temperature", timezone="UTC")
-    try:
-        return round(float(d["hourly"]["sea_surface_temperature"][0]), 1)
-    except Exception:
-        return None
-
-
-def get_kp() -> Optional[float]:
-    d = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
-    try:
-        return float(d[-1][1])
-    except Exception:
-        return None
-
-
-def get_schumann() -> dict:
-    d = _get("https://api.glcoherence.org/v1/earth")
-    if d:
-        return {"freq": d["frequency_1"], "amp": d["amplitude_1"]}
-    d = _get("https://gci-api.ucsd.edu/data/latest")
-    if d:
-        return {"freq": d["data"]["sr1"]["frequency"], "amp": d["data"]["sr1"]["amplitude"]}
-    return {"msg": "датчики молчат третий день — ушли в ретрит"}
-
-# ──────────────── астрология ─────────────────────────────────────────────
-SIGNS = ("Овне", "Тельце", "Близнецах", "Раке", "Льве", "Деве",
-         "Весах", "Скорпионе", "Стрельце", "Козероге", "Водолее", "Рыбах")
-LUNAR_EFF = ("придаёт смелости", "заставляет чувствовать комфорт", "повышает коммуникабельность",
-             "усиливает заботу", "разжигает творческий огонь", "настраивает на порядок",
-             "заставляет искать баланс", "поднимает страсть", "толкает к приключениям",
-             "фокусирует на деле", "дарит странные идеи", "усиливает эмпатию")
-
-
-def moon_phase(jd):
-    sun = swe.calc_ut(jd, swe.SUN)[0][0]
-    moon = swe.calc_ut(jd, swe.MOON)[0][0]
-    phase = ((moon - sun + 360) % 360) / 360
-    illum = round(abs(math.cos(math.pi * phase)) * 100)
-    name = ("Новолуние" if illum < 5 else "Растущая Луна" if phase < .5 else
-            "Полнолуние" if illum > 95 else "Убывающая Луна")
-    sign = int(moon // 30)
-    return f"{name} в {SIGNS[sign]} — {LUNAR_EFF[sign]} ({illum} %)"
-
-
-def planet_parade(jd):
-    lons = sorted(swe.calc_ut(jd, b)[0][0] for b in
-                  (swe.MERCURY, swe.VENUS, swe.MARS, swe.JUPITER, swe.SATURN))
-    best = min((lons[i + 2] - lons[i]) % 360 for i in range(len(lons) - 2))
-    return "Мини-парад планет" if best < 90 else None
-
-
-def trine_vj(jd):
-    v, j = swe.calc_ut(jd, swe.VENUS)[0][0], swe.calc_ut(jd, swe.JUPITER)[0][0]
-    return "Трин Венеры и Юпитера — волна удачи" if abs((v - j + 180) % 360 - 180) < 4 else None
-
-
-def astro_events():
-    jd = swe.julday(*datetime.utcnow().timetuple()[:3])
-    parts = [moon_phase(jd)]
-    for fn in (planet_parade, trine_vj):
-        if (s := fn(jd)):
-            parts.append(s)
-    if swe.calc_ut(jd, swe.MERCURY)[0][3] < 0:
-        parts.append("Меркурий ретрограден")
-    return "\n".join(parts)
-
-
-# ──────────────── GPT вывод + советы ─────────────────────────────────────
-def gpt_blurb(culprit: str) -> tuple[str, str]:
-    prompt = (f"Одной строкой: 'Если завтра что-то пойдёт не так, вините {culprit}.' "
-              f"Добавь короткий позитив (≤12 слов). "
-              f"Потом пустая строка и ровно 3 весёлых bullet-совета, ≤12 слов.")
-    res = OpenAI(api_key=os.getenv("OPENAI_API_KEY")).chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.6,
-        messages=[{"role": "user", "content": prompt}]
-    ).choices[0].message.content.strip().splitlines()
-    lines = [l.strip() for l in res if l.strip()]
-    summary = lines[0]
-    tips = "\n".join(f"- {l.lstrip('-• ').strip()}" for l in lines[1:4])
-    return summary, tips
-
-
-# ──────────────── сборка Markdown ----------------------------------------
-def build_md() -> str:
-    name, lat, lon = HOME
-    fc = forecast_tomorrow(lat, lon)
-    daily = fc["daily"]
-    hourly = fc["hourly"]
-    fog = fog_risk(hourly["weathercode"])
-
-    hot_city, hot_t, cold_city, cold_t = hot_cold_mean()
-
-    # давление
-    try:
-        press_val = round(float(hourly["surface_pressure"][0]))
-    except Exception:
-        press_val = 1013
-
-    P = [
-        "☀️ <b>Погода завтра</b>",
-        f"<b>Темп. днём:</b> до {daily['temperature_2m_max'][0]:.0f} °C",
-        f"<b>Темп. ночью:</b> около {daily['temperature_2m_min'][0]:.0f} °C",
-        f"<b>Облачность:</b> {clouds_word(hourly['cloud_cover'][0])}",
-        "<b>Осадки:</b> не ожидаются"
-        if daily["precipitation_probability_max"][0] < 20
-        else "<b>Осадки:</b> возможен дождь",
-        f"<b>Давление:</b> {press_val} гПа",
-    ]
-
-    if fog:
-        P.append("Вероятен туман 🌫️ в утренние часы")
-
-    P.append(f"Самый тёплый город: {hot_city} ({hot_t:.1f} °C)")
-    P.append(f"Самый прохладный город: {cold_city} ({cold_t:.1f} °C)")
-
-    # ─── качество воздуха ────────────────────────────────────────────────
-    if (air := get_air()):
-        pol = air["data"]["current"]["pollution"]
-        pm25 = pol.get("p2") or round(pol["aqius"] * 0.25, 1)  # грубая оценка
-        pm10 = pol.get("p1") or pm10_openmeteo() or "нет данных"
-        lvl = ("хороший" if pol["aqius"] <= 50 else
-               "умеренный" if pol["aqius"] <= 100 else
-               "вредный")
-        P += [
-            "",
-            "🌬️ <b>Качество воздуха</b>",
-            f"<b>AQI:</b> {pol['aqius']} | <b>PM2.5:</b> {pm25} µg/m³ | <b>PM10:</b> {pm10} µg/m³",
-            f"Воздух {lvl}."
-        ]
-
-    # ─── пыльца ───────────────────────────────────────────────────────────
-    if (poll := get_pollen()):
-        def idx(v): return ["нет", "низк", "умерен", "высок", "оч.выс", "экстрим"][int(round(v))]
-        P += [
-            "",
-            "🌿 <b>Пыльца</b>",
-            f"Деревья — {idx(poll['treeIndex'])} | Травы — {idx(poll['grassIndex'])} | "
-            f"Амброзия — {idx(poll['weedIndex'])}"
-        ]
-
-    # ─── геомагнитка ──────────────────────────────────────────────────────
-    kp = get_kp()
-    if kp is not None:
-        state = ("буря (G1)" if kp >= 5 else "спокойный" if kp < 4 else "повышенный")
-        P += ["", "🌌 <b>Геомагнитная активность</b>",
-              f"<b>Уровень:</b> {state} (Kp {kp:.1f})"]
-
-    # ─── Шуман ────────────────────────────────────────────────────────────
-    sch = get_schumann()
-    if "freq" in sch:
-        P += ["", "📈 <b>Резонанс Шумана</b>",
-              f"<b>Частота:</b> ≈{sch['freq']:.1f} Гц • амплитуда стабильна"]
-    else:
-        P += ["", "📈 <b>Резонанс Шумана</b>",
-              sch.get("msg", "нет данных")]
-
-    # ─── температура моря ────────────────────────────────────────────────
-    if (sst := get_sst()):
-        P += ["", "🌊 <b>Температура воды в море</b>",
-              f"<b>Сейчас:</b> {sst} °C"]
-
-    # ─── астрология ───────────────────────────────────────────────────────
-    astro = astro_events()
-    P += ["", "🔮 <b>Астрологические события</b>", astro]
-
-    P.append("---")
-
-    culprit_raw = ("магнитные бури" if kp and kp >= 5 else
-                   "низкое давление" if press_val < 1007 else
-                   "туман" if fog else
-                   "мини-парад планет")
-    summary, tips = gpt_blurb(culprit_raw)
-
-    P += ["<b>📝 Вывод</b>", summary, "", "<b>✅ Рекомендации</b>", tips]
-    return "\n".join(P)
-
-
-# ──────────────── Telegram send ──────────────────────────────────────────
-async def send(text: str):
-    await Bot(os.getenv("TELEGRAM_TOKEN")).send_message(
-        chat_id=os.getenv("CHANNEL_ID"),
-        text=text[:4096],
-        parse_mode="HTML",
-        disable_web_page_preview=True)
-
-
-# ──────────────── main ───────────────────────────────────────────────────
-async def main():
-    md = build_md()
-    print("Preview:", md.replace("\n", " | ")[:400])
-    try:
-        await send(md)
-        print("✓ sent")
-    except tg_err.TelegramError as e:
-        print("Telegram error:", e, file=sys.stderr)
-        raise
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+      - name: 🚀 Run VayбоМетр poster
+        env:
+          OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_TOKEN:  ${{ secrets.TELEGRAM_TOKEN }}
+          CHANNEL_ID:      ${{ secrets.CHANNEL_ID }}
+          OWM_KEY:         ${{ secrets.OWM_KEY }}
+          AIRVISUAL_KEY:   ${{ secrets.AIRVISUAL_KEY }}
+          AMBEE_KEY:       ${{ secrets.AMBEE_KEY }}
+          COPERNICUS_USER: ${{ secrets.COPERNICUS_USER }}
+          COPERNICUS_PASS: ${{ secrets.COPERNICUS_PASS }}
+        run: python post.py
