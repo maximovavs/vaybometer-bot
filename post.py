@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 import requests
 import pendulum
 from dateutil import tz
-from python_telegram_bot import Bot      # NB: pip install python-telegram-bot==20.0  (импорт иначе)
+from telegram import Bot      # NB: pip install python-telegram-bot==20.0  (импорт иначе)
 # Если импорт выдаёт ошибку, оставьте from telegram import Bot  (для старых версий)
 
 # ──────────────────────── CONSTANTS ────────────────────────
