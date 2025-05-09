@@ -103,11 +103,20 @@ def build_msg()->str:
     aqi_emoji=("🟢","🟡","🟠","🔴","🟣")[0 if aqi<=50 else 1 if aqi<=100 else 2 if aqi<=150 else 3 if aqi<=200 else 4]
 
     kp=fetch_kp(); sch=fetch_schumann()
-    culprit,emo=random.choice([
-        ("низкое давление","📉") if isinstance(pressure,int) and pressure<1005 else None,
-        ("магнитная буря","🧲")   if kp and kp>=4 else None,
-        ("шальной ветер","💨")    if windspd and windspd>=25 else None,
-    ]+[("погоду","🌦")])
+        # ----- кто «виноват» в плохом самочувствии
+    options = []
+    if isinstance(pressure, (int, float)) and pressure < 1005:
+        options.append(("низкое давление", "📉"))
+    if kp and kp >= 4:
+        options.append(("магнитная буря", "🧲"))
+    if windspd and windspd >= 25:
+        options.append(("шальной ветер", "💨"))
+
+    if not options:                       # если спец-факторов нет
+        options.append(("погоду", "🌦"))  # дефолтный «виновник»
+
+    culprit, emo = random.choice(options)
+
 
     lines=[
         f"🌞 <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>",
