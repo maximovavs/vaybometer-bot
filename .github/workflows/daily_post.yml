@@ -1,269 +1,38 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-post.py – VayboМетр Limassol v6.1  (21:00 Asia/Nicosia → прогноз на завтра)
-"""
+name: Daily VayboMeter Post
 
-from __future__ import annotations
-import asyncio, os, sys, math
-from datetime import datetime, timedelta
-from typing import Optional
+on:
+  schedule:
+    # 18:00 UTC → 21:00 Asia/Nicosia
+    - cron: '0 18 * * *'
+  workflow_dispatch:
 
-import requests, swisseph as swe
-from openai import OpenAI
-from telegram import Bot, error as tg_err
+jobs:
+  post:
+    runs-on: ubuntu-latest
 
-# ──────────── гео ────────────────────────────────────────────────────────
-HOME = ("Лимассол", 34.707, 33.022)
-CITIES = {
-    "Лимассол": (34.707, 33.022),
-    "Ларнака":  (34.916, 33.613),
-    "Никосия":  (35.166, 33.366),
-    "Пафос":    (34.776, 32.429),
-}
+    steps:
+      - name: 📥 Checkout repo
+        uses: actions/checkout@v3
 
-# ──────────── HTTP helper ────────────────────────────────────────────────
-def _get(url: str, **params) -> Optional[dict]:
-    try:
-        r = requests.get(url, params=params, timeout=20)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"[warn] {url} → {e}", file=sys.stderr)
-        return None
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
+      - name: 📦 Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt \
+              requests python-dateutil pendulum astropy
 
-# ──────────── forecast helper (Open-Meteo) ───────────────────────────────
-def forecast_tomorrow(lat: float, lon: float) -> dict:
-    tomorrow = datetime.utcnow().date() + timedelta(days=1)
-    return _get(
-        "https://api.open-meteo.com/v1/forecast",
-        latitude=lat, longitude=lon, timezone="UTC",
-        hourly="temperature_2m,weathercode,cloud_cover,surface_pressure",
-        daily="temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
-              "precipitation_probability_max",
-        start_date=tomorrow.isoformat(),
-        end_date=(tomorrow + timedelta(days=1)).isoformat(),
-    )
-
-
-def fog_risk(codes: list[int]) -> bool:
-    return sum(1 for c in codes if c in (45, 48)) / 24 >= 0.40
-
-
-def hot_cold_mean() -> tuple[str, float, str, float]:
-    res = []
-    for city, (lat, lon) in CITIES.items():
-        d = forecast_tomorrow(lat, lon)
-        t_mean = d["daily"]["temperature_2m_mean"][0]
-        res.append((city, t_mean))
-    hot = max(res, key=lambda x: x[1])
-    cold = min(res, key=lambda x: x[1])
-    return hot[0], hot[1], cold[0], cold[1]
-
-
-# ──────────── доп-API (воздух/pollen/SST/Kp/Шуман) ───────────────────────
-def get_air():
-    k = os.getenv("AIRVISUAL_KEY")
-    if not k:
-        return None
-    return _get("https://api.airvisual.com/v2/nearest_city",
-                lat=HOME[1], lon=HOME[2], key=k)
-
-
-def pm10_openmeteo():
-    d = _get("https://air-quality-api.open-meteo.com/v1/air-quality",
-             latitude=HOME[1], longitude=HOME[2],
-             hourly="pm10", timezone="UTC")
-    try:
-        return round(float(d["hourly"]["pm10"][0]), 1)
-    except Exception:
-        return None
-
-
-def get_pollen():
-    key = os.getenv("TOMORROW_KEY")
-    if not key:
-        return None
-    d = _get("https://api.tomorrow.io/v4/timelines",
-             apikey=key,
-             location=f"{HOME[1]},{HOME[2]}",
-             fields="treeIndex,grassIndex,weedIndex",
-             timesteps="1d")
-    try:
-        return d["data"]["timelines"][0]["intervals"][0]["values"]
-    except Exception:
-        return None
-
-
-def get_sst():
-    d = _get("https://marine-api.open-meteo.com/v1/marine",
-             latitude=HOME[1], longitude=HOME[2],
-             hourly="sea_surface_temperature",
-             timezone="UTC")
-    try:
-        return round(float(d["hourly"]["sea_surface_temperature"][0]), 1)
-    except Exception:
-        return None
-
-
-def get_kp():
-    d = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
-    try:
-        return float(d[-1][1])
-    except Exception:
-        return None
-
-
-def get_schumann():
-    d = _get("https://api.glcoherence.org/v1/earth")
-    if d:
-      return {"freq": d["frequency_1"], "amp": d["amplitude_1"]}
-    return {"msg": "датчики молчат третий день — ушли в ретрит"}
-
-# ──────────── astrology helpers ──────────────────────────────────────────
-SIGNS = ("Овне","Тельце","Близнецах","Раке","Льве","Деве",
-         "Весах","Скорпионе","Стрельце","Козероге","Водолее","Рыбах")
-EFFECT = ("придаёт смелости","заставляет чувствовать комфорт","повышает коммуникабельность",
-          "усиливает заботу","разжигает творческий огонь","настраивает на порядок",
-          "заставляет искать баланс","поднимает страсть","толкает к приключениям",
-          "фокусирует на деле","дарит странные идеи","усиливает эмпатию")
-
-
-def moon_phase(jd):
-    sun = swe.calc_ut(jd, swe.SUN)[0][0]
-    moon = swe.calc_ut(jd, swe.MOON)[0][0]
-    phase = ((moon - sun + 360) % 360) / 360
-    illum = round(abs(math.cos(math.pi * phase))*100)
-    name = ("Новолуние" if illum<5 else "Растущая Луна" if phase<.5 else
-            "Полнолуние" if illum>95 else "Убывающая Луна")
-    sign = int(moon // 30)
-    return f"{name} в {SIGNS[sign]} — {EFFECT[sign]} ({illum} %)"
-
-
-def planet_parade(jd):
-    lons = sorted(swe.calc_ut(jd,b)[0][0] for b in
-                  (swe.MERCURY,swe.VENUS,swe.MARS,swe.JUPITER,swe.SATURN))
-    best = min((lons[i+2]-lons[i])%360 for i in range(len(lons)-2))
-    return "Мини-парад планет" if best < 90 else None
-
-
-def trine_vj(jd):
-    v = swe.calc_ut(jd,swe.VENUS)[0][0]
-    j = swe.calc_ut(jd,swe.JUPITER)[0][0]
-    return "Трин Венеры и Юпитера — волна удачи" if abs((v-j+180)%360-180)<4 else None
-
-
-def astro_events():
-    jd = swe.julday(*datetime.utcnow().timetuple()[:3])
-    ev = [moon_phase(jd)]
-    for fn in (planet_parade, trine_vj):
-        if (s := fn(jd)):
-            ev.append(s)
-    return "\n".join(ev)
-
-
-# ──────────── GPT вывод + советы ─────────────────────────────────────────
-def gpt_blurb(culprit:str):
-    prompt = ("Одной строкой: 'Если завтра что-то пойдёт не так, вините "
-              f"{culprit}.' Добавь позитив ≤12 слов. Потом пустая строка и ровно "
-              "3 весёлых bullet-совета ≤12 слов.")
-    res = OpenAI(api_key=os.getenv("OPENAI_API_KEY")).chat.completions.create(
-        model="gpt-4o-mini", temperature=0.6,
-        messages=[{"role":"user","content":prompt}]
-    ).choices[0].message.content.strip().splitlines()
-    lines=[l.strip() for l in res if l.strip()]
-    summary=lines[0]
-    tips="\n".join(f"- {l.lstrip('-• ').strip()}" for l in lines[1:4])
-    return summary, tips
-
-
-# ──────────── main builder ───────────────────────────────────────────────
-def build_md() -> str:
-    _, lat, lon = HOME
-    fc  = forecast_tomorrow(lat, lon);  daily = fc["daily"];  hr = fc["hourly"]
-    fog = fog_risk(hr["weathercode"])
-
-    hot_city, hot_t, cold_city, cold_t = hot_cold_mean()
-    press = round(hr["surface_pressure"][0])
-
-    P=[
-        "☀️ <b>Погода завтра</b>",
-        f"<b>Темп. днём:</b> до {daily['temperature_2m_max'][0]:.0f} °C",
-        f"<b>Темп. ночью:</b> около {daily['temperature_2m_min'][0]:.0f} °C",
-        f"Самый тёплый город: {hot_city} ({hot_t:.1f} °C)",
-        f"Самый прохладный: {cold_city} ({cold_t:.1f} °C)",
-    ]
-    if fog:
-        P.append("Вероятен туман 🌫️ в утренние часы")
-
-    # ==== EXTRA BLOCKS BEGIN ==================================================
-    # 1. AQI
-    if (air := get_air()):
-        pol  = air["data"]["current"]["pollution"]
-        pm25 = pol.get("p2") or round(pol["aqius"]*0.25,1)
-        pm10 = pol.get("p1") or pm10_openmeteo() or "нет данных"
-        lvl  = ("хороший" if pol["aqius"]<=50 else
-                "умеренный" if pol["aqius"]<=100 else "вредный")
-        P += ["",
-              "🌬️ <b>Качество воздуха</b>",
-              f"<b>AQI:</b> {pol['aqius']}  |  <b>PM2.5:</b> {pm25} µg/m³  |  "
-              f"<b>PM10:</b> {pm10} µg/m³",
-              f"Воздух {lvl}."]
-    # 2. Pollen
-    if (poll := get_pollen()):
-        scale=lambda v: ["нет","низкий","умерен","высок","экстрим"][int(round(v))]
-        P+=["",
-            "🌿 <b>Пыльца</b>",
-            f"Деревья — {scale(poll['treeIndex'])} | "
-            f"Травы — {scale(poll['grassIndex'])} | "
-            f"Амброзия — {scale(poll['weedIndex'])}"]
-    # 3. KP
-    if (kp := get_kp()) is not None:
-        state=("буря (G1)" if kp>=5 else "повышенный" if kp>=4 else "спокойный")
-        P+=["",
-            "🌌 <b>Геомагнитная активность</b>",
-            f"<b>Уровень:</b> {state} (Kp {kp:.1f})"]
-    # 4. Шуман
-    sch=get_schumann()
-    P+=["",
-        "📈 <b>Резонанс Шумана</b>",
-        (f"{sch['freq']:.1f} Гц, амплитуда стабильна"
-         if 'freq' in sch else sch['msg'])]
-    # 5. SST
-    if (sst := get_sst()):
-        P+=["",
-            "🌊 <b>Температура воды в море</b>",
-            f"<b>Сейчас:</b> {sst} °C"]
-    # 6. Astro
-    P+=["",
-        "🔮 <b>Астрологические события</b>",
-        astro_events()]
-    # ==== EXTRA BLOCKS END ====================================================
-
-    P.append("---")
-
-    culprit=("туман" if fog else
-             "низкое давление" if press<1007 else
-             "магнитные бури" if (kp:=get_kp()) and kp>=5 else
-             "мини-парад планет")
-    summary,tips = gpt_blurb(culprit)
-
-    P += ["<b>📝 Вывод</b>", summary, "",
-          "<b>✅ Рекомендации</b>", tips]
-    return "\n".join(P)
-
-
-async def send(text:str):
-    await Bot(os.getenv("TELEGRAM_TOKEN")).send_message(
-        chat_id=os.getenv("CHANNEL_ID"), text=text[:4096],
-        parse_mode="HTML", disable_web_page_preview=True)
-
-
-async def main():
-    md=build_md(); print("Preview:", md.replace("\n"," | ")[:350])
-    await send(md); print("✓ sent")
-
-
-if __name__=="__main__":
-    asyncio.run(main())
+      - name: 🚀 Run VayбоМетр poster
+        env:
+          OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_TOKEN:  ${{ secrets.TELEGRAM_TOKEN }}
+          CHANNEL_ID:      ${{ secrets.CHANNEL_ID }}
+          OWM_KEY:         ${{ secrets.OWM_KEY }}
+          AIRVISUAL_KEY:   ${{ secrets.AIRVISUAL_KEY }}
+          AMBEE_KEY:       ${{ secrets.AMBEE_KEY }}
+          COPERNICUS_USER: ${{ secrets.COPERNICUS_USER }}
+          COPERNICUS_PASS: ${{ secrets.COPERNICUS_PASS }}
+        run: python post.py
