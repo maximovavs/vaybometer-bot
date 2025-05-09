@@ -1,38 +1,171 @@
-name: Daily VayboMeter Post
+"""
+post.py – VayboМетр Limassol v5.2
 
-on:
-  schedule:
-    # 18:00 UTC → 21:00 Asia/Nicosia
-    - cron: '0 18 * * *'
-  workflow_dispatch:
+• Сообщение формируется вечером в 21:00 Asia/Nicosia (cron 18 UTC)
+• Описывает ЗАВТРА:
+      – макс / мин температуры,
+      – предупреждение о тумане, если ≥40 % часов имеют weather-code 45/48
+• Рейтинг «Самый тёплый / прохладный город» по среднесуточной температуре
+      среди Лимассола, Ларнаки, Никосии, Пафоса
+• Все прежние блоки (качество воздуха, КП, Шуман, астрология, вывод-шутка,
+  рекомендации GPT) сохранены
+"""
 
-jobs:
-  post:
-    runs-on: ubuntu-latest
+from __future__ import annotations
+import asyncio, os, sys, math
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional
 
-    steps:
-      - name: 📥 Checkout repo
-        uses: actions/checkout@v3
+import requests, swisseph as swe
+from openai import OpenAI
+from telegram import Bot, error as tg_err
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+# ──────────── базовые координаты ─────────────────────────────────────────
+HOME = ("Лимассол", 34.707, 33.022)
+CITIES = {
+    "Лимассол": (34.707, 33.022),
+    "Ларнака":  (34.916, 33.613),
+    "Никосия":  (35.166, 33.366),
+    "Пафос":    (34.776, 32.429),
+}
 
-      - name: 📦 Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt \
-              requests python-dateutil pendulum astropy
+# ──────────── утилита HTTP ------------------------------------------------
+def _get(url: str, **params) -> Optional[dict]:
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[warn] {url} -> {e}", file=sys.stderr)
+        return None
 
-      - name: 🚀 Run VayboМетр poster
-        env:
-          OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
-          TELEGRAM_TOKEN:  ${{ secrets.TELEGRAM_TOKEN }}
-          CHANNEL_ID:      ${{ secrets.CHANNEL_ID }}
-          OWM_KEY:         ${{ secrets.OWM_KEY }}
-          AIRVISUAL_KEY:   ${{ secrets.AIRVISUAL_KEY }}
-          AMBEE_KEY:       ${{ secrets.AMBEE_KEY }}
-          COPERNICUS_USER: ${{ secrets.COPERNICUS_USER }}
-          COPERNICUS_PASS: ${{ secrets.COPERNICUS_PASS }}
-        run: python post.py
+# ──────────── прогноз на завтра для одной точки --------------------------
+def forecast_tomorrow(lat: float, lon: float) -> dict:
+    tomorrow = datetime.utcnow().date() + timedelta(days=1)
+    d = _get(
+        "https://api.open-meteo.com/v1/forecast",
+        latitude=lat,
+        longitude=lon,
+        timezone="UTC",
+        hourly="temperature_2m,weathercode",
+        daily="temperature_2m_max,temperature_2m_min,temperature_2m_mean",
+        start_date=tomorrow.isoformat(),
+        end_date=(tomorrow + timedelta(days=1)).isoformat(),
+    )
+    if not d:
+        raise RuntimeError("no forecast")
+    return d
+
+# ──────────── fog detection ----------------------------------------------
+def fog_risk(hourly_codes: list[int]) -> bool:
+    fog_hours = sum(1 for code in hourly_codes if code in (45, 48))
+    return fog_hours / 24 >= 0.40  # ≥ 40 %
+
+# ──────────── hottest / coldest by mean temp ------------------------------
+def hot_cold_mean() -> tuple[str, float, str, float]:
+    res = []
+    for city, (lat, lon) in CITIES.items():
+        try:
+            t_mean = forecast_tomorrow(lat, lon)["daily"]["temperature_2m_mean"][0]
+            res.append((city, t_mean))
+        except Exception:
+            continue
+    hot = max(res, key=lambda x: x[1])
+    cold = min(res, key=lambda x: x[1])
+    return hot[0], hot[1], cold[0], cold[1]
+
+# ──────────── astrology helpers (как раньше) ------------------------------
+signs=("Овне","Тельце","Близнецах","Раке","Льве","Деве",
+       "Весах","Скорпионе","Стрельце","Козероге","Водолее","Рыбах")
+lunar_eff=("придаёт смелости","заставляет чувствовать комфорт","повышает коммуникабельность",
+           "усиливает заботу","разжигает творческий огонь","настраивает на порядок",
+           "заставляет искать баланс","поднимает страсть","толкает к приключениям",
+           "фокусирует на деле","дарит странные идеи","усиливает эмпатию")
+
+def moon_phase(jd):
+    sun=swe.calc_ut(jd,swe.SUN)[0][0]; moon=swe.calc_ut(jd,swe.MOON)[0][0]
+    phase=((moon-sun+360)%360)/360; illum=round(abs(math.cos(math.pi*phase))*100)
+    name=("Новолуние" if illum<5 else "Растущая Луна" if phase<.5 else
+          "Полнолуние" if illum>95 else "Убывающая Луна")
+    sign=int(moon//30)
+    return f"{name} в {signs[sign]} — {lunar_eff[sign]} ({illum} %)"
+
+def planet_parade(jd):
+    lons=sorted(swe.calc_ut(jd,b)[0][0] for b in
+                (swe.MERCURY,swe.VENUS,swe.MARS,swe.JUPITER,swe.SATURN))
+    best=min((lons[i+2]-lons[i])%360 for i in range(len(lons)-2))
+    return "Мини-парад планет" if best<90 else None
+
+def trine_vj(jd):
+    v,j=swe.calc_ut(jd,swe.VENUS)[0][0],swe.calc_ut(jd,swe.JUPITER)[0][0]
+    return "Трин Венеры и Юпитера — волна удачи" if abs((v-j+180)%360-180)<4 else None
+
+def astro_events():
+    jd=swe.julday(*datetime.utcnow().timetuple()[:3])
+    pts=[moon_phase(jd)]
+    for fn in (planet_parade,trine_vj):
+        if s:=fn(jd): pts.append(s)
+    if swe.calc_ut(jd,swe.MERCURY)[0][3]<0:
+        pts.append("Меркурий ретрограден")
+    return "\n".join(pts)
+
+# ──────────── GPT one-liner + tips ---------------------------------------
+def gpt_blurb(culprit:str)->tuple[str,str]:
+    prompt=(f"Одной строкой: 'Если завтра что-то пойдёт не так, вините {culprit}.' "
+            "Добавь короткий позитив (≤12 слов). "
+            "Потом пустая строка и РОВНО 3 весёлых bullet-совета, ≤12 слов.")
+    res=OpenAI(api_key=os.getenv("OPENAI_API_KEY")).chat.completions.create(
+        model="gpt-4o-mini",temperature=0.6,
+        messages=[{"role":"user","content":prompt}]
+    ).choices[0].message.content.strip().splitlines()
+    lines=[l.strip() for l in res if l.strip()]
+    summary=lines[0]
+    tips="\n".join(f"- {l.lstrip('-• ').strip()}" for l in lines[1:4])
+    return summary,tips
+
+# ──────────── build message ----------------------------------------------
+def build_message()->str:
+    name,lat,lon=HOME
+    fc=forecast_tomorrow(lat,lon)
+    daily=fc["daily"]
+    fog=fog_risk(fc["hourly"]["weathercode"])
+
+    hot_city, hot_t, cold_city, cold_t = hot_cold_mean()
+
+    P=["☀️ <b>Погода завтра</b>",
+       f"<b>Темп. днём:</b> до {daily['temperature_2m_max'][0]:.0f} °C",
+       f"<b>Темп. ночью:</b> около {daily['temperature_2m_min'][0]:.0f} °C"]
+
+    if fog:
+        P.append("Вероятен туман 🌫️ в утренние часы")
+
+    P.append(f"Самый тёплый город: {hot_city} ({hot_t:.1f} °C)")
+    P.append(f"Самый прохладный город: {cold_city} ({cold_t:.1f} °C)")
+
+    # — астрология, воздух, КП, Шуман, море — можешь вставить свои блоки здесь —
+
+    P.append("---")
+    culprit="туман" if fog else "капризы погоды"
+    summary, tips = gpt_blurb(culprit)
+    P += ["<b>📝 Вывод</b>", summary, "", "<b>✅ Рекомендации</b>", tips]
+    return "\n".join(P)
+
+# ──────────── telegram send ----------------------------------------------
+async def send(text:str):
+    await Bot(os.getenv("TELEGRAM_TOKEN")).send_message(
+        chat_id=os.getenv("CHANNEL_ID"),
+        text=text[:4096],parse_mode="HTML",
+        disable_web_page_preview=True)
+
+# ──────────── main --------------------------------------------------------
+async def main():
+    md=build_message()
+    print("Preview:", md.replace("\n"," | ")[:300])
+    try:
+        await send(md)
+        print("✓ sent")
+    except tg_err.TelegramError as e:
+        print("Telegram error:",e,file=sys.stderr); raise
+
+if __name__=="__main__":
+    asyncio.run(main())
