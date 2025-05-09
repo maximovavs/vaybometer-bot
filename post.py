@@ -1,164 +1,212 @@
-#!/usr/bin/env python3
-# VayboМетр 4.0.6  · 10 May 2025
-# — полностью самодостаточный post.py —
+# post.py – VayboМетр v5 (09-05-2025)
 
-import os, asyncio, json, random, requests, pendulum
-from zoneinfo import ZoneInfo
+import os, asyncio, json, math, random, csv, textwrap, datetime as dt
+import requests, pendulum
+from python_dateutil import tz
 from telegram import Bot
-from openai import OpenAI
 
-# ────────────────────────────────────────
-TZ    = ZoneInfo("Asia/Nicosia")
-TODAY = pendulum.now(TZ).date()
+# ────────────────────────────  постоянные  ────────────────────────────
+TZ          = "Asia/Nicosia"
+TODAY       = pendulum.now(TZ).date()
+TOMORROW    = TODAY + pendulum.duration(days=1)
+DATE_STR    = TOMORROW.format("DD.MM.YYYY")
 
-PLACES = {
+LAT, LON    = 34.707, 33.022        # Limassol
+CITIES      = {                     # для «самый тёплый / прохладный»
     "Лимассол": (34.707, 33.022),
-    "Ларнака":  (34.916, 33.624),
-    "Никосия":  (35.170, 33.360),
-    "Пафос":    (34.776, 32.424),
+    "Ларнака" : (34.916, 33.624),
+    "Никосия" : (35.170, 33.360),
+    "Пафос"   : (34.776, 32.424),
 }
 
-WEATHER_URL  = "https://api.open-meteo.com/v1/forecast"
-AIR_URL      = "https://api.airvisual.com/v2/nearest_city"
-POLLEN_URL   = "https://api.ambeedata.com/latest/pollen/by-place"
-SCHUMANN_CSV = "https://schumann-res.s3.eu-central-1.amazonaws.com/recent.csv"
-K_INDEX_URL  = "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json"
+COMPASS     = "N NE E SE S SW W NW".split()
+WC          = {0:"ясно",1:"главным образом ясно",2:"переменная",3:"пасмурно",
+              45:"туман",48:"изморозь",51:"морось",61:"дождь",71:"снег"}  # сокращено
+EMO_BULLET  = "•"
 
-WC = {0:"ясно",1:"преим. ясно",2:"переменная",3:"пасмурно",
-      45:"туман",48:"туман с изморозью",51:"морось",61:"дождь",
-      80:"ливни",95:"гроза"}
+HEADLINE    = f"☀️ <b>Погода на завтра в Лимассоле {DATE_STR}</b>"
 
-ai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# ─ helpers ──────────────────────────────
-def requ(url, params=None, headers=None, t=15):
+# ──────────────────────────────  утилиты  ─────────────────────────────
+def http(url, params=None, headers=None, timeout=20, key=None):
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=t)
+        r = requests.get(url, params=params, headers=headers, timeout=timeout)
         r.raise_for_status()
-        return r.json()
+        return r.json() if key!="text" else r.text
     except Exception as e:
-        print("[warn]", url.split("://")[1].split("?")[0], "->", e)
+        print("[warn]", url.split("/")[2], "->", e)
         return None
 
-def get_weather(lat, lon):
-    """Возвращает daily-скаляры (завтра → idx=1, иначе сегодня)."""
-    par = dict(latitude=lat, longitude=lon, timezone="auto",
-               daily="temperature_2m_max,temperature_2m_min,weathercode",
-               forecast_days=2, current_weather="true")
-    j = requ(WEATHER_URL, par)
-    if not j: return {}
-    idx  = 1 if len(j["daily"]["time"]) > 1 else 0
-    daily = {k: j["daily"][k][idx] for k in j["daily"] if k != "time"}
-    return {"daily": daily, "current_weather": j.get("current_weather", {})}
+def deg_to_compass(deg: float|None):
+    if deg is None: return "—"
+    idx = int((deg % 360) / 45 + .5) % 8
+    return COMPASS[idx]
 
-def safe_temp(w):  # Tmax или текущая T
-    return w.get("daily", {}).get("temperature_2m_max") \
-        or w.get("current_weather", {}).get("temperature")
+def smart_choice(*facts):
+    """Возвращает «виновника дня»."""
+    picks = [f for f in facts if f] or ["погоду"]
+    return random.choice(picks)
 
-def get_air(lat, lon):
-    key=os.getenv("AIRVISUAL_KEY")
-    j = requ(AIR_URL, {"lat":lat,"lon":lon,"key":key}) if key else None
+# ────────────────────────────  данные  ────────────────────────────────
+def openmeteo_daily(lat, lon):
+    params = dict(latitude=lat, longitude=lon, timezone="auto",
+                  start_date=str(TOMORROW), end_date=str(TOMORROW),
+                  daily="temperature_2m_max,temperature_2m_min,weathercode")
+    j = http("https://api.open-meteo.com/v1/forecast", params)
+    if not j or "daily" not in j: return {}
+    d = j["daily"]
+    return {
+        "tmax":   d["temperature_2m_max"][0],
+        "tmin":   d["temperature_2m_min"][0],
+        "code":   d["weathercode"][0],
+    }
+
+def openmeteo_current(lat, lon):
+    params = dict(latitude=lat, longitude=lon, timezone="auto",
+                  current="temperature_2m,pressure_msl,wind_speed_10m,wind_direction_10m,weathercode")
+    j = http("https://api.open-meteo.com/v1/forecast", params)
+    if not j or "current" not in j: return {}
+    c = j["current"]
+    return {
+        "temp":   c["temperature_2m"],
+        "press":  c.get("pressure_msl"),
+        "wind":   c.get("wind_speed_10m"),
+        "wdir":   c.get("wind_direction_10m"),
+        "code":   c.get("weathercode"),
+    }
+
+def air_quality():
+    key = os.environ.get("AIRVISUAL_KEY")
+    if not key: return {}
+    p = dict(key=key, lat=LAT, lon=LON)
+    j = http("https://api.airvisual.com/v2/nearest_city", p)
     if not j or j.get("status")!="success": return {}
-    pol=j["data"]["current"]["pollution"]
-    return {"aqi":pol["aqius"],"p2":pol.get("aqius_pm2_5"),"p1":pol.get("aqius_pm10")}
+    d=j["data"]["current"]["pollution"]; a=j["data"]["current"]["weather"]
+    return {"aqi":d["aqius"],
+            "pm25": j["data"]["current"]["pollution"].get("p2") or "—",
+            "pm10": j["data"]["current"]["pollution"].get("p1") or "—",
+            "press": a.get("pr") }
 
-def get_pollen(lat, lon):
-    k=os.getenv("AMBEE_KEY")
-    j=requ(POLLEN_URL, {"lat":lat,"lng":lon}, headers={"x-api-key":k}) if k else None
-    if not j or j.get("message")!="success": return None
-    r=j["data"]["Risk"]; return {t:r[f"{t}_pollen"]["value"] for t in ("tree","grass","weed")}
+def pollen():
+    key = os.environ.get("AMBEE_KEY")
+    if not key: return {}
+    hdr={"x-api-key":key}
+    url=f"https://api.ambeedata.com/latest/pollen/by-lat-lng?lat={LAT}&lng={LON}"
+    j=http(url,headers=hdr)
+    if not j or j.get("message")!="success": return {}
+    idx=j["data"][0]["Count"]
+    return {"grass": idx["grass_pollen"]}
 
-def get_kp():
-    j=requ(K_INDEX_URL)
-    try: return float(j[-1]["k_index"]) if j else "—"
-    except: return "—"
+def kp_index():
+    j=http("https://services.swpc.noaa.gov/json/planetary_k_index_1m.json")
+    if not j: return None
+    try: return j[-1]["kp_index"]
+    except: return None
 
-def get_schumann():
+def schumann():
+    txt=http("https://data.schumann-resonance.org/latest.csv",key="text")
+    if not txt: return None
+    rows=list(csv.reader(txt.splitlines()))
     try:
-        rows=requests.get(SCHUMANN_CSV, timeout=10).text.strip().splitlines()
-        vals=[x for x in rows[-1].split(",")[1:3] if x]
-        return tuple(map(float, vals)) if len(vals)==2 else None
+        f,a=map(float,rows[-1][1:3]); return f,a
     except: return None
 
 def moon_phase():
-    # обе даты naive → никакого timezone-конфликта
-    days = (TODAY - pendulum.date(2000, 1, 6)).days
-    age  = days % 29.53
-    pct  = round((1 - abs(15 - age) / 15) * 100)
-    return pct, random.choice("♉♊♋♌♍♎♏♐♑♒♓♈")
+    ref=pendulum.datetime(2000,1,6,tz=TZ).naive()
+    age=(pendulum.now(TZ).naive()-ref).days%29.53
+    pct=round(abs(14.77-age)*100/14.77)  # проценты от новолуния/полнолуния
+    signs="♈♉♊♋♌♍♎♏♐♑♒♓".split("♈")[1:]  # простая карта
+    sign=signs[int((pendulum.now(TZ).day_of_year%360)/30)]
+    return pct,sign
 
-def astro_events():
-    pct, sign = moon_phase()
-    ev=[f"Растущая Луна в {sign} ({pct} %)", "Мини-парад планет"]
-    if TODAY.month==5 and 3<=TODAY.day<=10: ev.append("Eta Aquarids (пик 6 мая)")
-    return ev
-
-# ─ message builder ───────────────────────
+# ─────────────────────────  построение сообщения  ─────────────────────
 def build_msg():
-    w = get_weather(*PLACES["Лимассол"])
-    d, c = w.get("daily", {}), w.get("current_weather", {})
-
-    t_max = d.get("temperature_2m_max") or c.get("temperature", "—")
-    t_min = d.get("temperature_2m_min") or c.get("temperature", "—")
-    desc  = WC.get(d.get("weathercode") or c.get("weathercode"), "переменная")
-    pressure = c.get("pressure_msl", "—")
-    wind = f"{c.get('windspeed','—')} км/ч, {c.get('winddirection','—')}"
-    fog  = "⚠️ Возможен туман." if d.get("weathercode")==45 else ""
-
-    temps={city:safe_temp(get_weather(*loc)) for city,loc in PLACES.items()}
-    good=[(k,v) for k,v in temps.items() if v is not None]
-    warm_line=cold_line=""
-    if good:
-        warm=max(good,key=lambda x:x[1]); cold=min(good,key=lambda x:x[1])
-        warm_line=f"<i>Самое тёплое:</i> {warm[0]} ({warm[1]} °C)"
-        cold_line=f"<i>Самое прохладное:</i> {cold[0]} ({cold[1]} °C)"
-
-    air  = get_air(*PLACES["Лимассол"])
-    aqi,p2,p1 = air.get("aqi","—"), air.get("p2","—"), air.get("p1","—")
-    pollen = get_pollen(*PLACES["Лимассол"])
-    poll_line = (" | ".join(f"{k.capitalize()}: {v}" for k,v in pollen.items())
-                 if pollen else "нет данных")
-
-    kp   = get_kp()
-    sch  = get_schumann()
-    sch_line = f"{sch[0]:.1f} Гц, {sch[1]:.1f}" if sch else "нет данных"
-
-    culprit = "низкого давления" if pressure!="—" and float(pressure)<1005 else "мини-парада планет"
-    prompt  = f"Сделай короткий весёлый вывод (≤35 слов) и 3 смешных совета. Виноват {culprit}. Верни JSON {{outro:str,tips:list}}."
-    try:
-        gpt = ai_client.chat.completions.create(model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],temperature=0.6,max_tokens=120)
-        j = json.loads(gpt.choices[0].message.content)
-    except Exception:
-        j={"outro":"Если завтра что-то пойдёт не так — вините погоду!",
-           "tips":["Улыбайтесь!","Танцуйте под дождём!","Мечтайте смелее!"]}
-
-    parts = [
-        "☀️ <b>Погода в Лимассоле</b>",
-        f"<b>Темп. днём:</b> {t_max} °C",
-        f"<b>Темп. ночью:</b> {t_min} °C",
-        f"<b>Облачность:</b> {desc}", f"<b>Ветер:</b> {wind}",
-        f"<b>Давление:</b> {pressure} гПа", fog, warm_line, cold_line,
-        "—"*3,
-        "🌬️ <b>Качество воздуха</b>",
-        f"AQI: {aqi} | PM2.5: {p2} | PM10: {p1}",
-        "🌿 <b>Пыльца</b>", poll_line,
-        "🛰️ <b>Геомагнитная активность</b>", f"Kp {kp}",
-        "📈 <b>Резонанс Шумана</b>", sch_line,
-        "🌊 <b>Температура воды</b>", "Сейчас: 20.3 °C",
-        "🔮 <b>Астрологические события</b>", " | ".join(astro_events()),
-        "—"*3, "📝 <b>Вывод</b>", j["outro"],
-        "—"*3, "✅ <b>Рекомендации</b>", *(f"- {tip}" for tip in j["tips"])
+    # данные Limassol
+    d=openmeteo_daily(LAT,LON)
+    c=openmeteo_current(LAT,LON)
+    press=c.get("press") or air_quality().get("press") or "—"
+    wind_dir=deg_to_compass(c.get("wdir"))
+    wind_sp = f"{c.get('wind',0):.1f} км/ч" if c.get("wind") is not None else "—"
+    wc_desc = WC.get(d.get("code") if d else c.get("code"),"переменная")
+    if d.get("code") in (45,48): wc_desc += " — будьте внимательны, возможен туман!"
+    # осадки
+    precip="не ожидаются" if d.get("code",99) not in range(51,78) else "вероятны"
+    # tmax/tmin
+    tmax = d.get("tmax") or c.get("temp")
+    tmin = d.get("tmin") or c.get("temp")
+    # города Кипра
+    temps={}
+    for name,(la,lo) in CITIES.items():
+        td=openmeteo_daily(la,lo)
+        temps[name]=td.get("tmax")
+    warm=max((k for k,v in temps.items() if v), key=lambda k:temps[k])
+    cold=min((k for k,v in temps.items() if v), key=lambda k:temps[k])
+    # AQ
+    aq=air_quality()
+    # Kp
+    kp=kp_index()
+    # Schumann
+    sch=schumann()
+    sch_str="нет данных" if not sch else f"{sch[0]} Гц, A={sch[1]}"
+    # Pollen
+    pol=pollen()
+    pollen_str="нет данных" if not pol else f"Травы: {pol['grass']}"
+    # Astro
+    pct,sign=moon_phase()
+    astro=["Растущая Луна "+sign+f" ({pct} %)","Мини-парад планет","Eta Aquarids (пик 6 мая)"]
+    # «виновник дня»
+    culprit=smart_choice(
+        "давление"     if isinstance(press,(int,float)) and press<1005 else "",
+        "магнитные бури" if kp and kp>=4 else "",
+        "ретроградный Меркурий" if random.random()<0.05 else "",
+        "ветер" if c.get("wind",0)>20 else ""
+    )
+    # рекомендации
+    rec=[
+        "😊 Улыбайтесь чаще — повышает гормоны радости!",
+        "🌬️ Лёгкие дыхательные практики помогут, если " + culprit + " пошалит.",
+        "🌙 Медитация под лунным светом — заряд креатива!",
     ]
-    return "\n".join(p for p in parts if p)
+    # формируем HTML
+    parts=[
+        HEADLINE,
+        f"<b>Темп. днём:</b> {tmax:.1f} °C",
+        f"<b>Темп. ночью:</b> {tmin:.1f} °C",
+        f"Облачность: {wc_desc}",
+        f"Осадки: {precip}",
+        f"Ветер: {wind_sp}, {wind_dir}",
+        f"Давление: {press} гПа" if press!="—" else "Давление: — гПа",
+        f"<i>Самое тёплое:</i> {warm} ({temps[warm]:.1f} °C)",
+        f"<i>Самое прохладное:</i> {cold} ({temps[cold]:.1f} °C)",
+        "———",
+        f"🌬️ <b>Качество воздуха</b>",
+        f"AQI: {aq.get('aqi','—')} | PM2.5: {aq.get('pm25','—')} | PM10: {aq.get('pm10','—')}",
+        "🌿 <b>Пыльца</b>",
+        pollen_str,
+        "🌌 <b>Геомагнитная активность</b>",
+        f"Kp {kp if kp is not None else '—'}",
+        "📈 <b>Резонанс Шумана</b>",
+        sch_str if sch else "нет данных – датчики в ретрите",
+        "🌊 <b>Температура воды</b>",
+        f"Сейчас: {openmeteo_current(LAT,LON).get('temp','—')} °C",
+        "🔮 <b>Астрологические события</b>",
+        " | ".join(astro),
+        "———",
+        "📝 <b>Вывод</b>",
+        f"Если завтра что-то пойдёт не так, вините {culprit}! Главное — сохраняйте хорошее настроение!",
+        "———",
+        "✅ <b>Рекомендации</b>",
+        "\n".join([EMO_BULLET+" "+t for t in rec])
+    ]
+    return "\n".join(parts)
 
-# ─ main ───────────────────────────────────
+# ─────────────────────────────  отправка  ─────────────────────────────
 async def main():
-    html = build_msg()
+    html=build_msg()
     print("Preview:", html.replace("\n"," | ")[:200])
-    await Bot(os.getenv("TELEGRAM_TOKEN")).send_message(
-        os.getenv("CHANNEL_ID"), html[:4096],
-        parse_mode="HTML", disable_web_page_preview=True)
+    bot=Bot(os.environ["TELEGRAM_TOKEN"])
+    await bot.send_message(chat_id=os.environ["CHANNEL_ID"],
+                           text=html[:4096], parse_mode="HTML",
+                           disable_web_page_preview=True)
 
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
