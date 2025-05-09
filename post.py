@@ -1,184 +1,209 @@
-# post.py – VayboМетр v5-fix (09-05-2025)
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+VayboМетр 5.0  – вечерний дайджест «на завтра»
+"""
 
-import os, asyncio, json, math, random, csv, textwrap, datetime as dt
+import os, random, asyncio, json, math, datetime as dt
 import requests, pendulum
-from dateutil import tz           # ← исправили название пакета
 from telegram import Bot
 
-# ────────────────────────────  постоянные  ────────────────────────────
-TZ          = "Asia/Nicosia"
-TODAY       = pendulum.now(TZ).date()
-TOMORROW    = TODAY + pendulum.duration(days=1)
-DATE_STR    = TOMORROW.format("DD.MM.YYYY")
-
-LAT, LON    = 34.707, 33.022        # Limassol
-CITIES      = {                     # для «самый тёплый / прохладный»
+# ────── Константы ────────────────────────────────────────────────────────────
+TZ              = pendulum.timezone("Asia/Nicosia")
+LAT_LIM, LON_LIM= 34.707, 33.022
+CITIES          = {
     "Лимассол": (34.707, 33.022),
     "Ларнака" : (34.916, 33.624),
     "Никосия" : (35.170, 33.360),
     "Пафос"   : (34.776, 32.424),
 }
+HEADINGS        = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
+                   "S","SSW","SW","WSW","W","WNW","NW","NNW"]
+# weathercode → описание/облачность
+WC = {0:"ясно",1:"преимущественно ясно",2:"частично облачно",3:"пасмурно",
+      45:"туман",48:"туман, изморось",51:"морось",53:"морось",55:"морось сильная",
+      61:"дождь легкий",63:"дождь",65:"дождь сильный",
+      71:"снег",80:"ливень",95:"гроза"}
+# ────── Утилиты ──────────────────────────────────────────────────────────────
+def deg2compass(deg:float)->str:
+    idx = int((deg/22.5)+.5)%16
+    return HEADINGS[idx]
 
-COMPASS     = "N NE E SE S SW W NW".split()
-WC          = {0:"ясно",1:"главным образом ясно",2:"переменная",3:"пасмурно",
-              45:"туман",48:"изморозь",51:"морось",61:"дождь",71:"снег"}  # сокращено
-EMO_BULLET  = "•"
+def fetch_open_meteo(lat, lon):
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = dict(latitude=lat, longitude=lon, timezone="auto",
+                  daily="temperature_2m_max,temperature_2m_min,weathercode,pressure_msl",
+                  current_weather=True, forecast_days=2)
+    r=requests.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
 
-HEADLINE    = f"☀️ <b>Погода на завтра в Лимассоле {DATE_STR}</b>"
+def fetch_airvisual(lat, lon):
+    key=os.getenv("AIRVISUAL_KEY")
+    if not key: return {}
+    url="https://api.airvisual.com/v2/nearest_city"
+    r=requests.get(url, params=dict(lat=lat, lon=lon, key=key), timeout=15)
+    if r.status_code!=200: return {}
+    data=r.json().get("data",{})
+    return {"aqi":data.get("current",{}).get("pollution",{}).get("aqius"),
+            "pm25":data.get("current",{}).get("pollution",{}).get("p2"),
+            "pm10":data.get("current",{}).get("pollution",{}).get("p1")}
 
-# ──────────────────────────────  утилиты  ─────────────────────────────
-def http(url, params=None, headers=None, timeout=20, key=None):
+def fetch_kp():
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        return r.json() if key!="text" else r.text
-    except Exception as e:
-        print("[warn]", url.split("/")[2], "->", e)
+        url="https://services.swpc.noaa.gov/json/planetary_k_index_1m.json"
+        rows=requests.get(url, timeout=15).json()
+        return rows[-1]['kp_index']
+    except Exception:
         return None
 
-def deg_to_compass(deg: float|None):
-    if deg is None: return "—"
-    idx = int((deg % 360) / 45 + .5) % 8
-    return COMPASS[idx]
+def fetch_schumann():
+    try:
+        csv=requests.get("https://data.gci.org/files/GGIRAW.csv", timeout=15).text
+        *_, last=csv.strip().splitlines()
+        _, f, a, *_ = last.split(",")
+        return float(f), float(a)
+    except Exception:
+        return None, None
 
-def smart_choice(*facts):
-    picks = [f for f in facts if f] or ["погоду"]
-    return random.choice(picks)
-
-# ────────────────────────────  данные  ────────────────────────────────
-def openmeteo_daily(lat, lon):
-    p=dict(latitude=lat, longitude=lon, timezone="auto",
-           start_date=str(TOMORROW), end_date=str(TOMORROW),
-           daily="temperature_2m_max,temperature_2m_min,weathercode")
-    j=http("https://api.open-meteo.com/v1/forecast", p)
-    if not j or "daily" not in j: return {}
-    d=j["daily"]
-    return {"tmax":d["temperature_2m_max"][0],
-            "tmin":d["temperature_2m_min"][0],
-            "code":d["weathercode"][0]}
-
-def openmeteo_current(lat, lon):
-    p=dict(latitude=lat, longitude=lon, timezone="auto",
-           current="temperature_2m,pressure_msl,wind_speed_10m,wind_direction_10m,weathercode")
-    j=http("https://api.open-meteo.com/v1/forecast", p)
-    if not j or "current" not in j: return {}
-    c=j["current"]
-    return {"temp":c["temperature_2m"],
-            "press":c.get("pressure_msl"),
-            "wind":c.get("wind_speed_10m"),
-            "wdir":c.get("wind_direction_10m"),
-            "code":c.get("weathercode")}
-
-def air_quality():
-    key=os.environ.get("AIRVISUAL_KEY")
-    if not key: return {}
-    p=dict(key=key, lat=LAT, lon=LON)
-    j=http("https://api.airvisual.com/v2/nearest_city", p)
-    if not j or j.get("status")!="success": return {}
-    pol=j["data"]["current"]["pollution"]
-    return {"aqi":pol["aqius"],
-            "pm25":pol.get("p2","—"),
-            "pm10":pol.get("p1","—")}
-
-def pollen():
-    key=os.environ.get("AMBEE_KEY")
-    if not key: return {}
-    hdr={"x-api-key":key}
-    url=f"https://api.ambeedata.com/latest/pollen/by-lat-lng?lat={LAT}&lng={LON}"
-    j=http(url,headers=hdr)
-    if not j or j.get("message")!="success": return {}
-    idx=j["data"][0]["Count"]
-    return {"grass": idx["grass_pollen"]}
-
-def kp_index():
-    j=http("https://services.swpc.noaa.gov/json/planetary_k_index_1m.json")
-    try: return j[-1]["kp_index"] if j else None
-    except: return None
-
-def schumann():
-    txt=http("https://data.schumann-resonance.org/latest.csv",key="text")
-    if not txt: return None
-    rows=list(csv.reader(txt.splitlines()))
-    try: f,a=map(float,rows[-1][1:3]); return f,a
-    except: return None
+def fetch_pollen():
+    key=os.getenv("AMBEE_KEY"); 
+    if not key: return None
+    try:
+        url="https://api.ambeedata.com/latest/pollen/by-place"
+        r=requests.get(url, params=dict(place="Limassol"), headers={"x-api-key":key}, timeout=15)
+        data=r.json()['data'][0]['Count']
+        return {k.lower():v for k,v in data.items()}
+    except Exception:
+        return None
 
 def moon_phase():
-    ref=pendulum.datetime(2000,1,6,tz=TZ).naive()
-    age=(pendulum.now(TZ).naive()-ref).days%29.53
-    pct=round(abs(14.77-age)*100/14.77)
-    signs="♈♉♊♋♌♍♎♏♐♑♒♓"
-    sign=signs[int((pendulum.now(TZ).day_of_year%360)/30)]
-    return pct,sign
+    # простая аппроксимация
+    now=pendulum.now(TZ)
+    new_moon=pendulum.datetime(2000,1,6, tz=TZ)
+    days=(now-new_moon).total_days()%29.530588
+    pct=round(days/29.5306*100)
+    signs=["♈","♉","♊","♋","♌","♍","♎","♏","♐","♑","♒","♓"]
+    sign=signs[int(((now.int_timestamp/86400)%27.3)//2.275)]
+    return pct, sign
 
-# ─────────────────────────  построение сообщения  ─────────────────────
+def astro_events():
+    pct, sign = moon_phase()
+    events=[f"Растущая Луна {sign} ({pct} %)", "Мини-парад планет", "Eta Aquarids (пик 6 мая)"]
+    return events
+
+def choose_scapegoat(p, kp, wind, fog):
+    if p and p<1005: return "низкое давление"
+    if kp and kp>=4: return "геомагнитную бурю"
+    if fog:         return "туманное утро"
+    if wind>25:     return "шквалистый ветер"
+    return "ретроградный Меркурий"
+
+def recommend(factor):
+    pool={
+        "низкое давление":[ "💧 Пейте воду — помогает сосудам",
+                            "🧘 Короткая дыхательная практика снимет тяжесть" ],
+        "геомагнитную бурю":[ "🧢 Откажитесь от тяжёлых тренировок",
+                              "🌿 Травяной чай с мелиссой успокоит" ],
+        "шквалистый ветер":[ "🧣 Возьмите шарф — берегите горло!",
+                             "🌬️ Проверьте окна перед сном" ],
+        "туманное утро":[ "⚠️ На дороге туман — будьте внимательны",
+                          "🌫️ Прогулку лучше отложить до обеда" ],
+        "ретроградный Меркурий":[ "🔄 Перепроверьте планы — Меркурий шалит!",
+                                  "✉️ Отложите важные письма до завтра" ],
+    }
+    return random.choice(pool[factor])
+
+# ────── Сообщение ────────────────────────────────────────────────────────────
 def build_msg():
-    d=openmeteo_daily(LAT,LON); c=openmeteo_current(LAT,LON)
-    press=c.get("press")
-    wind_dir=deg_to_compass(c.get("wdir")); wind_sp=f"{c.get('wind',0):.1f} км/ч" if c.get("wind") else "—"
-    wc_desc=WC.get(d.get("code") if d else c.get("code"),"переменная")
-    if d.get("code") in (45,48): wc_desc+=" — внимание, туман!"
-    precip="не ожидаются" if d.get("code",99)<51 else "вероятны"
-    tmax=d.get("tmax") or c.get("temp"); tmin=d.get("tmin") or c.get("temp")
+    # Open-Meteo: основные данные
+    j=fetch_open_meteo(LAT_LIM,LON_LIM)
+    d=j['daily']
+    t_max=d['temperature_2m_max'][1]; t_min=d['temperature_2m_min'][1]
+    wc_tom=d['weathercode'][1];        wc_now=j['current_weather']['weathercode']
+    pressure=d['pressure_msl'][1] or None
+    windspeed=j['current_weather']['windspeed']; winddir=deg2compass(j['current_weather']['winddirection'])
+    desc=WC.get(wc_tom, WC.get(wc_now,"переменная"))
+    fog_alert = wc_tom in (45,48)
 
+    # Тёплый/холодный города
     temps={}
-    for n,(la,lo) in CITIES.items():
-        td=openmeteo_daily(la,lo); temps[n]=td.get("tmax")
-    warm=max((k for k,v in temps.items() if v), key=temps.get)
-    cold=min((k for k,v in temps.items() if v), key=temps.get)
+    for city,(lat,lon) in CITIES.items():
+        try:
+            jj=fetch_open_meteo(lat,lon)
+            temps[city]=jj['daily']['temperature_2m_max'][1]
+        except Exception: temps[city]=None
+    warm=max((c for c,v in temps.items() if v), key=lambda c:temps[c])
+    cold=min((c for c,v in temps.items() if v), key=lambda c:temps[c])
 
-    aq=air_quality(); kp=kp_index(); sch=schumann(); pol=pollen()
-    pct,sign=moon_phase()
-    astro=["Растущая Луна "+sign+f" ({pct} %)","Мини-парад планет","Eta Aquarids (пик 6 мая)"]
+    # AQI & PM
+    air=fetch_airvisual(LAT_LIM,LON_LIM)
+    aqi  = air.get("aqi","—")
+    pm25 = air.get("pm25","—")
+    pm10 = air.get("pm10","—")
 
-    culprit=smart_choice("давление" if press and press<1005 else "",
-                         "магнитные бури" if kp and kp>=4 else "",
-                         "ветер" if c.get("wind",0)>20 else "",
-                         "ретроградный Меркурий" if random.random()<0.05 else "")
+    # Pollen
+    poll=fetch_pollen()
+    pollen_str = " | ".join(f"{k.capitalize()}: {v}" for k,v in poll.items()) if poll else "нет данных"
 
-    rec=[
-        "💧 Пейте воду — помогает при "+culprit,
-        "🌿 Прогулка в парке освежит идеи",
-        "🌓 Медитируйте под лунным светом",
-    ]
+    # K-index
+    kp=fetch_kp() or "—"
 
-    parts=[
-        HEADLINE,
-        f"<b>Темп. днём:</b> {tmax:.1f} °C",
-        f"<b>Темп. ночью:</b> {tmin:.1f} °C",
-        f"Облачность: {wc_desc}",
-        f"Осадки: {precip}",
-        f"Ветер: {wind_sp}, {wind_dir}",
-        f"Давление: {press if press else '—'} гПа",
+    # Schumann
+    f,a=fetch_schumann()
+    if f: sch=f"Част. {f:.1f} Гц, амп. {a:.1f}"
+    else: sch="датчики молчат — ушли в ретрит"
+
+    # Sea temp (Copernicus тяжеловесный → использую open-meteo sst)
+    try:
+        sst=requests.get("https://marine-api.open-meteo.com/v1/gfs?latitude=34.7&longitude=33&hourly=sea_surface_temperature&forecast_days=1", timeout=15).json()['hourly']['sea_surface_temperature'][0]
+    except Exception: sst="—"
+
+    # Астрология
+    astro=" | ".join(astro_events())
+
+    # Scapegoat & рекомендация
+    scapegoat=choose_scapegoat(pressure, kp if isinstance(kp,(int,float)) else None, windspeed, fog_alert)
+    rec = recommend(scapegoat)
+
+    dt_tom=(pendulum.now(TZ)+pendulum.duration(days=1)).format("DD.MM.YYYY")
+
+    msg="\n".join([
+        f"🌞 <b>Погода на завтра в Лимассоле {dt_tom}</b>",
+        f"<b>Темп. днём:</b> до {t_max:.1f} °C",
+        f"<b>Темп. ночью:</b> около {t_min:.1f} °C",
+        f"<b>Облачность:</b> {desc}",
+        f"<b>Осадки:</b> {'не ожидаются' if wc_tom not in (51,53,55,61,63,65,80,95) else 'возможны'}",
+        f"<b>Ветер:</b> {windspeed:.1f} км/ч, {winddir}",
+        f"<b>Давление:</b> {pressure or '—'} гПа",
         f"<i>Самый тёплый город:</i> {warm} ({temps[warm]:.1f} °C)",
         f"<i>Самый прохладный город:</i> {cold} ({temps[cold]:.1f} °C)",
         "———",
-        "🌬️ <b>Качество воздуха</b>",
-        f"AQI: {aq.get('aqi','—')} | PM2.5: {aq.get('pm25','—')} | PM10: {aq.get('pm10','—')}",
-        "🌿 <b>Пыльца</b>",
-        "нет данных" if not pol else f"Травы: {pol['grass']}",
-        "🌌 <b>Геомагнитная активность</b>",
-        f"Kp {kp if kp is not None else '—'}",
-        "📈 <b>Резонанс Шумана</b>",
-        "датчики молчат — ушли в ретрит" if not sch else f"{sch[0]} Гц, A={sch[1]}",
-        "🌊 <b>Температура воды</b>",
-        f"Сейчас: {openmeteo_current(LAT,LON).get('temp','—')} °C",
-        "🔮 <b>Астрологические события</b>",
-        " | ".join(astro),
+        f"🏴‍☠️ <b>Качество воздуха</b>",
+        f"AQI: {aqi} | PM2.5: {pm25} | PM10: {pm10}",
+        f"🌿 <b>Пыльца</b>\n{pollen_str}",
+        f"🛰️ <b>Геомагнитная активность</b>\nKp {kp}",
+        f"📈 <b>Резонанс Шумана</b>\n{sch}",
+        f"🌊 <b>Температура воды</b>\nСейчас: {sst} °C",
+        f"🔮 <b>Астрологические события</b>\n{astro}",
         "———",
         "📝 <b>Вывод</b>",
-        f"Если завтра что-то пойдёт не так — вините {culprit}!",
+        f"Если завтра что-то пойдёт не так — вините {scapegoat}! 😉",
         "———",
         "✅ <b>Рекомендации</b>",
-        "\n".join(EMO_BULLET+" "+r for r in rec)
-    ]
-    return "\n".join(parts)
+        f"• {rec}",
+        "• 🌞 Зарядитесь солнечным настроением!",
+        ])
+    if fog_alert:
+        msg=msg.replace("———","⚠️ <b>Туман утром</b> — будьте внимательны!\n———",1)
+    return msg
 
-# ─────────────────────────────  отправка  ─────────────────────────────
+# ────── Telegram ─────────────────────────────────────────────────────────────
 async def main():
-    html=build_msg(); print("Preview:",html.replace("\n"," | ")[:200])
-    await Bot(os.environ["TELEGRAM_TOKEN"]).send_message(
-        chat_id=os.environ["CHANNEL_ID"], text=html[:4096],
-        parse_mode="HTML", disable_web_page_preview=True)
+    html=build_msg()
+    bot=Bot(os.getenv("TELEGRAM_TOKEN"))
+    await bot.send_message(chat_id=os.getenv("CHANNEL_ID"), text=html[:4096], parse_mode="HTML",
+                           disable_web_page_preview=True)
 
 if __name__=="__main__":
     asyncio.run(main())
