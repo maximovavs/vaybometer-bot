@@ -61,12 +61,25 @@ def fetch_json(url, params=None):
 
 # ───── Open-Meteo ─────────────────────────────────────────────────────────────
 def fetch_openmeteo(lat, lon):
-    url="https://api.open-meteo.com/v1/forecast"
-    params=dict(latitude=lat, longitude=lon, timezone="auto",
-                current_weather="true", forecast_days=2,
-                daily="temperature_2m_max,temperature_2m_min,weathercode,pressure_msl,precipitation_probability_max")
-    return fetch_json(url, params)
+    url = "https://api.open-meteo.com/v1/forecast"
+    base = dict(latitude=lat, longitude=lon, timezone="auto",
+                current_weather="true", forecast_days=2)
+    daily_full = "temperature_2m_max,temperature_2m_min,weathercode,pressure_msl,precipitation_probability_max"
+    daily_safe = "temperature_2m_max,temperature_2m_min,weathercode,pressure_msl"
 
+    for daily in (daily_full, daily_safe):
+        params = base | {"daily": daily}
+        try:
+            r = requests.get(url, params=params, timeout=10, headers=HEADERS)
+            r.raise_for_status()
+            return r.json()
+        except requests.HTTPError as e:
+            if r.status_code == 400 and daily is daily_full:
+                logging.warning("precipitation_probability_max unsupported — retrying without it")
+                continue
+            logging.warning("%s -> %s", url.split('//')[1].split('/')[0], e)
+            return None
+    return None
 # ───── AirVisual AQI ─────────────────────────────────────────────────────────
 def fetch_aqi(lat, lon):
     if not AIR_KEY: return None
