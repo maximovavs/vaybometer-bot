@@ -227,9 +227,11 @@ def build_msg():
     culprit,emo = choose_culprit(pr, kp, wind, fog)
 
     # советы
+    # ─── после блока с culprit/pool/k/tips ───
     pool = TIPS.get(culprit, ["🙂 Улыбайтесь!"])
-k    = min(2, len(pool))          # 1 или 2, сколько есть
-tips = random.sample(pool, k)
+    k    = min(2, len(pool))
+    tips = random.sample(pool, k)
+
     parts=[
         f"🌞 <b>Погода на завтра в Лимассоле {DATE}</b>",
         f"<b>Темп. днём:</b> до {safe(tmax)} °C",
