@@ -60,26 +60,56 @@ def fetch_json(url, params=None):
         return None
 
 # ───── Open-Meteo ─────────────────────────────────────────────────────────────
-def fetch_openmeteo(lat, lon):
-    url = "https://api.open-meteo.com/v1/forecast"
-    base = dict(latitude=lat, longitude=lon, timezone="auto",
-                current_weather="true", forecast_days=2)
-    daily_full = "temperature_2m_max,temperature_2m_min,weathercode,pressure_msl,precipitation_probability_max"
-    daily_safe = "temperature_2m_max,temperature_2m_min,weathercode,pressure_msl"
+def fetch_openmeteo(lat: float, lon: float):
+    url   = "https://api.open-meteo.com/v1/forecast"
+    base  = dict(latitude=lat, longitude=lon,
+                 timezone="auto",
+                 forecast_days=2,
+                 current_weather="true")
+    # Сначала пробуем c вероятностью осадков
+    daily_try  = [
+        "temperature_2m_max,temperature_2m_min,weathercode,precipitation_probability_max",
+        "temperature_2m_max,temperature_2m_min,weathercode"                       # fallback
+    ]
 
-    for daily in (daily_full, daily_safe):
-        params = base | {"daily": daily}
+    for daily in daily_try:
+        params = base | {
+            "daily" : daily,
+            "hourly": "pressure_msl"       # давление почасовое
+        }
         try:
             r = requests.get(url, params=params, timeout=10, headers=HEADERS)
             r.raise_for_status()
-            return r.json()
+            data = r.json()
+
+            # ── нормализуем давление ────────────────────────────────
+            try:
+                # 1) текущее
+                if "current_weather" in data and "pressure_msl" in data.get("current_weather", {}):
+                    data["pressure_now"] = data["current_weather"]["pressure_msl"]
+                else:
+                    # 2) ближайший к полудню завтрашний час
+                    hrs   = data["hourly"]["time"]
+                    press = data["hourly"]["pressure_msl"]
+                    noon_idx = min(range(len(hrs)),
+                                   key=lambda i: abs(
+                                       (pendulum.parse(hrs[i]).time() -
+                                        pendulum.time(12, 0)).total_seconds()))
+                    data["pressure_now"] = press[noon_idx]
+            except Exception as e:
+                logging.warning("pressure parse fail: %s", e)
+                data["pressure_now"] = None
+
+            return data
+
         except requests.HTTPError as e:
-            if r.status_code == 400 and daily is daily_full:
-                logging.warning("precipitation_probability_max unsupported — retrying without it")
+            if r.status_code == 400 and daily is daily_try[0]:
+                logging.warning("precipitation_probability_max unsupported — fallback w/o it")
                 continue
             logging.warning("%s -> %s", url.split('//')[1].split('/')[0], e)
             return None
     return None
+
 # ───── AirVisual AQI ─────────────────────────────────────────────────────────
 def fetch_aqi(lat, lon):
     if not AIR_KEY: return None
