@@ -8,7 +8,7 @@ VayboMeter 5.2 – полная сборка сообщения для Telegram-
 
 import os, asyncio, logging, random, math, requests, datetime as dt
 import pendulum
-from python_telegram_bot import Bot
+from telegram import Bot
 
 logging.basicConfig(level=logging.INFO,
                     format="%(levelname)s: %(message)s")
