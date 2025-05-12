@@ -642,16 +642,73 @@ def build_msg() -> str:
 
     return "\n".join(P)
 
-# ─────────── 7.  SEND ───────────────────────────────────────────
-async def main():
-    html=build_msg()
-    logging.info("Preview: %s",html.replace('\n',' | ')[:250])
-    try:
-        await Bot(TOKEN).send_message(int(CHAT),html[:4096],
-                                      parse_mode="HTML",disable_web_page_preview=True)
-        logging.info("Message sent ✓")
-    except tg_err.TelegramError as e:
-        logging.error("Telegram error: %s",e); raise
+# ─────────── 7.  SEND / EXTRA ──────────────────────────────────────────
+UNSPLASH_KEY = os.getenv("UNSPLASH_KEY")          # optional – фото заката
 
-if __name__=="__main__":
+POLL_QUESTION = "Как сегодня ваше самочувствие? 🤔"
+POLL_OPTIONS  = ["🔥 Полон(а) энергии", "🙂 Нормально", "😴 Слегка вялый(ая)", "🤒 Всё плохо"]
+
+async def send_main_post(bot: Bot, text: str) -> None:
+    """Отправка самого HTML-поста."""
+    await bot.send_message(
+        int(CHAT),
+        text[:4096],
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+async def send_friday_poll(bot: Bot) -> None:
+    """Раз в неделю (пятница) кидаем опрос под постом."""
+    try:
+        await bot.send_poll(
+            int(CHAT),
+            question=POLL_QUESTION,
+            options=POLL_OPTIONS,
+            is_anonymous=False,
+            allows_multiple_answers=False,
+        )
+    except tg_err.TelegramError as e:
+        logging.warning("Poll send error: %s", e)
+
+async def fetch_unsplash_photo() -> Optional[str]:
+    """Берём случайное фото Кипра / Лимассола (Unsplash Source API)."""
+    if not UNSPLASH_KEY:
+        return None
+    url = "https://api.unsplash.com/photos/random"
+    j   = _get(url, query="cyprus coast sunset", client_id=UNSPLASH_KEY)
+    try:
+        return j["urls"]["regular"]
+    except Exception:
+        return None
+
+async def send_media(bot: Bot, photo_url: str) -> None:
+    """Прикрепляем фото отдельным сообщением (media group ненужна, если 1 фото)."""
+    try:
+        await bot.send_photo(int(CHAT), photo=photo_url, caption="Фото дня • Unsplash")
+    except tg_err.TelegramError as e:
+        logging.warning("Photo send error: %s", e)
+
+# ─────────── main() ────────────────────────────────────────────────────
+async def main() -> None:
+    bot  = Bot(TOKEN)
+
+    # 1) главный пост
+    html = build_msg()
+    logging.info("Preview: %s", html.replace('\n', ' | ')[:250])
+    await send_main_post(bot, html)
+
+    # 2) пятничный опрос
+    if pendulum.now(TZ).is_friday():
+        await send_friday_poll(bot)
+
+    # 3) каждые 3 дня — картинка (UTC-дата, чтобы было стабильно)
+    if UNSPLASH_KEY and (dt.datetime.utcnow().toordinal() % 3 == 0):
+        if (photo := await fetch_unsplash_photo()):
+            await send_media(bot, photo)
+
+    logging.info("All messages sent ✓")
+
+# ───────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
     asyncio.run(main())
+
