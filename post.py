@@ -66,94 +66,68 @@ def _get(url:str, **params)->Optional[dict]:
         logging.warning("%s – %s", url.split('/')[2], e); return None
 
 # ─────────── 2.  WEATHER (OWM → Open-Meteo) ─────────────────────
+# ─────────── 2. WEATHER (OWM → Open-Meteo) ─────────────────────
 def get_weather(lat: float, lon: float) -> Optional[dict]:
     """
-    Гарантированно возвращает:
-      • current_weather               – единый формат
-      • daily[0]  (max, min, code)    – список с 1-м элементом
-      • hourly  (pressure, clouds …)  – словарь с ≥1 значением
-
-    Шаги:
-      1) OpenWeather One Call (3.0 → 2.5)  – если есть OWM_KEY
-      2) Open-Meteo full (daily+hourly)     – forecast_days=2
-      3) Open-Meteo fallback «только current» – эмулируем daily+hourly
+    Возвращает один унифицированный словарь с полями:
+      current_weather · daily[0] · hourly[…]
+    Логика:
+      1) OpenWeather One Call (3.0 → 2.5) – если есть OWM_KEY
+      2) Open-Meteo (daily+hourly)
+      3) Open-Meteo fallback – только current_weather (эмулируем daily/hourly)
     """
 
     # 1️⃣  OpenWeather
     if OWM_KEY:
         for ver in ("3.0", "2.5"):
-            ow = _get(f"https://api.openweathermap.org/data/{ver}/onecall",
-                      lat=lat, lon=lon, appid=OWM_KEY, units="metric",
-                      exclude="minutely,hourly,alerts")
+            ow = _get(
+                f"https://api.openweathermap.org/data/{ver}/onecall",
+                lat=lat, lon=lon, appid=OWM_KEY, units="metric",
+                exclude="minutely,hourly,alerts",
+            )
             if ow and "current" in ow:
-                return ow                            # структура уже полная
+                return ow                     # структура уже полная
 
-    # 2️⃣  Open-Meteo full (есть daily & hourly)
-    om = _get("https://api.open-meteo.com/v1/forecast",
-              latitude=lat, longitude=lon, timezone="UTC",
-              forecast_days=2, current_weather=True,
-              daily=("temperature_2m_max,temperature_2m_min,"
-                     "weathercode"),
-              hourly=("surface_pressure,cloud_cover,weathercode,"
-                      "wind_speed,wind_direction"))
-    if om and om.get("daily") and om.get("hourly"):
+    # 2️⃣  Open-Meteo (полный набор)
+    om = _get(
+        "https://api.open-meteo.com/v1/forecast",
+        latitude=lat, longitude=lon, timezone="UTC",
+        forecast_days=2, current_weather="true",            # ← bool → str
+        daily="temperature_2m_max,temperature_2m_min,weathercode",
+        hourly="surface_pressure,cloud_cover,weathercode,wind_speed,wind_direction",
+    )
+    if om and "daily" in om and "hourly" in om:
         cw = om["current_weather"]
-        # Приводим давление/облака к одному стилю с OWM
         cw["pressure"] = om["hourly"]["surface_pressure"][0]
         cw["clouds"]   = om["hourly"]["cloud_cover"][0]
-        # Open-Meteo уже хранит daily списком – ничего доделывать не надо
         return om
 
-    # 3️⃣  fallback: только current_weather → эмулируем daily & hourly
-    om = _get("https://api.open-meteo.com/v1/forecast",
-              latitude=lat, longitude=lon, timezone="UTC",
-              current_weather=True)
-    if not om or "current_weather" not in om:
-        return None                                 # совсем недоступно
+    # 3️⃣  Open-Meteo fallback – только current_weather
+    om = _get(
+        "https://api.open-meteo.com/v1/forecast",
+        latitude=lat, longitude=lon, timezone="UTC",
+        current_weather="true",
+    )
+    if not om:
+        return None                               # совсем недоступно
 
     cw = om["current_weather"]
-
-    # daily – в формате списка, чтобы build_msg везде работал одинаково
-    om["daily"] = [{
-        "temperature_2m_max": [cw["temperature"]],
-        "temperature_2m_min": [cw["temperature"]],
-        "weathercode":        [cw["weathercode"]],
-    }]
-
-    # hourly – минимальный набор (по одному значению)
-    om["hourly"] = {
-        "surface_pressure": [cw.get("pressure", 1013)],
-        "cloud_cover":      [cw.get("clouds",   0   )],
-        "weathercode":      [cw["weathercode"]],
-        "wind_speed":       [cw.get("windspeed",     0)],
-        "wind_direction":   [cw.get("winddirection", 0)],
-    }
-    # Дублируем в current_weather, чтобы интерфейс был унифицирован
-    cw["pressure"] = om["hourly"]["surface_pressure"][0]
-    cw["clouds"]   = om["hourly"]["cloud_cover"][0]
-    return om
-
-
-    # ── эмулируем daily ───────────────────────────────────────────
+    # эмулируем daily
     om["daily"] = [{
         "temperature_2m_max": [cw["temperature"]],
         "temperature_2m_min": [cw["temperature"]],
         "weathercode"       : [cw["weathercode"]],
     }]
-
-    # ── эмулируем hourly (минимум по одному элементу) ─────────────
+    # эмулируем hourly (минимальный набор)
     om["hourly"] = {
         "surface_pressure": [cw.get("pressure", 1013)],
         "cloud_cover"     : [cw.get("clouds",   0   )],
         "weathercode"     : [cw["weathercode"]],
-        "wind_speed"      : [cw.get("windspeed", 0  )],
+        "wind_speed"      : [cw.get("windspeed", 0 )],
         "wind_direction"  : [cw.get("winddirection", 0)],
     }
-
-    # дублируем давление/облака и в current_weather для единообразия
     cw["pressure"] = om["hourly"]["surface_pressure"][0]
     cw["clouds"]   = om["hourly"]["cloud_cover"][0]
-
     return om
 
 # ─────────── 3.  AIR / POLLEN / SST / KP / SCHUMANN ─────────────
@@ -282,13 +256,19 @@ def build_msg()->str:
         wind=cur["wind_speed"]*3.6; wind_txt=f"{wind:.1f} км/ч, {compass(cur['wind_deg'])}"
         press=cur["pressure"]; press_val=float(press)
         day_max,night_min = day["max"],day["min"]
-    else:                      # Open-Meteo
-        cw=w["current_weather"]; dm=w["daily"]
-        cloud=clouds_word(w["hourly"]["cloud_cover"][0])
-        rain="не ожидаются"     # daily precip. prob. нет
-        wind=cw["windspeed"]; wind_txt=f"{wind:.1f} км/ч, {compass(cw['winddirection'])}"
-        press=w["hourly"]["surface_pressure"][0]; press_val=float(press)
-        day_max,night_min = dm["temperature_2m_max"][0],dm["temperature_2m_min"][0]
+    else:                                      # Open-Meteo
+        cw = w["current_weather"]
+        dm = w["daily"]
+        if isinstance(dm, list):               # ← добавлено
+            dm = dm[0]
+
+        cloud = clouds_word(w["hourly"]["cloud_cover"][0])
+        rain  = "не ожидаются"                 # daily precip. prob. нет
+        wind  = cw["windspeed"]
+        wind_txt  = f"{wind:.1f} км/ч, {compass(cw['winddirection'])}"
+        press     = w["hourly"]["surface_pressure"][0]
+        press_val = float(press)
+        day_max, night_min = dm["temperature_2m_max"][0], dm["temperature_2m_min"][0]
 
     # диапазоны городов
     temps={}
