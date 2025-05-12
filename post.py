@@ -358,7 +358,6 @@ def get_schumann() -> dict:
 
 
 # ─────────── 4.  ASTRO ──────────────────────────────────────────
-# ─────────── 4.  ASTRO ──────────────────────────────────────────
 SIGNS = [
     "Козероге", "Водолее", "Рыбах", "Овне", "Тельце", "Близнецах",
     "Раке", "Льве", "Деве", "Весах", "Скорпионе", "Стрельце",
@@ -510,26 +509,25 @@ WEATHER_ICONS = {
     "ясно": "☀️", "переменная": "🌤️", "пасмурно": "☁️",
     "дождь": "🌧️", "туман": "🌁",
 }
-AIR_EMOJI = {               # уровень AQI → «светофор»
+AIR_EMOJI = {
     "good": "🟢", "moderate": "🟡", "unhealthy": "🟠",
     "very unhealthy": "🔴", "hazardous": "🟣",
 }
 
 def _daily_val(key: str, block: dict | list) -> float:
-    """Берёт daily-значение вне зависимости от dict / fallback-list."""
+    """Возвращает значение из daily вне зависимости от формата ответа."""
     return block[0][key][0] if isinstance(block, list) else block[key][0]
 
 def build_msg() -> str:
-    # ── 6-A.  Погода (Limassol) ────────────────────────────────────────
+    # ── 6-A.  Погода (Лимассол) ───────────────────────────────────────
     w = get_weather(LAT, LON)
     if not w:
         raise RuntimeError("источники погоды недоступны")
 
-    # --- OpenWeather ----------------------------------------------------
+    # -----  OpenWeather  ------------------------------------------------
     if "current" in w:
-        cur   = w["current"]
-        daily = w["daily"][0]["temp"]
-
+        cur        = w["current"]
+        daily      = w["daily"][0]["temp"]
         cloud_word = clouds_word(cur.get("clouds", 0))
         wind_kmh   = cur["wind_speed"] * 3.6
         wind_dir   = compass(cur["wind_deg"])
@@ -538,17 +536,18 @@ def build_msg() -> str:
         night_min  = daily["min"]
         wcode      = cur["weather"][0]["id"] if cur.get("weather") else 0
 
-    # --- Open-Meteo -----------------------------------------------------
+    # -----  Open-Meteo  -------------------------------------------------
     else:
-        cw        = w["current_weather"]
-        dm        = w["daily"]               # dict  -или-  fallback-list
-        cloud_word= clouds_word(w["hourly"]["cloud_cover"][0])
-        wind_kmh  = cw["windspeed"]
-        wind_dir  = compass(cw["winddirection"])
-        press     = float(w["hourly"]["surface_pressure"][0])
-        day_max   = _daily_val("temperature_2m_max", dm)
-        night_min = _daily_val("temperature_2m_min", dm)
-        wcode     = _daily_val("weathercode", dm)
+        cw         = w["current_weather"]
+        dm         = w["daily"]
+        cloud_word = clouds_word(w["hourly"]["cloud_cover"][0])
+        wind_kmh   = cw["windspeed"]
+        wind_dir   = compass(cw["winddirection"])
+        press      = float(w["hourly"]["surface_pressure"][0])
+        day_max    = _daily_val("temperature_2m_max", dm)
+        night_min  = _daily_val("temperature_2m_min", dm)
+        # 🟢 ИСПРАВЛЕНО: универсальный способ
+        wcode      = _daily_val("weathercode", dm)
 
     strong_wind = wind_kmh > 30
     fog_alert   = wcode in (45, 48)
