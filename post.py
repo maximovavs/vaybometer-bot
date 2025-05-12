@@ -497,7 +497,7 @@ def gpt_blurb(culprit: str) -> tuple[str, list[str]]:
     if len(tips) < 2:         # страховка
         tips = random.sample(tips_pool, 2)
     return summary, tips
-# ─────────── 6. BUILD MESSAGE ───────────────────────────────────────────
+ # ─────────── 6. BUILD MESSAGE ───────────────────────────────────────────
 WEATHER_ICONS = {
     "ясно":       "☀️",
     "переменная": "🌤️",
@@ -544,19 +544,18 @@ def build_msg() -> str:
         press     = w["hourly"]["surface_pressure"][0]
         cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
 
-        # правильное извлечение завтра из daily
+        # извлечение завтрашних значений
         if isinstance(dblock, dict):
-            codes = dblock["weathercode"]
-            # второй элемент — завтра, если он есть
-            wcode     = codes[1] if len(codes) > 1 else codes[0]
             tm = dblock["temperature_2m_max"]; tn = dblock["temperature_2m_min"]
             day_max   = tm[1] if len(tm) > 1 else tm[0]
             night_min = tn[1] if len(tn) > 1 else tn[0]
+            codes = dblock["weathercode"]
+            wcode     = codes[1] if len(codes) > 1 else codes[0]
         else:
             elt       = dblock[0]
-            wcode     = elt["weathercode"][0]
             day_max   = elt["temperature_2m_max"][0]
             night_min = elt["temperature_2m_min"][0]
+            wcode     = elt["weathercode"][0]
 
     strong_wind = wind_kmh > 30
     fog_alert   = wcode in (45, 48)
@@ -623,7 +622,7 @@ def build_msg() -> str:
         f"{AIR_EMOJI.get(lvl,'⚪')} AQI {aqi} | PM2.5: {safe(pm25,' µg/м³')} | PM10: {safe(pm10,' µg/м³')}",
     ]
 
-    # блок пыльцы
+    # пыльца
     if pollen:
         idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
         P += [
@@ -631,7 +630,7 @@ def build_msg() -> str:
             f"Деревья — {idx(pollen['treeIndex'])} | Травы — {idx(pollen['grassIndex'])} | Сорняки — {idx(pollen['weedIndex'])}",
         ]
 
-    # блок геомагнитки
+    # геомагнитка
     if kp is not None:
         P += [
             "🧲 <b>Геомагнитная активность</b>",
@@ -640,7 +639,7 @@ def build_msg() -> str:
     else:
         P += ["🧲 <b>Геомагнитная активность</b>", "нет данных"]
 
-    # блок Шумана
+    # Шуман
     if sch.get("high"):
         P += ["🎵 <b>Шуман:</b> ⚡️ вибрации повышены (>8 Гц)"]
     elif "freq" in sch:
@@ -668,6 +667,7 @@ def build_msg() -> str:
     ]
 
     return "\n".join(P)
+
 
 # ─────────── 7.  SEND / EXTRA ──────────────────────────────────────────
 UNSPLASH_KEY = os.getenv("UNSPLASH_KEY")          # optional – фото заката
