@@ -73,51 +73,53 @@ FACTS = {
 }
 
 
-# ─────────── 1.  UTILS ──────────────────────────────────────────
-import math, requests, logging, random, pendulum
+# ─────────── 1. UTILS ──────────────────────────────────────────
+import os
+import logging
+import requests
+import math
+import random
+import pendulum
+from typing import Union
 
-# ── румбы для компаса ───────────────────────────────────────────
+# компас
 COMPASS = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
            "S","SSW","SW","WSW","W","WNW","NW","NNW"]
 
 def compass(deg: float) -> str:
-    """ Числовой угол 0-360° → краткое направление N/NE/E… """
     return COMPASS[int((deg/22.5)+.5) % 16]
 
 def clouds_word(pc: int) -> str:
-    """ %-облачности → словесное описание """
     return "ясно" if pc < 25 else "переменная" if pc < 70 else "пасмурно"
 
 def wind_phrase(km_h: float) -> str:
-    """ Скорость ветра → словечко «штиль/слабый/умеренный/сильный» """
-    return ("штиль"       if km_h < 2  else
-            "слабый"      if km_h < 8  else
-            "умеренный"   if km_h < 14 else
+    return ("штиль" if km_h < 2 else
+            "слабый" if km_h < 8 else
+            "умеренный" if km_h < 14 else
             "сильный")
 
-def aqi_color(aqi: int|float|str) -> str:
-    """ AQI → цветокружок-эмодзи 🟢🟡🟠🔴🟣🟤 (строка) """
-    if aqi == "—":              return "⚪️"
-    aqi = float(aqi)
-    return ("🟢" if aqi <= 50 else "🟡" if aqi <=100 else
-            "🟠" if aqi <=150 else "🔴" if aqi <=200 else
-            "🟣" if aqi <=300 else "🟤")
+# факты
+FACTS_BY_DATE = {
+    "05-11": "11 мая — День морского бриза на Кипре 🌬️",
+    "06-08": "8 июня 2004 г. — транзит Венеры по диску Солнца 🌞",
+    "07-20": "20 июля — на Кипре собирают первый урожай винограда 🍇",
+}
+RANDOM_FACTS = list(FACTS_BY_DATE.values())
 
 def get_fact(date_obj: pendulum.Date) -> str:
-    """ Вернуть «факт дня» по дате или запасную фразу. """
     key = date_obj.format("MM-DD")
-    return FACTS.get(key, "На Кипре в году ≈340 солнечных дней ☀️")
+    return FACTS_BY_DATE.get(key, random.choice(RANDOM_FACTS))
 
-def safe(v, unit: str = "") -> str:
-    """ Красивый вывод показателя (None → «—»). """
-    if v in (None, "None", "—"):          return "—"
-    if isinstance(v, (int, float)):       return f"{v:.1f}{unit}"
+def safe(v: Union[None,str,int,float], unit: str = "") -> str:
+    if v in (None, "None", "—"):
+        return "—"
+    if isinstance(v, (int, float)):
+        return f"{v:.1f}{unit}"
     return f"{v}{unit}"
 
-# ── универсальный HTTP-геттер с логированием ────────────────────
 def _get(url: str, **params) -> dict | None:
     try:
-        r = requests.get(url, params=params, timeout=15, headers=HEADERS)
+        r = requests.get(url, params=params, timeout=15, headers={"User-Agent":"VayboMeter"})
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -214,18 +216,9 @@ def get_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     return om
 
 # ─────────── 3-A.  AIR / POLLEN / SST / KP  ──────────────────────
-"""
-📌 Изменения
-• `get_air()`   → всегда возвращает словарь вида
-      {"aqi": 63, "lvl": "умеренный", "pm25": 12.4, "pm10": 17.8}
-  где lvl уже «окрашен» словами (границы US-EPA).
+# ─────────── 3-A. AIR / POLLEN / SST / KP ───────────────────────
 
-• `get_kp()`    → теперь кортеж (kp_value, state_string)
-      (1.7, "спокойный")  |  (4.3, "повышенный")  |  (5.7, "буря")
-
-Остальные функции (пыльца, SST) не менялись.
-"""
-
+# шкала AQI по US-EPA
 AQI_BANDS = (
     (0,  50,  "хороший"),
     (51, 100, "умеренный"),
@@ -235,21 +228,26 @@ AQI_BANDS = (
     (301,500, "опасный"),
 )
 
-def aqi_color(val: int | float | None) -> str:
-    if val is None or val == "—":                      # данных нет
-        return "н/д"
-    for low, high, name in AQI_BANDS:
-        if low <= val <= high:
-            return name
-    return "опасный"
+def aqi_color(aqi: Union[int,float,None]) -> str:
+    if aqi is None or aqi == "—":
+        return "⚪️"
+    for lo, hi, name in AQI_BANDS:
+        if lo <= aqi <= hi:
+            em = ("🟢" if lo==0 else
+                  "🟡" if lo==51 else
+                  "🟠" if lo==101 else
+                  "🔴" if lo==151 else
+                  "🟣" if lo==201 else
+                  "🟤")
+            return f"{em} {name}"
+    return f"⚫ опасный"
 
-def get_air() -> Optional[dict]:
+def get_air() -> dict | None:
+    from .utils import _get  # или прямой импорт
     if not AIR_KEY:
         return None
-    j = _get(
-        "https://api.airvisual.com/v2/nearest_city",
-        lat=LAT, lon=LON, key=AIR_KEY
-    )
+    j = _get("https://api.airvisual.com/v2/nearest_city",
+             lat=LAT, lon=LON, key=AIR_KEY)
     if not j:
         return None
 
@@ -257,63 +255,42 @@ def get_air() -> Optional[dict]:
     aqi = pol.get("aqius")
     pm25 = pol.get("p2")
     pm10 = pol.get("p1")
+    lvl = aqi_color(aqi)
 
-    return {
-        "aqi": aqi,
-        "lvl": aqi_color(aqi),
-        "pm25": pm25,
-        "pm10": pm10,
-    }
+    return {"aqi": aqi, "lvl": lvl, "pm25": pm25, "pm10": pm10}
 
-def get_pollen() -> Optional[dict]:
+def get_pollen() -> dict | None:
     if not AMBEE_KEY:
         return None
-    d = _get(
-        "https://api.tomorrow.io/v4/timelines",
-        apikey=AMBEE_KEY,
-        location=f"{LAT},{LON}",
-        fields="treeIndex,grassIndex,weedIndex",
-        timesteps="1d",
-        units="metric",
-    )
+    d = _get("https://api.tomorrow.io/v4/timelines",
+             apikey=AMBEE_KEY,
+             location=f"{LAT},{LON}",
+             fields="treeIndex,grassIndex,weedIndex",
+             timesteps="1d", units="metric")
     try:
         return d["data"]["timelines"][0]["intervals"][0]["values"]
-    except Exception:
+    except:
         return None
 
-def get_sst() -> Optional[float]:
-    j = _get(
-        "https://marine-api.open-meteo.com/v1/marine",
-        latitude=LAT,
-        longitude=LON,
-        hourly="sea_surface_temperature",
-        timezone="UTC",
-    )
+def get_sst() -> float | None:
+    j = _get("https://marine-api.open-meteo.com/v1/marine",
+             latitude=LAT, longitude=LON,
+             hourly="sea_surface_temperature",
+             timezone="UTC")
     try:
         return round(j["hourly"]["sea_surface_temperature"][0], 1)
-    except Exception:
+    except:
         return None
 
-def get_kp() -> tuple[Optional[float], str]:
-    """
-    ❱ Возвращает (kp_value, state)
-      state ∈ {"спокойный", "повышенный", "буря", "н/д"}
-    """
-    j = _get(
-        "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
-    )
+def get_kp() -> tuple[float|None,str]:
+    j = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
     try:
-        kp_val = float(j[-1][1])
-    except Exception:
+        v = float(j[-1][1])
+    except:
         return None, "н/д"
+    state = "спокойный" if v < 4 else "повышенный" if v < 5 else "буря"
+    return v, state
 
-    if kp_val < 4:
-        state = "спокойный"
-    elif kp_val < 5:
-        state = "повышенный"
-    else:
-        state = "буря"
-    return kp_val, state
 
 
 # ─────────── 3-B.  SCHUMANN  ─────────────────────────────────────
@@ -497,7 +474,14 @@ def gpt_blurb(culprit: str) -> tuple[str, list[str]]:
     if len(tips) < 2:         # страховка
         tips = random.sample(tips_pool, 2)
     return summary, tips
- # ─────────── 6. BUILD MESSAGE ───────────────────────────────────────────
+# ─────────── 6. BUILD MESSAGE ────────────────────────────────────
+from .utils import compass, clouds_word, wind_phrase, safe, get_fact
+from .weather import get_weather  # ваш модуль 2
+from .air import get_air, get_pollen, get_sst, get_kp
+from .schumann import get_schumann
+from .astro import astro_events
+from .gpt import gpt_blurb, CULPRITS
+
 WEATHER_ICONS = {
     "ясно":       "☀️",
     "переменная": "🌤️",
@@ -506,94 +490,64 @@ WEATHER_ICONS = {
     "туман":      "🌁",
 }
 
-AIR_EMOJI = {
-    "good":           "🟢",
-    "moderate":       "🟡",
-    "unhealthy":      "🟠",
-    "very unhealthy": "🔴",
-    "hazardous":      "⚫",
-}
-
-def get_fact(date_obj) -> str:
-    """Возвращает случайный факт на заданную дату."""
-    return random.choice(FACTS)
-
 def build_msg() -> str:
-    # 1. Погода в Лимассоле
     w = get_weather(LAT, LON)
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
+    # единый wind_deg и wind_kmh
     if "current" in w:
-        # — ответ OpenWeather
-        cur       = w["current"]
+        cur = w["current"]
+        wind_kmh = cur["wind_speed"] * 3.6
+        wind_deg = cur["wind_deg"]
+        press    = cur["pressure"]
+        cloud_w  = clouds_word(cur.get("clouds",0))
         day_block = w["daily"][0]["temp"]
-        wind_kmh  = cur["wind_speed"] * 3.6
-        wind_deg  = cur["wind_deg"]
-        wcode     = cur.get("weather", [{}])[0].get("id", 0)
-        press     = cur["pressure"]
-        cloud_w   = clouds_word(cur.get("clouds", 0))
-        day_max   = day_block["max"]
-        night_min = day_block["min"]
+        day_max, night_min = day_block["max"], day_block["min"]
     else:
-        # — ответ Open-Meteo
-        cw        = w["current_weather"]
-        dblock    = w["daily"]
-        wind_kmh  = cw["windspeed"]
-        wind_deg  = cw["winddirection"]
-        press     = w["hourly"]["surface_pressure"][0]
-        cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
+        cur = w["current_weather"]
+        wind_kmh = cur["windspeed"]
+        wind_deg = cur["winddirection"]
+        press    = cur.get("pressure", w["hourly"]["surface_pressure"][0])
+        cloud_w  = clouds_word(w["hourly"]["cloud_cover"][0])
+        d = w["daily"]
+        # завтра из Open-Meteo
+        arr_max = d["temperature_2m_max"]
+        arr_min = d["temperature_2m_min"]
+        codes   = d["weathercode"]
+        day_max   = arr_max[1] if len(arr_max)>1 else arr_max[0]
+        night_min = arr_min[1] if len(arr_min)>1 else arr_min[0]
+        wcode     = codes[1]   if len(codes)>1   else codes[0]
 
-        # извлечение завтрашних значений
-        if isinstance(dblock, dict):
-            tm = dblock["temperature_2m_max"]; tn = dblock["temperature_2m_min"]
-            day_max   = tm[1] if len(tm) > 1 else tm[0]
-            night_min = tn[1] if len(tn) > 1 else tn[0]
-            codes = dblock["weathercode"]
-            wcode     = codes[1] if len(codes) > 1 else codes[0]
-        else:
-            elt       = dblock[0]
-            day_max   = elt["temperature_2m_max"][0]
-            night_min = elt["temperature_2m_min"][0]
-            wcode     = elt["weathercode"][0]
+    strong_wind = w["strong_wind"]
+    fog_alert   = w["fog_alert"]
 
-    strong_wind = wind_kmh > 30
-    fog_alert   = wcode in (45, 48)
-
-    # 2. Температурные лидеры
-    temps: dict[str, float] = {}
-    for city, (la, lo) in CITIES.items():
-        wc = get_weather(la, lo)
-        if not wc:
-            continue
+    # температурные лидеры
+    temps = {}
+    for city,(la,lo) in CITIES.items():
+        wc = get_weather(la,lo)
+        if not wc: continue
         if "current" in wc:
             temps[city] = wc["daily"][0]["temp"]["max"]
         else:
-            db = wc["daily"]
-            if isinstance(db, dict):
-                arr = db["temperature_2m_max"]
-                temps[city] = arr[1] if len(arr) > 1 else arr[0]
-            else:
-                temps[city] = db[0]["temperature_2m_max"][0]
+            dm = wc["daily"]
+            arr = dm["temperature_2m_max"]
+            temps[city] = arr[1] if len(arr)>1 else arr[0]
     warm = max(temps, key=temps.get)
     cold = min(temps, key=temps.get)
 
-    # 3. Воздух / пыльца / kp / sst / Шуман
-    air   = get_air() or {}
-    aqi   = air.get("aqi", "—")
-    lvl   = air.get("lvl")
-    pm25  = air.get("pm25", "—")
-    pm10  = air.get("pm10", "—")
+    # остальное
+    air    = get_air() or {}
+    pollen = get_pollen()
+    sst    = get_sst()
     kp, kp_state = get_kp()
-    sst          = get_sst()
-    pollen       = get_pollen()
-    sch          = get_schumann()
-    astro_list   = astro_events()
+    sch    = get_schumann()
+    astro_list = astro_events()
 
-    # 4. Выбор «виновника»
+    # виновник
     if fog_alert:
         culprit = "туман"
-    elif kp_state == "буря":
+    elif kp_state=="буря":
         culprit = "магнитные бури"
     elif press < 1007:
         culprit = "низкое давление"
@@ -605,8 +559,7 @@ def build_msg() -> str:
 
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
 
-    # 5. Сборка HTML
-    P: list[str] = [
+    lines = [
         f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>",
         f"<b>Темп. днём:</b> до {day_max:.1f} °C",
         f"<b>Темп. ночью:</b> около {night_min:.1f} °C",
@@ -619,44 +572,39 @@ def build_msg() -> str:
         f"<i>Самый прохладный город:</i> {cold} ({temps[cold]:.1f} °C)",
         "———",
         "🏙️ <b>Качество воздуха</b>",
-        f"{AIR_EMOJI.get(lvl,'⚪')} AQI {aqi} | PM2.5: {safe(pm25,' µg/м³')} | PM10: {safe(pm10,' µg/м³')}",
+        f"{air.get('lvl','⚪️')} AQI {air.get('aqi','—')} | "
+        f"PM2.5: {safe(air.get('pm25'),' µg/м³')} | PM10: {safe(air.get('pm10'),' µg/м³')}",
     ]
 
-    # пыльца
     if pollen:
         idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
-        P += [
+        lines += [
             "🌿 <b>Пыльца</b>",
-            f"Деревья — {idx(pollen['treeIndex'])} | Травы — {idx(pollen['grassIndex'])} | Сорняки — {idx(pollen['weedIndex'])}",
+            f"Деревья — {idx(pollen['treeIndex'])} | "
+            f"Травы — {idx(pollen['grassIndex'])} | "
+            f"Сорняки — {idx(pollen['weedIndex'])}",
         ]
 
-    # геомагнитка
     if kp is not None:
-        P += [
-            "🧲 <b>Геомагнитная активность</b>",
-            f"K-index: {kp:.1f} ({kp_state})"
-        ]
+        lines += ["🧲 <b>Геомагнитная активность</b>",
+                  f"K-index: {kp:.1f} ({kp_state})"]
     else:
-        P += ["🧲 <b>Геомагнитная активность</b>", "нет данных"]
+        lines += ["🧲 <b>Геомагнитная активность</b>", "нет данных"]
 
-    # Шуман
     if sch.get("high"):
-        P += ["🎵 <b>Шуман:</b> ⚡️ вибрации повышены (>8 Гц)"]
+        lines += ["🎵 <b>Шуман:</b> ⚡️ вибрации повышены (>8 Гц)"]
     elif "freq" in sch:
-        P += [f"🎵 <b>Шуман:</b> ≈{sch['freq']:.1f} Гц, амплитуда стабильна"]
+        lines += [f"🎵 <b>Шуман:</b> ≈{sch['freq']:.1f} Гц, амплитуда стабильна"]
     else:
-        P += [f"🎵 <b>Шуман:</b> {sch.get('msg','нет данных')}"]
+        lines += [f"🎵 <b>Шуман:</b> {sch.get('msg','нет данных')}"]
 
-    # температура воды
     if sst is not None:
-        P += [f"🌊 <b>Температура воды</b>\nСейчас: {sst:.1f} °C"]
+        lines += [f"🌊 <b>Температура воды</b>\nСейчас: {sst:.1f} °C"]
 
-    # астрособытия
     if astro_list:
-        P += ["🌌 <b>Астрологические события</b>\n" + " | ".join(astro_list)]
+        lines += ["🌌 <b>Астрологические события</b>\n" + " | ".join(astro_list)]
 
-    # вывод и советы
-    P += [
+    lines += [
         "———",
         f"📜 <b>Вывод</b>\n{summary}",
         "———",
@@ -665,8 +613,8 @@ def build_msg() -> str:
         "———",
         f"📚 {get_fact(TOMORROW)}",
     ]
+    return "\n".join(lines)
 
-    return "\n".join(P)
 
 
 # ─────────── 7.  SEND / EXTRA ──────────────────────────────────────────
