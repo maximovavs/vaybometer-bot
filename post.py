@@ -66,69 +66,89 @@ def _get(url:str, **params)->Optional[dict]:
         logging.warning("%s – %s", url.split('/')[2], e); return None
 
 # ─────────── 2.  WEATHER (OWM → Open-Meteo) ─────────────────────
-# ─────────── 2. WEATHER (OWM → Open-Meteo) ─────────────────────
+
+# ─────────── 2.  WEATHER (OWM → Open-Meteo) ─────────────────────
 def get_weather(lat: float, lon: float) -> Optional[dict]:
     """
-    Возвращает один унифицированный словарь с полями:
-      current_weather · daily[0] · hourly[…]
-    Логика:
-      1) OpenWeather One Call (3.0 → 2.5) – если есть OWM_KEY
-      2) Open-Meteo (daily+hourly)
-      3) Open-Meteo fallback – только current_weather (эмулируем daily/hourly)
+    Возвращает словарь, где гарантированно есть:
+      • current_weather
+      • daily[0]  (temperature_2m_max / min, weathercode)
+      • hourly    (surface_pressure, cloud_cover, weathercode,
+                   wind_speed, wind_direction)
+
+    Порядок источников:
+      1) OpenWeather One Call (3.0 → 2.5) — при наличии OWM_KEY
+      2) Open-Meteo с daily+hourly
+      3) Open-Meteo fallback — только current_weather, остальное эмулируем
     """
 
-    # 1️⃣  OpenWeather
+    # 1️⃣ OpenWeather
     if OWM_KEY:
         for ver in ("3.0", "2.5"):
             ow = _get(
                 f"https://api.openweathermap.org/data/{ver}/onecall",
-                lat=lat, lon=lon, appid=OWM_KEY, units="metric",
+                lat=lat,
+                lon=lon,
+                appid=OWM_KEY,
+                units="metric",
                 exclude="minutely,hourly,alerts",
             )
-            if ow and "current" in ow:
-                return ow                     # структура уже полная
+            if ow and "current" in ow and "daily" in ow:
+                return ow                           # структура уже полная
 
-    # 2️⃣  Open-Meteo (полный набор)
+    # 2️⃣ Open-Meteo (полный daily + hourly)
     om = _get(
         "https://api.open-meteo.com/v1/forecast",
-        latitude=lat, longitude=lon, timezone="UTC",
-        forecast_days=2, current_weather="true",            # ← bool → str
+        latitude=lat,
+        longitude=lon,
+        timezone="UTC",
+        current_weather="true",
+        forecast_days=2,
         daily="temperature_2m_max,temperature_2m_min,weathercode",
         hourly="surface_pressure,cloud_cover,weathercode,wind_speed,wind_direction",
     )
-    if om and "daily" in om and "hourly" in om:
+    if om and "daily" in om and "hourly" in om and "current_weather" in om:
         cw = om["current_weather"]
+        # подмешиваем давление и облака в current_weather для единообразия с OWM
         cw["pressure"] = om["hourly"]["surface_pressure"][0]
         cw["clouds"]   = om["hourly"]["cloud_cover"][0]
         return om
 
-    # 3️⃣  Open-Meteo fallback – только current_weather
+    # 3️⃣ Open-Meteo fallback — только current_weather
     om = _get(
         "https://api.open-meteo.com/v1/forecast",
-        latitude=lat, longitude=lon, timezone="UTC",
+        latitude=lat,
+        longitude=lon,
+        timezone="UTC",
         current_weather="true",
     )
-    if not om:
-        return None                               # совсем недоступно
+    if not om or "current_weather" not in om:
+        return None                       # погодные API недоступны
 
     cw = om["current_weather"]
-    # эмулируем daily
+
+    # ── эмулируем daily (один «день» на основе текущих значений) ─────────
     om["daily"] = [{
         "temperature_2m_max": [cw["temperature"]],
         "temperature_2m_min": [cw["temperature"]],
         "weathercode"       : [cw["weathercode"]],
     }]
-    # эмулируем hourly (минимальный набор)
+
+    # ── эмулируем hourly (хотя бы по одной точке) ────────────────────────
     om["hourly"] = {
         "surface_pressure": [cw.get("pressure", 1013)],
-        "cloud_cover"     : [cw.get("clouds",   0   )],
+        "cloud_cover"     : [cw.get("clouds", 0)],
         "weathercode"     : [cw["weathercode"]],
-        "wind_speed"      : [cw.get("windspeed", 0 )],
+        "wind_speed"      : [cw.get("windspeed", 0)],
         "wind_direction"  : [cw.get("winddirection", 0)],
     }
+
+    # дублируем давление/облака и в current_weather
     cw["pressure"] = om["hourly"]["surface_pressure"][0]
     cw["clouds"]   = om["hourly"]["cloud_cover"][0]
+
     return om
+
 
 # ─────────── 3.  AIR / POLLEN / SST / KP / SCHUMANN ─────────────
 def get_air()->Optional[dict]:
