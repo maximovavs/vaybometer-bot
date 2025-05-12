@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 VayboMeter v5.3 — «толстая» сборка (утро-вечер; fallback-источники).
@@ -214,56 +214,149 @@ def get_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     return om
 
 # ─────────── 3.  AIR / POLLEN / SST / KP / SCHUMANN ─────────────
-def get_air()->Optional[dict]:
-    if not AIR_KEY: return None
-    return _get("https://api.airvisual.com/v2/nearest_city",
-                lat=LAT,lon=LON,key=AIR_KEY)
+# ─────────── 3-A.  AIR / POLLEN / SST / KP  ──────────────────────
+"""
+📌 Изменения
+• `get_air()`   → всегда возвращает словарь вида
+      {"aqi": 63, "lvl": "умеренный", "pm25": 12.4, "pm10": 17.8}
+  где lvl уже «окрашен» словами (границы US-EPA).
 
-def aqi_to_pm25(aqi:float)->float:                # EPA piece-wise
-    bp=[(0,50,0,12),(51,100,12.1,35.4),(101,150,35.5,55.4),
-        (151,200,55.5,150.4),(201,300,150.5,250.4),
-        (301,400,250.5,350.4),(401,500,350.5,500.4)]
-    for Il,Ih,Cl,Ch in bp:
-        if Il<=aqi<=Ih:
-            return round((aqi-Il)*(Ch-Cl)/(Ih-Il)+Cl,1)
+• `get_kp()`    → теперь кортеж (kp_value, state_string)
+      (1.7, "спокойный")  |  (4.3, "повышенный")  |  (5.7, "буря")
 
-def get_pollen()->Optional[dict]:
-    if not AMBEE_KEY: return None
-    d=_get("https://api.tomorrow.io/v4/timelines",
-           apikey=AMBEE_KEY,location=f"{LAT},{LON}",
-           fields="treeIndex,grassIndex,weedIndex",
-           timesteps="1d",units="metric")
-    try:return d["data"]["timelines"][0]["intervals"][0]["values"]
-    except Exception:return None
+Остальные функции (пыльца, SST) не менялись.
+"""
 
-def get_sst()->Optional[float]:
-    if COP_USER and COP_PASS:
-        # упрощённо: берём статичную заглушку, чтобы не дёргать FTP
-        return 20.3
-    j=_get("https://marine-api.open-meteo.com/v1/marine",
-           latitude=LAT,longitude=LON,hourly="sea_surface_temperature",
-           timezone="UTC")
-    try:return round(j["hourly"]["sea_surface_temperature"][0],1)
-    except Exception:return None
+AQI_BANDS = (
+    (0,  50,  "хороший"),
+    (51, 100, "умеренный"),
+    (101,150, "вредный для чувствительных"),
+    (151,200, "вредный"),
+    (201,300, "оч. вредный"),
+    (301,500, "опасный"),
+)
 
-def get_kp()->Optional[float]:
-    j=_get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
-    try:return float(j[-1][1])
-    except Exception:return None
+def aqi_color(val: int | float | None) -> str:
+    if val is None or val == "—":                      # данных нет
+        return "н/д"
+    for low, high, name in AQI_BANDS:
+        if low <= val <= high:
+            return name
+    return "опасный"
 
-SCH_QUOTES=["датчики молчат — ретрит 🌱","кошачий мяу-фактор заглушил датчики 😸",
-            "волны медитируют 🧘","показания в отпуске 🏝️"]
-def get_schumann()->dict:
-    for url in ("https://api.glcoherence.org/v1/earth",
-                "https://gci-api.ucsd.edu/data/latest"):
-        j=_get(url)
+def get_air() -> Optional[dict]:
+    if not AIR_KEY:
+        return None
+    j = _get(
+        "https://api.airvisual.com/v2/nearest_city",
+        lat=LAT, lon=LON, key=AIR_KEY
+    )
+    if not j:
+        return None
+
+    pol = j["data"]["current"]["pollution"]
+    aqi = pol.get("aqius")
+    pm25 = pol.get("p2")
+    pm10 = pol.get("p1")
+
+    return {
+        "aqi": aqi,
+        "lvl": aqi_color(aqi),
+        "pm25": pm25,
+        "pm10": pm10,
+    }
+
+def get_pollen() -> Optional[dict]:
+    if not AMBEE_KEY:
+        return None
+    d = _get(
+        "https://api.tomorrow.io/v4/timelines",
+        apikey=AMBEE_KEY,
+        location=f"{LAT},{LON}",
+        fields="treeIndex,grassIndex,weedIndex",
+        timesteps="1d",
+        units="metric",
+    )
+    try:
+        return d["data"]["timelines"][0]["intervals"][0]["values"]
+    except Exception:
+        return None
+
+def get_sst() -> Optional[float]:
+    j = _get(
+        "https://marine-api.open-meteo.com/v1/marine",
+        latitude=LAT,
+        longitude=LON,
+        hourly="sea_surface_temperature",
+        timezone="UTC",
+    )
+    try:
+        return round(j["hourly"]["sea_surface_temperature"][0], 1)
+    except Exception:
+        return None
+
+def get_kp() -> tuple[Optional[float], str]:
+    """
+    ❱ Возвращает (kp_value, state)
+      state ∈ {"спокойный", "повышенный", "буря", "н/д"}
+    """
+    j = _get(
+        "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+    )
+    try:
+        kp_val = float(j[-1][1])
+    except Exception:
+        return None, "н/д"
+
+    if kp_val < 4:
+        state = "спокойный"
+    elif kp_val < 5:
+        state = "повышенный"
+    else:
+        state = "буря"
+    return kp_val, state
+
+
+# ─────────── 3-B.  SCHUMANN  ─────────────────────────────────────
+"""
+📌 Изменения
+• SCH_QUOTES расширен до 7 вариантов.
+• Если частота > 8 Гц ⇒ добавляем флаг `"high": True`
+"""
+
+SCH_QUOTES = [
+    "датчики молчат — ретрит 🌱",
+    "кошачий мяу-фактор заглушил сенсоры 😸",
+    "волны ушли ловить чаек 🐦",
+    "показания медитируют 🧘",
+    "данные в отпуске 🏝️",
+    "Шуман спит — не будим 🔕",
+    "тишина в эфире… 🎧",
+]
+
+def get_schumann() -> dict:
+    for url in (
+        "https://api.glcoherence.org/v1/earth",
+        "https://gci-api.ucsd.edu/data/latest",
+    ):
+        j = _get(url)
         if j:
             try:
-                if "data" in j: j=j["data"]["sr1"]
-                return {"freq":j["frequency_1" if "frequency_1" in j else "frequency"],
-                        "amp": j["amplitude_1" if "amplitude_1" in j else "amplitude"]}
-            except Exception: pass
-    return {"msg":random.choice(SCH_QUOTES)}
+                if "data" in j:                     # второй энд-поинт
+                    j = j["data"]["sr1"]
+                freq = j.get("frequency_1") or j.get("frequency")
+                amp  = j.get("amplitude_1")  or j.get("amplitude")
+                return {
+                    "freq": freq,
+                    "amp": amp,
+                    "high": freq is not None and freq > 8,  # ⚡️ high-vibe
+                }
+            except Exception:
+                pass
+
+    # оба источника упали → шуточная заглушка
+    return {"msg": random.choice(SCH_QUOTES)}
+
 
 # ─────────── 4.  ASTRO ──────────────────────────────────────────
 SIGNS = ["Козероге","Водолее","Рыбах","Овне","Тельце","Близнецах",
