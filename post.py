@@ -497,23 +497,21 @@ def gpt_blurb(culprit: str) -> tuple[str, list[str]]:
     if len(tips) < 2:         # страховка
         tips = random.sample(tips_pool, 2)
     return summary, tips
-
-
-# ─────────── 6.  BUILD MESSAGE ─────────────────────────────────
+# ─────────── 6. BUILD MESSAGE ───────────────────────────────────────────
 WEATHER_ICONS = {
-    "ясно":      "☀️",
-    "переменная":"🌤️",
-    "пасмурно":  "☁️",
-    "дождь":     "🌧️",
-    "туман":     "🌁",
+    "ясно":       "☀️",
+    "переменная": "🌤️",
+    "пасмурно":   "☁️",
+    "дождь":      "🌧️",
+    "туман":      "🌁",
 }
 
 AIR_EMOJI = {
-    "good":        "🟢",
-    "moderate":    "🟡",
-    "unhealthy":   "🟠",
+    "good":          "🟢",
+    "moderate":      "🟡",
+    "unhealthy":     "🟠",
     "very unhealthy":"🔴",
-    "hazardous":   "🟣",
+    "hazardous":     "⚫",
 }
 
 def get_fact(date_obj) -> str:
@@ -526,7 +524,7 @@ def build_msg() -> str:
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
-    if "current" in w:  # OpenWeather
+    if "current" in w:  # ответ OpenWeather
         cur       = w["current"]
         day_block = w["daily"][0]["temp"]
         wind_kmh  = cur["wind_speed"] * 3.6
@@ -535,15 +533,24 @@ def build_msg() -> str:
         cloud_w   = clouds_word(cur.get("clouds", 0))
         day_max   = day_block["max"]
         night_min = day_block["min"]
-    else:               # Open-Meteo
+    else:               # ответ Open-Meteo
         cw        = w["current_weather"]
         dblock    = w["daily"]
         wind_kmh  = cw["windspeed"]
-        wcode     = dblock["weathercode"][0]
         press     = w["hourly"]["surface_pressure"][0]
         cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
-        day_max   = dblock["temperature_2m_max"][0]
-        night_min = dblock["temperature_2m_min"][0]
+
+        # корректно вытягиваем weathercode для завтрашнего дня
+        if isinstance(dblock, dict):
+            codes = dblock["weathercode"]
+            wcode = codes[1] if len(codes) > 1 else codes[0]
+            day_max   = dblock["temperature_2m_max"][1] if len(dblock["temperature_2m_max"])>1 else dblock["temperature_2m_max"][0]
+            night_min = dblock["temperature_2m_min"][1] if len(dblock["temperature_2m_min"])>1 else dblock["temperature_2m_min"][0]
+        else:
+            elt       = dblock[0]
+            wcode     = elt["weathercode"][0]
+            day_max   = elt["temperature_2m_max"][0]
+            night_min = elt["temperature_2m_min"][0]
 
     strong_wind = wind_kmh > 30
     fog_alert   = wcode in (45, 48)
@@ -557,16 +564,21 @@ def build_msg() -> str:
         if "current" in wc:
             temps[city] = wc["daily"][0]["temp"]["max"]
         else:
-            temps[city] = wc["daily"]["temperature_2m_max"][0]
+            db = wc["daily"]
+            if isinstance(db, dict):
+                arr = db["temperature_2m_max"]
+                temps[city] = arr[1] if len(arr)>1 else arr[0]
+            else:
+                temps[city] = db[0]["temperature_2m_max"][0]
     warm = max(temps, key=temps.get)
     cold = min(temps, key=temps.get)
 
     # 3. Воздух / пыльца / Kp / SST / Шуман
-    air = get_air() or {}
-    aqi = air.get("aqi", "—")
-    lvl = air.get("lvl", None)
-    pm25 = air.get("pm25", "—")
-    pm10 = air.get("pm10", "—")
+    air   = get_air() or {}
+    aqi   = air.get("aqi", "—")
+    lvl   = air.get("lvl")
+    pm25  = air.get("pm25", "—")
+    pm10  = air.get("pm10", "—")
     kp, kp_state = get_kp()
     sst          = get_sst()
     pollen       = get_pollen()
@@ -584,24 +596,22 @@ def build_msg() -> str:
         culprit = "шальной ветер"
     else:
         culprit = "мини-парад планет"
-
     summary, tips = gpt_blurb(culprit)
-    icon    = WEATHER_ICONS.get(cloud_w, "🌦️")
+    icon = WEATHER_ICONS.get(cloud_w, "🌦️")
 
-    # 5. Сборка основного сообщения
+    # 5. Сборка HTML
     P: list[str] = [
         f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>",
         f"<b>Темп. днём:</b> до {day_max:.1f} °C",
         f"<b>Темп. ночью:</b> около {night_min:.1f} °C",
         f"<b>Облачность:</b> {cloud_w}",
-        f"<b>Ветер:</b> {wind_phrase(wind_kmh)} ({wind_kmh:.1f} км/ч, {compass(cur.get('wind_deg', cw.get('winddirection')))}{''})",
+        f"<b>Ветер:</b> {wind_phrase(wind_kmh)} ({wind_kmh:.1f} км/ч, {compass(cur.get('wind_deg', cw.get('winddirection')))} )",
         *(["⚠️ Ветер может усиливаться"] if strong_wind else []),
         *(["🌁 Возможен туман, водите аккуратно"] if fog_alert else []),
         f"<b>Давление:</b> {press:.0f} гПа",
         f"<i>Самый тёплый город:</i> {warm} ({temps[warm]:.1f} °C)",
         f"<i>Самый прохладный город:</i> {cold} ({temps[cold]:.1f} °C)",
         "———",
-        # воздух
         "🏙️ <b>Качество воздуха</b>",
         f"{AIR_EMOJI.get(lvl,'⚪')} AQI {aqi} | PM2.5: {safe(pm25,' µg/м³')} | PM10: {safe(pm10,' µg/м³')}",
     ]
