@@ -18,31 +18,60 @@ from telegram import Bot, error as tg_err
 from openai import OpenAI
 
 # ─────────── 0.  CONST / SECRETS ─────────────────────────────────
-LAT, LON = 34.707, 33.022                         # Limassol
-CITIES = {                                        # max/min диапазон
+"""
+Все глобальные константы, ключи-секреты и справочники,
+которыми пользуются остальные модули.
+"""
+import os, pendulum
+
+# ── география канала ────────────────────────────────────────────
+LAT, LON = 34.707, 33.022                         # Limassol, CY
+CITIES   = {                                     # для «самый тёплый/холодный»
     "Limassol": (34.707, 33.022),
     "Larnaca" : (34.916, 33.624),
     "Nicosia" : (35.170, 33.360),
     "Pafos"   : (34.776, 32.424),
 }
 
-TOKEN  = os.environ["TELEGRAM_TOKEN"]
-CHAT   = os.environ["CHANNEL_ID"]                 # id канала/чата
-OWM_KEY= os.getenv("OWM_KEY")
-AIR_KEY= os.getenv("AIRVISUAL_KEY")
-AMBEE_KEY = os.getenv("TOMORROW_KEY")
-OPENAI_KEY= os.getenv("OPENAI_API_KEY")
-COP_USER  = os.getenv("COPERNICUS_USER")
-COP_PASS  = os.getenv("COPERNICUS_PASS")
+# ── ключи из GitHub Secrets ─────────────────────────────────────
+TOKEN       = os.environ["TELEGRAM_TOKEN"]
+CHAT        = os.environ["CHANNEL_ID"]                    # id канала/чата
+OWM_KEY     = os.getenv("OWM_KEY")                        # погода
+AIR_KEY     = os.getenv("AIRVISUAL_KEY")                  # AQI / PM
+AMBEE_KEY   = os.getenv("TOMORROW_KEY")                   # пыльца (Tomorrow.io)
+OPENAI_KEY  = os.getenv("OPENAI_API_KEY")                 # GPT
+COP_USER    = os.getenv("COPERNICUS_USER")                # Copernicus FTP
+COP_PASS    = os.getenv("COPERNICUS_PASS")
 
-TZ       = pendulum.timezone("Asia/Nicosia")
-TODAY    = pendulum.now(TZ).date()
-TOMORROW = TODAY + pendulum.duration(days=1)
+# ── время / даты ────────────────────────────────────────────────
+TZ        = pendulum.timezone("Asia/Nicosia")
+TODAY     = pendulum.now(TZ).date()
+TOMORROW  = TODAY + pendulum.duration(days=1)
 
-HEADERS  = {"User-Agent": "VayboMeter/5.3"}
+# ── сетевые мелочи ──────────────────────────────────────────────
+HEADERS   = {"User-Agent": "VayboMeter/5.4"}
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(levelname)s: %(message)s")
+# ── эмодзи-иконки для заголовка (по типу погодного кода) ───────
+WEATHER_ICONS = {
+    "clear"   : "☀️",  # 0
+    "partly"  : "🌤",
+    "cloudy"  : "☁️",
+    "overcast": "🌥",
+    "fog"     : "🌁",
+    "drizzle" : "🌦",
+    "rain"    : "🌧",
+    "snow"    : "🌨",
+    "storm"   : "⛈",
+}
+
+# ── «факт дня»  (ключ = MM-DD) ─────────────────────────────────
+FACTS = {
+    "05-11": "11 мая — День морского бриза на Кипре 🌬️",
+    "06-08": "8 июня 2004 г. — транзит Венеры по диску Солнца 🌞",
+    "07-20": "20 июля — на Кипре собирают первый урожай винограда 🍇",
+    # …дополняйте по вкусу
+}
+
 
 # ─────────── 1.  UTILS ──────────────────────────────────────────
 COMPASS = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
