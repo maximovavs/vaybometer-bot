@@ -74,25 +74,58 @@ FACTS = {
 
 
 # ─────────── 1.  UTILS ──────────────────────────────────────────
+# ─────────── 1.  UTILS  (вспомогательные функции) ───────────────
+import math, requests, logging, random, pendulum
+
+# ── румбы для компаса ───────────────────────────────────────────
 COMPASS = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
            "S","SSW","SW","WSW","W","WNW","NW","NNW"]
+
 def compass(deg: float) -> str:
+    """ Числовой угол 0-360° → краткое направление N/NE/E… """
     return COMPASS[int((deg/22.5)+.5) % 16]
 
-def clouds_word(pc:int)->str:
-    return "ясно" if pc<25 else "переменная" if pc<70 else "пасмурно"
-wind_phrase = lambda k: "штиль" if k<2 else "слабый" if k<8 else "умеренный" if k<14 else "сильный"
+def clouds_word(pc: int) -> str:
+    """ %-облачности → словесное описание """
+    return "ясно" if pc < 25 else "переменная" if pc < 70 else "пасмурно"
 
-def safe(v, unit=""):
-    if v in (None,"None","—"): return "—"
-    return f"{v}{unit}" if isinstance(v,str) else f"{v:.1f}{unit}"
+def wind_phrase(km_h: float) -> str:
+    """ Скорость ветра → словечко «штиль/слабый/умеренный/сильный» """
+    return ("штиль"       if km_h < 2  else
+            "слабый"      if km_h < 8  else
+            "умеренный"   if km_h < 14 else
+            "сильный")
 
-def _get(url:str, **params)->Optional[dict]:
+def aqi_color(aqi: int|float|str) -> str:
+    """ AQI → цветокружок-эмодзи 🟢🟡🟠🔴🟣🟤 (строка) """
+    if aqi == "—":              return "⚪️"
+    aqi = float(aqi)
+    return ("🟢" if aqi <= 50 else "🟡" if aqi <=100 else
+            "🟠" if aqi <=150 else "🔴" if aqi <=200 else
+            "🟣" if aqi <=300 else "🟤")
+
+def get_fact(date_obj: pendulum.Date) -> str:
+    """ Вернуть «факт дня» по дате или запасную фразу. """
+    key = date_obj.format("MM-DD")
+    return FACTS.get(key, "На Кипре в году ≈340 солнечных дней ☀️")
+
+def safe(v, unit: str = "") -> str:
+    """ Красивый вывод показателя (None → «—»). """
+    if v in (None, "None", "—"):          return "—"
+    if isinstance(v, (int, float)):       return f"{v:.1f}{unit}"
+    return f"{v}{unit}"
+
+# ── универсальный HTTP-геттер с логированием ────────────────────
+def _get(url: str, **params) -> dict | None:
     try:
-        r=requests.get(url,params=params,timeout=15,headers=HEADERS); r.raise_for_status()
+        r = requests.get(url, params=params, timeout=15, headers=HEADERS)
+        r.raise_for_status()
         return r.json()
     except Exception as e:
-        logging.warning("%s – %s", url.split('/')[2], e); return None
+        host = url.split("/")[2]
+        logging.warning("%s – %s", host, e)
+        return None
+
 
 # ─────────── 2.  WEATHER (OWM → Open-Meteo) ─────────────────────
 def get_weather(lat: float, lon: float) -> Optional[dict]:
