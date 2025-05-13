@@ -1,31 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-post.py — объединяет все модули и шлёт Telegram-сообщение с дайджестом
-"""
 
-import os, asyncio, logging, random, dt as _dt
+import os
+import asyncio
+import logging
+import random
+import datetime as dt
 import pendulum
+
 from telegram import Bot, error as tg_err
+from openai import OpenAI
 
-from utils import compass, clouds_word, wind_phrase, safe, get_fact
 from weather import get_weather
-from air import get_air, get_pollen, get_sst, get_kp
-from schumann import get_schumann
+# предполагаем, что вы вынесли в модули:
+# - air_pollen_sst_kp.py: get_air(), get_pollen(), get_sst(), get_kp()
+# - astro.py: moon_phase(), planet_parade(), eta_aquarids(), upcoming_event(), astro_events()
+# - utils.py: compass(), clouds_word(), wind_phrase(), safe(), get_fact()
+from air_pollen_sst_kp import get_air, get_pollen, get_sst, get_kp
 from astro import astro_events
-from gpt import gpt_blurb, FACTS
+from utils import compass, clouds_word, wind_phrase, safe, get_fact
 
-# ─────────── 0.  КОНСТАНТЫ ─────────────────────────────────────────
+# ─────────── 0. CONST ───────────────────────────────────────────
 LAT, LON = 34.707, 33.022
 CITIES = {
     "Limassol": (34.707, 33.022),
-    "Larnaca" : (34.916, 33.624),
-    "Nicosia" : (35.170, 33.360),
-    "Pafos"   : (34.776, 32.424),
+    "Larnaca":  (34.916, 33.624),
+    "Nicosia":  (35.170, 33.360),
+    "Pafos":    (34.776, 32.424),
 }
 
 TOKEN      = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID    = int(os.environ["CHANNEL_ID"])
+CHAT       = os.environ["CHANNEL_ID"]
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 TZ         = pendulum.timezone("Asia/Nicosia")
 TODAY      = pendulum.now(TZ).date()
 TOMORROW   = TODAY + pendulum.duration(days=1)
@@ -38,130 +44,132 @@ WEATHER_ICONS = {
     "туман":      "🌁",
 }
 
-AIR_EMOJI = {
-    "хороший":           "🟢",
-    "умеренный":         "🟡",
-    "вредный для чувствительных": "🟠",
-    "вредный":           "🔴",
-    "оч. вредный":       "🟣",
-    "опасный":           "⚫",
-    "н/д":               "⚪️",
+# ─────────── 5. GPT / CULPRITS ──────────────────────────────────
+CULPRITS = {
+    "туман": {"emoji":"🌁","tips":["🔦 Светлая одежда","🚗 Водите аккуратно","⏰ Выходите заранее"]},
+    "магнитные бури": {"emoji":"🧲","tips":["🧘 Дыхательная пауза","🌿 Чай с мелиссой","😌 Избегайте стресса"]},
+    "низкое давление": {"emoji":"🌡️","tips":["💧 Пейте воду","😴 Днём отдохните","🥗 Лёгкий ужин"]},
+    "шальной ветер": {"emoji":"💨","tips":["🧣 Захватите шарф","🚶 Прогулка по ветру","🕶️ Очки от пыли"]},
+    "мини-парад планет": {"emoji":"✨","tips":["🔭 Смотрите на небо","📸 Фото на память","🤔 Задумайтесь"]},
+    "жара": {"emoji":"🔥","tips":["💦 Пейте воду","🧢 Наденьте шляпу","🌳 Ищите тень"]},
+    "сырость": {"emoji":"💧","tips":["👟 Сменная обувь","🌂 Держите зонт","🌬️ Проветривайте"]],
 }
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(levelname)s: %(message)s")
+def gpt_blurb(culprit: str) -> tuple[str, list[str]]:
+    pool = CULPRITS[culprit]["tips"]
+    if not OPENAI_KEY:
+        return f"Если завтра что-то пойдёт не так, вините {culprit}! 😉", random.sample(pool, 2)
+    prompt = (f"Одна строка «Если завтра что-то пойдёт не так, вините {culprit}!». "
+              "Через точку — позитив. Далее 3 буллета ≤12 слов.")
+    out = OpenAI(api_key=OPENAI_KEY).chat.completions.create(
+        model="gpt-4o-mini", temperature=0.6,
+        messages=[{"role":"user","content":prompt}]
+    ).choices[0].message.content.strip().splitlines()
+    lines = [l.strip() for l in out if l.strip()]
+    summary = lines[0]
+    tips = [l.lstrip("-• ").strip() for l in lines[1:4]]
+    if len(tips) < 2:
+        tips = random.sample(pool, 2)
+    return summary, tips
 
-
-# ─────────── 6.  BUILD MESSAGE ────────────────────────────────────
+# ─────────── 6. BUILD MESSAGE ───────────────────────────────────
 def build_msg() -> str:
-    # 1. Погода в Лимассоле
     w = get_weather(LAT, LON)
     if not w:
-        raise RuntimeError("Источники погоды недоступны")
+        raise RuntimeError("Погода недоступна")
 
-    # различаем OpenWeather и Open-Meteo
+    # определяем параметры
     if "current" in w:
-        cur       = w["current"]
-        daily     = w["daily"][0]["temp"]
-        wind_kmh  = cur.get("wind_speed", 0) * 3.6
-        wind_deg  = cur.get("wind_deg", 0)
-        wcode     = cur.get("weather",[{"id":0}])[0]["id"]
-        press     = cur.get("pressure",
-                       w.get("hourly", {}).get("surface_pressure",[None])[0])
-        cloud_w   = clouds_word(cur.get("clouds",0))
-        day_max   = daily.get("max",0)
-        night_min = daily.get("min",0)
+        cur = w["current_weather"]
     else:
-        cur       = w["current_weather"]
-        dblock    = w["daily"]
-        wind_kmh  = cur.get("windspeed",0)
-        wind_deg  = cur.get("winddirection",0)
-        press     = cur.get("pressure",
-                       w.get("hourly",{}).get("surface_pressure",[None])[0])
-        cloud_w   = clouds_word(cur.get("clouds",
-                       w.get("hourly",{}).get("cloud_cover",[0])[0]))
-        # завтрашние
-        tmax = dblock.get("temperature_2m_max",[])
-        tmin = dblock.get("temperature_2m_min",[])
-        code= dblock.get("weathercode",[])
-        day_max   = tmax[1] if len(tmax)>1 else (tmax[0] if tmax else 0)
-        night_min = tmin[1] if len(tmin)>1 else (tmin[0] if tmin else 0)
-        wcode     = code[1] if len(code)>1 else (code[0] if code else 0)
+        cur = w["current_weather"]
+    day = w["daily"]
+    # завтра
+    tmax = day[0]["temperature_2m_max"][1] if len(day[0]["temperature_2m_max"])>1 else day[0]["temperature_2m_max"][0]
+    tmin = day[0]["temperature_2m_min"][1] if len(day[0]["temperature_2m_min"])>1 else day[0]["temperature_2m_min"][0]
+    code = day[0]["weathercode"][1] if len(day[0]["weathercode"])>1 else day[0]["weathercode"][0]
 
-    strong_wind = wind_kmh > 30
-    fog_alert   = wcode in (45, 48)
+    wind_kmh = cur["windspeed"] if "windspeed" in cur else cur["wind_speed"]*3.6
+    wind_deg = cur.get("winddirection", cur.get("wind_deg"))
+    press    = cur["pressure"]
+    cloud_w  = clouds_word(cur["clouds"])
 
-    # 2. Температурные лидеры
+    strong_wind = w.get("strong_wind", False)
+    fog_alert   = w.get("fog_alert", False)
+
+    # лидеры
     temps = {}
     for city,(la,lo) in CITIES.items():
-        ww = get_weather(la,lo)
+        ww = get_weather(la, lo)
         if not ww: continue
-        if "current" in ww:
-            temps[city] = ww["daily"][0]["temp"]["max"]
-        else:
-            arr = ww["daily"].get("temperature_2m_max",[])
-            temps[city] = arr[1] if len(arr)>1 else (arr[0] if arr else 0)
-    warm = max(temps,key=temps.get)
-    cold = min(temps,key=temps.get)
+        d0 = ww["daily"][0]
+        mv = d0["temperature_2m_max"][1] if len(d0["temperature_2m_max"])>1 else d0["temperature_2m_max"][0]
+        temps[city] = mv
+    warm = max(temps, key=temps.get)
+    cold = min(temps, key=temps.get)
 
-    # 3. Воздух, пыльца, kp, sst, шуман
-    air     = get_air() or {}
-    pollen  = get_pollen()
-    kp_val, kp_state = get_kp()
-    sst     = get_sst()
-    sch     = get_schumann()
-    astro   = astro_events()
+    # воздух/пыльца/kp/sst/schumann
+    air    = get_air() or {}
+    pollen = get_pollen()
+    kp, kp_state = get_kp()
+    sst    = get_sst()
+    sch    = get_schumann()
+    astro  = astro_events()
 
-    # 4. Виновник дня + советы
+    # виновник
     if fog_alert:
-        culprit = "туман"
+        culprit="туман"
     elif kp_state=="буря":
-        culprit = "магнитные бури"
-    elif press is not None and press<1007:
-        culprit = "низкое давление"
+        culprit="магнитные бури"
+    elif press<1007:
+        culprit="низкое давление"
     elif strong_wind:
-        culprit = "шальной ветер"
+        culprit="шальной ветер"
     else:
-        culprit = "мини-парад планет"
+        culprit="мини-парад планет"
     summary, tips = gpt_blurb(culprit)
 
-    # 5. Собираем строки
     icon = WEATHER_ICONS.get(cloud_w,"🌦️")
+
     lines = [
         f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>",
-        f"<b>Темп. днём:</b> до {day_max:.1f} °C",
-        f"<b>Темп. ночью:</b> около {night_min:.1f} °C",
+        f"<b>Днём:</b> до {tmax:.1f}°C  <b>Ночью:</b> около {tmin:.1f}°C",
         f"<b>Облачность:</b> {cloud_w}",
         f"<b>Ветер:</b> {wind_phrase(wind_kmh)} ({wind_kmh:.1f} км/ч, {compass(wind_deg)})",
-        *(["⚠️ Ветер может усиливаться"] if strong_wind else []),
-        *(["🌁 Возможен туман, водите аккуратно"] if fog_alert else []),
-        f"<b>Давление:</b> {safe(press,' гПа')}",
-        f"<i>Самый тёплый город:</i> {warm} ({temps[warm]:.1f} °C)",
-        f"<i>Самый прохладный город:</i> {cold} ({temps[cold]:.1f} °C)",
+        *(["⚠️ Ветер усилится"] if strong_wind else []),
+        *(["🌁 Возможен туман"] if fog_alert else []),
+        f"<b>Давление:</b> {press:.0f} гПа",
+        f"<i>Самый тёплый город:</i> {warm} ({temps[warm]:.1f}°C)",
+        f"<i>Самый прохладный город:</i> {cold} ({temps[cold]:.1f}°C)",
         "———",
-        "🏙️ <b>Качество воздуха</b>",
-        f"{AIR_EMOJI.get(air.get('lvl','н/д'))} AQI {air.get('aqi','—')} | PM2.5: {safe(air.get('pm25'))} | PM10: {safe(air.get('pm10'))}",
+        f"🏙️ <b>Качество воздуха</b>  AQI {air.get('aqi','—')} ({air.get('lvl','—')})",
+        f"PM2.5: {safe(air.get('pm25'))}  PM10: {safe(air.get('pm10'))}",
     ]
+
     if pollen:
-        idx = lambda v:["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
+        idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
         lines += [
             "🌿 <b>Пыльца</b>",
             f"Деревья — {idx(pollen['treeIndex'])} | Травы — {idx(pollen['grassIndex'])} | Сорняки — {idx(pollen['weedIndex'])}"
         ]
-    if kp_val is not None:
-        lines += ["🧲 <b>Геомагнит.</b>", f"K-index: {kp_val:.1f} ({kp_state})"]
-    else:
-        lines += ["🧲 <b>Геомагнит.</b>", "нет данных"]
+
+    lines += [
+        f"🧲 <b>Геомагнитка:</b> Kp {kp:.1f} ({kp_state})" if kp is not None else "🧲 <b>Геомагнитка:</b> —",
+    ]
+
     if sch.get("high"):
-        lines += ["🎵 <b>Шуман:</b> ⚡️ вибрации повышены (>8 Гц)"]
+        lines.append("🎵 <b>Шуман:</b> ⚡️ вибрации повышены")
     elif "freq" in sch:
-        lines += [f"🎵 <b>Шуман:</b> ≈{sch['freq']:.1f} Гц, амплитуда стабильна"]
+        lines.append(f"🎵 <b>Шуман:</b> ≈{sch['freq']:.1f} Гц")
     else:
-        lines += [f"🎵 <b>Шуман:</b> {sch.get('msg','нет данных')}"]
+        lines.append(f"🎵 <b>Шуман:</b> {sch.get('msg','—')}")
+
     if sst is not None:
-        lines += [f"🌊 <b>Темп. воды</b>\nСейчас: {sst:.1f} °C"]
+        lines.append(f"🌊 <b>Вода:</b> {sst:.1f}°C")
+
     if astro:
-        lines += ["🌌 <b>Астрособытия</b>\n" + " | ".join(astro)]
+        lines.append("🌌 <b>Астрособытия</b>\n" + " | ".join(astro))
+
     lines += [
         "———",
         f"📜 <b>Вывод</b>\n{summary}",
@@ -169,25 +177,23 @@ def build_msg() -> str:
         "✅ <b>Рекомендации</b>",
         *[f"• {t}" for t in tips],
         "———",
-        f"📚 {get_fact(TOMORROW)}",
+        f"📚 {get_fact(TOMORROW)}"
     ]
 
     return "\n".join(lines)
 
-
-# ─────────── 7.  MAIN ─────────────────────────────────────────────
+# ─────────── 7. SEND ───────────────────────────────────────────────
 async def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     bot = Bot(TOKEN)
     html = build_msg()
     logging.info("Preview: %s", html.replace("\n"," | ")[:200])
     try:
-        await bot.send_message(CHAT_ID, html[:4096],
-                               parse_mode="HTML", disable_web_page_preview=True)
-        logging.info("Message sent ✓")
+        await bot.send_message(int(CHAT), html, parse_mode="HTML", disable_web_page_preview=True)
+        logging.info("Sent ✓")
     except tg_err.TelegramError as e:
         logging.error("Telegram error: %s", e)
         raise
-
 
 if __name__ == "__main__":
     asyncio.run(main())
