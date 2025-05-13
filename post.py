@@ -13,7 +13,7 @@ from telegram import Bot, error as tg_err
 from utils import (compass, clouds_word, wind_phrase, safe,
                    get_fact, WEATHER_ICONS, AIR_EMOJI)
 from weather import get_weather
-from air_pollen_sst_kp import get_air, get_pollen, get_sst, get_kp
+from air import get_air, get_pollen, get_sst, get_kp
 from schumann import get_schumann
 from astro import astro_events
 from gpt import gpt_blurb
