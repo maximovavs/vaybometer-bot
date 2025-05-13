@@ -87,22 +87,31 @@ def build_msg() -> str:
         day_max  = w["daily"][0]["temp"]["max"]
         night_min = w["daily"][0]["temp"]["min"]
         wcode    = cur.get("weather", [{}])[0].get("id", 0)
-    else:               # Open-Meteo
+        # …предыдущий код…
+    else:
+        # ответ от Open-Meteo
         cur      = w["current_weather"]
-        # если в cur нет pressure, берём из hourly
         press    = cur.get("pressure", w["hourly"]["surface_pressure"][0])
         wind_kmh = cur["windspeed"]
         wind_deg = cur["winddirection"]
         cloud_w  = clouds_word(w["hourly"]["cloud_cover"][0])
-        # из daily
-        tm = w["daily"]["temperature_2m_max"]
-        tn = w["daily"]["temperature_2m_min"]
-        codes = w["daily"]["weathercode"]
+        # теперь daily может быть dict или list
+        daily = w["daily"]
+        if isinstance(daily, list):
+            # список из одного или нескольких элементов
+            block = daily[0]
+        else:
+            # словарь вида {"temperature_2m_max": [...], …}
+            block = daily
+
+        tm = block["temperature_2m_max"]
+        tn = block["temperature_2m_min"]
+        codes = block["weathercode"]
+        # index 1 — это завтрашние данные, если они есть
         day_max   = tm[1] if len(tm) > 1 else tm[0]
         night_min = tn[1] if len(tn) > 1 else tn[0]
         wcode     = codes[1] if len(codes) > 1 else codes[0]
 
-    # … дальше ваш код как было …
 
 
     strong_wind = w.get("strong_wind", False)
