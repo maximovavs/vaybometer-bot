@@ -76,23 +76,34 @@ def gpt_blurb(culprit: str) -> tuple[str, list[str]]:
 def build_msg() -> str:
     w = get_weather(LAT, LON)
     if not w:
-        raise RuntimeError("Погода недоступна")
+        raise RuntimeError("Источники погоды недоступны")
 
-    # определяем параметры
-    if "current" in w:
-        cur = w["current_weather"]
-    else:
-        cur = w["current_weather"]
-    day = w["daily"]
-    # завтра
-    tmax = day[0]["temperature_2m_max"][1] if len(day[0]["temperature_2m_max"])>1 else day[0]["temperature_2m_max"][0]
-    tmin = day[0]["temperature_2m_min"][1] if len(day[0]["temperature_2m_min"])>1 else day[0]["temperature_2m_min"][0]
-    code = day[0]["weathercode"][1] if len(day[0]["weathercode"])>1 else day[0]["weathercode"][0]
+    if "current" in w:  # OpenWeather
+        cur      = w["current"]
+        press    = cur["pressure"]
+        wind_kmh = cur["wind_speed"] * 3.6
+        wind_deg = cur["wind_deg"]
+        cloud_w  = clouds_word(cur.get("clouds", 0))
+        day_max  = w["daily"][0]["temp"]["max"]
+        night_min = w["daily"][0]["temp"]["min"]
+        wcode    = cur.get("weather", [{}])[0].get("id", 0)
+    else:               # Open-Meteo
+        cur      = w["current_weather"]
+        # если в cur нет pressure, берём из hourly
+        press    = cur.get("pressure", w["hourly"]["surface_pressure"][0])
+        wind_kmh = cur["windspeed"]
+        wind_deg = cur["winddirection"]
+        cloud_w  = clouds_word(w["hourly"]["cloud_cover"][0])
+        # из daily
+        tm = w["daily"]["temperature_2m_max"]
+        tn = w["daily"]["temperature_2m_min"]
+        codes = w["daily"]["weathercode"]
+        day_max   = tm[1] if len(tm) > 1 else tm[0]
+        night_min = tn[1] if len(tn) > 1 else tn[0]
+        wcode     = codes[1] if len(codes) > 1 else codes[0]
 
-    wind_kmh = cur["windspeed"] if "windspeed" in cur else cur["wind_speed"]*3.6
-    wind_deg = cur.get("winddirection", cur.get("wind_deg"))
-    press    = cur["pressure"]
-    cloud_w  = clouds_word(cur["clouds"])
+    # … дальше ваш код как было …
+
 
     strong_wind = w.get("strong_wind", False)
     fog_alert   = w.get("fog_alert", False)
