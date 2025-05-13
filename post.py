@@ -16,7 +16,7 @@ from weather import get_weather
 # - air_pollen_sst_kp.py: get_air(), get_pollen(), get_sst(), get_kp()
 # - astro.py: moon_phase(), planet_parade(), eta_aquarids(), upcoming_event(), astro_events()
 # - utils.py: compass(), clouds_word(), wind_phrase(), safe(), get_fact()
-from air_pollen_sst_kp import get_air, get_pollen, get_sst, get_kp
+from air import get_air, get_pollen, get_sst, get_kp
 from astro import astro_events
 from utils import compass, clouds_word, wind_phrase, safe, get_fact
 
