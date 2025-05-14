@@ -56,33 +56,39 @@ def build_msg() -> str:
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
+    # ветка OpenWeather
     if "current" in w:
-        cur       = w["current"]
-        day_blk   = w["daily"][0]["temp"]
-        wind_kmh  = cur["wind_speed"] * 3.6
-        wind_dir  = cur["wind_deg"]
-        press     = cur["pressure"]
-        cloud_w   = clouds_word(cur.get("clouds", 0))
-        day_max   = day_blk["max"]
+        cur      = w["current"]
+        day_blk  = w["daily"][0]["temp"]
+        wind_kmh = cur["wind_speed"] * 3.6
+        wind_dir = cur["wind_deg"]
+        press    = cur["pressure"]
+        cloud_w  = clouds_word(cur.get("clouds", 0))
+        day_max  = day_blk["max"]
         night_min = day_blk["min"]
-        strong    = w.get("strong_wind", False)
-        fog       = w.get("fog_alert", False)
-    else:
-        cur       = w["current_weather"]
-        wind_kmh  = cur["windspeed"]
-        wind_dir  = cur["winddirection"]
-        press     = cur["pressure"]
-        cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
-        strong    = w.get("strong_wind", False)
-        fog       = w.get("fog_alert", False)
+        strong   = w.get("strong_wind", False)
+        fog      = w.get("fog_alert", False)
 
-        # Завтрашние данные
+    # ветка Open-Meteo
+    else:
+        cw       = w["current_weather"]
+        wind_kmh = cw["windspeed"]
+        wind_dir = cw["winddirection"]
+        press    = w["hourly"]["surface_pressure"][0]    # <-- именно так
+        cloud_w  = clouds_word(w["hourly"]["cloud_cover"][0])
+        strong   = w.get("strong_wind", False)
+        fog      = w.get("fog_alert", False)
+
+        # извлечение завтрашних t˚ из daily
         daily = w["daily"]
         blk   = daily[0] if isinstance(daily, list) else daily
-        arr_max, arr_min, codes = blk["temperature_2m_max"], blk["temperature_2m_min"], blk["weathercode"]
-        day_max   = arr_max[1] if len(arr_max) > 1 else arr_max[0]
-        night_min = arr_min[1] if len(arr_min) > 1 else arr_min[0]
+        arr_d = blk["temperature_2m_max"]
+        arr_n = blk["temperature_2m_min"]
+        codes = blk["weathercode"]
+        day_max   = arr_d[1] if len(arr_d) > 1 else arr_d[0]
+        night_min = arr_n[1] if len(arr_n) > 1 else arr_n[0]
 
+    # теперь все переменные определены: icon, day_max, night_min, wind_kmh, wind_dir, press, cloud_w, strong, fog
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
     P.append(f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>")
     P.append(f"<b>Темп.: {day_max:.1f}/{night_min:.1f} °C</b>")
@@ -94,6 +100,9 @@ def build_msg() -> str:
         P.append("🌁 Возможен туман, водите аккуратно")
     P.append(f"<b>Давление:</b> {press:.0f} гПа")
     P.append("———")
+
+    # …далее по остальной логике без изменений…
+
 
     # 2) Рейтинг городов (дён./ночн.) с медалями
     temps_d, temps_n = {}, {}
