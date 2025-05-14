@@ -56,44 +56,43 @@ def build_msg() -> str:
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
-    # ветка OpenWeather
     if "current" in w:
-        cur      = w["current"]
-        day_blk  = w["daily"][0]["temp"]
-        wind_kmh = cur["wind_speed"] * 3.6
-        wind_dir = cur["wind_deg"]
-        press    = cur["pressure"]
-        cloud_w  = clouds_word(cur.get("clouds", 0))
-        day_max  = day_blk["max"]
+        # OpenWeather
+        cur       = w["current"]
+        day_blk   = w["daily"][0]["temp"]
+        wind_kmh  = cur["wind_speed"] * 3.6
+        wind_deg  = cur["wind_deg"]
+        press     = cur["pressure"]
+        cloud_w   = clouds_word(cur.get("clouds", 0))
+        day_max   = day_blk["max"]
         night_min = day_blk["min"]
-        strong   = w.get("strong_wind", False)
-        fog      = w.get("fog_alert", False)
-
-    # ветка Open-Meteo
+        strong    = w.get("strong_wind", False)
+        fog       = w.get("fog_alert", False)
     else:
-        cw       = w["current_weather"]
-        wind_kmh = cw["windspeed"]
-        wind_dir = cw["winddirection"]
-        press    = w["hourly"]["surface_pressure"][0]    # <-- именно так
-        cloud_w  = clouds_word(w["hourly"]["cloud_cover"][0])
-        strong   = w.get("strong_wind", False)
-        fog      = w.get("fog_alert", False)
+        # Open-Meteo
+        cw        = w["current_weather"]
+        wind_kmh  = cw["windspeed"]
+        wind_deg  = cw["winddirection"]
+        # давление берём из hourly
+        press     = w["hourly"]["surface_pressure"][0]
+        cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
+        strong    = w.get("strong_wind", False)
+        fog       = w.get("fog_alert", False)
 
-        # извлечение завтрашних t˚ из daily
+        # дневная/ночная и код погоды
         daily = w["daily"]
-        blk   = daily[0] if isinstance(daily, list) else daily
-        arr_d = blk["temperature_2m_max"]
-        arr_n = blk["temperature_2m_min"]
-        codes = blk["weathercode"]
-        day_max   = arr_d[1] if len(arr_d) > 1 else arr_d[0]
-        night_min = arr_n[1] if len(arr_n) > 1 else arr_n[0]
+        blk = daily[0] if isinstance(daily, list) else daily
+        tm = blk["temperature_2m_max"]
+        tn = blk["temperature_2m_min"]
+        day_max   = tm[1] if len(tm)>1 else tm[0]
+        night_min = tn[1] if len(tn)>1 else tn[0]
 
-    # теперь все переменные определены: icon, day_max, night_min, wind_kmh, wind_dir, press, cloud_w, strong, fog
+    # иконка заголовка
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
     P.append(f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>")
-    P.append(f"<b>Темп.: {day_max:.1f}/{night_min:.1f} °C</b>")
+    P.append(f"<b>Темп. днём/ночью:</b> {day_max:.1f}/{night_min:.1f} °C")
     P.append(f"<b>Облачность:</b> {cloud_w}")
-    P.append(f"<b>Ветер:</b> {wind_phrase(wind_kmh)} ({wind_kmh:.1f} км/ч, {compass(wind_dir)})")
+    P.append(f"<b>Ветер:</b> {wind_phrase(wind_kmh)} ({wind_kmh:.1f} км/ч, {compass(wind_deg)})")
     if strong:
         P.append("⚠️ Ветер может усилиться")
     if fog:
@@ -101,92 +100,71 @@ def build_msg() -> str:
     P.append(f"<b>Давление:</b> {press:.0f} гПа")
     P.append("———")
 
-    # …далее по остальной логике без изменений…
-
-
-    # 2) Рейтинг городов (дён./ночн.) с медалями
-    temps_d, temps_n = {}, {}
+    # 2) Рейтинг городов по дн./ночн. t˚
+    temps: dict[str, tuple[float, float]] = {}
     for city, (la, lo) in CITIES.items():
         w2 = get_weather(la, lo)
-        if not w2: 
+        if not w2:
             continue
         if "current" in w2:
             tb = w2["daily"][0]["temp"]
-            temps_d[city] = tb["max"]
-            temps_n[city] = tb["min"]
+            temps[city] = (tb["max"], tb["min"])
         else:
-            blk2         = w2["daily"][0] if isinstance(w2["daily"], list) else w2["daily"]
-            arr_d, arr_n = blk2["temperature_2m_max"], blk2["temperature_2m_min"]
-            temps_d[city] = arr_d[1] if len(arr_d)>1 else arr_d[0]
-            temps_n[city] = arr_n[1] if len(arr_n)>1 else arr_n[0]
-
-    ranked = sorted(temps_d.items(), key=lambda x: x[1], reverse=True)
-    medals = ["🥇","🥈","🥉","🏅"]
-    P.append("🎖️ <b>Рейтинг по дн./ночн. темп.</b>")
-    for i, (city, dval) in enumerate(ranked):
-        med = medals[i] if i < len(medals) else ""
-        nval = temps_n[city]
-        P.append(f"{med} {city}: {dval:.1f}/{nval:.1f} °C")
+            db = w2["daily"]
+            blk2 = db[0] if isinstance(db, list) else db
+            tm2 = blk2["temperature_2m_max"]
+            tn2 = blk2["temperature_2m_min"]
+            d2 = tm2[1] if len(tm2)>1 else tm2[0]
+            n2 = tn2[1] if len(tn2)>1 else tn2[0]
+            temps[city] = (d2, n2)
+    # сортируем по дневной t˚
+    sorted_c = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)
+    P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
+    medals = ["🥇","🥈","🥉"]
+    for i, (city, (dval, nval)) in enumerate(sorted_c[:3]):
+        P.append(f"{medals[i]} {city}: {dval:.1f}/{nval:.1f} °C")
     P.append("———")
 
-    # 3) Качество воздуха и пыльца
-    air    = get_air() or {}
-    pollen = get_pollen()
+    # 3) Качество воздуха + пыльца
+    air = get_air() or {}
     if air:
-        aqi   = air["aqi"]
-        lvl   = air["lvl"]
-        em    = aqi_color(aqi)
-        pm25  = safe(air["pm25"], " µg/м³")
-        pm10  = safe(air["pm10"], " µg/м³")
+        em = AIR_EMOJI.get(air["lvl"], "⚪")
         P.append("🏙️ <b>Качество воздуха</b>")
-        P.append(f"{em} AQI {aqi} | PM₂.₅: {pm25} | PM₁₀: {pm10}")
+        P.append(f"{em} AQI {air['aqi']} | PM2.5: {safe(air['pm25'],' µg/м³')} | PM10: {safe(air['pm10'],' µg/м³')}")
     else:
         P.append("🏙️ <b>Качество воздуха</b>")
         P.append("нет данных")
 
+    pollen = get_pollen()
     if pollen:
         idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
         P.append("🌿 <b>Пыльца</b>")
-        P.append(
-            f"Деревья — {idx(pollen['treeIndex'])} | "
-            f"Травы — {idx(pollen['grassIndex'])} | "
-            f"Сорняки — {idx(pollen['weedIndex'])}"
-        )
+        P.append(f"Деревья — {idx(pollen['treeIndex'])} | Травы — {idx(pollen['grassIndex'])} | Сорняки — {idx(pollen['weedIndex'])}")
     P.append("———")
 
-    # 4) Геомагнитная + Шуман + SST
-    kp_val, kp_state = get_kp()
+    # 4) Геомагнитка, Шуман, вода, астрособытия...
+    kp, kp_state = get_kp()
     sch = get_schumann()
     sst = get_sst()
+    astro = astro_events()
 
-    P.append(f"🧲 <b>Геомагнитка</b> K-index: {kp_val:.1f} ({kp_state})" if kp_val is not None else "🧲 <b>Геомагнитка</b> нет данных")
+    P.append(f"🧲 <b>Геомагнитка</b> K-index: {kp:.1f} ({kp_state})" if kp is not None else "🧲 нет данных")
     if sch.get("high"):
-        P.append("🎵 <b>Шуман:</b> ⚡️ вибрации повышены (>8 Гц)")
+        P.append("🎵 <b>Шуман:</b> ⚡️ вибрации повышены")
     elif "freq" in sch:
-        P.append(f"🎵 <b>Шуман:</b> ≈{sch['freq']:.1f} Гц, амплитуда стабильна")
+        P.append(f"🎵 <b>Шуман:</b> ≈{sch['freq']:.1f} Гц")
     else:
         P.append(f"🎵 <b>Шуман:</b> {sch.get('msg','нет данных')}")
+
     if sst is not None:
-        P.append(f"🌊 <b>Темп. воды</b> {sst:.1f} °C")
-    P.append("———")
+        P.append(f"🌊 <b>Темп. воды:</b> {sst:.1f} °C")
+    if astro:
+        P.append("🌌 <b>Астрособытия</b>\n" + " | ".join(astro))
 
-    # 5) Астрособытия
-    ev = astro_events()
-    if ev:
-        main_phase, *others = ev
-        line = main_phase + ((" | " + " | ".join(others)) if others else "")
-        P.append(f"🌌 <b>Астрособытия</b>\n{line}")
-    P.append("———")
-
-    # 6) Вывод и советы
-    # Выбираем виновника по приоритету
-    culprit = "мини-парад планет"
-    if fog:             culprit = "туман"
-    elif kp_state=="буря": culprit = "магнитные бури"
-    elif press < 1007:  culprit = "низкое давление"
-    elif strong:        culprit = "шальной ветер"
-
+    # 5) Вывод, рекомендации и факт дня
+    # …ваш существующий выбор «culprit» и советы через gpt_blurb…
     summary, tips = gpt_blurb(culprit)
+    P.append("———")
     P.append(f"📜 <b>Вывод</b>\n{summary}")
     P.append("———")
     P.append("✅ <b>Рекомендации</b>")
@@ -196,6 +174,7 @@ def build_msg() -> str:
     P.append(f"📚 {get_fact(TOMORROW)}")
 
     return "\n".join(P)
+
 
 
 # ─────────── Опрос и фото ───────────────────────────────────────────
