@@ -49,15 +49,15 @@ def build_msg() -> str:
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
-    # Если пришёл OpenWeather → там есть key "current" и "daily"[0]["temp"]
+    # Если пришёл OpenWeather → там есть key "current" и "daily"[1]["temp"]
     if "current" in w:
         cur       = w["current"]
         wind_kmh  = cur["wind_speed"] * 3.6
         wind_deg  = cur["wind_deg"]
         press     = cur["pressure"]
         cloud_w   = clouds_word(cur.get("clouds", 0))
-        day_max   = w["daily"][0]["temp"]["max"]
-        night_min = w["daily"][0]["temp"]["min"]
+        day_max   = w["daily"][1]["temp"]["max"]
+        night_min = w["daily"][1]["temp"]["min"]
         strong    = w["strong_wind"]
         fog       = w["fog_alert"]
     else:
@@ -122,22 +122,25 @@ def build_msg() -> str:
     # 3) Качество воздуха и пыльца
     air    = get_air() or {}
     pollen = get_pollen() or {}
+
+    P.append("🏙️ <b>Качество воздуха</b>")
     if air:
         status = f"{air['lvl']} (AQI {air['aqi']})"
-        P.append("🏙️ <b>Качество воздуха</b>")
         P.append(f"{status} | PM2.5: {safe(air['pm25'],' µg/м³')} | PM10: {safe(air['pm10'],' µg/м³')}")
     else:
-        P.append("🏙️ <b>Качество воздуха</b>")
         P.append("нет данных")
 
+    P.append("🌿 <b>Пыльца</b>")
     if pollen:
         idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
-        P.append("🌿 <b>Пыльца</b>")
         P.append(
             f"Деревья — {idx(pollen.get('treeIndex',0))} | "
             f"Травы — {idx(pollen.get('grassIndex',0))} | "
             f"Сорняки — {idx(pollen.get('weedIndex',0))}"
         )
+    else:
+        P.append("нет данных")
+
     P.append("———")
 
     # 4) Геомагнитка / Шуман / Темп. воды / Астрособытия
