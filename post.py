@@ -41,34 +41,43 @@ def build_msg() -> str:
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
-    # Унифицированный current
+    # current = OpenWeather или Open-Meteo
     if "current" in w:
         cur = w["current"]
     else:
         cur = w["current_weather"]
 
-    # Давление, облака, ветер
-    press     = cur["pressure"]
-    cloud_pc  = cur["clouds"]
-    cloud_w   = clouds_word(cloud_pc)
-    wind_kmh  = (cur.get("wind_speed") or cur.get("windspeed")) * (3.6 if "wind_speed" in cur else 1)
-    wind_deg  = cur.get("wind_deg") or cur.get("winddirection")
+    # давление (фоллбэк из hourly)
+    press = cur.get("pressure")
+    if press is None and "hourly" in w:
+        press = w["hourly"]["surface_pressure"][0]
 
-    # Температуры и код погоды
+    # облачность и ветер
+    cloud_pc = cur.get("clouds", cur.get("cloud_cover", 0))
+    cloud_w  = clouds_word(cloud_pc)
+    wind_raw = cur.get("wind_speed", cur.get("windspeed", 0))
+    # на случай OpenWeather — м/с → км/ч
+    wind_kmh = wind_raw * (3.6 if "wind_speed" in cur else 1)
+    wind_deg = cur.get("wind_deg", cur.get("winddirection", 0))
+
+    # температура и код погоды
     if "current" in w:
-        d = w["daily"][0]["temp"]
-        day_max, night_min = d["max"], d["min"]
-        wcode = cur.get("weather",[{"id":0}])[0]["id"]
+        day = w["daily"][0]["temp"]
+        day_max, night_min = day["max"], day["min"]
+        wcode = cur.get("weather", [{"id": 0}])[0]["id"]
     else:
         dblock = w["daily"]
-        blk = dblock[0] if isinstance(dblock,list) else dblock
-        temps = blk["temperature_2m_max"]; mins = blk["temperature_2m_min"]; codes = blk["weathercode"]
-        day_max   = temps[1]  if len(temps)>1  else temps[0]
-        night_min = mins[1]   if len(mins)>1   else mins[0]
-        wcode     = codes[1]  if len(codes)>1  else codes[0]
+        blk    = dblock[0] if isinstance(dblock, list) else dblock
+        tm     = blk["temperature_2m_max"]
+        tn     = blk["temperature_2m_min"]
+        codes  = blk["weathercode"]
+        day_max   = tm[1] if len(tm) > 1 else tm[0]
+        night_min = tn[1] if len(tn) > 1 else tn[0]
+        wcode     = codes[1] if len(codes) > 1 else codes[0]
 
     strong = w.get("strong_wind", False)
     fog    = w.get("fog_alert",   False)
+
 
     # 2) Рейтинг городов по температуре
     CITIES = {
