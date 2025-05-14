@@ -48,14 +48,14 @@ def build_msg() -> str:
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
-    # Берём всегда прогноз на завтра, index=1 в daily и hourly
+    # — извлекаем прогноз именно на завтра (index=1 в daily и hourly)
     if "current" in w:
         cur       = w["current"]
         wind_kmh  = cur["wind_speed"] * 3.6
         wind_deg  = cur["wind_deg"]
         press     = cur["pressure"]
         cloud_w   = clouds_word(cur.get("clouds", 0))
-        tomorrow  = w["daily"][1]      # <— завтрашний
+        tomorrow  = w["daily"][1]      # 🔥 вот тут — именно завтра
         day_max   = tomorrow["temp"]["max"]
         night_min = tomorrow["temp"]["min"]
         strong    = w["strong_wind"]
@@ -64,7 +64,7 @@ def build_msg() -> str:
         cw        = w["current_weather"]
         wind_kmh  = cw["windspeed"]
         wind_deg  = cw["winddirection"]
-        # давление тоже на завтра (если hourly len>1)
+        # давление на завтра, если hourly больше одного
         hp        = w["hourly"]["surface_pressure"]
         press     = hp[1] if len(hp) > 1 else hp[0]
         # облачность на завтра
@@ -72,15 +72,16 @@ def build_msg() -> str:
         cloud_w   = clouds_word(hc[1] if len(hc) > 1 else hc[0])
         strong    = w["strong_wind"]
         fog       = w["fog_alert"]
-        # завтрашний блок daily:
+        # завтрашний блок daily
         d = w["daily"]
-        # full Open-Meteo: d is dict of arrays
         if isinstance(d, dict):
+            # Open-Meteo даёт dict из списков
             tm = d["temperature_2m_max"]
             tn = d["temperature_2m_min"]
             day_max   = tm[1] if len(tm) > 1 else tm[0]
             night_min = tn[1] if len(tn) > 1 else tn[0]
         else:
+            # list из блоков
             blk = d[1] if len(d) > 1 else d[0]
             tm  = blk["temperature_2m_max"]
             tn  = blk["temperature_2m_min"]
@@ -107,8 +108,8 @@ def build_msg() -> str:
         if not w2:
             continue
         if "current" in w2:
-            tblk = w2["daily"][1]["temp"]
-            temps[city] = (tblk["max"], tblk["min"])
+            tblk = w2["daily"][1]  # внимание: тоже index=1
+            temps[city] = (tblk["temp"]["max"], tblk["temp"]["min"])
         else:
             d2 = w2["daily"]
             if isinstance(d2, dict):
@@ -146,9 +147,9 @@ def build_msg() -> str:
     if pollen:
         idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
         P.append(
-            f"Деревья — {idx(pollen.get('treeIndex',0))} | "
-            f"Травы — {idx(pollen.get('grassIndex',0))} | "
-            f"Сорняки — {idx(pollen.get('weedIndex',0))}"
+            f"Деревья — {idx(pollen['treeIndex'])} | "
+            f"Травы — {idx(pollen['grassIndex'])} | "
+            f"Сорняки — {idx(pollen['weedIndex'])}"
         )
     else:
         P.append("нет данных")
@@ -176,12 +177,10 @@ def build_msg() -> str:
         P.append(f"🌊 <b>Темп. воды:</b> {sst:.1f} °C")
 
     if astro:
-        # упрощаем: фаза + главное событие
         core = astro[0:2]
         P.append("🌌 <b>Астрособытия</b>\n" + " | ".join(core))
 
     # 5) Вывод и советы
-    # выбираем виновника
     if fog:
         culprit = "туман"
     elif kp_state == "буря":
@@ -226,7 +225,6 @@ async def send_main_post(bot: Bot) -> None:
 
 
 async def send_poll_if_friday(bot: Bot) -> None:
-    # pendulum.weekday(): Monday=0 … Friday=4
     if pendulum.now(TZ).weekday() == 4:
         try:
             await bot.send_poll(
@@ -266,7 +264,6 @@ async def main() -> None:
     bot = Bot(token=TOKEN)
     await send_main_post(bot)
     await send_poll_if_friday(bot)
-    # каждые 3 дня
     if UNSPLASH_KEY and (pendulum.now(TZ).day % 3 == 0):
         if photo := await fetch_unsplash_photo():
             await send_photo(bot, photo)
