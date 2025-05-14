@@ -47,16 +47,14 @@ def build_msg() -> str:
     w = get_weather(*CITIES["Limassol"])
     if not w:
         raise RuntimeError("Источники погоды недоступны")
-
     if "current" in w:
         cur       = w["current"]
-        day_blk   = w["daily"][0]["temp"]
         wind_kmh  = cur["wind_speed"] * 3.6
         wind_deg  = cur["wind_deg"]
         press     = cur["pressure"]
         cloud_w   = clouds_word(cur.get("clouds", 0))
-        day_max   = day_blk["max"]
-        night_min = day_blk["min"]
+        day_max   = w["daily"][0]["temp"]["max"]
+        night_min = w["daily"][0]["temp"]["min"]
         strong    = w.get("strong_wind", False)
         fog       = w.get("fog_alert", False)
     else:
@@ -69,9 +67,10 @@ def build_msg() -> str:
         fog       = w.get("fog_alert", False)
         daily     = w["daily"]
         blk       = daily[0] if isinstance(daily, list) else daily
-        tm, tn    = blk["temperature_2m_max"], blk["temperature_2m_min"]
+        tm        = blk["temperature_2m_max"]
+        tn        = blk["temperature_2m_min"]
         day_max   = tm[1] if len(tm) > 1 else tm[0]
-        night_min = tn[1] if len(tn) > 1 else tn[0]
+        night_min = tn[1] if len(tn) > 1 else min(tn)
 
     # Заголовок и базовые данные
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
@@ -98,23 +97,25 @@ def build_msg() -> str:
             m_arr = dblk["temperature_2m_max"]
             n_arr = dblk["temperature_2m_min"]
             d_val = m_arr[1] if len(m_arr) > 1 else m_arr[0]
-            n_val = n_arr[1] if len(n_arr) > 1 else n_arr[0]
+            n_val = n_arr[1] if len(n_arr) > 1 else min(n_arr)
             temps[city] = (d_val, n_val)
 
     P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
     sorted_c = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)
-    medals = ["🥇", "🥈", "🥉"]
-    for i, (city, (d_v, n_v)) in enumerate(sorted_c[:3]):
-        P.append(f"{medals[i]} {city}: {d_v:.1f}/{n_v:.1f} °C")
+    medals = ["🥇", "🥈", "🥉", "🏅"]
+    for (city, (d_v, n_v)), medal in zip(sorted_c, medals):
+        P.append(f"{medal} {city}: {d_v:.1f}/{n_v:.1f} °C")
     P.append("———")
 
     # 3) Качество воздуха и пыльца
     air = get_air() or {}
     if air:
-        em = AIR_EMOJI.get(air["lvl"], "⚪")
+        lvl = air["lvl"]
+        aqi = air["aqi"]
+        em  = AIR_EMOJI.get(lvl, "⚪")
         P.append("🏙️ <b>Качество воздуха</b>")
+        P.append(f"{em} {lvl.capitalize()} (AQI {aqi})")
         P.append(
-            f"{em} AQI {air['aqi']} | "
             f"PM2.5: {safe(air['pm25'], ' µg/м³')} | "
             f"PM10: {safe(air['pm10'], ' µg/м³')}"
         )
@@ -153,8 +154,11 @@ def build_msg() -> str:
 
     if sst is not None:
         P.append(f"🌊 <b>Темп. воды:</b> {sst:.1f} °C")
+
     if astro:
-        P.append("🌌 <b>Астрособытия</b>\n" + " | ".join(astro))
+        P.append("🌌 <b>Астрособытия</b>")
+        P.append(" | ".join(astro))
+        P.append("💡 <i>Влияние:</i> эмоции ⚡ отношения 🤝 интуиция 🧠")
 
     # 5) Виновник дня + советы от GPT
     if fog:
@@ -181,7 +185,6 @@ def build_msg() -> str:
 
     return "\n".join(P)
 
-
 # ─────────── SEND ────────────────────────────────────────────────
 async def send_main_post(bot: Bot) -> None:
     html = build_msg()
@@ -198,9 +201,8 @@ async def send_main_post(bot: Bot) -> None:
         logging.error("Telegram error: %s", e)
         raise
 
-
 async def send_poll_if_friday(bot: Bot) -> None:
-    # pendulum.weekday(): Monday=0 … Friday=4
+    # Friday is weekday()==4
     if pendulum.now(TZ).weekday() == 4:
         try:
             await bot.send_poll(
@@ -213,7 +215,6 @@ async def send_poll_if_friday(bot: Bot) -> None:
         except tg_err.TelegramError as e:
             logging.warning("Poll send error: %s", e)
 
-
 async def fetch_unsplash_photo() -> str | None:
     if not UNSPLASH_KEY:
         return None
@@ -223,7 +224,6 @@ async def fetch_unsplash_photo() -> str | None:
         client_id=UNSPLASH_KEY,
     )
     return j.get("urls", {}).get("regular")
-
 
 async def send_photo(bot: Bot, photo_url: str) -> None:
     try:
@@ -235,23 +235,15 @@ async def send_photo(bot: Bot, photo_url: str) -> None:
     except tg_err.TelegramError as e:
         logging.warning("Photo send error: %s", e)
 
-
 async def main() -> None:
     bot = Bot(token=TOKEN)
-
-    # 1) Главный пост
     await send_main_post(bot)
-
-    # 2) Опрос по пятницам
     await send_poll_if_friday(bot)
-
-    # 3) Фото каждые 3 дня
+    # фото каждые 3 дня по дню месяца
     if UNSPLASH_KEY and (pendulum.now(TZ).day % 3 == 0):
         if photo := await fetch_unsplash_photo():
             await send_photo(bot, photo)
-
     logging.info("All tasks done ✓")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
