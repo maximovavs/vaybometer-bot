@@ -86,23 +86,65 @@ def build_msg() -> str:
         "Nicosia" : (35.170,33.360),
         "Pafos"   : (34.776,32.424),
     }
-    temps = {}
-    for city,(la,lo) in CITIES.items():
+       # ── Температурный рейтинг городов с медалями ─────────────────────────
+    temps_day, temps_night = {}, {}
+    for city, (la, lo) in CITIES.items():
         w2 = get_weather(la, lo)
         if not w2: continue
+        # вытаскиваем дн./ночн. макс/мин
         if "current" in w2:
-            mx = w2["daily"][0]["temp"]["max"]
-            mn = w2["daily"][0]["temp"]["min"]
+            day2 = w2["daily"][0]["temp"]
+            temps_day[city]   = day2["max"]
+            temps_night[city] = day2["min"]
         else:
-            blk2 = w2["daily"][0] if isinstance(w2["daily"],list) else w2["daily"]
-            arr_mx = blk2["temperature_2m_max"]
-            arr_mn = blk2["temperature_2m_min"]
-            mx = arr_mx[1] if len(arr_mx)>1 else arr_mx[0]
-            mn = arr_mn[1] if len(arr_mn)>1 else arr_mn[0]
-        temps[city] = (mx, mn)
-    # Самый тёплый и прохладный (по дню)
-    warm = max(temps, key=lambda c: temps[c][0])
-    cold = min(temps, key=lambda c: temps[c][0])
+            blk = w2["daily"][0] if isinstance(w2["daily"], list) else w2["daily"]
+            arr_max = blk["temperature_2m_max"]
+            arr_min = blk["temperature_2m_min"]
+            temps_day[city]   = arr_max[1] if len(arr_max)>1 else arr_max[0]
+            temps_night[city] = arr_min[1] if len(arr_min)>1 else arr_min[0]
+
+    # Сортируем по дню (убывание)
+    ranked = sorted(temps_day.items(), key=lambda x: x[1], reverse=True)
+    medals = ["🥇","🥈","🥉","🏅"]
+    P.append("🎖️ <b>Рейтинг по дневной/ночной темп.</b>")
+    for i,(city,day_t) in enumerate(ranked):
+        night_t = temps_night[city]
+        med = medals[i] if i < len(medals) else ""
+        P.append(f"{med} {city}: {day_t:.1f}/{night_t:.1f} °C")
+
+    # ── Качество воздуха + пыльца ────────────────────────────────────────
+    if air:
+        aqi   = air["aqi"]
+        lvl   = air["lvl"]
+        em    = aqi_color(aqi)  # из utils: эмодзи-окраска
+        pm25  = safe(air["pm25"], " µg/м³")
+        pm10  = safe(air["pm10"], " µg/м³")
+        P += [
+            "🏙️ <b>Качество воздуха</b>",
+            f"{em} AQI {aqi} | PM₂.₅: {pm25} | PM₁₀: {pm10}",
+        ]
+    else:
+        P += ["🏙️ <b>Качество воздуха</b>", "нет данных"]
+
+    if pollen:
+        idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
+        P += [
+            f"🌿 <b>Пыльца</b>",
+            f"Деревья — {idx(pollen['treeIndex'])} | "
+            f"Травы — {idx(pollen['grassIndex'])} | "
+            f"Сорняки — {idx(pollen['weedIndex'])}",
+        ]
+
+    # ── Астрособытия ────────────────────────────────────────────────────
+    ev = astro_events()  # moon_phase() уже вкладывает иконку + описание
+    if ev:
+        # первый элемент — фаза луны, остальные — события/анонс
+        main_phase, *others = ev
+        line = main_phase
+        if others:
+            line += " | " + " | ".join(others)
+        P.append(f"🌌 <b>Астрособытия</b>\n{line}")
+
 
     # 3) Воздух, пыльца, KP, SST, Шуман, Astro
     air   = get_air() or {}
