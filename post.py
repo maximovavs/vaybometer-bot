@@ -9,8 +9,7 @@ import pendulum
 from telegram import Bot, error as tg_err
 
 from utils import (
-    _get,
-    compass, clouds_word, wind_phrase, safe, get_fact,
+    _get, compass, clouds_word, wind_phrase, safe, get_fact,
     WEATHER_ICONS, AIR_EMOJI
 )
 from weather import get_weather
@@ -45,48 +44,38 @@ def build_msg() -> str:
 
     # 1) Погода в Лимассоле
     w = get_weather(*CITIES["Limassol"])
-    if not w:
-        raise RuntimeError("Источники погоды недоступны")
+    if not w or "daily" not in w or len(w["daily"]) < 2:
+        raise RuntimeError("Нет прогноза на завтра — проверьте get_weather!")
 
-    # — извлекаем прогноз именно на завтра (index=1 в daily и hourly)
+    # разный синтаксис для OpenWeather и Open-Meteo
     if "current" in w:
-        cur       = w["current"]
-        wind_kmh  = cur["wind_speed"] * 3.6
-        wind_deg  = cur["wind_deg"]
-        press     = cur["pressure"]
-        cloud_w   = clouds_word(cur.get("clouds", 0))
-        tomorrow  = w["daily"][1]      # 🔥 вот тут — именно завтра
+        cur     = w["current"]
+        tomorrow = w["daily"][1]
+        wind_kmh = cur["wind_speed"] * 3.6
+        wind_deg = cur["wind_deg"]
+        press    = cur["pressure"]
+        # OpenWeather daily.temp содержит day/min/max/night
         day_max   = tomorrow["temp"]["max"]
-        night_min = tomorrow["temp"]["min"]
-        strong    = w["strong_wind"]
-        fog       = w["fog_alert"]
+        night_min = tomorrow["temp"].get("night", tomorrow["temp"]["min"])
+        cloud_w   = clouds_word(tomorrow["temp"].get("clouds", cur.get("clouds",0)))
+        strong    = w.get("strong_wind", False)
+        fog       = w.get("fog_alert", False)
     else:
-        cw        = w["current_weather"]
-        wind_kmh  = cw["windspeed"]
-        wind_deg  = cw["winddirection"]
-        # давление на завтра, если hourly больше одного
-        hp        = w["hourly"]["surface_pressure"]
-        press     = hp[1] if len(hp) > 1 else hp[0]
-        # облачность на завтра
-        hc        = w["hourly"]["cloud_cover"]
-        cloud_w   = clouds_word(hc[1] if len(hc) > 1 else hc[0])
-        strong    = w["strong_wind"]
-        fog       = w["fog_alert"]
-        # завтрашний блок daily
-        d = w["daily"]
-        if isinstance(d, dict):
-            # Open-Meteo даёт dict из списков
-            tm = d["temperature_2m_max"]
-            tn = d["temperature_2m_min"]
-            day_max   = tm[1] if len(tm) > 1 else tm[0]
-            night_min = tn[1] if len(tn) > 1 else tn[0]
-        else:
-            # list из блоков
-            blk = d[1] if len(d) > 1 else d[0]
-            tm  = blk["temperature_2m_max"]
-            tn  = blk["temperature_2m_min"]
-            day_max   = tm[1] if len(tm) > 1 else tm[0]
-            night_min = tn[1] if len(tn) > 1 else tn[0]
+        # Open-Meteo
+        cw      = w["current_weather"]
+        tomorrow = w["daily"][1] if isinstance(w["daily"], list) else w["daily"]
+        wind_kmh = cw["windspeed"]
+        wind_deg = cw["winddirection"]
+        press_arr = w["hourly"]["surface_pressure"]
+        press    = press_arr[1] if len(press_arr) > 1 else press_arr[0]
+        tm       = tomorrow["temperature_2m_max"]
+        tn       = tomorrow["temperature_2m_min"]
+        day_max   = tm[1] if len(tm) > 1 else tm[0]
+        night_min = tn[1] if len(tn) > 1 else tn[0]
+        cc       = w["hourly"]["cloud_cover"]
+        cloud_w   = clouds_word(cc[1] if len(cc)>1 else cc[0])
+        strong    = w.get("strong_wind", False)
+        fog       = w.get("fog_alert", False)
 
     # Заголовок и базовые данные
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
@@ -94,41 +83,29 @@ def build_msg() -> str:
     P.append(f"<b>Темп. днём/ночью:</b> {day_max:.1f}/{night_min:.1f} °C")
     P.append(f"<b>Облачность:</b> {cloud_w}")
     P.append(f"<b>Ветер:</b> {wind_phrase(wind_kmh)} ({wind_kmh:.1f} км/ч, {compass(wind_deg)})")
-    if strong:
-        P.append("⚠️ Ветер может усилиться")
-    if fog:
-        P.append("🌁 Возможен туман, водите аккуратно")
+    if strong: P.append("⚠️ Ветер может усилиться")
+    if fog:    P.append("🌁 Возможен туман, водите аккуратно")
     P.append(f"<b>Давление:</b> {press:.0f} гПа")
     P.append("———")
 
-    # 2) Рейтинг городов по дн./ночн. темп.
-    temps: dict[str, tuple[float, float]] = {}
+    # 2) Рейтинг городов по дн./ночь
+    temps: dict[str, tuple[float,float]] = {}
     for city, coords in CITIES.items():
         w2 = get_weather(*coords)
-        if not w2:
+        if not w2 or "daily" not in w2 or len(w2["daily"])<2:
             continue
+        block = w2["daily"][1] if "current" in w2 else (w2["daily"][1] if isinstance(w2["daily"], list) else w2["daily"])
         if "current" in w2:
-            tblk = w2["daily"][1]  # внимание: тоже index=1
-            temps[city] = (tblk["temp"]["max"], tblk["temp"]["min"])
+            d_v = block["temp"]["max"]; n_v = block["temp"].get("night", block["temp"]["min"])
         else:
-            d2 = w2["daily"]
-            if isinstance(d2, dict):
-                tm2 = d2["temperature_2m_max"]
-                tn2 = d2["temperature_2m_min"]
-                d_val = tm2[1] if len(tm2) > 1 else tm2[0]
-                n_val = tn2[1] if len(tn2) > 1 else tn2[0]
-            else:
-                blk2 = d2[1] if len(d2) > 1 else d2[0]
-                m_arr = blk2["temperature_2m_max"]
-                n_arr = blk2["temperature_2m_min"]
-                d_val = m_arr[1] if len(m_arr) > 1 else m_arr[0]
-                n_val = n_arr[1] if len(n_arr) > 1 else n_arr[0]
-            temps[city] = (d_val, n_val)
+            tm2 = block["temperature_2m_max"]; tn2 = block["temperature_2m_min"]
+            d_v = tm2[1] if len(tm2)>1 else tm2[0]
+            n_v = tn2[1] if len(tn2)>1 else tn2[0]
+        temps[city] = (d_v, n_v)
 
     P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
-    sorted_c = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)
-    medals   = ["🥇","🥈","🥉","4️⃣"]
-    for i, (city, (d_v, n_v)) in enumerate(sorted_c[:4]):
+    medals = ["🥇","🥈","🥉","4️⃣"]
+    for i,(city,(d_v,n_v)) in enumerate(sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]):
         P.append(f"{medals[i]} {city}: {d_v:.1f}/{n_v:.1f} °C")
     P.append("———")
 
@@ -138,19 +115,14 @@ def build_msg() -> str:
 
     P.append("🏙️ <b>Качество воздуха</b>")
     if air:
-        status = f"{air['lvl']} (AQI {air['aqi']})"
-        P.append(f"{status} | PM2.5: {safe(air['pm25'],' µg/м³')} | PM10: {safe(air['pm10'],' µg/м³')}")
+        P.append(f"{air['lvl']} (AQI {air['aqi']}) | PM2.5: {safe(air['pm25'],' µg/м³')} | PM10: {safe(air['pm10'],' µg/м³')}")
     else:
         P.append("нет данных")
 
     P.append("🌿 <b>Пыльца</b>")
     if pollen:
         idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
-        P.append(
-            f"Деревья — {idx(pollen['treeIndex'])} | "
-            f"Травы — {idx(pollen['grassIndex'])} | "
-            f"Сорняки — {idx(pollen['weedIndex'])}"
-        )
+        P.append(f"Деревья — {idx(pollen['treeIndex'])} | Травы — {idx(pollen['grassIndex'])} | Сорняки — {idx(pollen['weedIndex'])}")
     else:
         P.append("нет данных")
     P.append("———")
@@ -161,24 +133,18 @@ def build_msg() -> str:
     sst          = get_sst()
     astro        = astro_events()
 
-    if kp is not None:
-        P.append(f"🧲 <b>Геомагнитка</b> K-index: {kp:.1f} ({kp_state})")
-    else:
-        P.append("🧲 <b>Геомагнитка</b> нет данных")
-
+    P.append(f"🧲 <b>Геомагнитка</b> K-index: {kp:.1f} ({kp_state})" if kp is not None else "🧲 <b>Геомагнитка</b> нет данных")
     if sch.get("high"):
         P.append("🎵 <b>Шуман:</b> ⚡️ вибрации повышены")
     elif "freq" in sch:
         P.append(f"🎵 <b>Шуман:</b> ≈{sch['freq']:.1f} Гц")
     else:
         P.append(f"🎵 <b>Шуман:</b> {sch.get('msg','нет данных')}")
-
     if sst is not None:
         P.append(f"🌊 <b>Темп. воды:</b> {sst:.1f} °C")
-
     if astro:
-        core = astro[0:2]
-        P.append("🌌 <b>Астрособытия</b>\n" + " | ".join(core))
+        P.append("🌌 <b>Астрособытия</b>\n" + " | ".join(astro[:2]))
+    P.append("———")
 
     # 5) Вывод и советы
     if fog:
@@ -191,18 +157,15 @@ def build_msg() -> str:
         culprit = "шальной ветер"
     else:
         culprit = "мини-парад планет"
-
     summary, tips = gpt_blurb(culprit)
 
-    P += [
-        "———",
-        f"📜 <b>Вывод</b>\n{summary}",
-        "———",
-        "✅ <b>Рекомендации</b>",
-        *[f"• {t}" for t in tips],
-        "———",
-        f"📚 {get_fact(TOMORROW)}",
-    ]
+    P.append(f"📜 <b>Вывод</b>\n{summary}")
+    P.append("———")
+    P.append("✅ <b>Рекомендации</b>")
+    for t in tips:
+        P.append(f"• {t}")
+    P.append("———")
+    P.append(f"📚 {get_fact(TOMORROW)}")
 
     return "\n".join(P)
 
@@ -212,53 +175,32 @@ async def send_main_post(bot: Bot) -> None:
     html = build_msg()
     logging.info("Preview: %s", html.replace("\n"," | ")[:200])
     try:
-        await bot.send_message(
-            CHAT_ID,
-            html,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
+        await bot.send_message(CHAT_ID, html, parse_mode="HTML", disable_web_page_preview=True)
         logging.info("Message sent ✓")
     except tg_err.TelegramError as e:
         logging.error("Telegram error: %s", e)
         raise
 
-
 async def send_poll_if_friday(bot: Bot) -> None:
     if pendulum.now(TZ).weekday() == 4:
         try:
-            await bot.send_poll(
-                CHAT_ID,
-                question=POLL_QUESTION,
-                options=POLL_OPTIONS,
-                is_anonymous=False,
-                allows_multiple_answers=False,
-            )
+            await bot.send_poll(CHAT_ID, question=POLL_QUESTION, options=POLL_OPTIONS,
+                                is_anonymous=False, allows_multiple_answers=False)
         except tg_err.TelegramError as e:
-            logging.warning("Poll send error: %s", e)
-
+            logging.warning("Poll error: %s", e)
 
 async def fetch_unsplash_photo() -> str | None:
     if not UNSPLASH_KEY:
         return None
-    j = _get(
-        "https://api.unsplash.com/photos/random",
-        query="cyprus coast sunset",
-        client_id=UNSPLASH_KEY,
-    )
-    return j.get("urls", {}).get("regular")
+    j = _get("https://api.unsplash.com/photos/random",
+             query="cyprus coast sunset", client_id=UNSPLASH_KEY)
+    return j.get("urls",{}).get("regular")
 
-
-async def send_photo(bot: Bot, photo_url: str) -> None:
+async def send_photo(bot: Bot, url: str) -> None:
     try:
-        await bot.send_photo(
-            CHAT_ID,
-            photo=photo_url,
-            caption="Фото дня • Unsplash"
-        )
+        await bot.send_photo(CHAT_ID, photo=url, caption="Фото дня • Unsplash")
     except tg_err.TelegramError as e:
-        logging.warning("Photo send error: %s", e)
-
+        logging.warning("Photo error: %s", e)
 
 async def main() -> None:
     bot = Bot(token=TOKEN)
@@ -267,8 +209,7 @@ async def main() -> None:
     if UNSPLASH_KEY and (pendulum.now(TZ).day % 3 == 0):
         if photo := await fetch_unsplash_photo():
             await send_photo(bot, photo)
-    logging.info("All tasks done ✓")
+    logging.info("Done ✓")
 
-
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
