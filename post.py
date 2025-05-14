@@ -42,13 +42,17 @@ CITIES = {
 
 # ─────────── Helpers for temperatures ────────────────────────────
 def get_day_temp(w: Dict[str, Any]) -> Optional[float]:
-    """Дн. температура (макс) на завтра из get_weather()."""
-    # OpenWeather: w['daily'] = list of dicts with 'temp'
-    if "current" in w and isinstance(w.get("daily"), list):
-        idx = 1 if len(w["daily"]) > 1 else 0
-        return w["daily"][idx]["temp"].get("max")
-    # Open-Meteo: w['daily'] may be dict with arrays, or list of dicts
+    """
+    Возвращает завтрашнюю дневную (макс) темп-ру в °C.
+    Поддерживает и OpenWeather (w['daily'][i]['temp']['max']),
+    и Open-Meteo (w['daily'] → массивы temperature_2m_max).
+    """
     daily = w.get("daily")
+    # OpenWeather: список словарей с ключом 'temp'
+    if isinstance(daily, list) and daily and "temp" in daily[0]:
+        idx = 1 if len(daily) > 1 else 0
+        return daily[idx]["temp"].get("max")
+    # Open-Meteo: либо dict, либо список блоков
     if isinstance(daily, dict):
         arr = daily.get("temperature_2m_max", [])
     elif isinstance(daily, list) and daily:
@@ -59,11 +63,14 @@ def get_day_temp(w: Dict[str, Any]) -> Optional[float]:
     return arr[1] if len(arr) > 1 else (arr[0] if arr else None)
 
 def get_night_temp(w: Dict[str, Any]) -> Optional[float]:
-    """Ночная температура (мин) на завтра из get_weather()."""
-    if "current" in w and isinstance(w.get("daily"), list):
-        idx = 1 if len(w["daily"]) > 1 else 0
-        return w["daily"][idx]["temp"].get("min")
+    """
+    Возвращает завтрашнюю ночную (мин) темп-ру в °C.
+    Аналогично дневной.
+    """
     daily = w.get("daily")
+    if isinstance(daily, list) and daily and "temp" in daily[0]:
+        idx = 1 if len(daily) > 1 else 0
+        return daily[idx]["temp"].get("min")
     if isinstance(daily, dict):
         arr = daily.get("temperature_2m_min", [])
     elif isinstance(daily, list) and daily:
@@ -84,27 +91,30 @@ def build_msg() -> str:
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
-    # common extraction
+    # флаги
     strong = w.get("strong_wind", False)
-    fog    = w.get("fog_alert", False)
+    fog    = w.get("fog_alert",   False)
 
+    # текущие данные (унификация под оба API)
     if "current" in w:
         cur       = w["current"]
-        wind_kmh  = cur["wind_speed"] * 3.6
-        wind_deg  = cur["wind_deg"]
+        wind_kmh  = cur["windspeed"]
+        wind_deg  = cur["winddirection"]
         press     = cur["pressure"]
-        cloud_w   = clouds_word(cur.get("clouds", 0))
+        cloud_w   = clouds_word(cur["clouds"])
     else:
         cw        = w["current_weather"]
         wind_kmh  = cw["windspeed"]
         wind_deg  = cw["winddirection"]
+        # в hourly лежит давление/облака
         press     = w["hourly"]["surface_pressure"][0]
         cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
 
-    day_max   = get_day_temp(w)    or 0.0
+    # дневная и ночная температура
+    day_max   = get_day_temp(w) or 0.0
     night_min = get_night_temp(w) or day_max
 
-    # Заголовок
+    # заголовок и основной блок
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
     P.append(f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>")
     P.append(f"<b>Темп. днём/ночью:</b> {day_max:.1f}/{night_min:.1f} °C")
@@ -115,12 +125,13 @@ def build_msg() -> str:
     P.append(f"<b>Давление:</b> {press:.0f} гПа")
     P.append("———")
 
-    # 2) Рейтинг городов
-    temps: dict[str, tuple[float, float]] = {}
+    # 2) Рейтинг городов (дн./ночь)
+    temps: Dict[str, tuple[float, float]] = {}
     for city, (la, lo) in CITIES.items():
         w2 = get_weather(la, lo)
-        if not w2: continue
-        d = get_day_temp(w2)    or 0.0
+        if not w2:
+            continue
+        d = get_day_temp(w2) or 0.0
         n = get_night_temp(w2) or d
         temps[city] = (d, n)
 
@@ -130,6 +141,11 @@ def build_msg() -> str:
     for i, (city, (d_v, n_v)) in enumerate(sorted_c[:4]):
         P.append(f"{medals[i]} {city}: {d_v:.1f}/{n_v:.1f} °C")
     P.append("———")
+
+    # … остальная сборка …
+
+    return "\n".join(P)
+
 
     # 3) AQI и пыльца
     air = get_air() or {}
