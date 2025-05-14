@@ -31,7 +31,8 @@ CHAT_ID      = int(os.environ["CHANNEL_ID"])
 UNSPLASH_KEY = os.getenv("UNSPLASH_KEY")
 
 POLL_QUESTION = "Как сегодня ваше самочувствие? 🤔"
-POLL_OPTIONS  = ["🔥 Полон(а) энергии", "🙂 Нормально", "😴 Слегка вялый(ая)", "🤒 Всё плохо"]
+POLL_OPTIONS  = ["🔥 Полон(а) энергии", "🙂 Нормально",
+                 "😴 Слегка вялый(ая)", "🤒 Всё плохо"]
 
 CITIES = {
     "Limassol": (34.707, 33.022),
@@ -42,17 +43,12 @@ CITIES = {
 
 # ─────────── Helpers for temperatures ────────────────────────────
 def get_day_temp(w: Dict[str, Any]) -> Optional[float]:
-    """
-    Возвращает завтрашнюю дневную (макс) темп-ру в °C.
-    Поддерживает и OpenWeather (w['daily'][i]['temp']['max']),
-    и Open-Meteo (w['daily'] → массивы temperature_2m_max).
-    """
     daily = w.get("daily")
-    # OpenWeather: список словарей с ключом 'temp'
+    # OpenWeather
     if isinstance(daily, list) and daily and "temp" in daily[0]:
         idx = 1 if len(daily) > 1 else 0
         return daily[idx]["temp"].get("max")
-    # Open-Meteo: либо dict, либо список блоков
+    # Open-Meteo
     if isinstance(daily, dict):
         arr = daily.get("temperature_2m_max", [])
     elif isinstance(daily, list) and daily:
@@ -63,14 +59,12 @@ def get_day_temp(w: Dict[str, Any]) -> Optional[float]:
     return arr[1] if len(arr) > 1 else (arr[0] if arr else None)
 
 def get_night_temp(w: Dict[str, Any]) -> Optional[float]:
-    """
-    Возвращает завтрашнюю ночную (мин) темп-ру в °C.
-    Аналогично дневной.
-    """
     daily = w.get("daily")
+    # OpenWeather
     if isinstance(daily, list) and daily and "temp" in daily[0]:
         idx = 1 if len(daily) > 1 else 0
         return daily[idx]["temp"].get("min")
+    # Open-Meteo
     if isinstance(daily, dict):
         arr = daily.get("temperature_2m_min", [])
     elif isinstance(daily, list) and daily:
@@ -91,11 +85,10 @@ def build_msg() -> str:
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
-    # флаги
     strong = w.get("strong_wind", False)
     fog    = w.get("fog_alert",   False)
 
-    # текущие данные (унификация под оба API)
+    # текущие данные
     if "current" in w:
         cur       = w["current"]
         wind_kmh  = cur["windspeed"]
@@ -106,20 +99,20 @@ def build_msg() -> str:
         cw        = w["current_weather"]
         wind_kmh  = cw["windspeed"]
         wind_deg  = cw["winddirection"]
-        # в hourly лежит давление/облака
         press     = w["hourly"]["surface_pressure"][0]
         cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
 
-    # дневная и ночная температура
-    day_max   = get_day_temp(w) or 0.0
-    night_min = get_night_temp(w) or day_max
+    # дневная/ночная
+    day_max   = get_day_temp(w)    or 0.0
+    night_min = get_night_temp(w)  or day_max
 
-    # заголовок и основной блок
+    # Заголовок
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
     P.append(f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>")
     P.append(f"<b>Темп. днём/ночью:</b> {day_max:.1f}/{night_min:.1f} °C")
     P.append(f"<b>Облачность:</b> {cloud_w}")
-    P.append(f"<b>Ветер:</b> {wind_phrase(wind_kmh)} ({wind_kmh:.1f} км/ч, {compass(wind_deg)})")
+    P.append(f"<b>Ветер:</b> {wind_phrase(wind_kmh)} "
+             f"({wind_kmh:.1f} км/ч, {compass(wind_deg)})")
     if strong: P.append("⚠️ Ветер может усилиться")
     if fog:    P.append("🌁 Возможен туман, водите аккуратно")
     P.append(f"<b>Давление:</b> {press:.0f} гПа")
@@ -129,9 +122,8 @@ def build_msg() -> str:
     temps: Dict[str, tuple[float, float]] = {}
     for city, (la, lo) in CITIES.items():
         w2 = get_weather(la, lo)
-        if not w2:
-            continue
-        d = get_day_temp(w2) or 0.0
+        if not w2: continue
+        d = get_day_temp(w2)   or 0.0
         n = get_night_temp(w2) or d
         temps[city] = (d, n)
 
@@ -142,29 +134,22 @@ def build_msg() -> str:
         P.append(f"{medals[i]} {city}: {d_v:.1f}/{n_v:.1f} °C")
     P.append("———")
 
-    # … остальная сборка …
-
-    return "\n".join(P)
-
-
-    # 3) AQI и пыльца
+    # 3) Качество воздуха и пыльца
     air = get_air() or {}
+    P.append("🏙️ <b>Качество воздуха</b>")
     if air:
-        lvl = air["lvl"]
-        P.append("🏙️ <b>Качество воздуха</b>")
-        P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air['aqi']}) | "
-                 f"PM2.5: {safe(air['pm25'],' µg/м³')} | PM10: {safe(air['pm10'],' µg/м³')}")
+        P.append(f"{AIR_EMOJI.get(air['lvl'],'⚪')} {air['lvl']} (AQI {air['aqi']}) | "
+                 f"PM2.5: {safe(air['pm25'], 'µg/м³')} | PM10: {safe(air['pm10'], 'µg/м³')}")
     else:
-        P.append("🏙️ <b>Качество воздуха</b>")
         P.append("нет данных")
-
     pollen = get_pollen()
     if pollen:
-        idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
+        idxf = lambda v: ["нет","низкий","умеренный","высокий",
+                          "оч. высокий","экстрим"][int(round(v))]
         P.append("🌿 <b>Пыльца</b>")
-        P.append(f"Деревья — {idx(pollen['treeIndex'])} | "
-                 f"Травы — {idx(pollen['grassIndex'])} | "
-                 f"Сорняки — {idx(pollen['weedIndex'])}")
+        P.append(f"Деревья – {idxf(pollen['treeIndex'])} | "
+                 f"Травы – {idxf(pollen['grassIndex'])} | "
+                 f"Сорняки – {idxf(pollen['weedIndex'])}")
     P.append("———")
 
     # 4) Геомагнитка, Шуман, вода, астрособытия
@@ -173,24 +158,21 @@ def build_msg() -> str:
     sst          = get_sst()
     astro        = astro_events()
 
-    if kp is not None:
-        P.append(f"🧲 <b>Геомагнитка</b> K-index: {kp:.1f} ({kp_state})")
-    else:
-        P.append("🧲 <b>Геомагнитка</b> нет данных")
-
+    P.append(f"🧲 <b>Геомагнитка</b> K-index: {kp:.1f} ({kp_state})" if kp is not None
+             else "🧲 <b>Геомагнитка</b> нет данных")
     if sch.get("high"):
         P.append("🎵 <b>Шуман:</b> ⚡️ вибрации повышены")
     elif "freq" in sch:
         P.append(f"🎵 <b>Шуман:</b> ≈{sch['freq']:.1f} Гц")
     else:
         P.append(f"🎵 <b>Шуман:</b> {sch.get('msg','нет данных')}")
-
     if sst is not None:
-        P.append(f"🌊 <b>Темп. воды:</b> {sst:.1f} °C")
+        P.append(f"🌊 <b>Температура воды:</b> {sst:.1f} °C")
     if astro:
-        P.append("🌌 <b>Астрособытия</b>\n" + " | ".join(astro))
+        P.append("🌌 <b>Астрособытия</b> – " + " | ".join(astro))
+    P.append("———")
 
-    # 5) Виновник + советы
+    # 5) Вывод и советы
     if fog:
         culprit = "туман"
     elif kp_state == "буря":
@@ -203,7 +185,6 @@ def build_msg() -> str:
         culprit = "мини-парад планет"
 
     summary, tips = gpt_blurb(culprit)
-    P.append("———")
     P.append(f"📜 <b>Вывод</b>\n{summary}")
     P.append("———")
     P.append("✅ <b>Рекомендации</b>")
@@ -215,7 +196,7 @@ def build_msg() -> str:
     return "\n".join(P)
 
 
-# ─────────── SEND ────────────────────────────────────────────────
+# ─────────── Отправка ──────────────────────────────────────────────
 async def send_main_post(bot: Bot) -> None:
     html = build_msg()
     logging.info("Preview: %s", html.replace("\n"," | ")[:200])
@@ -226,7 +207,6 @@ async def send_main_post(bot: Bot) -> None:
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
-        logging.info("Message sent ✓")
     except tg_err.TelegramError as e:
         logging.error("Telegram error: %s", e)
         raise
@@ -234,25 +214,33 @@ async def send_main_post(bot: Bot) -> None:
 async def send_poll_if_friday(bot: Bot) -> None:
     if pendulum.now(TZ).weekday() == 4:
         try:
-            await bot.send_poll(CHAT_ID, question=POLL_QUESTION,
-                                options=POLL_OPTIONS,
-                                is_anonymous=False,
-                                allows_multiple_answers=False)
+            await bot.send_poll(
+                CHAT_ID,
+                question=POLL_QUESTION,
+                options=POLL_OPTIONS,
+                is_anonymous=False,
+                allows_multiple_answers=False,
+            )
         except tg_err.TelegramError as e:
             logging.warning("Poll send error: %s", e)
 
 async def fetch_unsplash_photo() -> Optional[str]:
     if not UNSPLASH_KEY:
         return None
-    j = _get("https://api.unsplash.com/photos/random",
-             query="cyprus coast sunset",
-             client_id=UNSPLASH_KEY)
+    j = _get(
+        "https://api.unsplash.com/photos/random",
+        query="cyprus coast sunset",
+        client_id=UNSPLASH_KEY,
+    )
     return j.get("urls", {}).get("regular")
 
 async def send_photo(bot: Bot, photo_url: str) -> None:
     try:
-        await bot.send_photo(CHAT_ID, photo=photo_url,
-                             caption="Фото дня • Unsplash")
+        await bot.send_photo(
+            CHAT_ID,
+            photo=photo_url,
+            caption="Фото дня • Unsplash"
+        )
     except tg_err.TelegramError as e:
         logging.warning("Photo send error: %s", e)
 
