@@ -39,6 +39,39 @@ CITIES = {
 }
 
 
+def extract_tomorrow_temps(w: dict) -> tuple[float,float]:
+    """
+    Возвращает (day_max, night_min) для завтрашнего дня.
+    Поддерживает два формата daily:
+     - OpenWeather: list of { "temp": {"max":..,"min":..} }
+     - Open-Meteo:  dict of arrays {"temperature_2m_max":[..,..], "temperature_2m_min":[..,..]}
+    Если нет второго дня — берет первый. Если нет daily вообще — возвращает current.temp как оба.
+    """
+    if "daily" in w:
+        d = w["daily"]
+        # OpenWeather
+        if isinstance(d, list) and d:
+            rec = d[1] if len(d) > 1 else d[0]
+            # у OWM: rec["temp"]["max"], rec["temp"]["min"]
+            mx = rec["temp"]["max"]
+            mn = rec["temp"]["min"]
+            return mx, mn
+        # Open-Meteo
+        if isinstance(d, dict):
+            arr_max = d.get("temperature_2m_max", [])
+            arr_min = d.get("temperature_2m_min", [])
+            if arr_max and arr_min:
+                mx = arr_max[1] if len(arr_max) > 1 else arr_max[0]
+                mn = arr_min[1] if len(arr_min) > 1 else arr_min[0]
+                return mx, mn
+
+    # fallback → current
+    cur = w.get("current") or w.get("current_weather", {})
+    # OpenWeather: cur["temp"] не всегда есть, но обычно есть cur["temperature"] у Meteo
+    t = cur.get("temp") or cur.get("temperature") or 0.0
+    return t, t
+
+
 # ─────────── build_msg ────────────────────────────────────────────
 def build_msg() -> str:
     P: list[str] = []
@@ -48,57 +81,28 @@ def build_msg() -> str:
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
-    # Попытаемся взять завтрашний прогноз в daily[1], если он есть
-    has_tomorrow = "daily" in w and isinstance(w["daily"], list) and len(w["daily"]) > 1
+    # универсально: берем tomorrow temps
+    day_max, night_min = extract_tomorrow_temps(w)
 
-    if "current" in w and has_tomorrow:
-        # OpenWeather
+    # остальные параметры
+    if "current" in w:
         cur      = w["current"]
-        tomorrow = w["daily"][1]
         wind_kmh = cur["wind_speed"] * 3.6
         wind_deg = cur["wind_deg"]
         press    = cur["pressure"]
-        day_max   = tomorrow["temp"]["max"]
-        night_min = tomorrow["temp"].get("night", tomorrow["temp"]["min"])
-        cloud_w   = clouds_word(tomorrow.get("clouds", cur.get("clouds", 0)))
-        strong    = w.get("strong_wind", False)
-        fog       = w.get("fog_alert", False)
-
-    elif "current_weather" in w and has_tomorrow:
-        # Open-Meteo
+        clouds   = cur.get("clouds", 0)
+    else:
         cw       = w["current_weather"]
-        tomorrow = w["daily"][1]
         wind_kmh = cw["windspeed"]
         wind_deg = cw["winddirection"]
-        press_arr = w["hourly"]["surface_pressure"]
-        press    = press_arr[1] if len(press_arr) > 1 else press_arr[0]
-        tm       = tomorrow["temperature_2m_max"]
-        tn       = tomorrow["temperature_2m_min"]
-        day_max   = tm[1] if len(tm) > 1 else tm[0]
-        night_min = tn[1] if len(tn) > 1 else tn[0]
-        cc       = w["hourly"]["cloud_cover"]
-        cloud_w   = clouds_word(cc[1] if len(cc) > 1 else cc[0])
-        strong    = w.get("strong_wind", False)
-        fog       = w.get("fog_alert", False)
+        press    = w["pressure"] if "pressure" in cw else w["hourly"]["surface_pressure"][0]
+        clouds   = w["hourly"]["cloud_cover"][0]
 
-    else:
-        # **Аварийный fallback** — нет daily[1], берём current
-        logging.warning("Нет завтрашнего daily → fallback current as both day/night")
-        if "current" in w:
-            cur = w["current"]
-            temp = cur.get("temp") or cur.get("temperature", 0)
-        else:
-            cur = w["current_weather"]
-            temp = cur.get("temperature", 0)
-        wind_kmh  = cur.get("wind_speed", cur.get("windspeed", 0)) * (3.6 if "wind_speed" in cur else 1)
-        wind_deg  = cur.get("wind_deg", cur.get("winddirection", 0))
-        press     = cur.get("pressure", cur.get("pressure", 1013))
-        day_max   = night_min = temp
-        cloud_w   = clouds_word(cur.get("clouds", cur.get("cloud_cover", 0)))
-        strong    = w.get("strong_wind", False)
-        fog       = w.get("fog_alert", False)
+    strong = w.get("strong_wind", False)
+    fog    = w.get("fog_alert", False)
+    cloud_w = clouds_word(clouds)
 
-    # Заголовок и базовые данные
+    # заголовок
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
     P.append(f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>")
     P.append(f"<b>Темп. днём/ночью:</b> {day_max:.1f}/{night_min:.1f} °C")
@@ -109,33 +113,22 @@ def build_msg() -> str:
     P.append(f"<b>Давление:</b> {press:.0f} гПа")
     P.append("———")
 
-    # 2) Рейтинг городов по дн./ночь
-    temps: dict[str, tuple[float, float]] = {}
+    # 2) Рейтинг городов (дн./ночь)
+    temps: dict[str, tuple[float,float]] = {}
     for city, coords in CITIES.items():
         w2 = get_weather(*coords)
         if not w2: continue
-        if "current" in w2 and "daily" in w2 and len(w2["daily"]) > 1:
-            blk = w2["daily"][1]
-            d = blk["temp"]["max"]; n = blk["temp"].get("night", blk["temp"]["min"])
-        elif "current_weather" in w2 and "daily" in w2 and isinstance(w2["daily"], list) and len(w2["daily"])>1:
-            blk = w2["daily"][1]
-            arrd = blk["temperature_2m_max"]; arrn = blk["temperature_2m_min"]
-            d = arrd[1] if len(arrd)>1 else arrd[0]
-            n = arrn[1] if len(arrn)>1 else arrn[0]
-        else:
-            # fallback
-            temp = (w2.get("current", w2.get("current_weather", {}))
-                   .get("temp") or w2.get("current_weather",{}).get("temperature", 0))
-            d = n = temp
-        temps[city] = (d, n)
+        temps[city] = extract_tomorrow_temps(w2)
 
     P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
     medals = ["🥇","🥈","🥉","4️⃣"]
-    for i,(city,(d_v,n_v)) in enumerate(sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]):
+    for i,(city,(d_v,n_v)) in enumerate(
+        sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]
+    ):
         P.append(f"{medals[i]} {city}: {d_v:.1f}/{n_v:.1f} °C")
     P.append("———")
 
-    # 3) Качество воздуха и пыльца
+    # 3) Качество воздуха + пыльца
     air    = get_air() or {}
     pollen = get_pollen() or {}
 
@@ -148,12 +141,16 @@ def build_msg() -> str:
     P.append("🌿 <b>Пыльца</b>")
     if pollen:
         idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
-        P.append(f"Деревья — {idx(pollen['treeIndex'])} | Травы — {idx(pollen['grassIndex'])} | Сорняки — {idx(pollen['weedIndex'])}")
+        P.append(
+            f"Деревья — {idx(pollen['treeIndex'])} | "
+            f"Травы — {idx(pollen['grassIndex'])} | "
+            f"Сорняки — {idx(pollen['weedIndex'])}"
+        )
     else:
         P.append("нет данных")
     P.append("———")
 
-    # 4) Геомагнитка, Шуман, вода, астрособытия
+    # 4) geomag, schumann, вода, astro
     kp, kp_state = get_kp()
     sch          = get_schumann()
     sst          = get_sst()
@@ -166,10 +163,12 @@ def build_msg() -> str:
         P.append(f"🎵 <b>Шуман:</b> ≈{sch['freq']:.1f} Гц")
     else:
         P.append(f"🎵 <b>Шуман:</b> {sch.get('msg','нет данных')}")
+
     if sst is not None:
         P.append(f"🌊 <b>Темп. воды:</b> {sst:.1f} °C")
+
     if astro:
-        # оставляем только два самых важных
+        # показываем только два самых значимых
         P.append("🌌 <b>Астрособытия</b>\n" + " | ".join(astro[:2]))
     P.append("———")
 
@@ -233,7 +232,7 @@ async def main() -> None:
     bot = Bot(token=TOKEN)
     await send_main_post(bot)
     await send_poll_if_friday(bot)
-    if UNSPLASH_KEY and (pendulum.now(TZ).day % 3 == 0):
+    if UNSPLASH_KEY and pendulum.now(TZ).day % 3 == 0:
         if photo := await fetch_unsplash_photo():
             await send_photo(bot, photo)
     logging.info("Done ✓")
