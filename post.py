@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-post.py — сборка и отправка сообщения в Telegram
-с гарантированным получением ночной температуры.
-"""
-
 import os
 import asyncio
 import logging
+from typing import Any, Dict, Optional
+
 import pendulum
-from typing import Any, Dict
 from telegram import Bot, error as tg_err
 
 from utils import (
@@ -43,31 +39,46 @@ CITIES = {
     "Pafos"   : (34.776, 32.424),
 }
 
-# ─────────── BUILD MESSAGE ────────────────────────────────────────
+# ─────────── build_msg ────────────────────────────────────────────
 def build_msg() -> str:
     P: list[str] = []
 
-    # 1️⃣ Погода в Лимассоле
+    # 1️⃣ Получаем прогноз для Лимассола
     lat, lon = CITIES["Limassol"]
     w = get_weather(lat, lon)
     if not w:
         raise RuntimeError("Источники погоды недоступны")
 
+    # Вынесем common
     strong = w.get("strong_wind", False)
     fog    = w.get("fog_alert", False)
 
-    cur = w["current"]
+    # …но cur может быть в w["current"] или только в w["current_weather"]
+    if "current" in w:
+        cur = w["current"]
+    else:
+        # fallback: Open-Meteo без «current»
+        cw = w["current_weather"]
+        cur = {
+            "windspeed":     cw["windspeed"],
+            "winddirection": cw["winddirection"],
+            "pressure":      w["hourly"]["surface_pressure"][0],
+            "clouds":        w["hourly"]["cloud_cover"][0],
+        }
+
     wind_kmh = cur["windspeed"]
     wind_deg = cur["winddirection"]
     press    = cur["pressure"]
     cloud_w  = clouds_word(cur["clouds"])
-    # два значения из daily: [сегодня, завтра]
+
+    # Достаем завтра из массива daily (два элемента: сегодня и завтра)
     day_arr   = w["daily"]["temperature_2m_max"]
     night_arr = w["daily"]["temperature_2m_min"]
+    # гарантированно есть index 1
     day_max   = day_arr[1]
     night_min = night_arr[1]
 
-    # Заголовок
+    # Заголовок и базовый блок
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
     P.append(f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>")
     P.append(f"<b>Темп. днём/ночью:</b> {day_max:.1f}/{night_min:.1f} °C")
@@ -82,7 +93,8 @@ def build_msg() -> str:
     temps: Dict[str, tuple[float, float]] = {}
     for city, (la, lo) in CITIES.items():
         w2 = get_weather(la, lo)
-        if not w2: continue
+        if not w2:
+            continue
         d2 = w2["daily"]["temperature_2m_max"][1]
         n2 = w2["daily"]["temperature_2m_min"][1]
         temps[city] = (d2, n2)
@@ -113,7 +125,7 @@ def build_msg() -> str:
                  f"Сорняки — {idx(pollen['weedIndex'])}")
     P.append("———")
 
-    # 4️⃣ Геомагнитка, Шуман, вода, астрособытия
+    # 4️⃣ Геомагнитка / Шуман / вода / астрособытия
     kp, kp_st = get_kp()
     sch       = get_schumann()
     sst       = get_sst()
@@ -137,7 +149,7 @@ def build_msg() -> str:
         P.append("🌌 <b>Астрособытия</b> – " + " | ".join(astro))
     P.append("———")
 
-    # 5️⃣ Вывод и советы
+    # 5️⃣ Вывод + советы
     if fog:
         culprit = "туман"
     elif kp_st == "буря":
@@ -160,13 +172,15 @@ def build_msg() -> str:
 
     return "\n".join(P)
 
-# ─────────── SEND ─────────────────────────────────────────────────
+# ─────────── Отправка ──────────────────────────────────────────────
 async def send_main(bot: Bot) -> None:
     html = build_msg()
     logging.info("Preview: %s", html.replace("\n"," | ")[:200])
     try:
-        await bot.send_message(CHAT_ID, html,
-            parse_mode="HTML", disable_web_page_preview=True
+        await bot.send_message(
+            CHAT_ID, html,
+            parse_mode="HTML",
+            disable_web_page_preview=True
         )
     except tg_err.TelegramError as e:
         logging.error("Telegram error: %s", e)
@@ -175,25 +189,29 @@ async def send_main(bot: Bot) -> None:
 async def send_poll(bot: Bot) -> None:
     if pendulum.now(TZ).weekday() == 4:
         try:
-            await bot.send_poll(CHAT_ID, question=POLL_Q,
-                                options=POLL_OPTS,
-                                is_anonymous=False,
-                                allows_multiple_answers=False)
+            await bot.send_poll(
+                CHAT_ID,
+                question=POLL_Q,
+                options=POLL_OPTS,
+                is_anonymous=False,
+                allows_multiple_answers=False
+            )
         except tg_err.TelegramError as e:
             logging.warning("Poll error: %s", e)
 
-async def fetch_photo() -> str | None:
+async def fetch_photo() -> Optional[str]:
     if not UNSPLASH:
         return None
-    j = _get("https://api.unsplash.com/photos/random",
-             query="cyprus coast sunset",
-             client_id=UNSPLASH)
-    return j.get("urls",{}).get("regular")
+    j = get_weather._get(  # <-- поправьте на ваш _get из utils, если требуется
+        "https://api.unsplash.com/photos/random",
+        query="cyprus coast sunset",
+        client_id=UNSPLASH
+    )
+    return j.get("urls", {}).get("regular")
 
 async def send_photo(bot: Bot, url: str) -> None:
     try:
-        await bot.send_photo(CHAT_ID, photo=url,
-                             caption="Фото дня • Unsplash")
+        await bot.send_photo(CHAT_ID, photo=url, caption="Фото дня • Unsplash")
     except tg_err.TelegramError as e:
         logging.warning("Photo error: %s", e)
 
@@ -204,7 +222,7 @@ async def main() -> None:
     if UNSPLASH and pendulum.now(TZ).day % 3 == 0:
         if url := await fetch_photo():
             await send_photo(bot, url)
-    logging.info("Done ✓")
+    logging.info("All done ✓")
 
 if __name__ == "__main__":
     asyncio.run(main())
