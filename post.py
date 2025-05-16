@@ -61,11 +61,24 @@ def build_msg() -> str:
     w0 = get_weather(*CITIES["Limassol"])
     if not w0:
         raise RuntimeError("Нет погоды для Лимассола")
+    # ── извлекаем текущие данные безопасно ──────────────
     cur = w0.get("current") or w0["current_weather"]
-    wind_kmh = cur.get("windspeed", cur.get("wind_speed")) 
-    wind_deg = cur.get("winddirection", cur.get("wind_deg"))
-    press    = cur["pressure"]
-    cloud_w  = clouds_word(cur.get("clouds",0))
+
+    wind_kmh = cur.get("windspeed") or cur.get("wind_speed") or 0.0
+    wind_deg = cur.get("winddirection") or cur.get("wind_deg") or 0.0
+
+    # давление бывает не в current – тогда берём из hourly
+    press = (
+        cur.get("pressure") or
+        w0.get("hourly", {}).get("surface_pressure", [1013])[0]
+    )
+
+    # облачность тоже может отсутствовать
+    clouds_pct = cur.get("clouds")
+    if clouds_pct is None:
+        clouds_pct = w0.get("hourly", {}).get("cloud_cover", [0])[0]
+    cloud_w = clouds_word(clouds_pct)
+
 
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
     P.append(f"{icon} Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})")
