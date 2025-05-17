@@ -4,19 +4,16 @@
 """
 schumann.py
 
-• SCH_QUOTES расширен до 7 вариантов.
-• get_schumann() возвращает словарь:
-    - {"freq": float, "amp": float, "high": bool}
-      когда данные получены и freq > 8 Гц → high=True
-    - {"freq": float, "amp": float, "high": False}
-      когда freq ≤ 8 Гц
-    - {"msg": str}
-      когда оба источника недоступны → юмористическая заглушка
+• SCH_QUOTES – юмористические фразы-заглушки.
+• get_schumann() возвращает:
+    ▸ {"freq": float, "amp": float, "high": True}   – если freq > 8 Гц
+    ▸ {"freq": float, "amp": float}                 – если freq ≤ 8 Гц
+    ▸ {"msg": str}                                 – если оба источника недоступны
 """
 
-import logging
-import random
-from typing import Dict, Any, Optional
+from __future__ import annotations
+import logging, random
+from typing import Dict, Any
 
 from utils import _get
 
@@ -30,42 +27,49 @@ SCH_QUOTES = [
     "тишина в эфире… 🎧",
 ]
 
+# ────────────────────────────────────────────────────────────────────
 def get_schumann() -> Dict[str, Any]:
     """
-    Пытается получить текущие показания резонанса Шумана
-    из двух эндпоинтов. Возвращает:
-      • {"freq": float, "amp": float, "high": bool}
-      • или {"msg": str} при ошибках всех источников.
+    Возвращает словарь c частотой/амплитудой резонанса Шумана
+    либо шуточную «msg», если данные не получены.
     """
     for url in (
         "https://api.glcoherence.org/v1/earth",
         "https://gci-api.ucsd.edu/data/latest",
     ):
-        j = _get(url)
-        if not j:
+        data = _get(url)
+        if not data:
             continue
 
         try:
-            # второй сервис оборачивает данные в j["data"]["sr1"]
-            if "data" in j:
-                j = j["data"]["sr1"]
-            # ключи могут называться frequency_1 или frequency, amplitude_1 или amplitude
-            freq = j.get("frequency_1") or j.get("frequency")
-            amp  = j.get("amplitude_1")  or j.get("amplitude")
+            # у второго эндпоинта полезные данные в ["data"]["sr1"]
+            if "data" in data:
+                data = data["data"]["sr1"]
 
+            freq = data.get("frequency_1") or data.get("frequency")
+            amp  = data.get("amplitude_1") or data.get("amplitude")
             if freq is None or amp is None:
                 raise ValueError("missing fields")
 
             freq_val = float(freq)
             amp_val  = float(amp)
-            return {
-                "freq": freq_val,
-                "amp":  amp_val,
-                "high": freq_val > 8.0,   # ⚡️ повышенные вибрации
-            }
-        except Exception as e:
-            logging.warning("get_schumann(%s) parse error: %s", url, e)
-            continue
 
-    # оба источника недоступны — шуточный заглушка
+            result: Dict[str, Any] = {
+                "freq": round(freq_val, 2),
+                "amp":  round(amp_val, 1),
+            }
+            if freq_val > 8.0:               # «⚡️ повышенные вибрации»
+                result["high"] = True
+            return result
+
+        except Exception as e:
+            logging.warning("schumann parse %s: %s", url, e)
+
+    # оба источника недоступны
     return {"msg": random.choice(SCH_QUOTES)}
+
+
+# ── простой тест:  python -m schumann ─────────────────────────────
+if __name__ == "__main__":
+    from pprint import pprint
+    pprint(get_schumann())
