@@ -36,97 +36,125 @@ CITIES = {
 }
 
 
+# ────────── BUILD_MESSAGE ───────────────────────────────────────
 def build_msg() -> str:
     P: list[str] = []
 
-    # === 1) Погода на Кипре (среднее) ===
-    temps = []
-    for (la, lo) in CITIES.values():
+    # === 1) Погода на Кипре (средняя) ===
+    temps: list[tuple[float, float]] = []
+    for la, lo in CITIES.values():
         w = get_weather(la, lo)
-        if w:
-            # днём берем максимум, ночью минимум
-            daily = w["daily"]
-            if isinstance(daily, dict):
-                ma = daily["temperature_2m_max"][1] if len(daily["temperature_2m_max"])>1 else daily["temperature_2m_max"][0]
-                mi = daily["temperature_2m_min"][1] if len(daily["temperature_2m_min"])>1 else daily["temperature_2m_min"][0]
-            else:
-                blk = daily[1] if len(daily)>1 else daily[0]
-                ma = blk["temperature_2m_max"][-1]
-                mi = blk["temperature_2m_min"][0]
-            temps.append((ma, mi))
-    avg_day = sum(d for d,_ in temps)/len(temps)
-    avg_night = sum(n for _,n in temps)/len(temps)
+        if not w:
+            continue
 
-    # показываем прогноз для Лимассола
+        daily = w["daily"]
+        if isinstance(daily, dict):               # open-meteo c dict-массивами
+            dmax = daily["temperature_2m_max"]
+            dmin = daily["temperature_2m_min"]
+            day  = dmax[1] if len(dmax) > 1 else dmax[0]
+            night= dmin[1] if len(dmin) > 1 else dmin[0]
+        else:                                     # open-meteo list | openweather list
+            blk  = daily[1] if len(daily) > 1 else daily[0]
+            if "temp" in blk:                     # openweather
+                day, night = blk["temp"]["max"], blk["temp"]["min"]
+            else:                                 # open-meteo list-of-dicts
+                day   = blk["temperature_2m_max"][-1]
+                night = blk["temperature_2m_min"][0]
+        temps.append((day, night))
+
+    avg_day   = sum(d for d, _ in temps) / len(temps)
+    avg_night = sum(n for _, n in temps) / len(temps)
+
+    # прогноз для Лимассола
     w0 = get_weather(*CITIES["Limassol"])
     if not w0:
         raise RuntimeError("Нет погоды для Лимассола")
-    # ── извлекаем текущие данные безопасно ──────────────
-    cur = w0.get("current") or w0["current_weather"]
 
+    cur = w0.get("current") or w0["current_weather"]
     wind_kmh = cur.get("windspeed") or cur.get("wind_speed") or 0.0
     wind_deg = cur.get("winddirection") or cur.get("wind_deg") or 0.0
 
-    # давление бывает не в current – тогда берём из hourly
+    # давление (из current или первого часа hourly)
     press = (
         cur.get("pressure") or
         w0.get("hourly", {}).get("surface_pressure", [1013])[0]
     )
 
-    # облачность тоже может отсутствовать
+    # облачность (из current или hourly)
     clouds_pct = cur.get("clouds")
     if clouds_pct is None:
         clouds_pct = w0.get("hourly", {}).get("cloud_cover", [0])[0]
     cloud_w = clouds_word(clouds_pct)
 
-
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
-    P.append(f"{icon} Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})")
-    P.append(f"🌡️ Средняя темп.: {avg_day:.0f} °C")
-    P.append(f"📈 Темп. днём/ночью: {avg_day:.1f} °C / {avg_night:.1f} °C")
-    P.append(f"🌤 Облачность: {cloud_w}")
-    P.append(f"💨 Ветер: {wind_phrase(wind_kmh)} ({wind_kmh:.1f} км/ч, {compass(wind_deg)})")
-    P.append(f"🔽 Давление: {press:.0f} гПа")  # тут можно добавить ↑↓, если будет источник тренда
-
-    P.append("———")
+    P += [
+        f"{icon} Добрый вечер! Погода на завтра на Кипре "
+        f"({TOMORROW.format('DD.MM.YYYY')})",
+        f"🌡️ Средняя темп.: {avg_day:.0f} °C",
+        f"📈 Темп. днём/ночью: {avg_day:.1f} / {avg_night:.1f} °C",
+        f"🌤 Облачность: {cloud_w}",
+        f"💨 Ветер: {wind_phrase(wind_kmh)} "
+        f"({wind_kmh:.1f} км/ч, {compass(wind_deg)})",
+        f"🔽 Давление: {press:.0f} гПа",
+        "———",
+    ]
 
     # === 2) Рейтинг городов (дн./ночь) ===
-    city_t = []
-    for city,(la,lo) in CITIES.items():
+    city_t: list[tuple[str, float, float]] = []
+    for city, (la, lo) in CITIES.items():
         w = get_weather(la, lo)
-        if not w: continue
-        dblk = w["daily"]
-        if isinstance(dblk, dict):
-            d = dblk["temperature_2m_max"][1] if len(dblk["temperature_2m_max"])>1 else dblk["temperature_2m_max"][0]
-            n = dblk["temperature_2m_min"][1] if len(dblk["temperature_2m_min"])>1 else dblk["temperature_2m_min"][0]
+        if not w:
+            continue
+        daily = w["daily"]
+        if isinstance(daily, dict):
+            dmax = daily["temperature_2m_max"]
+            dmin = daily["temperature_2m_min"]
+            day  = dmax[1] if len(dmax) > 1 else dmax[0]
+            night= dmin[1] if len(dmin) > 1 else dmin[0]
         else:
-            blk = dblk[1] if len(dblk)>1 else dblk[0]
-            d = blk["temperature_2m_max"][-1]
-            n = blk["temperature_2m_min"][0]
-        city_t.append((city, d, n))
-    city_t.sort(key=lambda x: x[1], reverse=True)
-    medals = ["🥇","🥈","🥉","4️⃣"]
-    P.append("🎖️ Рейтинг городов (дн./ночь)")
-    for i,(c,d,n) in enumerate(city_t[:4]):
-        P.append(f"{medals[i]} {c}: {d:.1f}/{n:.1f} °C")
+            blk = daily[1] if len(daily) > 1 else daily[0]
+            if "temp" in blk:
+                day, night = blk["temp"]["max"], blk["temp"]["min"]
+            else:
+                day, night = blk["temperature_2m_max"][-1], blk["temperature_2m_min"][0]
+        city_t.append((city, day, night))
 
+    city_t.sort(key=lambda x: x[1], reverse=True)
+    medals = ["🥇", "🥈", "🥉", "4️⃣"]
+    P.append("🎖️ Рейтинг городов (дн./ночь)")
+    for i, (c, d, n) in enumerate(city_t[:4]):
+        P.append(f"{medals[i]} {c}: {d:.1f}/{n:.1f} °C")
     P.append("———")
 
     # === 3) Качество воздуха + пыльца ===
     air = get_air() or {}
     P.append("🏙️ Качество воздуха")
     if air:
-        P.append(f"{AIR_EMOJI[air['lvl']]} {air['lvl']} (AQI {air['aqi']}) | "
-                 f"PM2.5: {safe(air['pm25'],'µg/м³')} | PM10: {safe(air['pm10'],'µg/м³')}")
+        P.append(
+            f"{AIR_EMOJI[air['lvl']]} {air['lvl']} (AQI {air['aqi']}) | "
+            f"PM2.5: {safe(air['pm25'],' µg/м³')} | "
+            f"PM10: {safe(air['pm10'],' µg/м³')}"
+        )
     else:
         P.append("нет данных")
+
     pollen = get_pollen()
     if pollen:
-        idx = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
-        P.append("🌿 Пыльца")
-        P.append(f"Деревья – {idx(pollen['treeIndex'])}, Травы – {idx(pollen['grassIndex'])}, "
-                 f"Сорняки – {idx(pollen['weedIndex'])}")
+        idx = lambda v: ["нет", "низкий", "умеренный", "высокий",
+                         "оч. высокий", "экстрим"][int(round(v))]
+        P += [
+            "🌿 Пыльца",
+            f"Деревья – {idx(pollen['treeIndex'])}, "
+            f"Травы – {idx(pollen['grassIndex'])}, "
+            f"Сорняки – {idx(pollen['weedIndex'])}"
+        ]
     P.append("———")
+
+    # …дальше блоки геомагнитки, Шумана, моря, астрособытий и вывод
+    # остаются без изменений …
+    # ----------------------------------------------------------------
+    # return "\n".join(P)  ←  не забудьте оставить финальный return
+
 
     # === 4) Геомагнитка + Шуман + вода + астрособытия ===
     kp, kp_state = get_schumann  # исправьте, если get_kp
