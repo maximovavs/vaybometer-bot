@@ -1,124 +1,149 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Единый доступ к прогнозу погоды:
- 1) OpenWeather One Call (v3.0 → v2.5) — если есть ключ OWM_KEY
- 2) Open-Meteo c start_date / end_date (рекомендовано)
- 3) Фоллбэк — только current_weather
 
-Возвращается словарь формата «Open-Meteo»:
-{
-  "current": {...},
-  "daily":   {...},
-  "hourly":  {...},
-  "strong_wind": bool,
-  "fog_alert":   bool
-}
-"""
-from __future__ import annotations
-import os, pendulum
-from typing import Any, Dict, Optional
+import os
+from typing import Optional, Dict, Any
+
 from utils import _get
 
 OWM_KEY = os.getenv("OWM_KEY")
 
-# ────────────────────────────────────────────────────────────────────
-def _today_dates(tz: str="Europe/Nicosia") -> tuple[str,str]:
-    now = pendulum.now(tz).date()
-    return now.to_date_string(), (now + pendulum.duration(days=1)).to_date_string()
 
-# ────────────────────────────────────────────────────────────────────
 def get_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
-    # 1️⃣ OpenWeather (если есть ключ)
+    """
+    Возвращает прогноз для текущего и завтрашнего дня
+    в единой структуре, независимо от источника.
+    """
+
+    # ─── 1. OpenWeather One Call v3.0 → v2.5 ────────────────────────
     if OWM_KEY:
         for ver in ("3.0", "2.5"):
             ow = _get(
                 f"https://api.openweathermap.org/data/{ver}/onecall",
-                lat=lat, lon=lon, appid=OWM_KEY, units="metric",
-                exclude="minutely,hourly,alerts",
+                lat=lat, lon=lon, appid=OWM_KEY,
+                units="metric", exclude="minutely,hourly,alerts",
             )
             if ow and "current" in ow:
-                c = ow["current"]
-                ow["current"] = {
-                    "temperature":   c["temp"],
-                    "pressure":      c["pressure"],
-                    "clouds":        c["clouds"],
-                    "windspeed":     c["wind_speed"] * 3.6,
-                    "winddirection": c["wind_deg"],
-                    "weathercode":   c["weather"][0]["id"],
+                cur = ow["current"]
+                # unify current
+                unified_current = {
+                    "temperature":   cur.get("temp"),
+                    "pressure":      cur.get("pressure"),
+                    "clouds":        cur.get("clouds"),
+                    "windspeed":     cur.get("wind_speed", 0) * 3.6,
+                    "winddirection": cur.get("wind_deg"),
+                    "weathercode":   cur.get("weather", [{}])[0].get("id", 0),
                 }
-                # эмулируем структуры
-                ow["hourly"] = {
-                    "surface_pressure": [c["pressure"]],
-                    "cloud_cover":      [c["clouds"]],
-                    "weathercode":      [c["weather"][0]["id"]],
-                    "wind_speed":       [c["wind_speed"] * 3.6],
-                    "wind_direction":   [c["wind_deg"]],
+                # unify daily → список dict с массивами [today, tomorrow]
+                daily_list = []
+                for day in ow.get("daily", [])[:2]:
+                    temps = day.get("temp", {})
+                    daily_list.append({
+                        "temperature_2m_max": [temps.get("max")],
+                        "temperature_2m_min": [temps.get("min")],
+                        "weathercode":        [day.get("weather", [{}])[0].get("id", 0)],
+                    })
+                # hourly-emulation (только для current)
+                hourly = {
+                    "time":             [],  # нет точных меток
+                    "temperature_2m":   [cur.get("temp")],
+                    "surface_pressure": [cur.get("pressure")],
+                    "cloud_cover":      [cur.get("clouds")],
+                    "weathercode":      [cur.get("weather", [{}])[0].get("id", 0)],
+                    "wind_speed":       [cur.get("wind_speed", 0) * 3.6],
+                    "wind_direction":   [cur.get("wind_deg")],
                 }
-                ow["daily"] = {
-                    "time":               [],
-                    "temperature_2m_max": [c["temp"]],
-                    "temperature_2m_min": [c["temp"]],
-                    "weathercode":        [c["weather"][0]["id"]],
+                # флаги для завтра (тот же элемент индекса 1, если есть)
+                speed = unified_current["windspeed"]
+                strong = speed > 30
+                # OpenWeather не отдаёт коды 45/48, тумана не ловим
+                return {
+                    "current":     unified_current,
+                    "daily":       daily_list,
+                    "hourly":      hourly,
+                    "strong_wind": strong,
+                    "fog_alert":   False,
                 }
-                ow["strong_wind"] = c["wind_speed"] * 3.6 > 30
-                ow["fog_alert"]   = False
-                return ow
 
-    # 2️⃣ Open-Meteo (актуальный формат)
-    start, end = _today_dates()
+    # ─── 2. Open-Meteo full (daily + hourly) ───────────────────────
     om = _get(
         "https://api.open-meteo.com/v1/forecast",
-        latitude=lat, longitude=lon,
-        timezone="auto",
-        current_weather="true",
-        start_date=start, end_date=end,
-        hourly="surface_pressure,cloud_cover,weathercode,wind_speed,wind_direction",
+        latitude=lat, longitude=lon, timezone="UTC",
+        current_weather="true", forecast_days=2,
         daily="temperature_2m_max,temperature_2m_min,weathercode",
+        hourly="time,surface_pressure,cloud_cover,"
+               "weathercode,wind_speed,wind_direction,temperature_2m",
     )
-    if om and "current_weather" in om and "daily" in om:
-        cw = om["current_weather"]
-        # добавляем давление/облачность в current
-        cw["pressure"] = om["hourly"]["surface_pressure"][0]
-        cw["clouds"]   = om["hourly"]["cloud_cover"][0]
-        om["current"]  = {
-            "temperature":   cw["temperature"],
-            "pressure":      cw["pressure"],
-            "clouds":        cw["clouds"],
-            "windspeed":     cw["windspeed"],
-            "winddirection": cw["winddirection"],
-            "weathercode":   cw["weathercode"],
+    if om and "current_weather" in om and "daily" in om and "hourly" in om:
+        cur = om["current_weather"]
+        unified_current = {
+            "temperature":   cur.get("temperature"),
+            "pressure":      om["hourly"]["surface_pressure"][0],
+            "clouds":        om["hourly"]["cloud_cover"][0],
+            "windspeed":     cur.get("windspeed", 0),
+            "winddirection": cur.get("winddirection", 0),
+            "weathercode":   cur.get("weathercode", 0),
         }
-        speed   = cw["windspeed"]
-        code_td = om["daily"]["weathercode"][-1]   # код завтрашнего дня
-        om["strong_wind"] = speed > 30
-        om["fog_alert"]   = code_td in (45, 48)
-        return om
+        # daily из dict → забираем массивы [today, tomorrow]
+        daily = om["daily"]
+        daily_list = [{
+            "temperature_2m_max": daily["temperature_2m_max"],
+            "temperature_2m_min": daily["temperature_2m_min"],
+            "weathercode":        daily["weathercode"],
+        }]
+        # hourly уже содержит списки на каждый час
+        hourly = om["hourly"]
+        speed = unified_current["windspeed"]
+        code_day = (
+            daily["weathercode"][1]
+            if len(daily["weathercode"]) > 1
+            else daily["weathercode"][0]
+        )
+        return {
+            "current":     unified_current,
+            "daily":       daily_list,
+            "hourly":      hourly,
+            "strong_wind": speed > 30,
+            "fog_alert":   code_day in (45, 48),
+        }
 
-    # 3️⃣ Фоллбэк: только current_weather
+    # ─── 3. Fallback Open-Meteo (только current_weather) ──────────
     om = _get(
         "https://api.open-meteo.com/v1/forecast",
-        latitude=lat, longitude=lon,
-        timezone="auto",
+        latitude=lat, longitude=lon, timezone="UTC",
         current_weather="true",
     )
     if not om or "current_weather" not in om:
         return None
-
     cw = om["current_weather"]
-    om["daily"] = {
-        "temperature_2m_max": [cw["temperature"], cw["temperature"]],
-        "temperature_2m_min": [cw["temperature"], cw["temperature"]],
-        "weathercode":        [cw["weathercode"], cw["weathercode"]],
+    unified_current = {
+        "temperature":   cw.get("temperature"),
+        "pressure":      cw.get("pressure", 1013),
+        "clouds":        cw.get("clouds", 0),
+        "windspeed":     cw.get("windspeed", 0),
+        "winddirection": cw.get("winddirection", 0),
+        "weathercode":   cw.get("weathercode", 0),
     }
-    om["hourly"] = {
+    # эмуляция daily + hourly из одного значения
+    daily_list = [{
+        "temperature_2m_max": [cw.get("temperature")],
+        "temperature_2m_min": [cw.get("temperature")],
+        "weathercode":        [cw.get("weathercode")],
+    }]
+    hourly = {
+        "time":             [],
+        "temperature_2m":   [cw.get("temperature")],
         "surface_pressure": [cw.get("pressure", 1013)],
         "cloud_cover":      [cw.get("clouds", 0)],
-        "weathercode":      [cw["weathercode"]],
+        "weathercode":      [cw.get("weathercode", 0)],
         "wind_speed":       [cw.get("windspeed", 0)],
         "wind_direction":   [cw.get("winddirection", 0)],
     }
-    om["current"] = cw
-    om["strong_wind"] = cw.get("windspeed", 0) > 30
-    om["fog_alert"]   = cw["weathercode"] in (45, 48)
-    return om
+    speed = unified_current["windspeed"]
+    return {
+        "current":     unified_current,
+        "daily":       daily_list,
+        "hourly":      hourly,
+        "strong_wind": speed > 30,
+        "fog_alert":   cw.get("weathercode", 0) in (45, 48),
+    }
