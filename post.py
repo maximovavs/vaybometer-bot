@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
-import asyncio
-import logging
+import os, asyncio, logging
 from typing import Any, Dict, Optional
 
 import pendulum
@@ -14,7 +12,7 @@ from utils import (
     WEATHER_ICONS, AIR_EMOJI, WMO_DESCRIPTIONS
 )
 from weather import get_weather
-from air import get_air, get_pollen
+from air import get_air, get_pollen, get_sst, get_kp      # ← добавили get_sst, get_kp
 from schumann import get_schumann
 from astro import astro_events
 from gpt import gpt_blurb
@@ -40,7 +38,7 @@ CITIES = {
 def build_msg() -> str:
     P: list[str] = []
 
-    # === 1) Погода на Кипре (средняя) ===
+    # === 1) Погода на Кипре (среднее) ===
     temps: list[tuple[float, float]] = []
     for la, lo in CITIES.values():
         w = get_weather(la, lo)
@@ -48,16 +46,16 @@ def build_msg() -> str:
             continue
 
         daily = w["daily"]
-        if isinstance(daily, dict):               # open-meteo c dict-массивами
+        if isinstance(daily, dict):               # open-meteo dict-arrays
             dmax = daily["temperature_2m_max"]
             dmin = daily["temperature_2m_min"]
             day  = dmax[1] if len(dmax) > 1 else dmax[0]
             night= dmin[1] if len(dmin) > 1 else dmin[0]
-        else:                                     # open-meteo list | openweather list
+        else:                                     # list (open-meteo / openweather)
             blk  = daily[1] if len(daily) > 1 else daily[0]
             if "temp" in blk:                     # openweather
                 day, night = blk["temp"]["max"], blk["temp"]["min"]
-            else:                                 # open-meteo list-of-dicts
+            else:                                 # open-meteo list-dict
                 day   = blk["temperature_2m_max"][-1]
                 night = blk["temperature_2m_min"][0]
         temps.append((day, night))
@@ -150,63 +148,40 @@ def build_msg() -> str:
         ]
     P.append("———")
 
-    # …дальше блоки геомагнитки, Шумана, моря, астрособытий и вывод
-    # остаются без изменений …
-    # ----------------------------------------------------------------
-    # return "\n".join(P)  ←  не забудьте оставить финальный return
-
-
-    # === 4) Геомагнитка + Шуман + вода + астрособытия ===
-    # --- Геомагнитка, Шуман, море, астрособытия --------------------
-    kp, kp_state = get_kp()             # ← вызываем!
-
-    from air import get_kp
+    # === 4) Геомагнитка + Шуман + море + астрособытия ===
     kp, kp_state = get_kp()
-    sch = get_schumann()
-    sst = get_sst()
-    astro = astro_events()
+    sch          = get_schumann()
+    sst          = get_sst()
+    astro        = astro_events()
 
-    # светофор для geomag
-    emoji_k = {"спокойный":"🟢","повышенный":"🟡","буря":"🔴"}.get(kp_state, "⚪")
-    P.append(f"🧲 Геомагнитка: {emoji_k} K-index {kp:.1f} ({kp_state})")
+    P.append(
+        f"🧲 Геомагнитка: Kp {kp:.1f} ({kp_state})"
+        if kp is not None else "🧲 Геомагнитка: нет данных"
+    )
 
     if sch.get("high"):
-        P.append(f"🎵 Шуман: {sch['freq']:.1f} Гц ⚡️ (повышено)")
+        P.append("🎵 Шуман: ⚡️ вибрации повышены")
+    elif "freq" in sch:
+        P.append(f"🎵 Шуман: ≈{sch['freq']:.1f} Гц")
     else:
-        P.append(f"🎵 Шуман: {sch.get('freq','?'):.1f} Гц")
+        P.append(f"🎵 Шуман: {sch.get('msg','нет данных')}")
 
     if sst is not None:
-        P.append(f"🌊 Темп. воды: {sst:.1f} °C (Open-Meteo)")
-
-    # WMO: самый тяжёлый код из завтра
-    codes = w0["daily"][1 if len(w0["daily"])>1 else 0].get("weathercode", [])
-    if isinstance(codes, list): code = max(codes)
-    else: code = codes
-    desc = WMO_DESCRIPTIONS.get(code, "—")
-    P.append(f"🔎 Макс. WMO-код: {code} — {desc}")
+        P.append(f"🌊 Температура воды: {sst:.1f} °C")
 
     if astro:
-        # оставляем только фазу Луны + первое важное событие
-        phase = astro[0]
-        event = astro[1] if len(astro)>1 else ""
-        P.append("🌌 Астрособытия: " + " | ".join([phase, event]))
-
+        P.append("🌌 Астрособытия – " + " | ".join(astro))
     P.append("———")
 
-    # === 5) Вывод и советы ===
-    # выбираем «виновника» (пример из старого кода)
-    if fog:
-        culprit = "туман"
-    elif kp_state == "буря":
-        culprit = "магнитные бури"
-    elif press < 1007:
-        culprit = "низкое давление"
-    elif wind_kmh > 30:
-        culprit = "сильный ветер"
-    else:
-        culprit = "мини-парад планет"
-
+    # === 5) Вывод + советы GPT ===
+    culprit = "туман" if cloud_w == "туман" else (
+        "магнитные бури" if kp_state == "буря" else
+        "низкое давление" if press < 1007 else
+        "шальной ветер" if wind_kmh > 30 else
+        "мини-парад планет"
+    )
     summary, tips = gpt_blurb(culprit)
+
     P.append(f"📜 Вывод\n{summary}")
     P.append("———")
     P.append("✅ Рекомендации")
@@ -218,17 +193,18 @@ def build_msg() -> str:
     return "\n".join(P)
 
 
+# ─────────── SEND MESSAGE ────────────────────────────────────────
 async def main() -> None:
+    text = build_msg()
+    logging.info("Preview: %s", text.replace('\n', ' | ')[:250])
+
     bot = Bot(TOKEN)
-    txt = build_msg()
-    logging.info("Preview: %s", txt.replace("\n"," | ")[:200])
     try:
         await bot.send_message(
-            CHAT_ID, txt, parse_mode="HTML", disable_web_page_preview=True
+            CHAT_ID, text, parse_mode="HTML", disable_web_page_preview=True
         )
     except tg_err.TelegramError as e:
         logging.error("Telegram error: %s", e)
-        raise
 
 if __name__ == "__main__":
     asyncio.run(main())
