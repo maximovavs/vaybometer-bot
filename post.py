@@ -76,29 +76,29 @@ def build_msg() -> str:
     if day_max is None or night_min is None:
         raise RuntimeError("Не удалось получить температуру на завтра")
 
-    # 2) Текущие условия для Лимассола (давление, облака, ветер)
+    # 2) Текущие условия для Лимассола
     w = get_weather(lat, lon)
     if not w:
         raise RuntimeError("Источники погоды недоступны")
-    # определяем общий флаг
+
     strong = w.get("strong_wind", False)
-    fog    = w.get("fog_alert", False)
+    fog    = w.get("fog_alert",   False)
 
-   # ── достаём параметры ветра / давления / облаков ─────────────
-if "current" in w:
-    cur       = w["current"]
-    wind_kmh  = cur["windspeed"]            # уже км/ч
-    wind_deg  = cur["winddirection"]
-    press     = cur["pressure"]
-    cloud_w   = clouds_word(cur.get("clouds", 0))
-else:                                       # open-meteo «сырой» ответ
-    cw        = w["current_weather"]
-    wind_kmh  = cw["windspeed"]
-    wind_deg  = cw["winddirection"]
-    press     = w["hourly"]["surface_pressure"][0]
-    cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
+    # ── достаём параметры ветра / давления / облаков ─────────────
+    if "current" in w:
+        cur       = w["current"]
+        wind_kmh  = cur["windspeed"]        # уже км/ч
+        wind_deg  = cur["winddirection"]
+        press     = cur["pressure"]
+        cloud_w   = clouds_word(cur.get("clouds", 0))
+    else:                                   # «сырое» open-meteo
+        cw        = w["current_weather"]
+        wind_kmh  = cw["windspeed"]
+        wind_deg  = cw["winddirection"]
+        press     = w["hourly"]["surface_pressure"][0]
+        cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
 
-    # Заголовок
+    # ── заголовок ────────────────────────────────────────────────
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
     P.append(f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>")
     P.append(f"<b>Темп. днём/ночью:</b> {day_max:.1f}/{night_min:.1f} °C")
@@ -109,40 +109,46 @@ else:                                       # open-meteo «сырой» отве
     P.append(f"<b>Давление:</b> {press:.0f} гПа")
     P.append("———")
 
-    # 3) Рейтинг городов по завтрашней дн./ночн. темп.
-    temps: Dict[str, tuple[float, float]] = {}
+    # 3) Рейтинг городов (дн./ночь)
+    temps: Dict[str, Tuple[float, float]] = {}
     for city, (la, lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo)
-        if d is None: 
+        if d is None:
             continue
         temps[city] = (d, n if n is not None else d)
 
     P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
-    sorted_c = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)
-    medals   = ["🥇","🥈","🥉","4️⃣"]
-    for i, (city, (d_v, n_v)) in enumerate(sorted_c[:4]):
+    medals = ["🥇", "🥈", "🥉", "4️⃣"]
+    for i, (city, (d_v, n_v)) in enumerate(sorted(temps.items(),
+                                                  key=lambda kv: kv[1][0],
+                                                  reverse=True)[:4]):
         P.append(f"{medals[i]} {city}: {d_v:.1f}/{n_v:.1f} °C")
     P.append("———")
 
-    # 4) Качество воздуха + пыльца
-    air    = get_air() or {}
+    # 4) Качество воздуха + пыльца  (оставляем как у вас)
+    air = get_air() or {}
     P.append("🏙️ <b>Качество воздуха</b>")
     if air:
         lvl = air["lvl"]
         P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air['aqi']}) | "
-                 f"PM2.5: {safe(air['pm25'],'µg/м³')} | PM10: {safe(air['pm10'],'µg/м³')}")
+                 f"PM2.5: {safe(air['pm25'],'µg/м³')} | "
+                 f"PM10: {safe(air['pm10'],'µg/м³')}")
     else:
         P.append("нет данных")
+
     pollen = get_pollen()
     if pollen:
-        idxf = lambda v: ["нет","низкий","умеренный","высокий","оч. высокий","экстрим"][int(round(v))]
+        idx = lambda v: ["нет","низкий","умеренный","высокий",
+                         "оч. высокий","экстрим"][int(round(v))]
         P.append("🌿 <b>Пыльца</b>")
-        P.append(
-            f"Деревья – {idxf(pollen['treeIndex'])} | "
-            f"Травы – {idxf(pollen['grassIndex'])} | "
-            f"Сорняки – {idxf(pollen['weedIndex'])}"
-        )
+        P.append(f"Деревья – {idx(pollen['treeIndex'])} | "
+                 f"Травы – {idx(pollen['grassIndex'])} | "
+                 f"Сорняки – {idx(pollen['weedIndex'])}")
     P.append("———")
+
+    # …дальше оставляем ваши блоки геомагнитки, Шумана, воды, астрособытий, вывод и советы…
+
+    return "\n".join(P)   # ← теперь return снова внутри функции
 
     # 5) Геомагнитка, Шуман, морская вода, астрособытия
     kp, kp_state = get_kp()
