@@ -84,19 +84,19 @@ def build_msg() -> str:
     strong = w.get("strong_wind", False)
     fog    = w.get("fog_alert", False)
 
-    # Достаем параметры
-    if "current" in w:
-        cur      = w["current"]
-        wind_kmh = cur["wind_speed"] * 3.6
-        wind_deg = cur["wind_deg"]
-        press    = cur["pressure"]
-        cloud_w  = clouds_word(cur.get("clouds", 0))
-    else:
-        cw       = w["current_weather"]
-        wind_kmh = cw["windspeed"]
-        wind_deg = cw["winddirection"]
-        press    = w["hourly"]["surface_pressure"][0]
-        cloud_w  = clouds_word(w["hourly"]["cloud_cover"][0])
+   # ── достаём параметры ветра / давления / облаков ─────────────
+if "current" in w:
+    cur       = w["current"]
+    wind_kmh  = cur["windspeed"]            # уже км/ч
+    wind_deg  = cur["winddirection"]
+    press     = cur["pressure"]
+    cloud_w   = clouds_word(cur.get("clouds", 0))
+else:                                       # open-meteo «сырой» ответ
+    cw        = w["current_weather"]
+    wind_kmh  = cw["windspeed"]
+    wind_deg  = cw["winddirection"]
+    press     = w["hourly"]["surface_pressure"][0]
+    cloud_w   = clouds_word(w["hourly"]["cloud_cover"][0])
 
     # Заголовок
     icon = WEATHER_ICONS.get(cloud_w, "🌦️")
