@@ -157,8 +157,9 @@ def build_msg() -> str:
 
 
     # === 4) Геомагнитка + Шуман + вода + астрособытия ===
-    kp, kp_state = get_schumann  # исправьте, если get_kp
-    # если get_kp:
+    # --- Геомагнитка, Шуман, море, астрособытия --------------------
+    kp, kp_state = get_kp()             # ← вызываем!
+
     from air import get_kp
     kp, kp_state = get_kp()
     sch = get_schumann()
