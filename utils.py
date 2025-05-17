@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import logging
-import random
 import math
 import requests
+import logging
+import random
+import time          # ← добавили
 import pendulum
+
 
 # ── румбы для компаса ───────────────────────────────────────────
 COMPASS = [
@@ -116,7 +118,7 @@ def _get_retry(url: str, retries: int = 2, **params) -> dict | None:
                 logging.warning("%s – %s (attempts=%d)", host, e, attempt)
                 return None
             # экспоненциальная пауза 0.5 / 1.0 сек …
-            pendulum.sleep(0.5 * attempt)
+            time.sleep(0.5 * attempt)
 
 def _get(url: str, **params) -> dict | None:          # <- старый интерфейс
     """Обёртка для совместимости: вызывает _get_retry с 2 повторными попытками."""
