@@ -1,7 +1,14 @@
-python-telegram-bot==20.0
-openai
-requests
-python-dateutil
-pendulum
-astropy
-pyswisseph
+# базовые библиотеки
+requests>=2.31
+pendulum>=2.1
+python-dateutil>=2.8
+
+# Telegram-bot
+python-telegram-bot>=20,<21     # 20.x LTS, 21 ещё beta
+
+# OpenAI (советы / GPT-blurb)
+openai>=1.6
+
+# астрономия / эфемериды
+astropy>=5.3
+pyswisseph>=2.10
