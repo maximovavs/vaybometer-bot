@@ -4,10 +4,10 @@
 air.py
 ~~~~~~
 
-• get_air()    → гарантированно {lvl, aqi, pm25, pm10}
-• get_pollen() → (временно) индексы Tomorrow.io   ─ перенесёте в pollen.py
-• get_sst()    → Sea-Surface-Temperature (Open-Meteo marine)
-• get_kp()     → планетарный K-index NOAA
+• get_air()   → всегда    {"lvl", "aqi", "pm25", "pm10"}
+• get_pollen() (позднее переедет в pollen.py)
+• get_sst()   → Sea-Surface-Temperature   (Open-Meteo Marine API)
+• get_kp()    → планетарный K-index NOAA
 
 Все числовые поля, если данных нет, получают строку «н/д».
 """
@@ -37,19 +37,21 @@ def _aqi_level(aqi: float | int) -> str:
 
 # ═══════════════════════ источники AQI ═══════════════════════════
 def _src_airvisual() -> Dict[str, Any] | None:
-    """IQAir (AirVisual) → {'aqi','pm25','pm10'}  или  None"""
+    """IQAir (AirVisual).  Вернёт {'aqi','pm25','pm10'} либо None."""
     if not AIR_KEY:
         return None
+
     j = _get(
         "https://api.airvisual.com/v2/nearest_city",
         lat=LAT, lon=LON, key=AIR_KEY,
     )
     if not j or "data" not in j:
         return None
+
     try:
         pol = j["data"]["current"]["pollution"]
         return {
-            "aqi" : pol.get("aqius"),
+            "aqi":  pol.get("aqius"),  # может быть None
             "pm25": pol.get("p2"),
             "pm10": pol.get("p1"),
         }
@@ -59,7 +61,7 @@ def _src_airvisual() -> Dict[str, Any] | None:
 
 
 def _src_openmeteo() -> Dict[str, Any] | None:
-    """Open-Meteo Air-Quality → {'aqi','pm25','pm10'} или None"""
+    """Open-Meteo Air-Quality.  Возвращает {'aqi','pm25','pm10'} либо None."""
     j = _get(
         "https://air-quality-api.open-meteo.com/v1/air-quality",
         latitude=LAT, longitude=LON,
@@ -69,7 +71,7 @@ def _src_openmeteo() -> Dict[str, Any] | None:
     try:
         h = j["hourly"]
         return {
-            "aqi" : h["us_aqi"][0],
+            "aqi":  h["us_aqi"][0],
             "pm25": h["pm2_5"][0],
             "pm10": h["pm10"][0],
         }
@@ -78,38 +80,39 @@ def _src_openmeteo() -> Dict[str, Any] | None:
         return None
 
 # ═════════════════════ объединение и нормализация ════════════════
-def merge_air_sources(*srcs: Dict[str, Any] | None) -> Dict[str, Any]:
-    """Берёт данные из списка источников по убывающему приоритету."""
+def _merge_air_sources(*srcs: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Сливает данные нескольких источников по приоритету их порядка."""
     merged: Dict[str, Any] = {"aqi": None, "pm25": None, "pm10": None}
 
     for src in srcs:
         if not src:
             continue
-        for k in merged.keys():
-            if merged[k] is None and src.get(k) not in (None, "—"):
+        for k in merged:
+            if merged[k] is None and src.get(k) not in (None, "-", "—"):
                 merged[k] = src[k]
 
-    # заполняем «н/д» там, где так и не нашли значение
-    for k in merged:
-        if merged[k] is None:
+    # остающиеся None → «н/д»
+    for k, v in merged.items():
+        if v is None:
             merged[k] = "н/д"
     return merged
 
 # ═════════════════════ публичная точка входа ═════════════════════
 def get_air() -> Dict[str, Any]:
     """
-    Всегда -> {"lvl": str, "aqi": str|int, "pm25": str|float, "pm10": str|float}
+    Всегда возвращает:
+      {"lvl": str, "aqi": int|str, "pm25": float|str, "pm10": float|str}
     """
-    raw = merge_air_sources(_src_airvisual(), _src_openmeteo())
+    raw = _merge_air_sources(
+        _src_airvisual(),          # приоритет 1
+        _src_openmeteo(),          # приоритет 2 (без ключа)
+    )
 
-    # определяем текстовый уровень
-    if raw["aqi"] == "н/д":
+    # текстовый уровень
+    try:
+        lvl = _aqi_level(float(raw["aqi"])) if raw["aqi"] != "н/д" else "н/д"
+    except Exception:
         lvl = "н/д"
-    else:
-        try:
-            lvl = _aqi_level(float(raw["aqi"]))
-        except Exception:
-            lvl = "н/д"
 
     raw["lvl"] = lvl
     return raw
