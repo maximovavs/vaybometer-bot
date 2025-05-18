@@ -117,7 +117,7 @@ def build_msg() -> str:
         f"{icon} <b>Погода на завтра на Кипре {TOMORROW.format('DD.MM.YYYY')}</b>",
         f"🌡 Средняя темп.: {avg_day:.0f} °C",
         f"<b>Темп. днём/ночью:</b> {day_max:.1f}/{night_min:.1f} °C",
-        f"<b>Облачность:</b> {cloud_w}",
+        #  f"<b>Облачность:</b> {cloud_w}",
         f"🌡️ {w_desc}",
         f"<b>Ветер:</b> {wind_phrase(wind_kmh)} "
         f"({wind_kmh:.1f} км/ч, {compass_ru(wind_deg)})",
