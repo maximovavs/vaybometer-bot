@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -6,70 +5,70 @@
 pollen.py
 ~~~~~~~~~
 
-• Единственный бесплатный источник — Open-Meteo *Air Quality / Pollen*  
-  (https://air-quality-api.open-meteo.com)
-• Функция **get_pollen()** всегда возвращает словарь
+• Бесплатный источник: Open-Meteo ‘Air-Quality / Pollen’
+  https://air-quality-api.open-meteo.com/v1/air-quality
 
-    {
-        "tree":  <int | None>,   # 0–4  (0 — нет пыльцы)
-        "grass": <int | None>,
-        "weed":  <int | None>,
-        "risk":  <str>,          # "нет", "низкий", "умеренный", …
-    }
-
-  Если сервис недоступен, значения — `None`, `risk="н/д"`.
+Функция get_pollen()
+--------------------
+Возвращает ВСЕГДА словарь вида
+{
+    "tree" : <int|None>,   # 0‒4   (0 — нет пыльцы)
+    "grass": <int|None>,
+    "weed" : <int|None>,
+    "risk" : <str>,        # "нет", "низкий", "умеренный", …
+    "msg"  : <str>,        # "ok" | "н/д"  (для логов/UI)
+}
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from utils import _get
 
-# ────────────────────────────────────────────────────────────────────
-# Координаты по-умолчанию (Limassol); можно менять при вызове
+# ───────────────────────────────────────────────────────────────────
+# Координаты по-умолчанию (Limassol). При желании можно передавать свои.
 LAT, LON = 34.707, 33.022
 
-# шкала риска по Open-Meteo (0‒4) → текст
+# Официальная шкала риска 0–4 → текст
 RISK_TXT = ["нет", "низкий", "умеренный", "высокий", "оч. высокий"]
 
 
 def _risk_level(val: Optional[int]) -> str:
-    """Числовой уровень 0–4 → текст; None → 'н/д'."""
+    """Число 0–4 → текст, None → 'н/д'."""
     if val is None:
         return "н/д"
     try:
         return RISK_TXT[int(round(val))]
-    except Exception:            # вне диапазона / не число
+    except Exception:
         return "н/д"
 
 
-# ────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 def get_pollen(lat: float = LAT, lon: float = LON) -> Dict[str, Any]:
     """
-    Достаёт сегодняшний прогноз пыльцы с Open-Meteo и
-    возвращает словарь с трёх типами + агрегированным риском.
+    Запрашивает ближайший часовой прогноз пыльцы у Open-Meteo.
+    Всегда выдаёт словарь с ключами: tree / grass / weed / risk / msg.
     """
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
     params = {
-        "latitude":   lat,
-        "longitude":  lon,
-        "timezone":   "UTC",
-        # берём ближайшие 24 ч – first элемент массива подойдёт
-        "hourly": ",".join(
-            [
-                "pollen_level_tree",
-                "pollen_level_grass",
-                "pollen_level_weed",
-            ]
-        ),
+        "latitude":  lat,
+        "longitude": lon,
+        "timezone":  "UTC",
+        "hourly":    "pollen_level_tree,pollen_level_grass,pollen_level_weed",
     }
 
     j = _get(url, **params)
     if not j or "hourly" not in j:
         logging.warning("Pollen API unavailable")
-        return {"tree": None, "grass": None, "weed": None, "risk": "н/д"}
+        return {
+            "tree": None,
+            "grass": None,
+            "weed": None,
+            "risk": "н/д",
+            "msg":  "н/д",
+        }
 
     h: Dict[str, list] = j["hourly"]
 
@@ -83,17 +82,23 @@ def get_pollen(lat: float = LAT, lon: float = LON) -> Dict[str, Any]:
     grass = first_val("pollen_level_grass")
     weed  = first_val("pollen_level_weed")
 
-    # агрегированный риск — максимум из имеющихся
-    numeric_levels = [v for v in (tree, grass, weed) if v is not None]
-    agg_num = max(numeric_levels) if numeric_levels else None
-    risk = _risk_level(agg_num)
+    # суммарный риск как максимум из доступных числовых значений
+    numeric = [v for v in (tree, grass, weed) if v is not None]
+    risk = _risk_level(max(numeric) if numeric else None)
 
-    return {"tree": tree, "grass": grass, "weed": weed, "risk": risk}
+    return {
+        "tree":  tree,
+        "grass": grass,
+        "weed":  weed,
+        "risk":  risk,
+        "msg":   "ok",
+    }
 
 
-# ────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":        # быстрая проверка:  python -m pollen
-    import json
+# ───────────────────────────────────────────────────────────────────
+if __name__ == "__main__":  # быстрая проверка:  python -m pollen
+    import json, sys
 
-    data = get_pollen()
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    lat = float(sys.argv[1]) if len(sys.argv) > 2 else LAT
+    lon = float(sys.argv[2]) if len(sys.argv) > 2 else LON
+    print(json.dumps(get_pollen(lat, lon), ensure_ascii=False, indent=2))
