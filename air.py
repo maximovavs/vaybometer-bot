@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-air.py   • сбор и нормализация данных о качестве воздуха и пыльце
+air.py
+~~~~~~
 
-▪ get_air()        → гарантированно {lvl, aqi, pm25, pm10}
-▪ get_pollen()     → индексы пыльцы Tomorrow.io
-▪ get_sst()        → температура воды (Open-Meteo marine)
-▪ get_kp()         → планетарный K-index NOAA
+• get_air()    → гарантированно {lvl, aqi, pm25, pm10}
+• get_pollen() → (временно) индексы Tomorrow.io   ─ перенесёте в pollen.py
+• get_sst()    → Sea-Surface-Temperature (Open-Meteo marine)
+• get_kp()     → планетарный K-index NOAA
+
+Все числовые поля, если данных нет, получают строку «н/д».
 """
 
 from __future__ import annotations
-import os, logging
+
+import os
+import logging
 from typing import Dict, Any, Optional, Tuple
 
 from utils import _get
 
-# ────────────────────────────── координаты (Limassol) ────────────
+# ─────────────────────────── координаты (Limassol) ──────────────
 LAT, LON = 34.707, 33.022
 
-# ────────────────────────────── API-ключи (могут отсутствовать) ─
+# ─────────────────────────── возможные ключи ─────────────────────
 AIR_KEY   = os.getenv("AIRVISUAL_KEY")   # IQAir / AirVisual
-AMBEE_KEY = os.getenv("TOMORROW_KEY")    # Tomorrow.io
+AMBEE_KEY = os.getenv("TOMORROW_KEY")    # Tomorrow.io  (пока здесь)
 
-# ────────────────────────────── уровень AQI → словарь эмодзи ────
+# ─────────────────────────── US-EPA градации → уровень ───────────
 def _aqi_level(aqi: float | int) -> str:
     if aqi <=  50: return "хороший"
     if aqi <= 100: return "умеренный"
@@ -31,22 +35,21 @@ def _aqi_level(aqi: float | int) -> str:
     if aqi <= 200: return "оч. вредный"
     return "опасный"
 
-
-# ═══════════════════════ источники AQI ════════════════════════════
+# ═══════════════════════ источники AQI ═══════════════════════════
 def _src_airvisual() -> Dict[str, Any] | None:
-    """IQAir / AirVisual → {'aqi','pm25','pm10'} либо None"""
+    """IQAir (AirVisual) → {'aqi','pm25','pm10'}  или  None"""
     if not AIR_KEY:
         return None
     j = _get(
         "https://api.airvisual.com/v2/nearest_city",
-        lat=LAT, lon=LON, key=AIR_KEY
+        lat=LAT, lon=LON, key=AIR_KEY,
     )
     if not j or "data" not in j:
         return None
     try:
-        pol   = j["data"]["current"]["pollution"]
+        pol = j["data"]["current"]["pollution"]
         return {
-            "aqi":  pol.get("aqius"),      # может быть None
+            "aqi" : pol.get("aqius"),
             "pm25": pol.get("p2"),
             "pm10": pol.get("p1"),
         }
@@ -56,16 +59,17 @@ def _src_airvisual() -> Dict[str, Any] | None:
 
 
 def _src_openmeteo() -> Dict[str, Any] | None:
-    """Open-Meteo Air-Quality → {'aqi','pm25','pm10'} либо None"""
+    """Open-Meteo Air-Quality → {'aqi','pm25','pm10'} или None"""
     j = _get(
         "https://air-quality-api.open-meteo.com/v1/air-quality",
-        latitude=LAT, longitude=LON, timezone="UTC",
-        hourly="pm10,pm2_5,us_aqi"
+        latitude=LAT, longitude=LON,
+        timezone="UTC",
+        hourly="us_aqi,pm2_5,pm10",
     )
     try:
         h = j["hourly"]
         return {
-            "aqi":  h["us_aqi"][0],
+            "aqi" : h["us_aqi"][0],
             "pm25": h["pm2_5"][0],
             "pm10": h["pm10"][0],
         }
@@ -73,48 +77,44 @@ def _src_openmeteo() -> Dict[str, Any] | None:
         logging.warning("Open-Meteo AQ parse error: %s", e)
         return None
 
-
-# ═══════════════════════ объединение ══════════════════════════════
+# ═════════════════════ объединение и нормализация ════════════════
 def merge_air_sources(*srcs: Dict[str, Any] | None) -> Dict[str, Any]:
-    """
-    Приоритетно берёт числа из первого непустого источника,
-    заполняет недостающее из следующих.
-    """
-    result: Dict[str, Any] = {"aqi": None, "pm25": None, "pm10": None}
+    """Берёт данные из списка источников по убывающему приоритету."""
+    merged: Dict[str, Any] = {"aqi": None, "pm25": None, "pm10": None}
+
     for src in srcs:
         if not src:
             continue
-        for k in ("aqi", "pm25", "pm10"):
-            if result[k] is None and src.get(k) not in (None, "—"):
-                result[k] = src[k]
+        for k in merged.keys():
+            if merged[k] is None and src.get(k) not in (None, "—"):
+                merged[k] = src[k]
 
-    # приводим к "н/д", если так и не нашли цифру
-    for k in ("aqi",):
-        if result[k] is None:
-            result[k] = "н/д"
-    return result
+    # заполняем «н/д» там, где так и не нашли значение
+    for k in merged:
+        if merged[k] is None:
+            merged[k] = "н/д"
+    return merged
 
-
-# ═══════════════════════ публичная точка входа ════════════════════
+# ═════════════════════ публичная точка входа ═════════════════════
 def get_air() -> Dict[str, Any]:
     """
-    ► Всегда возвращает словарь
-        {"lvl": str, "aqi": int|str, "pm25": float|None, "pm10": float|None}
-    ► lvl вычисляется по числу AQI, либо "н/д".
+    Всегда -> {"lvl": str, "aqi": str|int, "pm25": str|float, "pm10": str|float}
     """
-    base = merge_air_sources(_src_airvisual(), _src_openmeteo())
+    raw = merge_air_sources(_src_airvisual(), _src_openmeteo())
 
-    aqi_val = base["aqi"]
-    if aqi_val == "н/д":
+    # определяем текстовый уровень
+    if raw["aqi"] == "н/д":
         lvl = "н/д"
     else:
-        lvl = _aqi_level(float(aqi_val))
+        try:
+            lvl = _aqi_level(float(raw["aqi"]))
+        except Exception:
+            lvl = "н/д"
 
-    base["lvl"] = lvl
-    return base
+    raw["lvl"] = lvl
+    return raw
 
-
-# ═══════════════════════ пыльца Tomorrow.io ═══════════════════════
+# ═══════════════════════ пыльца (переедет в pollen.py) ═══════════
 def get_pollen() -> Optional[dict]:
     if not AMBEE_KEY:
         return None
@@ -131,19 +131,18 @@ def get_pollen() -> Optional[dict]:
         logging.warning("Pollen fetch error: %s", e)
         return None
 
-
 # ═══════════════════════ температура воды ════════════════════════
 def get_sst() -> Optional[float]:
     j = _get(
         "https://marine-api.open-meteo.com/v1/marine",
         latitude=LAT, longitude=LON,
-        hourly="sea_surface_temperature", timezone="UTC",
+        hourly="sea_surface_temperature",
+        timezone="UTC",
     )
     try:
         return round(j["hourly"]["sea_surface_temperature"][0], 1)
     except Exception:
         return None
-
 
 # ═══════════════════════ планетарный K-index ═════════════════════
 def get_kp() -> Tuple[Optional[float], str]:
@@ -153,7 +152,15 @@ def get_kp() -> Tuple[Optional[float], str]:
     except Exception:
         return None, "н/д"
 
-    if kp_val < 4:   state = "спокойный"
-    elif kp_val < 5: state = "повышенный"
-    else:            state = "буря"
+    if kp_val < 4:
+        state = "спокойный"
+    elif kp_val < 5:
+        state = "повышенный"
+    else:
+        state = "буря"
     return kp_val, state
+
+# ─────────────────────────── локальный тест ──────────────────────
+if __name__ == "__main__":
+    from pprint import pprint
+    pprint(get_air())
