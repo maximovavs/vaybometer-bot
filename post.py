@@ -141,7 +141,7 @@ def build_msg() -> str:
     for i, (city, (d, n)) in enumerate(sorted(temps.items(),
                                               key=lambda kv: kv[1][0],
                                               reverse=True)[:4]):
-        parts.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
+        parts.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C, {cloud_w}")
     parts.append("———")
 
     # 3. качество воздуха
