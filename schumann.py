@@ -1,29 +1,45 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
 schumann.py
 ~~~~~~~~~~~
 
-• Берёт данные резонанса Шумана из двух публичных API
-  (glcoherence и gci-api UCSD).
-• Хранит историю чтений в  ~/cache/sr1.json  (макс. 48 ч).
-• get_schumann()           →  {"freq":7.83,"amp":48.2,"high":False}
-                              или {"msg":"..."} когда истории нет.
-• get_schumann_trend(24)   →  "↑" | "↓" | "→"  – динамика частоты.
+• Два бесплат-API c резонансом Шумана  
+    1) https://api.glcoherence.org/v1/earth         (JSON с полями frequency_1, amplitude_1)  
+    2) https://gci-api.ucsd.edu/data/latest         (тот же набор, но вложен в ["data"]["sr1"])
+
+• При успешном чтении частота/амплитуда пишутся в кэш
+      ~/.cache/vaybometer/sr1.json
+  (храним список записей вида {"ts": "...", "freq": 7.83, "amp": 48.2})
+
+• get_schumann() → {'freq', 'amp', 'high'}  либо {'msg'}  
+    high = freq > 8 Гц **или** amp > 100
+
+• get_schumann_trend(hours=24) → '↑' / '↓' / '→'
+    сравнивает последнюю freq с freq часовой давности (порог ±0.05 Гц)
+
+Пример использования
+--------------------
+>>> from schumann import get_schumann, get_schumann_trend
+>>> d = get_schumann();  print(d)
+{'freq': 7.79, 'amp': 54.1, 'high': False}
+>>> print(get_schumann_trend(24))
+'↑'
 """
 
 from __future__ import annotations
-import os, json, time, random, logging, datetime as dt
+
+import json, os, time, random, logging
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 from utils import _get
 
-# ── настройки кеша ────────────────────────────────────────────────
-CACHE_DIR  = Path(os.path.expanduser("~/cache"))
+# ── постоянные ----------------------------------------------------
+CACHE_DIR  = Path.home() / ".cache" / "vaybometer"
 CACHE_FILE = CACHE_DIR / "sr1.json"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
-MAX_AGE_H  = 48                       # храним не более 48 ч в истории
 
 SCH_QUOTES = [
     "датчики молчат — ретрит 🌱",
@@ -35,29 +51,34 @@ SCH_QUOTES = [
     "тишина в эфире… 🎧",
 ]
 
-# ── работа с историей ────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────
 def _load_history() -> List[Dict[str, float]]:
     if CACHE_FILE.exists():
         try:
-            with CACHE_FILE.open() as f:
-                return json.load(f)
+            return json.loads(CACHE_FILE.read_text())
         except Exception:
-            logging.warning("Schumann history corrupted – reset")
+            pass
     return []
 
 def _save_history(hist: List[Dict[str, float]]) -> None:
-    try:
-        with CACHE_FILE.open("w") as f:
-            json.dump(hist, f)
-    except Exception as e:
-        logging.warning("Schumann history save error: %s", e)
+    # храним не более 1000 записей
+    hist = hist[-1000:]
+    CACHE_FILE.write_text(json.dumps(hist))
 
-def _prune(hist: List[Dict[str, float]]) -> List[Dict[str, float]]:
-    cutoff = time.time() - MAX_AGE_H * 3600
-    return [h for h in hist if h["ts"] >= cutoff]
+def _append_history(freq: float, amp: float) -> None:
+    hist = _load_history()
+    hist.append({"ts": time.time(), "freq": freq, "amp": amp})
+    _save_history(hist)
 
-# ── единичное обращение к API ────────────────────────────────────
-def _fetch_once() -> Dict[str, float] | None:
+# ──────────────────────────────────────────────────────────────────
+def get_schumann() -> Dict[str, Any]:
+    """
+    Возвращает:
+        {'freq': 7.83, 'amp': 48.2, 'high': False}
+        {'freq': 8.14, 'amp':120.3, 'high': True}
+        {'msg': '…'}                       – когда оба источника упали
+    high → freq > 8 Гц  **или** amp > 100
+    """
     for url in (
         "https://api.glcoherence.org/v1/earth",
         "https://gci-api.ucsd.edu/data/latest",
@@ -65,75 +86,59 @@ def _fetch_once() -> Dict[str, float] | None:
         j = _get(url)
         if not j:
             continue
+
         try:
-            # второй сервис оборачивает полезное в ["data"]["sr1"]
+            # во втором эндпоинте данные лежат в ["data"]["sr1"]
             if "data" in j:
                 j = j["data"]["sr1"]
 
-            freq = j.get("frequency_1") or j.get("frequency")
-            amp  = j.get("amplitude_1") or j.get("amplitude")
-            if freq is None or amp is None:
-                raise ValueError("missing fields")
-
-            return {"freq": round(float(freq), 2),
-                    "amp":  round(float(amp), 1)}
+            freq = float(j.get("frequency_1") or j.get("frequency"))
+            amp  = float(j.get("amplitude_1")  or j.get("amplitude"))
         except Exception as e:
-            logging.warning("Schumann parse (%s): %s", url, e)
-    return None
+            logging.warning("schumann parse %s: %s", url, e)
+            continue
 
-# ── публичные функции ────────────────────────────────────────────
-def get_schumann() -> Dict[str, Any]:
-    """
-    Всегда пытается вернуть словарь с freq/amp/[high].
-    • Если новые источники недоступны, берёт последний кэш-замер.
-    • Если истории нет вовсе — возвращает {"msg":"..."}.
-    """
-    data = _fetch_once()
-    hist = _prune(_load_history())
+        # сохраним в историю
+        _append_history(freq, amp)
 
-    # если API не ответили – fallback на последний кэш
-    if data is None:
-        if not hist:
-            return {"msg": random.choice(SCH_QUOTES)}
-        last = hist[-1]
-        data = {"freq": last["freq"], "amp": last["amp"], "stale": True}
+        return {
+            "freq": round(freq, 2),
+            "amp":  round(amp, 1),
+            "high": (freq > 8.0) or (amp > 100),
+        }
 
-    # high-флаг
-    if data["freq"] > 8.0 or data["amp"] > 100:
-        data["high"] = True
+    # оба запроса не дали результата
+    return {"msg": random.choice(SCH_QUOTES)}
 
-    # запись в историю (только если это не устаревшая точка)
-    if not data.get("stale"):
-        hist.append({"ts": time.time(),
-                     "freq": data["freq"],
-                     "amp":  data["amp"]})
-        _save_history(hist)
-
-    return data
-
-
+# ──────────────────────────────────────────────────────────────────
 def get_schumann_trend(hours: int = 24) -> str:
     """
-    Возвращает стрелку тренда за указанные часы:
-        ↑  – выросло > 0.05 Гц
-        ↓  – упало   > 0.05 Гц
-        →  – без изменений / мало данных
+    Анализирует историю и возвращает:
+        '↑' – если freq выросла > 0.05 Гц
+        '↓' – если freq упала   <-0.05 Гц
+        '→' – изменений нет / данных мало
     """
-    span = time.time() - hours * 3600
-    pts = [h for h in _load_history() if h["ts"] >= span]
-    if len(pts) < 2:
+    hist = _load_history()
+    if len(hist) < 2:
         return "→"
-    start, end = pts[0]["freq"], pts[-1]["freq"]
-    diff = end - start
+
+    latest = hist[-1]
+    t_cut  = latest["ts"] - hours * 3600
+
+    # ищем запись не моложе t_cut
+    earlier = next((x for x in reversed(hist[:-1]) if x["ts"] <= t_cut), None)
+    if not earlier:
+        return "→"
+
+    diff = latest["freq"] - earlier["freq"]
     if diff >= 0.05:
         return "↑"
     if diff <= -0.05:
         return "↓"
     return "→"
 
-# ── CLI-тест ──────────────────────────────────────────────────────
+# ── CLI-тест ------------------------------------------------------
 if __name__ == "__main__":
     from pprint import pprint
-    print("Current reading:")
     pprint(get_schumann())
-    print("24-hour trend:", get_schumann_trend())
+    print("24h trend:", get_schumann_trend())
