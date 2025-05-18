@@ -4,20 +4,20 @@
 """
 pollen.py
 ~~~~~~~~~
-
-Бесплатный источник: Open-Meteo «Air-Quality / Pollen»
+Бесплатный источник: Open-Meteo *Air-Quality / Pollen*
     https://air-quality-api.open-meteo.com/v1/air-quality
 
-Функция get_pollen()
---------------------
-Возвращает ВСЕГДА словарь
+Функция
+    get_pollen(lat=…, lon=…) → dict
+возвращает ВСЕГДА словарь с ключами
 {
-    "tree" : int|"н/д",   # 0–5
-    "grass": int|"н/д",
-    "weed" : int|"н/д",
-    "risk" : str,         # текстовое описание суммарного риска
-    "color": str,         # 🟢🟡🟠🔴🟣⚫
-    "msg"  : "ok" | "н/д"
+  "tree": 0‒5 | "н/д",
+  "grass": …,
+  "weed": …,
+  "risk":  "нет/низкий/…/экстрим/н/д",
+  "color": "⚪🟢🟡🟠🔴🟣",
+  "ts":    "YYYY-MM-DDTHH",     # ISO-час метка прогноза
+  "msg":   "ok" | "н/д"
 }
 """
 
@@ -28,42 +28,40 @@ from typing import Any, Dict, Optional
 
 from utils import _get
 
-# ───────────────────────────────────────────────────────────────────
-# Координаты по-умолчанию (Limassol)
-LAT, LON = 34.707, 33.022
+# ------------------------------------------------------------------
+LAT, LON = 34.707, 33.022   # Limassol по-умолчанию
 
-# 0–5 → текст + цвет
-RISK_TXT   = ["нет", "низкий", "умеренный",
-              "высокий", "оч. высокий", "экстрим"]      # ★
-POLLEN_EMOJI = ["⚪", "🟢", "🟡", "🟠", "🔴", "🟣"]        # ★
+RISK_TXT      = ["нет", "низкий", "умеренный",
+                 "высокий", "оч. высокий", "экстрим"]
+POLLEN_EMOJI  = ["⚪",  "🟢",   "🟡",    "🟠",    "🔴",       "🟣"]
 
-
-def _risk_level(val: Optional[int]) -> tuple[str, str]:
-    """Число 0–5 → (текст, эмодзи-цвет). None → ('н/д','⚪')."""
+# ------------------------------------------------------------------
+def _risk_level(val: Optional[float]) -> tuple[str, str]:
+    """0‒5 (в т. ч. дробь) → (текст, эмодзи); None → ('н/д','⚪')."""
     if val is None:
         return "н/д", "⚪"
     try:
-        idx = max(0, min(int(round(val)), 5))
+        idx = int(round(float(val)))
+        idx = 0 if idx < 0 else 5 if idx > 5 else idx
         return RISK_TXT[idx], POLLEN_EMOJI[idx]
     except Exception:
         return "н/д", "⚪"
 
-
-# ───────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
 def get_pollen(lat: float = LAT, lon: float = LON) -> Dict[str, Any]:
     """
-    Запрашивает ближайший часовой прогноз пыльцы у Open-Meteo.
-    Всегда выдаёт словарь с ключами tree / grass / weed / risk / color / msg.
+    Запрашивает ближайший ЧАСОВОЙ прогноз пыльцы у Open-Meteo.
+    Гарантированно возвращает словарь из docstring.
     """
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
-    params = {
-        "latitude":  lat,
-        "longitude": lon,
-        "timezone":  "UTC",
-        "hourly":    "pollen_level_tree,pollen_level_grass,pollen_level_weed",
-    }
+    j = _get(
+        url,
+        latitude=lat,
+        longitude=lon,
+        timezone="UTC",
+        hourly="pollen_level_tree,pollen_level_grass,pollen_level_weed",
+    )
 
-    j = _get(url, **params)
     if not j or "hourly" not in j:
         logging.warning("Pollen API unavailable")
         return {
@@ -72,16 +70,17 @@ def get_pollen(lat: float = LAT, lon: float = LON) -> Dict[str, Any]:
             "weed":  "н/д",
             "risk":  "н/д",
             "color": "⚪",
+            "ts":    None,
             "msg":   "н/д",
         }
 
-    h: Dict[str, list] = j["hourly"]
+    hourly: Dict[str, list] = j["hourly"]
 
     def first_val(key: str) -> Optional[int]:
+        raw = hourly.get(key, [None])[0]
+        if raw is None:
+            return None
         try:
-            raw = h[key][0]
-            if raw is None:
-                return None
             return int(round(float(raw)))
         except Exception:
             return None
@@ -94,7 +93,7 @@ def get_pollen(lat: float = LAT, lon: float = LON) -> Dict[str, Any]:
     max_level = max(numeric) if numeric else None
     risk_txt, risk_color = _risk_level(max_level)
 
-    # заменяем None на «н/д» для удобства format/safe()
+    # заменяем None → "н/д" для удобства форматирования
     tree  = tree  if tree  is not None else "н/д"
     grass = grass if grass is not None else "н/д"
     weed  = weed  if weed  is not None else "н/д"
@@ -105,12 +104,12 @@ def get_pollen(lat: float = LAT, lon: float = LON) -> Dict[str, Any]:
         "weed":  weed,
         "risk":  risk_txt,
         "color": risk_color,
+        "ts":    j["hourly"]["time"][0] if "time" in j["hourly"] else None,
         "msg":   "ok",
     }
 
-
-# ───────────────────────────────────────────────────────────────────
-if __name__ == "__main__":  # быстрая CLI-проверка:  python -m pollen [lat lon]
+# ------------------------------------------------------------------
+if __name__ == "__main__":          # ➜  python -m pollen [lat lon]
     import json, sys
     lat = float(sys.argv[1]) if len(sys.argv) > 1 else LAT
     lon = float(sys.argv[2]) if len(sys.argv) > 2 else LON
