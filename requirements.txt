@@ -1,14 +1,18 @@
-# базовые библиотеки
+# ── базовые ──────────────────────────────────────────────
 requests>=2.31
 pendulum>=2.1
 python-dateutil>=2.8
+pandas>=2.2              # сохраняем тренды (Schumann history → CSV/JSON)
 
-# Telegram-bot
-python-telegram-bot>=20,<21     # 20.x LTS, 21 ещё beta
+# ── Telegram-Bot ────────────────────────────────────────
+python-telegram-bot>=20,<21   # 20.x LTS (21-я ветка пока beta)
 
-# OpenAI (советы / GPT-blurb)
+# ── GPT-советы / OpenAI ─────────────────────────────────
 openai>=1.6
 
-# астрономия / эфемериды
+# ── Астрономия / эфемериды ─────────────────────────────
 astropy>=5.3
 pyswisseph>=2.10
+
+# ── Погодные SDK и air/pollen ───────────────────────────
+openmeteo-py>=1.0           # официальный SDK, даёт /v1/forecast, /v1/pollen, /v1/air-quality
