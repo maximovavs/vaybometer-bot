@@ -92,20 +92,11 @@ def build_msg() -> str:
         clouds_pct = w.get("hourly", {}).get("cloud_cover", [0])[0]
     cloud_w = clouds_word(clouds_pct)
 
-    avg_line   = f"🌡 Средняя темп.: {((day_max + night_min)/2):.0f} °C"
-    press_line = f"🔽 Давление: {press:.0f} гПа {pressure_trend(w)}"
-
-    icon = WEATHER_ICONS.get(cloud_w, "🌦️")
-    P += [
-        f"{icon} <b>Погода на завтра в Лимассоле {TOMORROW.format('DD.MM.YYYY')}</b>",
-        avg_line,
-        f"📈 Темп. днём/ночью: {day_max:.1f}/{night_min:.1f} °C",
-        f"🌤 Облачность: {cloud_w}",
-        f"💨 Ветер: {wind_phrase(wind_kmh)} ({wind_kmh:.1f} км/ч, {compass(wind_deg)})",
-        press_line,
-    ]
-    if strong: P.append("⚠️ Ветер может усилиться")
-    if fog:    P.append("🌁 Возможен туман, водите аккуратно")
+    # строка, которая понравилась
+    P.append(
+        f"🌡️ Ср. темп: {((day_max + night_min)/2):.0f} °C • "
+        f"{cloud_w} • 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) • 💧 {press:.0f} гПа {pressure_trend(w)}"
+    )
     P.append("———")
 
     # 3) Рейтинг городов (дн./ночь)
@@ -142,23 +133,27 @@ def build_msg() -> str:
 
     # 5) Геомагнитка, Шуман, вода, астрособытия
     kp, kp_state = get_kp()
-    sch          = get_schumann()
-    sst          = get_sst()
-    astro        = astro_events()
+    sch = get_schumann()
+    sst = get_sst()
+    astro = astro_events()
 
     if kp is not None:
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})")
     else:
         P.append("🧲 Геомагнитка: н/д")
 
-    if "freq" in sch:
-        trend = "↑" if sch.get("high") else "→"
-        P.append(f"🎵 Шуман: {sch['freq']:.1f} Гц {trend}")
+    # исправленный вывод Шумана
+    if sch.get('freq') is not None:
+        emoji = '⚡' if sch['high'] else '🎵'
+        cached = ' (из кеша)' if sch.get('cached') else ''
+        P.append(
+            f"{emoji} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cached}"
+        )
     else:
         P.append(f"🎵 Шуман: {sch.get('msg','н/д')}")
 
     if sst is not None:
-        P.append(f"🌊 Темп. воды (Medit.): {sst:.1f} °C (Open-Meteo)")
+        P.append(f"🌊 Темп. воды (Medit.): {sst:.1f} °C")
 
     if astro:
         P.append("🌌 <b>Астрособытия</b> – " + " | ".join(astro))
@@ -166,8 +161,8 @@ def build_msg() -> str:
 
     # 6) Вывод + советы
     if   fog:        culprit = "туман"
-    elif kp_state=="буря": culprit = "магнитные бури"
-    elif press <1007: culprit = "низкое давление"
+    elif kp_state == "буря": culprit = "магнитные бури"
+    elif press < 1007: culprit = "низкое давление"
     elif strong:     culprit = "шальной ветер"
     else:            culprit = "мини-парад планет"
 
