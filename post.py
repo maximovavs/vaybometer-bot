@@ -44,8 +44,7 @@ POLL_QUESTION = "Как сегодня ваше самочувствие? 🤔"
 POLL_OPTIONS  = ["🔥 Полон(а) энергии", "🙂 Нормально",
                  "😴 Немного вялый(ая)", "🤒 Всё плохо"]
 
-
-# ─────────── helper: завтрашний max/min из Open-Meteo ────────────
+# ─────────── helper: завтрашний max/min из Open-Meteo ───────────
 def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
     date = TOM.to_date_string()
     r = requests.get(
@@ -64,7 +63,6 @@ def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optio
     t_min = j.get("temperature_2m_min", [None])[0]
     return t_max, t_min
 
-
 # ─────────── build_msg ──────────────────────────────────────────
 def build_msg() -> str:
     P: List[str] = []
@@ -75,6 +73,7 @@ def build_msg() -> str:
         d, n = fetch_tomorrow_temps(la, lo)
         if d is not None and n is not None:
             temps.append((d, n))
+
     if not temps:
         raise RuntimeError("Нет данных температур с Open-Meteo")
 
@@ -88,9 +87,9 @@ def build_msg() -> str:
         raise RuntimeError("Источники погоды недоступны")
 
     strong = w.get("strong_wind", False)
-    fog    = w.get("fog_alert", False)
+    fog    = w.get("fog_alert",   False)
 
-    cur   = w["current"]
+    cur       = w["current"]
     wind_kmh  = cur["windspeed"]
     wind_deg  = cur["winddirection"]
     press     = cur["pressure"]
@@ -115,11 +114,11 @@ def build_msg() -> str:
     city_t: List[Tuple[str, float, float]] = []
     for c, (la, lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo)
-        if d is None or n is None: continue
-        city_t.append((c, d, n))
+        if d is not None and n is not None:
+            city_t.append((c, d, n))
     city_t.sort(key=lambda x: x[1], reverse=True)
 
-    medals = "🥇🥈🥉4️⃣".split(" ")
+    medals = ["🥇", "🥈", "🥉", "4️⃣"]
     P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
     for i, (c, d, n) in enumerate(city_t[:4]):
         P.append(f"{medals[i]} {c}: {d:.1f}/{n:.1f} °C")
@@ -133,32 +132,30 @@ def build_msg() -> str:
 
     pol = get_pollen()
     if pol:
-        risk = max(pol["risk"].values())
-        P.append(f"🌿 Пыльца – уровень {risk} "
+        risk = max(pol['risk'].values())
+        P.append(f"🌿 Пыльца — уровень {risk} "
                  f"(деревья {pol['tree']}, травы {pol['grass']}, сорняки {pol['weed']})")
     P.append("———")
 
-    # ——— геомагнитка | Шуман | море | астрособытия ———
+    # ——— геомагнитка / Шуман / море / астрособытия ———
     kp, _ = get_kp()
     if kp is not None:
-        P.append(f"{kp_emoji(kp)} Геомагнитка Kp ={kp:.1f}")
+        P.append(f"{kp_emoji(kp)} Геомагнитка Kp = {kp:.1f}")
     else:
         P.append("🧲 Геомагнитка: нет данных")
 
-    sch = get_schumann()
-    trend = get_schumann_trend()
+    sch    = get_schumann()
+    trend  = get_schumann_trend()
     if "freq" in sch:
-        P.append(f"🎵 Шуман: {sch['freq']:.2f} Гц {trend} – "
-                 f\"{'⚡️ повышенные вибрации' if sch.get('high') else 'фон в норме'}\"")
+        note = "⚡️ повышенные вибрации" if sch.get("high") else "фон в норме"
+        P.append(f"🎵 Шуман: {sch['freq']:.2f} Гц {trend} – {note}")
     else:
         P.append(f"🎵 Шуман: {sch['msg']}")
 
-    sst = get_sst()
-    if sst is not None:
+    if (sst := get_sst()) is not None:
         P.append(f"🌊 Температура воды: {sst:.1f} °C (Open-Meteo)")
 
-    astro = astro_events()
-    if astro:
+    if (astro := astro_events()):
         P.append("🌌 " + " | ".join(astro))
     P.append("———")
 
@@ -166,7 +163,7 @@ def build_msg() -> str:
     culprit = ("туман" if fog else
                "магнитные бури" if kp and kp >= 5 else
                "низкое давление" if press < 1007 else
-               "шальной ветер" if strong else
+               "сильный ветер" if strong else
                "мини-парад планет")
     summary, tips = gpt_blurb(culprit)
     P.append(f"📜 <b>Вывод</b>\n{summary}")
@@ -178,11 +175,10 @@ def build_msg() -> str:
 
     return "\n".join(P)
 
-
 # ─────────── отправка ───────────────────────────────────────────
 async def send_main_post(bot: Bot) -> None:
     html = build_msg()
-    logging.info("Preview: %s", html.replace('\n', ' | ')[:200])
+    logging.info("Preview: %s", html.replace('\n', ' | ')[:250])
     await bot.send_message(
         CHAT_ID, html,
         parse_mode="HTML",
