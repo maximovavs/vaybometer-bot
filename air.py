@@ -5,139 +5,99 @@
 air.py
 ~~~~~~
 
-• Два бесплатных источника качества воздуха
-    1) IQAir “nearest_city”   (нужен AIRVISUAL_KEY)
-    2) Open-Meteo Air Quality (без ключа)
+• Два открытых источника качества воздуха
+  1) IQAir / nearest_city  (нужен AIRVISUAL_KEY, но можно быть None)
+  2) Open-Meteo Air-Quality (без ключа)
 
-• merge_air_sources() объединяет данные, чтобы всегда вернуть
-  словарь одинакового вида:
-      {"lvl":"умеренный", "aqi":67, "pm25":12.3, "pm10":22.0}
-
-  ▸ если цифры отсутствуют, ставится "н/д" / None  
-  ▸ цветной уровень формируется по шкале US-EPA
+• merge_air_sources()  ⇒ объединяет словари, приоритет IQAir-->Open-Meteo
+• get_air()            ⇒ всегда {'lvl','aqi','pm25','pm10'}  (с «н/д»)
 """
 
 from __future__ import annotations
-from typing import Any, Dict, Optional, Tuple
 import os, logging
+from typing import Dict, Any, Optional
 
-from utils import _get, _get_retry, aqi_color
+from utils import _get, aqi_color   # aqi_color уже есть в utils.py
 
-# ── координаты (Limassol) ─────────────────────────────────────────
+# ────────── координаты (Limassol) ────────────────────────────────
 LAT, LON = 34.707, 33.022
 
-# ── ключи (может не быть) ─────────────────────────────────────────
-AIR_KEY = os.getenv("AIRVISUAL_KEY")      # IQAir key
+# ────────── API-ключи ────────────────────────────────────────────
+AIR_KEY = os.getenv("AIRVISUAL_KEY")        # может быть None
 
-# ── шкала AQI → текст ────────────────────────────────────────────
+# ────────── helpers ──────────────────────────────────────────────
 def _aqi_level(aqi: float | int) -> str:
-    a = float(aqi)
-    if a <=  50: return "хороший"
-    if a <= 100: return "умеренный"
-    if a <= 150: return "вредный"
-    if a <= 200: return "оч. вредный"
+    if aqi == "н/д":        return "н/д"
+    aqi = float(aqi)
+    if aqi <=  50: return "хороший"
+    if aqi <= 100: return "умеренный"
+    if aqi <= 150: return "вредный"
+    if aqi <= 200: return "оч. вредный"
     return "опасный"
 
-# ── 1) IQAir ------------------------------------------------------
-def _fetch_iqair() -> Dict[str, Any]:
+# ────────── источники ────────────────────────────────────────────
+def _src_iqair() -> Dict[str, Any] | None:
+    """IQAir nearest_city — возвращает словарь или None."""
     if not AIR_KEY:
-        return {}
-    j = _get_retry(
-        "https://api.airvisual.com/v2/nearest_city",
-        lat=LAT, lon=LON, key=AIR_KEY, retries=2
-    )
-    try:
-        pol   = j["data"]["current"]["pollution"]
-        aqi   = pol.get("aqius")
-        pm25  = pol.get("p2")
-        pm10  = pol.get("p1")
-        return {"aqi": aqi, "pm25": pm25, "pm10": pm10}
-    except Exception as e:
-        logging.warning("IQAir parse error: %s", e)
-        return {}
-
-# ── 2) Open-Meteo Air-Quality ------------------------------------
-def _fetch_openmeteo() -> Dict[str, Any]:
-    j = _get_retry(
-        "https://air-quality-api.open-meteo.com/v1/air-quality",
-        latitude=LAT, longitude=LON,
-        hourly="us_aqi,pm10,pm2_5",
-        timezone="UTC",
-        retries=2,
-    )
-    try:
-        hh = j["hourly"]
-        aqi  = hh["us_aqi"][0]
-        pm10 = hh["pm10"][0]
-        pm25 = hh["pm2_5"][0]
-        # API иногда возвращает None → приводим
-        return {"aqi": aqi, "pm25": pm25, "pm10": pm10}
-    except Exception as e:
-        logging.warning("Open-Meteo air parse error: %s", e)
-        return {}
-
-# ── объединитель --------------------------------------------------
-def merge_air_sources(*sources: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Склеивает несколько словарей, выбирая первую доступную цифру.
-    На выходе гарантирован : lvl, aqi, pm25, pm10
-    """
-    out: Dict[str, Any] = {"aqi": "н/д", "pm25": None, "pm10": None}
-
-    for src in sources:
-        for k in ("aqi", "pm25", "pm10"):
-            if out[k] in ("н/д", None) and src.get(k) not in (None, "n/a"):
-                out[k] = src[k]
-
-    # уровень / цвет
-    if out["aqi"] != "н/д":
-        out["lvl"] = _aqi_level(out["aqi"])
-    else:
-        out["lvl"] = "н/д"
-
-    return out
-
-# ── публичная функция --------------------------------------------
-def get_air() -> Dict[str, Any]:
-    """
-    Всегда возвращает полный словарь:
-        {"lvl","aqi","pm25","pm10"}
-    """
-    iq   = _fetch_iqair()
-    om   = _fetch_openmeteo()
-    data = merge_air_sources(iq, om)
-
-    # финальный цвет-эмодзи можно получить так:
-    data["color"] = aqi_color(data["aqi"])
-    return data
-
-# ── K-index, SST оставляем как были -------------------------------
-def get_kp() -> Tuple[Optional[float], str]:
-    j = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
-    try:
-        kp_val = float(j[-1][1])
-    except Exception:
-        return None, "н/д"
-    if kp_val < 4:   state = "спокойный"
-    elif kp_val < 5: state = "повышенный"
-    else:            state = "буря"
-    return kp_val, state
-
-
-def get_sst() -> Optional[float]:
+        return None
     j = _get(
-        "https://marine-api.open-meteo.com/v1/marine",
-        latitude=LAT, longitude=LON,
-        hourly="sea_surface_temperature",
-        timezone="UTC",
+        "https://api.airvisual.com/v2/nearest_city",
+        lat=LAT, lon=LON, key=AIR_KEY
     )
     try:
-        return round(j["hourly"]["sea_surface_temperature"][0], 1)
-    except Exception:
+        pol = j["data"]["current"]["pollution"]
+        return {
+            "aqi":   pol.get("aqius", "н/д"),
+            "pm25":  pol.get("p2"   , None),
+            "pm10":  pol.get("p1"   , None),
+        }
+    except Exception as e:
+        logging.warning("IQAir source error: %s", e)
         return None
 
 
-# ── быстрый тест: python -m air -----------------------------------
-if __name__ == "__main__":
+def _src_openmeteo() -> Dict[str, Any] | None:
+    """Open-Meteo Air-Quality — возвращает словарь или None."""
+    j = _get(
+        "https://air-quality-api.open-meteo.com/v1/air-quality",
+        latitude=LAT, longitude=LON,
+        hourly="pm10,pm2_5,us_aqi", timezone="UTC"
+    )
+    try:
+        aqi  = j["hourly"]["us_aqi"][0]
+        pm25 = j["hourly"]["pm2_5"][0]
+        pm10 = j["hourly"]["pm10" ][0]
+        # иногда -1 для «нет данных»
+        aqi  = aqi  if aqi  >= 0 else "н/д"
+        pm25 = pm25 if pm25 >= 0 else None
+        pm10 = pm10 if pm10 >= 0 else None
+        return {"aqi": aqi, "pm25": pm25, "pm10": pm10}
+    except Exception as e:
+        logging.warning("Open-Meteo AQ source error: %s", e)
+        return None
+
+
+# ────────── слияние ──────────────────────────────────────────────
+def merge_air_sources(src1: Dict[str,Any]|None,
+                      src2: Dict[str,Any]|None) -> Dict[str,Any]:
+    """Приоритет src1; дополняем тем, чего в нём нет / None."""
+    base = {"aqi": "н/д", "pm25": None, "pm10": None}
+    for k in base:
+        base[k] = (
+            (src1 or {}).get(k) if (src1 and (src1.get(k) not in (None,"н/д")))
+            else (src2 or {}).get(k, base[k])
+        )
+    base["lvl"] = _aqi_level(base["aqi"])
+    return base
+
+
+# ────────── основной API ─────────────────────────────────────────
+def get_air() -> Dict[str,Any]:
+    """Публичная точка входа — всегда отдаёт полный словарь."""
+    return merge_air_sources(_src_iqair(), _src_openmeteo())
+
+
+# ──────── лёгкий тест:  python -m air ────────────────────────────
+if __name__ == "__main__":          # ← для локальной проверки
     from pprint import pprint
     pprint(get_air())
