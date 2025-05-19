@@ -8,10 +8,11 @@ import requests
 from typing import Optional, Tuple, Dict, Any
 
 import pendulum
+from requests.exceptions import RequestException
 from telegram import Bot, error as tg_err
 
 from utils import (
-    compass, clouds_word, wind_phrase, safe, get_fact,
+    compass, clouds_word, wind_phrase, get_fact,
     WEATHER_ICONS, AIR_EMOJI, pressure_trend, kp_emoji, pm_color
 )
 from weather import get_weather
@@ -27,8 +28,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 TZ           = pendulum.timezone("Asia/Nicosia")
 TODAY        = pendulum.now(TZ).date()
 TOMORROW     = TODAY.add(days=1)
-TOKEN        = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID      = int(os.environ["CHANNEL_ID"])
+TOKEN        = os.environ.get("TELEGRAM_TOKEN", "")
+CHAT_ID      = int(os.environ.get("CHANNEL_ID", 0))
 UNSPLASH_KEY = os.getenv("UNSPLASH_KEY")
 
 POLL_QUESTION = "Как сегодня ваше самочувствие? 🤔"
@@ -45,7 +46,7 @@ CITIES = {
 
 def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
     """
-    Возвращает (max_temp, min_temp) на завтра запросом к Open-Meteo.
+    Возвращает (max_temp, min_temp) на завтра или (None, None) при ошибке.
     """
     date = TOMORROW.to_date_string()
     url = "https://api.open-meteo.com/v1/forecast"
@@ -57,63 +58,65 @@ def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optio
         "start_date": date,
         "end_date":   date,
     }
-    r = requests.get(url, params=params, timeout=15)
-    r.raise_for_status()
-    j = r.json().get("daily", {})
-    tmax = j.get("temperature_2m_max", [])
-    tmin = j.get("temperature_2m_min", [])
-    return (tmax[0] if tmax else None,
-            tmin[0] if tmin else None)
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        daily = r.json().get("daily", {})
+        tmax = daily.get("temperature_2m_max", [])
+        tmin = daily.get("temperature_2m_min", [])
+        return (tmax[0] if tmax else None,
+                tmin[0] if tmin else None)
+    except RequestException as e:
+        logging.warning("fetch_tomorrow_temps error: %s", e)
+        return None, None
 
 
 def build_msg() -> str:
     P: list[str] = []
 
-    # 1) Завтрашние макс/мин для Лимассола
-    lat, lon = CITIES["Limassol"]
+    # 1) Погодный блок: средняя темп. и текущие условия
+    lat, lon = CITIES.get("Limassol", (None, None))
     day_max, night_min = fetch_tomorrow_temps(lat, lon)
-    if day_max is None or night_min is None:
-        raise RuntimeError("Не удалось получить температуру на завтра")
-
-    # 2) Текущие условия
     w = get_weather(lat, lon) or {}
-    strong = w.get("strong_wind", False)
-    fog    = w.get("fog_alert",   False)
-
     cur = w.get("current") or w.get("current_weather", {})
+
+    if day_max is not None and night_min is not None:
+        avg_temp = (day_max + night_min) / 2
+    else:
+        avg_temp = cur.get("temperature") or cur.get("temp") or 0
+        logging.warning("Используется текущая температура вместо прогноза")
+
     wind_kmh = cur.get("windspeed") or cur.get("wind_speed", 0.0)
     wind_deg = cur.get("winddirection") or cur.get("wind_deg", 0.0)
-
-    press = cur.get("pressure") \
-        or w.get("hourly", {}).get("surface_pressure", [1013])[0]
+    press    = cur.get("pressure") or w.get("hourly", {}).get("surface_pressure", [0])[0]
 
     clouds_pct = cur.get("clouds")
     if clouds_pct is None:
         clouds_pct = w.get("hourly", {}).get("cloud_cover", [0])[0]
     cloud_w = clouds_word(clouds_pct)
 
-    # строка, которая понравилась
     P.append(
-        f"🌡️ Ср. темп: {((day_max + night_min)/2):.0f} °C • "
-        f"{cloud_w} • 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) • 💧 {press:.0f} гПа {pressure_trend(w)}"
+        f"🌡️ Ср. темп: {avg_temp:.0f} °C • {cloud_w} • 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)})" \
+        f" • 💧 {press:.0f} гПа {pressure_trend(w)}"
     )
     P.append("———")
 
-    # 3) Рейтинг городов (дн./ночь)
+    # 2) Рейтинг городов по завтрашней температуре
     temps: Dict[str, Tuple[float, float]] = {}
     for city, (la, lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo)
         if d is not None:
             temps[city] = (d, n or d)
+    if temps:
+        P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
+        medals = ["🥇", "🥈", "🥉", "4️⃣"]
+        for i, (city, (d, n)) in enumerate(
+            sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]
+        ):
+            P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
+        P.append("———")
 
-    P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
-    medals = ["🥇", "🥈", "🥉", "4️⃣"]
-    for i, (city, (d, n)) in enumerate(
-            sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]):
-        P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
-    P.append("———")
-
-    # 4) Качество воздуха + пыльца
+    # 3) Качество воздуха и пыльца
     air = get_air() or {}
     P.append("🏙️ <b>Качество воздуха</b>")
     lvl = air.get("lvl", "н/д")
@@ -121,17 +124,16 @@ def build_msg() -> str:
         f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
         f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}"
     )
-
     pollen = get_pollen() or {}
     if pollen:
-        P += [
-            "🌿 <b>Пыльца</b>",
+        P.append("🌿 <b>Пыльца</b>")
+        P.append(
             f"Деревья: {pollen['tree']} | Травы: {pollen['grass']} | "
             f"Сорняки: {pollen['weed']} — риск {pollen['risk']}"
-        ]
+        )
     P.append("———")
 
-    # 5) Геомагнитка, Шуман, вода, астрособытия
+    # 4) Геомагнитка, Шуман, вода и астрособытия
     kp, kp_state = get_kp()
     sch = get_schumann()
     sst = get_sst()
@@ -142,7 +144,6 @@ def build_msg() -> str:
     else:
         P.append("🧲 Геомагнитка: н/д")
 
-    # исправленный вывод Шумана
     if sch.get('freq') is not None:
         emoji = '⚡' if sch['high'] else '🎵'
         cached = ' (из кеша)' if sch.get('cached') else ''
@@ -154,17 +155,25 @@ def build_msg() -> str:
 
     if sst is not None:
         P.append(f"🌊 Темп. воды (Medit.): {sst:.1f} °C")
+    P.append("———")
 
     if astro:
         P.append("🌌 <b>Астрособытия</b> – " + " | ".join(astro))
     P.append("———")
 
-    # 6) Вывод + советы
-    if   fog:        culprit = "туман"
-    elif kp_state == "буря": culprit = "магнитные бури"
-    elif press < 1007: culprit = "низкое давление"
-    elif strong:     culprit = "шальной ветер"
-    else:            culprit = "мини-парад планет"
+    # 5) Вывод и рекомендации
+    fog    = w.get("fog_alert", False)
+    strong = w.get("strong_wind", False)
+    if fog:
+        culprit = "туман"
+    elif kp_state == "буря":
+        culprit = "магнитные бури"
+    elif press < 1007:
+        culprit = "низкое давление"
+    elif strong:
+        culprit = "шальной ветер"
+    else:
+        culprit = "мини-парад планет"
 
     summary, tips = gpt_blurb(culprit)
     P.append(f"📜 <b>Вывод</b>\n{summary}")
@@ -214,15 +223,19 @@ async def fetch_unsplash_photo() -> Optional[str]:
     url = "https://api.unsplash.com/photos/random"
     resp = requests.get(
         url,
-        params={"query":"cyprus coast sunset","client_id":UNSPLASH_KEY},
+        params={"query":"cyprus coast sunset","client_id": UNSPLASH_KEY},
         timeout=15
     )
-    return resp.json().get("urls",{}).get("regular")
+    return resp.json().get("urls", {}).get("regular")
 
 
 async def send_photo(bot: Bot, photo_url: str) -> None:
     try:
-        await bot.send_photo(CHAT_ID, photo=photo_url, caption="Фото дня • Unsplash")
+        await bot.send_photo(
+            CHAT_ID,
+            photo=photo_url,
+            caption="Фото дня • Unsplash"
+        )
     except tg_err.TelegramError as e:
         logging.warning("Photo send error: %s", e)
 
