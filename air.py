@@ -120,6 +120,10 @@ def get_air() -> Dict[str, Any]:
         _src_openmeteo(),    # приоритет 2 (всегда без ключа)
     )
 
+      lvl = data['lvl']
+      color = AIR_EMOJI.get(lvl, "⚪")
+
+
     # уровень-текст
     try:
         lvl = _aqi_level(float(raw["aqi"])) if raw["aqi"] != "н/д" else "н/д"
