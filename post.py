@@ -152,10 +152,14 @@ def build_msg() -> str:
     )
 
     # 5️⃣ пыльца --------------------------------------------------
-    pol = get_pollen()
-    if pol:
-        P.append(f"🌿 Пыльца – риск: {pol['risk']}")
-        P.append(f"Деревья: {pol['tree']} | Травы: {pol['grass']} | Сорняки: {pol['weed']}")
+    p = get_pollen() or {"risk":"н/д","tree":None,"grass":None,"weed":None}
+    P.append("🌿 <b>Пыльца</b>")
+    P.append(
+        f"Риск: {p['risk']} | "
+        f"Деревья: {safe(p['tree'])} | "
+        f"Травы: {safe(p['grass'])} | "
+        f"Сорняки: {safe(p['weed'])}"
+    )
     P.append("———")
 
     # 6️⃣ геомагнитка -------------------------------------------
@@ -197,8 +201,9 @@ def build_msg() -> str:
         "туман"             if cloud_w=="туман" else
         "космические факторы"
     )
-    summary,tips = gpt_blurb(culprit)
+    summary, tips = gpt_blurb(culprit)
     P.append(f"📜 <b>Вывод</b>\n{summary}")
+    P.append("———")
     P.append("✅ <b>Рекомендации</b>")
     for t in tips:
         P.append(f"• {t}")
