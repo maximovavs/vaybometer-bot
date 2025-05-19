@@ -74,10 +74,16 @@ def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optio
 def build_msg() -> str:
     P: list[str] = []
 
-    # Приветствие и заголовок
+    # 1) Приветствие и заголовок
     P.append(f"☀️ Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})")
-    # 1) Погодный блок: средняя темп. и текущие условия
-    lat, lon = CITIES.get("Limassol", (None, None))
+
+    # 2) Температура воды
+    sst = get_sst()
+    if sst is not None:
+        P.append(f"🌊 Темп. воды (Medit.): {sst:.1f} °C")
+
+    # 3) Погодный блок: средняя темп. и текущие условия (Limassol)
+    lat, lon = CITIES["Limassol"]
     day_max, night_min = fetch_tomorrow_temps(lat, lon)
     w = get_weather(lat, lon) or {}
     cur = w.get("current") or w.get("current_weather", {})
@@ -86,7 +92,7 @@ def build_msg() -> str:
         avg_temp = (day_max + night_min) / 2
     else:
         avg_temp = cur.get("temperature") or cur.get("temp") or 0
-        logging.warning("Используется текущая температуру вместо прогноза")
+        logging.warning("Используется текущая температура вместо прогноза")
 
     wind_kmh = cur.get("windspeed") or cur.get("wind_speed", 0.0)
     wind_deg = cur.get("winddirection") or cur.get("wind_deg", 0.0)
@@ -103,7 +109,7 @@ def build_msg() -> str:
     )
     P.append("———")
 
-    # 2) Рейтинг городов по завтрашней температуре
+    # 4) Рейтинг городов по завтрашней температуре
     temps: Dict[str, Tuple[float, float]] = {}
     for city, (la, lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo)
@@ -118,7 +124,7 @@ def build_msg() -> str:
             P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
         P.append("———")
 
-    # 3) Качество воздуха и пыльца
+    # 5) Качество воздуха и пыльца
     air = get_air() or {}
     P.append("🏙️ <b>Качество воздуха</b>")
     lvl = air.get("lvl", "н/д")
@@ -135,17 +141,14 @@ def build_msg() -> str:
         )
     P.append("———")
 
-    # 4) Геомагнитка, Шуман, вода и астрособытия
+    # 6) Геомагнитка и Шуман
     kp, kp_state = get_kp()
-    sch = get_schumann()
-    sst = get_sst()
-    astro = astro_events()
-
     if kp is not None:
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})")
     else:
         P.append("🧲 Геомагнитка: н/д")
 
+    sch = get_schumann()
     if sch.get('freq') is not None:
         emoji = '⚡' if sch['high'] else '🎵'
         cached = ' (из кеша)' if sch.get('cached') else ''
@@ -154,16 +157,15 @@ def build_msg() -> str:
         )
     else:
         P.append(f"🎵 Шуман: {sch.get('msg','н/д')}")
-
-    if sst is not None:
-        P.append(f"🌊 Темп. воды (Medit.): {sst:.1f} °C")
     P.append("———")
 
+    # 7) Астрособытия
+    astro = astro_events()
     if astro:
         P.append("🌌 <b>Астрособытия</b> – " + " | ".join(astro))
     P.append("———")
 
-    # 5) Вывод и рекомендации
+    # 8) Вывод и рекомендации
     fog    = w.get("fog_alert", False)
     strong = w.get("strong_wind", False)
     if fog:
