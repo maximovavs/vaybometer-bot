@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 schumann.py
 ~~~~~~~~~~~
-• Получает частоту (Гц) и амплитуду (Р) основного резонанса Шумана (SR 1)
-  из двух открытых API (GL Coherence / UCSD GCI).
-• Сохраняет измерения в «~/.cache/vaybometer/sr1.json».
-• high = True, если  freq > 8 Гц  ИЛИ  amp > 100 Р.
-• get_schumann_trend(hours=24) → '↑' / '↓' / '→'  по сравнению
-  с показанием N часов назад.
+• берёт freq/amp из 2 open-API;
+• пишет историю в  ~/cache/sr1.json  (не критично, если каталога нет);
+• high = freq>8 Гц  ИЛИ  amp>100;
+• get_schumann_trend(hours) → ↑/↓/→.
 """
 
 from __future__ import annotations
-
-import json, time, logging, random, pathlib
-from typing import Dict, Any, List, Optional
+import json, os, time, logging, random, pathlib
+from typing import Dict, Any, List
+from datetime import datetime, timedelta
 
 from utils import _get
 
-# ── файловый кэш ──────────────────────────────────────────────────
-CACHE_DIR   = pathlib.Path.home() / ".cache" / "vaybometer"
-CACHE_FILE  = CACHE_DIR / "sr1.json"
-CACHE_DIR.mkdir(parents=True, exist_ok=True)      # гарантируем, что путь есть
+# -----------------------------------------------------------------
+CACHE_PATH = pathlib.Path.home() / "cache" / "sr1.json"
+CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-# ── шутки-затычки ────────────────────────────────────────────────
+URLS = (
+    "https://api.glcoherence.org/v1/earth",
+    "https://gci-api.ucsd.edu/data/latest",
+)
+
 SCH_QUOTES = [
     "датчики молчат — ретрит 🌱",
     "кошачий мяу-фактор заглушил сенсоры 😸",
@@ -35,116 +35,88 @@ SCH_QUOTES = [
     "тишина в эфире… 🎧",
 ]
 
-# ── внутренние утилиты ───────────────────────────────────────────
-def _load_history() -> List[Dict[str, float]]:
-    if CACHE_FILE.exists():
+# -----------------------------------------------------------------
+def _save_point(freq: float, amp: float) -> None:
+    point = {"ts": time.time(), "freq": round(freq, 3), "amp": round(amp, 1)}
+    history: List[dict] = []
+    if CACHE_PATH.exists():
         try:
-            return json.loads(CACHE_FILE.read_text())
+            history = json.loads(CACHE_PATH.read_text())
         except Exception:
-            logging.warning("Schumann cache corrupt – recreating")
-    return []
+            history = []
+    history.append(point)
+    # оставляем последние 7 дней
+    week_ago = time.time() - 7 * 24 * 3600
+    history = [p for p in history if p["ts"] >= week_ago]
+    CACHE_PATH.write_text(json.dumps(history, ensure_ascii=False))
 
-def _save_history(hist: List[Dict[str, float]]) -> None:
+def _last_points(hours: int = 24) -> List[dict]:
+    if not CACHE_PATH.exists():
+        return []
     try:
-        CACHE_FILE.write_text(json.dumps(hist, ensure_ascii=False))
-    except Exception as e:
-        logging.warning("Schumann cache save error: %s", e)
+        history = json.loads(CACHE_PATH.read_text())
+    except Exception:
+        return []
+    border = time.time() - hours * 3600
+    return [p for p in history if p["ts"] >= border]
 
-def _append_history(freq: float, amp: float) -> None:
-    ts_now = int(time.time())
-    hist   = _load_history()
-    hist.append({"ts": ts_now, "freq": freq, "amp": amp})
-    # оставляем записи лишь за последние 72 ч (избыточно для тренда)
-    cutoff = ts_now - 72 * 3600
-    hist   = [h for h in hist if h["ts"] >= cutoff]
-    _save_history(hist)
-
-# ── API запрос ───────────────────────────────────────────────────
-_API_ENDPOINTS = (
-    "https://api.glcoherence.org/v1/earth",       # JSON plain
-    "https://gci-api.ucsd.edu/data/latest",       # JSON в  ["data"]["sr1"]
-)
-
-def _fetch_sr1() -> Optional[tuple[float, float]]:
-    """Пробует оба эндпойнта и возвращает (freq, amp) или None."""
-    for url in _API_ENDPOINTS:
+# -----------------------------------------------------------------
+def get_schumann() -> Dict[str, Any]:
+    """
+    dict:
+        {'freq': 7.83, 'amp': 45.1, 'high': False}
+        или {'msg': '...'}
+    """
+    for url in URLS:
         j = _get(url)
         if not j:
             continue
         try:
-            # второй сервис оборачивает данные
-            if "data" in j and "sr1" in j["data"]:
+            if "data" in j:                 # второй эндпоинт
                 j = j["data"]["sr1"]
-
-            freq = j.get("frequency_1") or j.get("frequency")
-            amp  = j.get("amplitude_1") or j.get("amplitude")
-            if freq is None or amp is None:
-                raise ValueError("missing fields")
-
-            return float(freq), float(amp)
+            freq = float(j.get("frequency_1") or j.get("frequency"))
+            amp  = float(j.get("amplitude_1") or j.get("amplitude"))
+            _save_point(freq, amp)
+            return {
+                "freq": round(freq, 2),
+                "amp":  round(amp, 1),
+                "high": freq > 8.0 or amp > 100.0,
+            }
         except Exception as e:
-            logging.warning("Schumann parse error (%s): %s", url, e)
-    return None
+            logging.warning("schumann parse %s: %s", url, e)
 
-# ── публичные функции ────────────────────────────────────────────
-def get_schumann() -> Dict[str, Any]:
-    """
-    ▸ При успехе:
-        {"freq": 7.83, "amp": 42.1, "high": False}
-        {"freq": 8.11, "amp":123.4, "high": True}
-    ▸ При недоступности источников:
-        {"msg": "<случайная цитата>"}
-    """
-    sr = _fetch_sr1()
-    if not sr:
-        return {"msg": random.choice(SCH_QUOTES)}
+    # оба источника недоступны — пробуем кэш
+    pts = _last_points(48)
+    if pts:
+        last = pts[-1]
+        return {
+            "freq": last["freq"],
+            "amp":  last["amp"],
+            "high": last["freq"] > 8.0 or last["amp"] > 100.0,
+            "cached": True,
+        }
+    return {"msg": random.choice(SCH_QUOTES)}
 
-    freq, amp = sr
-    _append_history(freq, amp)                  # кешируем факт измерения
-
-    return {
-        "freq": round(freq, 2),
-        "amp":  round(amp, 1),
-        "high": (freq > 8.0) or (amp > 100.0),  # новое правило
-    }
-
+# -----------------------------------------------------------------
 def get_schumann_trend(hours: int = 24) -> str:
     """
-    Сравнивает текущую частоту с частотой `hours` назад.
-    Возвращает стрелку:
-       ↑  рост > 0.05 Гц
-       ↓  падение < −0.05 Гц
-       →  почти без изменений
+    ↑  если последняя freq > средней на |hours|;
+    ↓  если < средней −0.1 Гц;
+    →  иначе.
     """
-    hist = _load_history()
-    if len(hist) < 2:
+    pts = _last_points(hours)
+    if len(pts) < 3:
         return "→"
-
-    ts_now = int(time.time())
-    target = ts_now - hours * 3600
-
-    past: Optional[float] = None
-    for h in hist:
-        if h["ts"] <= target:
-            past = h["freq"]
-            break
-    if past is None:          # нет достаточной давности
-        past = hist[0]["freq"]
-
-    current = hist[-1]["freq"]
-    diff    = current - past
-
-    if diff > 0.05:
+    avg = sum(p["freq"] for p in pts[:-1]) / (len(pts)-1)
+    last = pts[-1]["freq"]
+    if last - avg >= 0.10:
         return "↑"
-    if diff < -0.05:
+    if last - avg <= -0.10:
         return "↓"
     return "→"
 
-# ── CLI-тест  :  python -m schumann ──────────────────────────────
+# -----------------------------------------------------------------
 if __name__ == "__main__":
     from pprint import pprint
-    data = get_schumann()
-    trend = get_schumann_trend()
-    if "freq" in data:
-        data["trend"] = trend
-    pprint(data)
+    pprint(get_schumann())
+    print("trend 24 h:", get_schumann_trend())
