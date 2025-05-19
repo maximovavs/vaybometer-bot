@@ -74,6 +74,8 @@ def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optio
 def build_msg() -> str:
     P: list[str] = []
 
+    # Приветствие и заголовок
+    P.append(f"☀️ Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})")
     # 1) Погодный блок: средняя темп. и текущие условия
     lat, lon = CITIES.get("Limassol", (None, None))
     day_max, night_min = fetch_tomorrow_temps(lat, lon)
@@ -84,7 +86,7 @@ def build_msg() -> str:
         avg_temp = (day_max + night_min) / 2
     else:
         avg_temp = cur.get("temperature") or cur.get("temp") or 0
-        logging.warning("Используется текущая температура вместо прогноза")
+        logging.warning("Используется текущая температуру вместо прогноза")
 
     wind_kmh = cur.get("windspeed") or cur.get("wind_speed", 0.0)
     wind_deg = cur.get("winddirection") or cur.get("wind_deg", 0.0)
@@ -195,7 +197,7 @@ async def send_main_post(bot: Bot) -> None:
             CHAT_ID,
             html,
             parse_mode="HTML",
-            disable_web_page_preview=True,
+            disable_web_page_preview=True
         )
         logging.info("Message sent ✓")
     except tg_err.TelegramError as e:
@@ -211,7 +213,7 @@ async def send_poll_if_friday(bot: Bot) -> None:
                 question=POLL_QUESTION,
                 options=POLL_OPTIONS,
                 is_anonymous=False,
-                allows_multiple_answers=False,
+                allows_multiple_answers=False
             )
         except tg_err.TelegramError as e:
             logging.warning("Poll send error: %s", e)
