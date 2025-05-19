@@ -10,37 +10,47 @@ air.py
   2) Open-Meteo Air-Quality (без ключа)
 
 • merge_air_sources()  ⇒ объединяет словари, приоритет IQAir → Open-Meteo
-• get_air()            ⇒ всегда возвращает dict с ключами
-                          {'lvl','aqi','pm25','pm10'} (с «н/д» / None)
+• get_air()            ⇒ dict {'lvl','aqi','pm25','pm10'}
+• get_sst()            ⇒ текущая температура поверхности моря (Sea Surface Temp)
+• get_kp()             ⇒ текущий индекс геомагнитной активности Kp и его состояние
 """
 
 from __future__ import annotations
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
-from utils import _get, aqi_color
+from utils import _get
 
-# ────────── координаты (Limassol) ────────────────────────────────
+# ────────── координаты Лимассола ───────────────────────────────────
 LAT, LON = 34.707, 33.022
 
-# ────────── API-ключи ────────────────────────────────────────────
-AIR_KEY = os.getenv("AIRVISUAL_KEY")  # IQAir
+# ────────── API-ключи ───────────────────────────────────────────────
+AIR_KEY      = os.getenv("AIRVISUAL_KEY")  # IQAir, при отсутствии – None
 
-# ────────── helpers ──────────────────────────────────────────────
+# ────────── хелперы ─────────────────────────────────────────────────
 def _aqi_level(aqi: float | int | str) -> str:
+    """Переводит числовой AQI в текстовый уровень."""
     if aqi in ("н/д", None):
         return "н/д"
     aqi = float(aqi)
-    if aqi <=  50: return "хороший"
-    if aqi <= 100: return "умеренный"
-    if aqi <= 150: return "вредный"
-    if aqi <= 200: return "оч. вредный"
+    if aqi <=  50:   return "хороший"
+    if aqi <= 100:   return "умеренный"
+    if aqi <= 150:   return "вредный"
+    if aqi <= 200:   return "оч. вредный"
     return "опасный"
 
-# ────────── источники ────────────────────────────────────────────
+def _kp_state(kp: float) -> str:
+    """Дает текстовое состояние по значению Kp."""
+    if kp < 3:
+        return "спокойно"
+    if kp < 5:
+        return "неспокойно"
+    return "буря"
+
+# ────────── источники AQ ────────────────────────────────────────────
 def _src_iqair() -> Optional[Dict[str, Any]]:
-    """IQAir nearest_city — возвращает словарь или None."""
+    """IQAir nearest_city — возвращает dict или None."""
     if not AIR_KEY:
         return None
     j = _get(
@@ -53,15 +63,15 @@ def _src_iqair() -> Optional[Dict[str, Any]]:
         pol = j["data"]["current"]["pollution"]
         return {
             "aqi":  pol.get("aqius", "н/д"),
-            "pm25": pol.get("p2"   , None),
-            "pm10": pol.get("p1"   , None),
+            "pm25": pol.get("p2",    None),
+            "pm10": pol.get("p1",    None),
         }
     except Exception as e:
         logging.warning("IQAir source error: %s", e)
         return None
 
 def _src_openmeteo() -> Optional[Dict[str, Any]]:
-    """Open-Meteo Air-Quality — возвращает словарь или None."""
+    """Open-Meteo Air-Quality — возвращает dict или None."""
     j = _get(
         "https://air-quality-api.open-meteo.com/v1/air-quality",
         latitude=LAT, longitude=LON,
@@ -85,14 +95,14 @@ def _src_openmeteo() -> Optional[Dict[str, Any]]:
         logging.warning("Open-Meteo AQ source error: %s", e)
         return None
 
-# ────────── слияние ──────────────────────────────────────────────
+# ────────── слияние источников ────────────────────────────────────
 def merge_air_sources(
-    src1: Optional[Dict[str,Any]],
+    src1: Optional[Dict[str,Any]], 
     src2: Optional[Dict[str,Any]]
 ) -> Dict[str, Any]:
     """
     Приоритет src1; дополняем тем, чего в нём нет или что = None/"н/д".
-    Результат всегда имеет ключи 'aqi','pm25','pm10','lvl'.
+    Всегда возвращает dict с ключами 'aqi','pm25','pm10','lvl'.
     """
     base = {"aqi": "н/д", "pm25": None, "pm10": None}
     for k in ("aqi","pm25","pm10"):
@@ -105,12 +115,12 @@ def merge_air_sources(
     base["lvl"] = _aqi_level(base["aqi"])
     return base
 
-# ────────── основной API ─────────────────────────────────────────
+# ────────── публичные API ──────────────────────────────────────────
 def get_air() -> Dict[str, Any]:
     """
-    Returns:
+    Возвращает текущее качество воздуха:
       {
-        'lvl':  <строка уровня>,
+        'lvl':  <уровень, строка>,
         'aqi':  <число или "н/д">,
         'pm25': <число или None>,
         'pm10': <число или None>
@@ -120,7 +130,49 @@ def get_air() -> Dict[str, Any]:
     om = _src_openmeteo()
     return merge_air_sources(iq, om)
 
-# ──────── лёгкий тест:  python -m air ────────────────────────────
+def get_sst() -> Optional[float]:
+    """
+    Возвращает текущую температуру поверхности моря (Mediterranean) в точке LAT, LON,
+    либо None, если данные недоступны.
+    """
+    j = _get(
+        "https://api.open-meteo.com/v1/forecast",
+        latitude=LAT, longitude=LON,
+        hourly="sea_surface_temperature", timezone="UTC"
+    )
+    if not j or "hourly" not in j:
+        return None
+    try:
+        arr = j["hourly"]["sea_surface_temperature"]
+        val = arr[0] if arr else None
+        return val if isinstance(val, (int, float)) else None
+    except Exception as e:
+        logging.warning("SST source error: %s", e)
+        return None
+
+def get_kp() -> Tuple[Optional[float], str]:
+    """
+    Возвращает текущий индекс Kp и его состояние:
+      (kp_value: float | None, state: str)
+    """
+    # NOAA SWPC real-time Kp API
+    j = _get("https://services.swpc.noaa.gov/products/geospace/geospace-real-time.json")
+    if not j or not isinstance(j, list):
+        return None, "н/д"
+    try:
+        # Пропустим заголовок, если он есть
+        first = j[1] if isinstance(j[0][0], str) else j[0]
+        # последний элемент массива — самый свежий трёхчасовой Kp
+        raw = first[-1]
+        kp = float(raw)
+        return kp, _kp_state(kp)
+    except Exception as e:
+        logging.warning("Kp source error: %s", e)
+        return None, "н/д"
+
+# ────────── тестирование при запуске ───────────────────────────────
 if __name__ == "__main__":
     from pprint import pprint
-    pprint(get_air())
+    print("Air:", end=" "); pprint(get_air())
+    print("SST:", get_sst())
+    print("Kp: ", get_kp())
