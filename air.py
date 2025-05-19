@@ -26,7 +26,7 @@ from utils import _get
 LAT, LON = 34.707, 33.022
 
 # ────────── API-ключи ───────────────────────────────────────────────
-AIR_KEY      = os.getenv("AIRVISUAL_KEY")  # IQAir, при отсутствии – None
+AIR_KEY = os.getenv("AIRVISUAL_KEY")  # IQAir, при отсутствии – None
 
 # ────────── хелперы ─────────────────────────────────────────────────
 def _aqi_level(aqi: float | int | str) -> str:
@@ -34,10 +34,14 @@ def _aqi_level(aqi: float | int | str) -> str:
     if aqi in ("н/д", None):
         return "н/д"
     aqi = float(aqi)
-    if aqi <=  50:   return "хороший"
-    if aqi <= 100:   return "умеренный"
-    if aqi <= 150:   return "вредный"
-    if aqi <= 200:   return "оч. вредный"
+    if aqi <=  50:
+        return "хороший"
+    if aqi <= 100:
+        return "умеренный"
+    if aqi <= 150:
+        return "вредный"
+    if aqi <= 200:
+        return "оч. вредный"
     return "опасный"
 
 def _kp_state(kp: float) -> str:
@@ -70,6 +74,7 @@ def _src_iqair() -> Optional[Dict[str, Any]]:
         logging.warning("IQAir source error: %s", e)
         return None
 
+
 def _src_openmeteo() -> Optional[Dict[str, Any]]:
     """Open-Meteo Air-Quality — возвращает dict или None."""
     j = _get(
@@ -97,7 +102,7 @@ def _src_openmeteo() -> Optional[Dict[str, Any]]:
 
 # ────────── слияние источников ────────────────────────────────────
 def merge_air_sources(
-    src1: Optional[Dict[str,Any]], 
+    src1: Optional[Dict[str,Any]],
     src2: Optional[Dict[str,Any]]
 ) -> Dict[str, Any]:
     """
@@ -105,7 +110,7 @@ def merge_air_sources(
     Всегда возвращает dict с ключами 'aqi','pm25','pm10','lvl'.
     """
     base = {"aqi": "н/д", "pm25": None, "pm10": None}
-    for k in ("aqi","pm25","pm10"):
+    for k in ("aqi","pm25","pm10"):  # type: ignore
         v1 = src1.get(k) if src1 else None
         if v1 not in (None, "н/д"):
             base[k] = v1
@@ -130,6 +135,7 @@ def get_air() -> Dict[str, Any]:
     om = _src_openmeteo()
     return merge_air_sources(iq, om)
 
+
 def get_sst() -> Optional[float]:
     """
     Возвращает текущую температуру поверхности моря (Mediterranean) в точке LAT, LON,
@@ -138,31 +144,34 @@ def get_sst() -> Optional[float]:
     j = _get(
         "https://api.open-meteo.com/v1/forecast",
         latitude=LAT, longitude=LON,
-        hourly="sea_surface_temperature", timezone="UTC"
+        hourly="soil_temperature_0cm",
+        timezone="UTC",
+        cell_selection="sea",
     )
     if not j or "hourly" not in j:
         return None
     try:
-        arr = j["hourly"]["sea_surface_temperature"]
+        arr = j["hourly"].get("soil_temperature_0cm", [])
         val = arr[0] if arr else None
-        return val if isinstance(val, (int, float)) else None
+        return float(val) if isinstance(val, (int, float)) else None
     except Exception as e:
         logging.warning("SST source error: %s", e)
         return None
+
 
 def get_kp() -> Tuple[Optional[float], str]:
     """
     Возвращает текущий индекс Kp и его состояние:
       (kp_value: float | None, state: str)
     """
-    # NOAA SWPC real-time Kp API
-    j = _get("https://services.swpc.noaa.gov/products/geospace/geospace-real-time.json")
+    j = _get(
+        "https://services.swpc.noaa.gov/products/geospace/geospace-real-time.json"
+    )
     if not j or not isinstance(j, list):
         return None, "н/д"
     try:
         # Пропустим заголовок, если он есть
         first = j[1] if isinstance(j[0][0], str) else j[0]
-        # последний элемент массива — самый свежий трёхчасовой Kp
         raw = first[-1]
         kp = float(raw)
         return kp, _kp_state(kp)
