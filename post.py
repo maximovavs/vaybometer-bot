@@ -120,19 +120,24 @@ def build_msg() -> str:
         f"🔽 Давление: {press:.0f} гПа {pressure_trend(w0)}",
         "———",
     ]
-
-    # 3️⃣ рейтинг городов ---------------------------------------
-    rating: List[Tuple[str,float,float]] = []
-    for city,(la,lo) in CITIES.items():
-        d,n = fetch_tomorrow_temps(la,lo)
-        if d is None: continue
-        rating.append((city,d,n if n is not None else d))
-    rating.sort(key=lambda x:x[1], reverse=True)
-
-    P.append("🎖️ Рейтинг городов (дн./ночь)")
-    medals = ["🥇","🥈","🥉","4️⃣"]
-    for i,(c,d,n) in enumerate(rating[:4]):
-        P.append(f"{medals[i]} {c}: {d:.1f}/{n:.1f} °C")
+    # ── 3️⃣ Рейтинг городов ─────────────────────────────────────────
+    temps: Dict[str, Tuple[float, float]] = {}
+    fallback_d, fallback_n = day_max, night_min     # запас на случай None
+    
+    for city, (la, lo) in CITIES.items():
+        d, n = fetch_tomorrow_temps(la, lo)
+        # сохраняем даже если None
+        temps[city] = (
+            d if d is not None else fallback_d,
+            n if n is not None else fallback_n,
+        )
+    
+    # сортируем и выводим ровно 4 строки
+    P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
+    medals = ["🥇", "🥈", "🥉", "4️⃣"]
+    for i, (city, (d_v, n_v)) in enumerate(
+            sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]):
+        P.append(f"{medals[i]} {city}: {d_v:.1f}/{n_v:.1f} °C")
     P.append("———")
 
     # 4️⃣ воздух --------------------------------------------------
