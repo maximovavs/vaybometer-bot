@@ -20,6 +20,11 @@ jobs:
           curl -v https://api.glcoherence.org/v1/earth || true
           echo "Пробуем достучаться до gci-api.ucsd.edu"
           curl -v https://gci-api.ucsd.edu/data/latest || true
+          echo "→ allorigins:" 
+          curl -I https://api.allorigins.win/get?url=https%3A%2F%2Fapi.glcoherence.org%2Fv1%2Fearth || true
+          echo "→ прямой GlCoherence:" 
+          curl -I https://api.glcoherence.org/v1/earth || true
+
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
