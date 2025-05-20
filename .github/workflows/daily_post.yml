@@ -17,10 +17,15 @@ jobs:
       - name: 🔍 Проверка сети Schumann и Open-Meteo
         run: |
           echo "=== Проверка Schumann API через зеркала ==="
+          # зеркало через CodeTabs
           curl -I https://api.codetabs.com/v1/proxy?quest=https://api.glcoherence.org/v1/earth || true
+          # зеркало через Freeboard ThingProxy
           curl -I https://thingproxy.freeboard.io/fetch/https://api.glcoherence.org/v1/earth || true
+          # зеркало через AllOrigins
           curl -I https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth || true
+          # прямой основной endpoint
           curl -I https://api.glcoherence.org/v1/earth || true
+          # второй источник
           curl -I https://gci-api.ucsd.edu/data/latest || true
           echo "---"
           echo "=== Проверка Open-Meteo Forecast ==="
