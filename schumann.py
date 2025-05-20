@@ -82,6 +82,7 @@ def get_schumann_trend(hours: int = 24) -> str:
     return "→"
 
 # ────────── основная функция ─────────────────────────────────────────
+logging.info("Schumann: пытаемся получить данные…")
 def get_schumann() -> Dict[str, Any]:
     """
     Возвращает словарь:
