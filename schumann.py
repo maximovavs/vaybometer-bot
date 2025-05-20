@@ -7,6 +7,7 @@ schumann.py
 • Кэширует историю (7 дней) в ~/.cache/vaybometer/sr1.json.
 • Возвращает частоту, амплитуду, тренд и состояние high. Использует mirror и fallback на кеш.
 """
+
 from __future__ import annotations
 import json
 import logging
@@ -21,7 +22,7 @@ from utils import _get
 CACHE_PATH = Path.home() / ".cache" / "vaybometer" / "sr1.json"
 CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-# URL-источники (mirror через allorigins, основной, запасной)
+# URL-источники: mirror через AllOrigins, основной и запасной
 URLS = [
     "https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth",
     "https://api.glcoherence.org/v1/earth",
@@ -40,7 +41,7 @@ SCH_QUOTES = [
 
 # ────────── Помощники кеша ───────────────────────────────────────────
 def _save_point(freq: float, amp: float) -> None:
-    point = {"ts": time.time(), "freq": round(freq, 3), "amp": round(amp, 1)}
+    point: Dict[str, Any] = {"ts": time.time(), "freq": round(freq, 3), "amp": round(amp, 1)}
     try:
         history: List[Dict[str, Any]] = json.loads(CACHE_PATH.read_text())
     except Exception:
@@ -60,7 +61,7 @@ def _last_points(hours: int = 24) -> List[Dict[str, Any]]:
 
 # ────────── Retry + backoff ─────────────────────────────────────────
 def _fetch_schumann_data(url: str, attempts: int = 5, backoff: float = 2.0) -> Optional[Any]:
-    logging.info("Schumann: fetching from %s, attempts=%d", url, attempts)
+    logging.info("Schumann: fetching from %s (attempts=%d)", url, attempts)
     for i in range(attempts):
         data = _get(url)
         if data:
@@ -88,50 +89,49 @@ def _compute_trend(pts: List[Dict[str, Any]], hours: int = 24) -> str:
 # ────────── Основная функция ─────────────────────────────────────────
 logging.info("Schumann: starting retrieval")
 def get_schumann() -> Dict[str, Any]:
-    # Пробуем каждый URL
     for url in URLS:
         raw = _fetch_schumann_data(url)
         if not raw:
             continue
         try:
-            # Если обёрнут в {'data':{...,'sr1':...}}
-            if isinstance(raw, dict) and 'data' in raw:
-                data = raw['data'].get('sr1', raw['data'])
+            if isinstance(raw, dict) and "data" in raw:
+                data = raw["data"].get("sr1", raw["data"])
             else:
                 data = raw
-            # Извлечение полей
-            freq_val = data.get('frequency_1') or data.get('frequency')
-            amp_val  = data.get('amplitude_1')  or data.get('amplitude')
+            freq_val = data.get("frequency_1") or data.get("frequency")
+            amp_val  = data.get("amplitude_1")  or data.get("amplitude")
             if freq_val is None or amp_val is None:
-                raise ValueError('freq/amp absent')
+                raise ValueError("freq/amp absent")
             freq = float(freq_val)
             amp  = float(amp_val)
             _save_point(freq, amp)
             pts = _last_points(24)
             return {
-                'freq':  round(freq, 2),
-                'amp':   round(amp, 1),
-                'high':  freq > 8.0 or amp > 100.0,
-                'trend': _compute_trend(pts),
+                "freq":  round(freq, 2),
+                "amp":   round(amp,   1),
+                "high":  freq > 8.0 or amp > 100.0,
+                "trend": _compute_trend(pts),
             }
         except Exception as e:
             logging.warning("Schumann parse error %s: %s", url, e)
-    # Фоллбэк на кеш
+
+    # Фоллбэк на кеш за 48 часов
     pts48 = _last_points(48)
     if pts48:
         last = pts48[-1]
         return {
-            'freq':  last['freq'],
-            'amp':   last['amp'],
-            'high':  last['freq'] > 8.0 or last['amp'] > 100.0,
-            'trend': _compute_trend(pts48),
-            'cached': True,
+            "freq":   last["freq"],
+            "amp":    last["amp"],
+            "high":   last["freq"] > 8.0 or last["amp"] > 100.0,
+            "trend":  _compute_trend(pts48),
+            "cached": True,
         }
-    # Совсем ничего
-    return {'msg': random.choice(SCH_QUOTES)}
+
+    # Совсем нет данных
+    return {"msg": random.choice(SCH_QUOTES)}
 
 # ────────── CLI-тест ────────────────────────────────────────────────
-if __name__ == '__main__':
+if __name__ == "__main__":
     from pprint import pprint
     pprint(get_schumann())
-    print('trend 24h:', get_schumann().get('trend'))
+    print("trend 24h:", get_schumann().get("trend"))
