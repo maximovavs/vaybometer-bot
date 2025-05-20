@@ -5,6 +5,8 @@ import os
 import asyncio
 import logging
 import requests
+import json
+from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
 import pendulum
@@ -43,6 +45,50 @@ CITIES = {
     "Pafos"   : (34.776, 32.424),
 }
 
+# ─────────── Schumann fallback ────────────────────────────────────
+def get_schumann_with_fallback() -> Dict[str, Any]:
+    """
+    Сначала пробует get_schumann() — 
+    если нет live-данных, читает последний часовой замер из schumann_hourly.json
+    и рассчитывает тренд за последние 24 точки.
+    """
+    sch = get_schumann()
+    if sch.get("freq") is not None:
+        return sch
+
+    # fallback на локальный часовой файл
+    cache_path = Path(__file__).parent / "schumann_hourly.json"
+    if cache_path.exists():
+        try:
+            arr = json.loads(cache_path.read_text())
+            if arr:
+                last = arr[-1]
+                # строим тренд по последним 24 точкам (или меньше, если меньше строк)
+                pts = arr[-24:]
+                freqs = [p["freq"] for p in pts]
+                if len(freqs) >= 2:
+                    avg = sum(freqs[:-1]) / (len(freqs)-1)
+                    delta = freqs[-1] - avg
+                    if delta >= 0.1:
+                        trend = "↑"
+                    elif delta <= -0.1:
+                        trend = "↓"
+                    else:
+                        trend = "→"
+                else:
+                    trend = "→"
+                return {
+                    "freq":  round(last["freq"], 2),
+                    "amp":   round(last["amp"], 1),
+                    "high":  last["freq"] > 8.0 or last["amp"] > 100.0,
+                    "trend": trend,
+                    "cached": True,
+                }
+        except Exception as e:
+            logging.warning("Schumann fallback parse error: %s", e)
+
+    # возвращаем оригинальный sch со «шуткой»
+    return sch
 
 def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
     """
@@ -104,7 +150,7 @@ def build_msg() -> str:
     cloud_w = clouds_word(clouds_pct)
 
     P.append(
-        f"🌡️ Ср. темп: {avg_temp:.0f} °C • {cloud_w} • 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)})" \
+        f"🌡️ Ср. темп: {avg_temp:.0f} °C • {cloud_w} • 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)})"
         f" • 💧 {press:.0f} гПа {pressure_trend(w)}"
     )
     P.append("———")
@@ -148,10 +194,10 @@ def build_msg() -> str:
     else:
         P.append("🧲 Геомагнитка: н/д")
 
-    sch = get_schumann()
-    if sch.get('freq') is not None:
-        emoji = '⚡' if sch['high'] else '🎵'
-        cached = ' (из кеша)' if sch.get('cached') else ''
+    sch = get_schumann_with_fallback()
+    if sch.get("freq") is not None:
+        emoji = '⚡' if sch["high"] else '🎵'
+        cached = ' (из кеша)' if sch.get("cached") else ''
         P.append(
             f"{emoji} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cached}"
         )
