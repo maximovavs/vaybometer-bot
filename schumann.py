@@ -22,10 +22,17 @@ from utils import _get
 CACHE_PATH = Path.home() / ".cache" / "vaybometer" / "sr1.json"
 CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-# URL-источники: mirror через AllOrigins, основной и запасной
+# URL-источники: несколько зеркал + прямой + запасной минутный поток
 URLS = [
+    # 1) Codetabs proxy
+    "https://api.codetabs.com/v1/proxy?quest=https://api.glcoherence.org/v1/earth",
+    # 2) ThingProxy
+    "https://thingproxy.freeboard.io/fetch/https://api.glcoherence.org/v1/earth",
+    # 3) AllOrigins raw
     "https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth",
+    # 4) Прямой
     "https://api.glcoherence.org/v1/earth",
+    # 5) Запасной минутный поток
     "https://gci-api.ucsd.edu/data/latest",
 ]
 
@@ -60,7 +67,7 @@ def _last_points(hours: int = 24) -> List[Dict[str, Any]]:
     return [p for p in history if p["ts"] >= cutoff]
 
 # ────────── Retry + backoff ─────────────────────────────────────────
-def _fetch_schumann_data(url: str, attempts: int = 5, backoff: float = 2.0) -> Optional[Any]:
+def _fetch_schumann_data(url: str, attempts: int = 7, backoff: float = 2.0) -> Optional[Any]:
     logging.info("Schumann: fetching from %s (attempts=%d)", url, attempts)
     for i in range(attempts):
         data = _get(url)
@@ -127,7 +134,7 @@ def get_schumann() -> Dict[str, Any]:
             "cached": True,
         }
 
-    # Совсем нет данных
+    # Совсем нет данных — выдаём шутку
     return {"msg": random.choice(SCH_QUOTES)}
 
 # ────────── CLI-тест ────────────────────────────────────────────────
