@@ -3,11 +3,10 @@
 """
 schumann.py
 ~~~~~~~~~~~
-• Берёт freq/amp из двух открытых API и кеширует 7 дней истории.
-• high = freq > 8.0 Гц или amp > 100 пТ.
-• Возвращает сразу и тренд (↑/↓/→).
+• Собирает freq/amp резонанса Шумана из нескольких API с retry и backoff.
+• Кэширует историю (7 дней) в ~/.cache/vaybometer/sr1.json.
+• Возвращает частоту, амплитуду, тренд и состояние high. Использует mirror и fallback на кеш.
 """
-
 from __future__ import annotations
 import json
 import logging
@@ -18,17 +17,17 @@ from typing import Any, Dict, List, Optional
 
 from utils import _get
 
-# ────────── настройки кеша ─────────────────────────────────────────
+# ────────── Кеш и настройки ─────────────────────────────────────────
 CACHE_PATH = Path.home() / ".cache" / "vaybometer" / "sr1.json"
 CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-# ────────── источники данных ─────────────────────────────────────────
-URLS = (
+# URL-источники (mirror через allorigins, основной, запасной)
+URLS = [
+    "https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth",
     "https://api.glcoherence.org/v1/earth",
     "https://gci-api.ucsd.edu/data/latest",
-)
+]
 
-# Цитаты, если данные недоступны
 SCH_QUOTES = [
     "датчики молчат — ретрит 🌱",
     "кошачий мяу-фактор заглушил сенсоры 😸",
@@ -39,22 +38,19 @@ SCH_QUOTES = [
     "тишина в эфире… 🎧",
 ]
 
-# ────────── функции работы с кешем ────────────────────────────────────
+# ────────── Помощники кеша ───────────────────────────────────────────
 def _save_point(freq: float, amp: float) -> None:
-    """Добавляет точку {ts, freq, amp} и хранит 7 дней истории"""
     point = {"ts": time.time(), "freq": round(freq, 3), "amp": round(amp, 1)}
     try:
         history: List[Dict[str, Any]] = json.loads(CACHE_PATH.read_text())
     except Exception:
         history = []
     history.append(point)
-    week_ago = time.time() - 7 * 24 * 3600
-    history = [p for p in history if p["ts"] >= week_ago]
+    cutoff = time.time() - 7 * 24 * 3600
+    history = [p for p in history if p["ts"] >= cutoff]
     CACHE_PATH.write_text(json.dumps(history, ensure_ascii=False))
 
-
 def _last_points(hours: int = 24) -> List[Dict[str, Any]]:
-    """Возвращает список точек за последние `hours` часов из кеша"""
     try:
         history: List[Dict[str, Any]] = json.loads(CACHE_PATH.read_text())
     except Exception:
@@ -62,79 +58,80 @@ def _last_points(hours: int = 24) -> List[Dict[str, Any]]:
     cutoff = time.time() - hours * 3600
     return [p for p in history if p["ts"] >= cutoff]
 
-# ────────── тренд частоты Шумана ─────────────────────────────────────
-def get_schumann_trend(hours: int = 24) -> str:
-    """
-    ↑ если последняя freq > средней за `hours` на ≥0.1 Гц,
-    ↓ если ниже на ≥0.1 Гц,
-    → в остальных случаях.
-    """
-    pts = _last_points(hours)
+# ────────── Retry + backoff ─────────────────────────────────────────
+def _fetch_schumann_data(url: str, attempts: int = 5, backoff: float = 2.0) -> Optional[Any]:
+    logging.info("Schumann: fetching from %s, attempts=%d", url, attempts)
+    for i in range(attempts):
+        data = _get(url)
+        if data:
+            logging.info("Schumann: received data from %s", url)
+            return data
+        wait = backoff ** i
+        logging.warning("Schumann: retry %d/%d after %.1fs", i+1, attempts, wait)
+        time.sleep(wait)
+    logging.error("Schumann: all attempts failed for %s", url)
+    return None
+
+# ────────── Тренд Шумана ─────────────────────────────────────────────
+def _compute_trend(pts: List[Dict[str, Any]], hours: int = 24) -> str:
     if len(pts) < 3:
         return "→"
     *prev, last = pts
     avg = sum(p["freq"] for p in prev) / len(prev)
     delta = last["freq"] - avg
-    if delta >= 0.10:
+    if delta >= 0.1:
         return "↑"
-    if delta <= -0.10:
+    if delta <= -0.1:
         return "↓"
     return "→"
 
-# ────────── основная функция ─────────────────────────────────────────
-logging.info("Schumann: пытаемся получить данные…")
+# ────────── Основная функция ─────────────────────────────────────────
+logging.info("Schumann: starting retrieval")
 def get_schumann() -> Dict[str, Any]:
-    """
-    Возвращает словарь:
-      {
-        'freq': float,       # частота резонанса в Гц
-        'amp': float,        # амплитуда в пТ
-        'high': bool,        # True, если freq>8.0 или amp>100
-        'trend': '↑'|'↓'|'→',# тренд частоты за 24ч
-        'cached': bool       # True, если данные из кеша
-      }
-    или при полном отсутствии данных:
-      {'msg': str}
-    """
+    # Пробуем каждый URL
     for url in URLS:
-        data = _get(url)
-        if not data:
+        raw = _fetch_schumann_data(url)
+        if not raw:
             continue
         try:
-            # для API с ключом 'data'
-            if isinstance(data, dict) and 'data' in data:
-                data = data['data'].get('sr1', data['data'])
-            freq_raw = data.get('frequency_1') or data.get('frequency')
-            amp_raw  = data.get('amplitude_1')  or data.get('amplitude')
-            if freq_raw is None or amp_raw is None:
+            # Если обёрнут в {'data':{...,'sr1':...}}
+            if isinstance(raw, dict) and 'data' in raw:
+                data = raw['data'].get('sr1', raw['data'])
+            else:
+                data = raw
+            # Извлечение полей
+            freq_val = data.get('frequency_1') or data.get('frequency')
+            amp_val  = data.get('amplitude_1')  or data.get('amplitude')
+            if freq_val is None or amp_val is None:
                 raise ValueError('freq/amp absent')
-            freq = float(freq_raw)
-            amp  = float(amp_raw)
+            freq = float(freq_val)
+            amp  = float(amp_val)
             _save_point(freq, amp)
+            pts = _last_points(24)
             return {
                 'freq':  round(freq, 2),
-                'amp':   round(amp,  1),
-                'high':  (freq > 8.0) or (amp > 100.0),
-                'trend': get_schumann_trend(),
+                'amp':   round(amp, 1),
+                'high':  freq > 8.0 or amp > 100.0,
+                'trend': _compute_trend(pts),
             }
         except Exception as e:
-            logging.warning('schumann parse %s: %s', url, e)
-    # fallback: данные из кеша за последние 48ч
-    pts = _last_points(48)
-    if pts:
-        last = pts[-1]
+            logging.warning("Schumann parse error %s: %s", url, e)
+    # Фоллбэк на кеш
+    pts48 = _last_points(48)
+    if pts48:
+        last = pts48[-1]
         return {
             'freq':  last['freq'],
             'amp':   last['amp'],
-            'high':  (last['freq'] > 8.0) or (last['amp'] > 100.0),
-            'trend': get_schumann_trend(48),
+            'high':  last['freq'] > 8.0 or last['amp'] > 100.0,
+            'trend': _compute_trend(pts48),
             'cached': True,
         }
-    # совсем нет данных
+    # Совсем ничего
     return {'msg': random.choice(SCH_QUOTES)}
 
-# ────────── CLI-тестирование ────────────────────────────────────────
+# ────────── CLI-тест ────────────────────────────────────────────────
 if __name__ == '__main__':
     from pprint import pprint
-    print('Schumann:', end=' '); pprint(get_schumann())
-    print('Trend 24h:', get_schumann_trend())
+    pprint(get_schumann())
+    print('trend 24h:', get_schumann().get('trend'))
