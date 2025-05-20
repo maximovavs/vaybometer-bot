@@ -14,6 +14,13 @@ jobs:
       - name: 📥 Checkout repo
         uses: actions/checkout@v3
 
+      - name: 🔌 Проверка связи для Шумана
+        run: |
+          echo "Пробуем достучаться до api.glcoherence.org"
+          curl -v https://api.glcoherence.org/v1/earth || true
+          echo "Пробуем достучаться до gci-api.ucsd.edu"
+          curl -v https://gci-api.ucsd.edu/data/latest || true
+
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
