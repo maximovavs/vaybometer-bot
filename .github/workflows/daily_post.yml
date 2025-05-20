@@ -14,17 +14,14 @@ jobs:
       - name: 📥 Checkout repo
         uses: actions/checkout@v3
 
-      - name: 🔌 Проверка связи для Шумана
+      - name: 🔍 Проверка сети Schumann и Open-Meteo
         run: |
-          echo "Пробуем достучаться до api.glcoherence.org"
-          curl -v https://api.glcoherence.org/v1/earth || true
-          echo "Пробуем достучаться до gci-api.ucsd.edu"
-          curl -v https://gci-api.ucsd.edu/data/latest || true
-          echo "→ allorigins:" 
-          curl -I https://api.allorigins.win/get?url=https%3A%2F%2Fapi.glcoherence.org%2Fv1%2Fearth || true
-          echo "→ прямой GlCoherence:" 
+          echo "=== Проверка Schumann API ==="
           curl -I https://api.glcoherence.org/v1/earth || true
-
+          curl -I https://gci-api.ucsd.edu/data/latest || true
+          echo "---"
+          echo "=== Проверка Open-Meteo Forecast ==="
+          curl -I "https://api.open-meteo.com/v1/forecast?latitude=34.707&longitude=33.022&hourly=soil_temperature_0cm" || true
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
