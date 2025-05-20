@@ -1,0 +1,52 @@
+name: Collect Schumann Data
+
+on:
+  schedule:
+    # каждый час ровно
+    - cron: '0 * * * *'
+
+jobs:
+  schumann:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repo
+        uses: actions/checkout@v3
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install deps
+        run: |
+          pip install requests
+
+      - name: 🚀 Fetch Schumann point
+        run: |
+          python - <<‘EOF’
+          import json, time
+          from pathlib import Path
+          from utils import _get
+          # URL и логика как в schumann.py, но только одна точка:
+          url = "https://api.glcoherence.org/v1/earth"
+          data = _get(url) or {}
+          freq = data.get("data",{}).get("sr1",{}).get("frequency_1") or data.get("frequency")
+          amp  = data.get("data",{}).get("sr1",{}).get("amplitude_1")  or data.get("amplitude")
+          if freq and amp:
+              rec = {"ts": int(time.time()), "freq": float(freq), "amp": float(amp)}
+              cache = Path("schumann_hourly.json")
+              arr = json.loads(cache.read_text()) if cache.exists() else []
+              arr.append(rec)
+              # храним 7 дней истории (24 * 7 записей)
+              cutoff = int(time.time()) - 7*24*3600
+              arr = [r for r in arr if r["ts"] >= cutoff]
+              cache.write_text(json.dumps(arr, ensure_ascii=False))
+              print("Saved Schumann point:", rec)
+          EOF
+
+      - name: 🗂️ Commit cache
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "schumann: add hourly point"
+          file_pattern: "schumann_hourly.json"
