@@ -2,8 +2,8 @@ name: Daily VayboMeter Post
 
 on:
   schedule:
-    # 18:00 UTC → 21:00 Asia/Nicosia
-    - cron: '0 18 * * *'
+    # 16:00 UTC → 19:00 Asia/Nicosia
+    - cron: '0 16 * * *'
   workflow_dispatch:
 
 jobs:
