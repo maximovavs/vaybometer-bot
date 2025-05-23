@@ -38,20 +38,19 @@ jobs:
           echo "=== Первые 20 строк lunar_calendar.json ==="
           head -n 20 lunar_calendar.json || true
 
-      - name: 📁 Upload lunar_calendar.json as artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: lunar_calendar
-          path: lunar_calendar.json
-
       - name: ✏️ Commit and push lunar_calendar.json if changed
         run: |
+          # Настраиваем автора
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet; then
+
+          # Стадим файл (и гарантируем, что untracked попадёт в индекс)
+          git add lunar_calendar.json
+
+          # Если в индексе есть изменения — коммитим и пушим
+          if git diff --cached --quiet; then
             echo "✅ lunar_calendar.json up to date, nothing to commit."
           else
-            git add lunar_calendar.json
             git commit -m "chore: обновить lunar_calendar.json"
             git push
           fi
