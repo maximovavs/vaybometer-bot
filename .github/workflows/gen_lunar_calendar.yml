@@ -1,0 +1,33 @@
+name: 🌓 Generate lunar_calendar.json
+
+# ручной вызов из UI Actions → "Run workflow"
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v3
+
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: 📦 Install deps
+      run: |
+        python -m pip install --upgrade pip
+        pip install pendulum requests
+
+    - name: ⚙️ Run generator
+      run: |
+        python gen_lunar_calendar.py
+
+    - name: 📁 Upload lunar_calendar.json
+      uses: actions/upload-artifact@v3
+      with:
+        name: lunar_calendar
+        path: lunar_calendar.json
