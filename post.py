@@ -24,6 +24,9 @@ from schumann import get_schumann
 from astro import astro_events
 from gpt import gpt_blurb
 
+# ← новый импорт
+from lunar import get_day_lunar_info  
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ─────────── Constants ────────────────────────────────────────────
@@ -63,7 +66,6 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
             arr = json.loads(cache_path.read_text())
             if arr:
                 last = arr[-1]
-                # строим тренд по последним 24 точкам (или меньше, если меньше строк)
                 pts = arr[-24:]
                 freqs = [p["freq"] for p in pts]
                 if len(freqs) >= 2:
@@ -87,7 +89,6 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
         except Exception as e:
             logging.warning("Schumann fallback parse error: %s", e)
 
-    # возвращаем оригинальный sch со «шуткой»
     return sch
 
 def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
@@ -121,7 +122,20 @@ def build_msg() -> str:
     P: list[str] = []
 
     # 1) Приветствие и заголовок
-    P.append(f"<b> 🌅 Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})</b>")
+    P.append(f"<b>🌅 Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})</b>")
+
+    # ← 1.1) Лунная информация на сегодня
+    lunar = get_day_lunar_info(TODAY)
+    if lunar:
+        P.append(f"🌙 <b>Луна</b>: {lunar['phase']} — {lunar['advice']}")
+        # выводим только две самые востребованные категории
+        fav = lunar.get("favorable", [])
+        unfav = lunar.get("unfavorable", [])
+        if fav:
+            P.append(f"✅ Благоприятные дни месяца: {', '.join(str(d) for d in fav)}")
+        if unfav:
+            P.append(f"❌ Неблагоприятные дни месяца: {', '.join(str(d) for d in unfav)}")
+        P.append("———")
 
     # 2) Температура воды
     sst = get_sst()
