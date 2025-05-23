@@ -1,13 +1,13 @@
 name: Generate Lunar Calendar
 
-# Запуск вручную из Actions → Run workflow
+# Запуск вручную через Actions → Run workflow
 on:
   workflow_dispatch:
 
+# Разрешаем workflow пушить изменения в репо
 permissions:
-  contents: write   # нужно, чтобы закоммитить обновлённый файл
-  actions: read
-  metadata: read
+  contents: write      # чтобы git push мог обновить lunar_calendar.json
+  actions: read        # по умолчанию для использования действий
 
 jobs:
   generate:
@@ -17,7 +17,7 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v3
         with:
-          persist-credentials: true  # чтобы git push работал с токеном
+          persist-credentials: true  # чтобы GITHUB_TOKEN использовался для push
 
       - name: 🐍 Setup Python 3.11
         uses: actions/setup-python@v4
@@ -36,5 +36,5 @@ jobs:
       - name: ✏️ Commit lunar_calendar.json back to repo
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          commit_message: "chore: обновить lunar_calendar.json"
+          commit_message: chore: обновить lunar_calendar.json
           file_pattern: lunar_calendar.json
