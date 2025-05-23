@@ -12,29 +12,32 @@ from lunar import get_day_lunar_info
 
 def astro_events() -> List[str]:
     """
-    Для текущей даты читает из lunar_calendar.json запись:
+    Для текущей даты (Asia/Nicosia) читает из lunar_calendar.json запись:
       {
         'phase':       строка с названием и знаком фазы Луны,
         'advice':      общий совет на этот день,
         'favorable':   [список благоприятных дней месяца],
         'unfavorable': [список неблагоприятных дней месяца],
       }
-    и возвращает список строк [phase, advice].
+    и возвращает список:
+      [ "<название фазы и знак>", "<рекомендация на сегодня>" ].
     Если данных нет — возвращает пустой список.
     """
-    today = pendulum.now().date()
+    tz = pendulum.timezone("Asia/Nicosia")
+    today = pendulum.now(tz).date()
     info: Optional[Dict[str, Any]] = get_day_lunar_info(today)
     if not info:
         return []
+
     events: List[str] = []
-    # первая строка — фаза Луны
     phase = info.get("phase", "").strip()
     if phase:
         events.append(phase)
-    # вторая строка — совет на сегодня
+
     advice = info.get("advice", "").strip()
     if advice:
         events.append(advice)
+
     return events
 
 if __name__ == "__main__":
