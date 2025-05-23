@@ -23,9 +23,7 @@ from pollen import get_pollen
 from schumann import get_schumann
 from astro import astro_events
 from gpt import gpt_blurb
-
-# ← новый импорт
-from lunar import get_day_lunar_info  
+from lunar import get_day_lunar_info  # ← новый импорт
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -48,18 +46,13 @@ CITIES = {
     "Pafos"   : (34.776, 32.424),
 }
 
+
 # ─────────── Schumann fallback ────────────────────────────────────
 def get_schumann_with_fallback() -> Dict[str, Any]:
-    """
-    Сначала пробует get_schumann() — 
-    если нет live-данных, читает последний часовой замер из schumann_hourly.json
-    и рассчитывает тренд за последние 24 точки.
-    """
     sch = get_schumann()
     if sch.get("freq") is not None:
         return sch
 
-    # fallback на локальный часовой файл
     cache_path = Path(__file__).parent / "schumann_hourly.json"
     if cache_path.exists():
         try:
@@ -91,10 +84,8 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
 
     return sch
 
+
 def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Возвращает (max_temp, min_temp) на завтра или (None, None) при ошибке.
-    """
     date = TOMORROW.to_date_string()
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -121,14 +112,13 @@ def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optio
 def build_msg() -> str:
     P: list[str] = []
 
-    # 1) Приветствие и заголовок
-    P.append(f"<b>🌅 Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})</b>")
+    # 1) Приветствие и заголовок (возвращаем звёздный вид ☀️)
+    P.append(f"☀️ Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})")
 
-    # ← 1.1) Лунная информация на сегодня
+    # 1.1) Лунная информация на сегодня
     lunar = get_day_lunar_info(TODAY)
     if lunar:
         P.append(f"🌙 <b>Луна</b>: {lunar['phase']} — {lunar['advice']}")
-        # выводим только две самые востребованные категории
         fav = lunar.get("favorable", [])
         unfav = lunar.get("unfavorable", [])
         if fav:
@@ -142,7 +132,7 @@ def build_msg() -> str:
     if sst is not None:
         P.append(f"🌊 Темп. моря: {sst:.1f} °C")
 
-    # 3) Погодный блок: средняя темп. и текущие условия (Limassol)
+    # 3) Погодный блок
     lat, lon = CITIES["Limassol"]
     day_max, night_min = fetch_tomorrow_temps(lat, lon)
     w = get_weather(lat, lon) or {}
@@ -158,18 +148,16 @@ def build_msg() -> str:
     wind_deg = cur.get("winddirection") or cur.get("wind_deg", 0.0)
     press    = cur.get("pressure") or w.get("hourly", {}).get("surface_pressure", [0])[0]
 
-    clouds_pct = cur.get("clouds")
-    if clouds_pct is None:
-        clouds_pct = w.get("hourly", {}).get("cloud_cover", [0])[0]
+    clouds_pct = cur.get("clouds") if cur.get("clouds") is not None else w.get("hourly", {}).get("cloud_cover", [0])[0]
     cloud_w = clouds_word(clouds_pct)
 
     P.append(
-        f"🌡️ Ср. темп: {avg_temp:.0f} °C • {cloud_w} • 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)})"
-        f" • 💧 {press:.0f} гПа {pressure_trend(w)}"
+        f"🌡️ Ср. темп: {avg_temp:.0f} °C • {cloud_w} • "
+        f"💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) • 💧 {press:.0f} гПа {pressure_trend(w)}"
     )
     P.append("———")
 
-    # 4) Рейтинг городов по завтрашней температуре
+    # 4) Рейтинг городов
     temps: Dict[str, Tuple[float, float]] = {}
     for city, (la, lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo)
@@ -178,9 +166,7 @@ def build_msg() -> str:
     if temps:
         P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣"]
-        for i, (city, (d, n)) in enumerate(
-            sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]
-        ):
+        for i, (city, (d, n)) in enumerate(sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]):
             P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
         P.append("———")
 
@@ -212,20 +198,22 @@ def build_msg() -> str:
     if sch.get("freq") is not None:
         emoji = '⚡' if sch["high"] else '🎵'
         cached = ' (из кеша)' if sch.get("cached") else ''
-        P.append(
-            f"{emoji} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cached}"
-        )
+        P.append(f"{emoji} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cached}")
     else:
         P.append(f"🎵 Шуман: {sch.get('msg','н/д')}")
     P.append("———")
 
-    # 7) Астрособытия
+    # 7) Астрособытия (две отдельные строки)
     astro = astro_events()
     if astro:
-        P.append("🌌 <b>Астрособытия</b> – " + " | ".join(astro))
+        # Первая — фаза, знак, влияние и рекомендация
+        P.append("🌌 <b>Астрособытия</b> – " + astro[0])
+        # Вторая — ближайшее важное событие и краткий совет
+        if len(astro) > 1 and astro[1]:
+            P.append("→ " + astro[1])
     P.append("———")
 
-    # 8) Вывод и рекомендации
+    # 8) Вывод и GPT-советы
     fog    = w.get("fog_alert", False)
     strong = w.get("strong_wind", False)
     if fog:
@@ -253,7 +241,7 @@ def build_msg() -> str:
 
 async def send_main_post(bot: Bot) -> None:
     html = build_msg()
-    logging.info("Preview: %s", html.replace("\n"," | ")[:200])
+    logging.info("Preview: %s", html.replace("\n", " | ")[:200])
     try:
         await bot.send_message(
             CHAT_ID,
@@ -287,7 +275,7 @@ async def fetch_unsplash_photo() -> Optional[str]:
     url = "https://api.unsplash.com/photos/random"
     resp = requests.get(
         url,
-        params={"query":"cyprus coast sunset","client_id": UNSPLASH_KEY},
+        params={"query": "cyprus coast sunset", "client_id": UNSPLASH_KEY},
         timeout=15
     )
     return resp.json().get("urls", {}).get("regular")
