@@ -1,34 +1,38 @@
 name: Generate Lunar Calendar
 
+# Запуск вручную или по расписанию — оставил только ручной запуск для отладки
 on:
   workflow_dispatch:
 
-# ─────────── Grant the runner permission to fetch actions metadata ───────────
+# Явно даём runner’у право читать действия (actions) и код (contents)
 permissions:
-  contents: read   # you already have this, but explicitly stating it doesn’t hurt
-  actions: read    # ← this is the missing bit
+  contents: read
+  actions: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout repository
         uses: actions/checkout@v3
 
-      - name: 🐍 Setup Python
+      - name: 🐍 Setup Python 3.11
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
       - name: 📦 Install dependencies
-        run: pip install pendulum
+        run: |
+          python -m pip install --upgrade pip
+          pip install pendulum
 
-      - name: 🌙 Generate lunar calendar for current month
+      - name: 🌙 Generate lunar calendar
+        # здесь ваш скрипт, который создаёт файл lunar_calendar.json
         run: python gen_lunar_calendar.py
 
-      - name: 📤 Upload generated calendar
+      - name: 📤 Upload lunar_calendar.json artifact
         uses: actions/upload-artifact@v3
         with:
-          name: lunar-calendar-${{ github.event_name }}  # or whatever you like
-          path: lunar_calendar.json                      # adjust to your output file
+          name: lunar-calendar
+          path: lunar_calendar.json
