@@ -1,21 +1,20 @@
 name: Generate Lunar Calendar
 
 on:
-  # Автозапуск 28-го числа каждого месяца в 00:00 UTC
-  schedule:
-    - cron: '0 0 28 * *'
-  # Кнопка «Run workflow» в UI
   workflow_dispatch:
+
+# ─────────── Grant the runner permission to fetch actions metadata ───────────
+permissions:
+  contents: read   # you already have this, but explicitly stating it doesn’t hurt
+  actions: read    # ← this is the missing bit
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout repository
+      - name: 📥 Checkout code
         uses: actions/checkout@v3
-        with:
-          persist-credentials: false
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -23,16 +22,13 @@ jobs:
           python-version: '3.11'
 
       - name: 📦 Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pendulum pyswisseph
+        run: pip install pendulum
 
-      - name: 🚀 Generate lunar_calendar.json
+      - name: 🌙 Generate lunar calendar for current month
         run: python gen_lunar_calendar.py
 
-      - name: 📁 Upload lunar_calendar.json artifact
-        # зашотили на конкретный SHA, чтобы избежать "Missing download info"
-        uses: actions/upload-artifact@d64b8b3fb9d0a9f0c80fe69a0c4b21db3a7437bb
+      - name: 📤 Upload generated calendar
+        uses: actions/upload-artifact@v3
         with:
-          name: lunar-calendar
-          path: lunar_calendar.json
+          name: lunar-calendar-${{ github.event_name }}  # or whatever you like
+          path: lunar_calendar.json                      # adjust to your output file
