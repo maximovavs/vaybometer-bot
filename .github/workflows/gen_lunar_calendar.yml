@@ -15,7 +15,7 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v3
         with:
-          # чтобы не было проблем с пушем, при автоматической коммите
+          # чтобы не было проблем с пушем при автокоммите
           persist-credentials: false
 
       - name: 🐍 Setup Python
@@ -32,7 +32,7 @@ jobs:
         run: python gen_lunar_calendar.py
 
       - name: 📁 Upload lunar_calendar.json
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v2
         with:
           name: lunar-calendar
           path: lunar_calendar.json
