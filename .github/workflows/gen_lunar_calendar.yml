@@ -18,7 +18,7 @@ jobs:
         with:
           # нужно, чтобы checkout сохранил креды для пуша
           persist-credentials: true
-          fetch-depth: 0              # ← чтобы история была полная и git diff работал корректно
+          fetch-depth: 0              # полный history для git diff
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -32,6 +32,17 @@ jobs:
 
       - name: 🌙 Generate lunar_calendar.json
         run: python gen_lunar_calendar.py
+
+      - name: 📝 Show sample of lunar_calendar.json
+        run: |
+          echo "=== Первые 20 строк lunar_calendar.json ==="
+          head -n 20 lunar_calendar.json || true
+
+      - name: 📁 Upload lunar_calendar.json as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: lunar_calendar
+          path: lunar_calendar.json
 
       - name: ✏️ Commit and push lunar_calendar.json if changed
         run: |
