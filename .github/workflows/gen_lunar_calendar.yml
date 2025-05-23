@@ -1,10 +1,10 @@
 name: Generate Lunar Calendar
 
-# Запуск вручную или по расписанию — оставил только ручной запуск для отладки
+# Запуск только вручную (для отладки и единичной генерации)
 on:
   workflow_dispatch:
 
-# Явно даём runner’у право читать действия (actions) и код (contents)
+# Безопасные права для скачивания действий и содержимого репозитория
 permissions:
   contents: read
   actions: read
@@ -27,12 +27,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install pendulum
 
-      - name: 🌙 Generate lunar calendar
-        # здесь ваш скрипт, который создаёт файл lunar_calendar.json
+      - name: 🌙 Generate lunar calendar JSON
         run: python gen_lunar_calendar.py
 
-      - name: 📤 Upload lunar_calendar.json artifact
-        uses: actions/upload-artifact@v3
+      - name: 📤 Upload lunar_calendar.json
+        uses: actions/upload-artifact@v2
         with:
           name: lunar-calendar
           path: lunar_calendar.json
