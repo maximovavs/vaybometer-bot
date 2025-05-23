@@ -1,6 +1,6 @@
+# .github/workflows/gen_lunar_calendar.yml
 name: 🌓 Generate lunar_calendar.json
 
-# ручной запуск из UI Actions → "Run workflow"
 on:
   workflow_dispatch:
 
@@ -11,24 +11,32 @@ jobs:
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: 📦 Install deps
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pendulum requests
 
-      - name: ⚙️ Run generator
+      - name: ⚙️ Generate lunar_calendar.json
         run: |
-          # Вызываем ваш скрипт, который генерит lunar_calendar.json
-          python gen_lunar_calendar.py
+          # Если у вас в скрипте другая команда, поправьте её:
+          python gen_lunar_calendar.py > lunar_calendar.json
 
-      - name: 📁 Upload lunar_calendar.json
-        uses: actions/upload-artifact@v2
-        with:
-          name: lunar_calendar
-          path: lunar_calendar.json
+      - name: 💾 Commit and push lunar_calendar.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add lunar_calendar.json
+          if git diff --cached --quiet; then
+            echo "No changes in lunar_calendar.json"
+          else
+            git commit -m "ci: Обновить lunar_calendar.json"
+            git push
+          fi
