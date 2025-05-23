@@ -1,52 +1,38 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+name: Generate Lunar Calendar
 
-"""
-gen_lunar_calendar.py
-~~~~~~~~~~~~~~~~~~~~~~
-Генерирует файл lunar_calendar.json для текущего месяца.
-Каждая запись — это UNIX-метка (00:00 местного времени) дня месяца,
-соответствующая информации о лунном дне, фазе, освещённости и астрособытиях.
-"""
+on:
+  # Автоматически 28-го числа каждого месяца в 00:00 UTC
+  schedule:
+    - cron: '0 0 28 * *'
+  # Ручной запуск из интерфейса Actions
+  workflow_dispatch:
 
-import json
-from pathlib import Path
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
-import pendulum
-from lunar import get_day_lunar_info
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v3
+        with:
+          # чтобы не было проблем с пушем, при автоматической коммите
+          persist-credentials: false
 
-def main() -> None:
-    # Выбираем локальную зону (например, Кипр)
-    TZ = pendulum.timezone("Asia/Nicosia")
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-    # Определяем год и месяц «сегодня»
-    today = pendulum.now(TZ)
-    year, month = today.year, today.month
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pendulum pyswisseph
 
-    # Узнаём, сколько дней в этом месяце
-    first_of_month = pendulum.datetime(year, month, 1, tz=TZ)
-    days_in_month = first_of_month.days_in_month
+      - name: 🚀 Generate lunar_calendar.json
+        run: python gen_lunar_calendar.py
 
-    calendar: dict[str, dict] = {}
-
-    for day in range(1, days_in_month + 1):
-        # Для каждого дня создаём datetime в полночь
-        dt = pendulum.datetime(year, month, day, 0, 0, 0, tz=TZ)
-        # Берём UNIX-метку
-        ts = dt.int_timestamp
-
-        # Получаем из lunar.py информацию по этому дню
-        info = get_day_lunar_info(dt)
-
-        # Сохраняем в словарь
-        calendar[str(ts)] = info
-
-    # Записываем в файл рядом со скриптом
-    output_path = Path(__file__).parent / "lunar_calendar.json"
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(calendar, f, ensure_ascii=False, indent=2)
-
-    print(f"✔ Сгенерирован {output_path.name}: {days_in_month} записей.")
-
-if __name__ == "__main__":
-    main()
+      - name: 📁 Upload lunar_calendar.json
+        uses: actions/upload-artifact@v3
+        with:
+          name: lunar-calendar
+          path: lunar_calendar.json
