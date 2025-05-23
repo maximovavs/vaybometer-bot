@@ -1,31 +1,41 @@
-name: Monthly Lunar Calendar
+name: Generate Monthly Lunar Calendar
 
+# запуск в последний рабочий день месяца (UTC 00:00)
 on:
   schedule:
-    # в 10:00 UTC в предпоследний день месяца
-    - cron: '0 10 L-1 * *'
+    - cron: '0 0 28 * *'
   workflow_dispatch:
 
 jobs:
-  calendar:
+  build:
     runs-on: ubuntu-latest
+
     steps:
       - name: 📥 Checkout repo
         uses: actions/checkout@v3
 
-      - name: 🐍 Setup Python
+      - name: 🐍 Setup Python 3.11
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: 📦 Install deps
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pendulum
+          # если у вас в requirements.txt уже pendulum, достаточно:
+          pip install pendulum requests
 
-      - name: 📝 Generate & send calendar
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
+      - name: 🔆 Generate lunar_calendar.json
+        # здесь ваш скрипт, который выводит lunar_calendar.json в корень репо
+        run: python .github/scripts/generate_monthly_calendar.py
+
+      - name: ⚙️ Commit & Push lunar_calendar.json
         run: |
-          python calendar.py
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add lunar_calendar.json
+          git commit -m "chore: update lunar_calendar.json for ${{ github.event.workflow }} ${{
+ github.run_number }}"
+          git push
+        # чтобы не фейлилось, если нечего коммитить:
+        continue-on-error: true
