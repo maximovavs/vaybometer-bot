@@ -1,21 +1,23 @@
 name: Generate Lunar Calendar
 
-# Запуск только вручную (для отладки и единичной генерации)
+# Запуск вручную из Actions → Run workflow
 on:
   workflow_dispatch:
 
-# Безопасные права для скачивания действий и содержимого репозитория
 permissions:
-  contents: read
+  contents: write   # нужно, чтобы закоммитить обновлённый файл
   actions: read
+  metadata: read
 
 jobs:
-  build:
+  generate:
     runs-on: ubuntu-latest
 
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v3
+        with:
+          persist-credentials: true  # чтобы git push работал с токеном
 
       - name: 🐍 Setup Python 3.11
         uses: actions/setup-python@v4
@@ -27,11 +29,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install pendulum
 
-      - name: 🌙 Generate lunar calendar JSON
-        run: python gen_lunar_calendar.py
+      - name: 🌙 Generate lunar_calendar.json
+        run: |
+          python gen_lunar_calendar.py
 
-      - name: 📤 Upload lunar_calendar.json
-        uses: actions/upload-artifact@v2
+      - name: ✏️ Commit lunar_calendar.json back to repo
+        uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          name: lunar-calendar
-          path: lunar_calendar.json
+          commit_message: "chore: обновить lunar_calendar.json"
+          file_pattern: lunar_calendar.json
