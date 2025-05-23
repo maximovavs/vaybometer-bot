@@ -1,10 +1,10 @@
 name: Generate Lunar Calendar
 
 on:
-  # Автоматически 28-го числа каждого месяца в 00:00 UTC
+  # Автозапуск 28-го числа каждого месяца в 00:00 UTC
   schedule:
     - cron: '0 0 28 * *'
-  # Ручной запуск из интерфейса Actions
+  # Кнопка «Run workflow» в UI
   workflow_dispatch:
 
 jobs:
@@ -15,7 +15,6 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v3
         with:
-          # чтобы не было проблем с пушем при автокоммите
           persist-credentials: false
 
       - name: 🐍 Setup Python
@@ -31,8 +30,9 @@ jobs:
       - name: 🚀 Generate lunar_calendar.json
         run: python gen_lunar_calendar.py
 
-      - name: 📁 Upload lunar_calendar.json
-        uses: actions/upload-artifact@v2
+      - name: 📁 Upload lunar_calendar.json artifact
+        # зашотили на конкретный SHA, чтобы избежать "Missing download info"
+        uses: actions/upload-artifact@d64b8b3fb9d0a9f0c80fe69a0c4b21db3a7437bb
         with:
           name: lunar-calendar
           path: lunar_calendar.json
