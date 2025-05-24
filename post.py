@@ -7,7 +7,7 @@ import logging
 import requests
 import json
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 import pendulum
 from requests.exceptions import RequestException
@@ -21,8 +21,7 @@ from weather import get_weather
 from air import get_air, get_sst, get_kp
 from pollen import get_pollen
 from schumann import get_schumann
-# убираем astro_events, вместо него сразу лунный календарь:
-from lunar import get_day_lunar_info  
+from lunar import get_day_lunar_info
 from gpt import gpt_blurb
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -46,8 +45,40 @@ CITIES = {
     "Pafos"   : (34.776, 32.424),
 }
 
+# ─────────── Fetch tomorrow temps ─────────────────────────────────
+def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Возвращает (max_temp, min_temp) на завтра или (None, None) при ошибке.
+    """
+    date = TOMORROW.to_date_string()
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude":   lat,
+        "longitude":  lon,
+        "timezone":   TZ.name,
+        "daily":      "temperature_2m_max,temperature_2m_min",
+        "start_date": date,
+        "end_date":   date,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        daily = r.json().get("daily", {})
+        tmax = daily.get("temperature_2m_max", [])
+        tmin = daily.get("temperature_2m_min", [])
+        return (tmax[0] if tmax else None,
+                tmin[0] if tmin else None)
+    except RequestException as e:
+        logging.warning("fetch_tomorrow_temps error: %s", e)
+        return None, None
+
 # ─────────── Schumann fallback ────────────────────────────────────
 def get_schumann_with_fallback() -> Dict[str, Any]:
+    """
+    Сначала пробует get_schumann() — 
+    если нет live-данных, читает последний часовой замер из schumann_hourly.json
+    и рассчитывает тренд за последние 24 точки.
+    """
     sch = get_schumann()
     if sch.get("freq") is not None:
         return sch
@@ -74,24 +105,24 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
                 "trend": trend,
                 "cached": True,
             }
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning("Schumann fallback parse error: %s", e)
+
     return sch
 
-# ... остальные функции fetch_tomorrow_temps, build_msg без изменений до раздела 6) Геомагнитка и Шуман ...
-
+# ─────────── Build message ─────────────────────────────────────────
 def build_msg() -> str:
-    P: list[str] = []
+    P: List[str] = []
 
     # 1) Приветствие и заголовок
     P.append(f"🌅 Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})")
 
-    # 2) Температура воды
+    # 2) Температура моря
     sst = get_sst()
     if sst is not None:
         P.append(f"🌊 Темп. моря: {sst:.1f} °C")
 
-    # 3) Погода (Limassol)
+    # 3) Погодный блок (Limassol)
     lat, lon = CITIES["Limassol"]
     day_max, night_min = fetch_tomorrow_temps(lat, lon)
     w = get_weather(lat, lon) or {}
@@ -101,6 +132,8 @@ def build_msg() -> str:
         avg_temp = (day_max + night_min) / 2
     else:
         avg_temp = cur.get("temperature") or cur.get("temp") or 0
+        logging.warning("Используется текущая температура вместо прогноза")
+
     wind_kmh = cur.get("windspeed") or cur.get("wind_speed", 0.0)
     wind_deg = cur.get("winddirection") or cur.get("wind_deg", 0.0)
     press    = cur.get("pressure") or w.get("hourly", {}).get("surface_pressure", [0])[0]
@@ -115,7 +148,7 @@ def build_msg() -> str:
     )
     P.append("———")
 
-    # 4) Рейтинг городов
+    # 4) Рейтинг городов по завтрашней температуре
     temps: Dict[str, Tuple[float, float]] = {}
     for city, (la, lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo)
@@ -124,7 +157,9 @@ def build_msg() -> str:
     if temps:
         P.append("🎖️ Рейтинг городов (дн./ночь)")
         medals = ["🥇","🥈","🥉","4️⃣"]
-        for i,(city,(d,n)) in enumerate(sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]):
+        for i, (city, (d, n)) in enumerate(
+            sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]
+        ):
             P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
         P.append("———")
 
@@ -132,8 +167,10 @@ def build_msg() -> str:
     air = get_air() or {}
     P.append("🏙️ Качество воздуха")
     lvl = air.get("lvl", "н/д")
-    P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
-             f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
+    P.append(
+        f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
+        f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}"
+    )
     pollen = get_pollen() or {}
     if pollen:
         P.append("🌿 Пыльца")
@@ -149,28 +186,31 @@ def build_msg() -> str:
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})")
     else:
         P.append("🧲 Геомагнитка: н/д")
+
     sch = get_schumann_with_fallback()
     if sch.get("freq") is not None:
         emoji = '⚡' if sch["high"] else '🎵'
         cached = ' (из кеша)' if sch.get("cached") else ''
-        P.append(f"{emoji} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cached}")
+        P.append(
+            f"{emoji} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cached}"
+        )
     else:
         P.append(f"🎵 Шуман: {sch.get('msg','н/д')}")
     P.append("———")
 
-    # 7) Астрособытия — только из lunar_calendar.json
+    # 7) Астрособытия из lunar_calendar.json
     lunar = get_day_lunar_info(TODAY)
     if lunar:
         P.append("🌌 Астрособытия")
-        # Первая строка: фаза + знак + % + ключевое влияние + конкретное действие
+        # 1) фаза + действие
         phase = lunar.get("phase", "")
         advice = lunar.get("advice", "")
         P.append(f"{phase} — {advice}")
-        # Вторая строка: ближайшее событие
+        # 2) ближайшее событие
         next_ev = lunar.get("next_event", "")
         if next_ev:
             P.append(next_ev)
-        # (опционально) Благоприятные/неблагоприятные дни
+        # Благоприятные и неблагоприятные дни (опционально)
         fav = lunar.get("favorable_days", [])
         unfav = lunar.get("unfavorable_days", [])
         if fav:
@@ -179,14 +219,15 @@ def build_msg() -> str:
             P.append("❌ Неблагоприятные дни месяца: " + ", ".join(str(d) for d in unfav))
         P.append("———")
 
-    # 8) Вывод и рекомендации
+    # 8) Вывод и рекомендации от GPT
     fog    = w.get("fog_alert", False)
     strong = w.get("strong_wind", False)
-    if   fog:         culprit = "туман"
-    elif kp_state=="буря": culprit = "магнитные бури"
-    elif press<1007:  culprit = "низкое давление"
-    elif strong:      culprit = "шальной ветер"
-    else:             culprit = "мини-парад планет"
+    if   fog:            culprit = "туман"
+    elif kp_state == "буря": culprit = "магнитные бури"
+    elif press < 1007:   culprit = "низкое давление"
+    elif strong:         culprit = "шальной ветер"
+    else:                culprit = "мини-парад планет"
+
     summary, tips = gpt_blurb(culprit)
     P.append(f"📜 Вывод\n{summary}")
     P.append("———")
@@ -201,7 +242,7 @@ def build_msg() -> str:
 
 async def send_main_post(bot: Bot) -> None:
     html = build_msg()
-    logging.info("Preview: %s", html[:200])
+    logging.info("Preview: %s", html.replace("\n", " | ")[:200])
     try:
         await bot.send_message(
             CHAT_ID,
@@ -213,6 +254,7 @@ async def send_main_post(bot: Bot) -> None:
     except tg_err.TelegramError as e:
         logging.error("Telegram error: %s", e)
         raise
+
 
 async def send_poll_if_friday(bot: Bot) -> None:
     if pendulum.now(TZ).weekday() == 4:
@@ -227,6 +269,7 @@ async def send_poll_if_friday(bot: Bot) -> None:
         except tg_err.TelegramError as e:
             logging.warning("Poll send error: %s", e)
 
+
 async def fetch_unsplash_photo() -> Optional[str]:
     if not UNSPLASH_KEY:
         return None
@@ -236,6 +279,7 @@ async def fetch_unsplash_photo() -> Optional[str]:
         timeout=15
     )
     return resp.json().get("urls", {}).get("regular")
+
 
 async def send_photo(bot: Bot, photo_url: str) -> None:
     try:
@@ -247,6 +291,7 @@ async def send_photo(bot: Bot, photo_url: str) -> None:
     except tg_err.TelegramError as e:
         logging.warning("Photo send error: %s", e)
 
+
 async def main() -> None:
     bot = Bot(token=TOKEN)
     await send_main_post(bot)
@@ -255,6 +300,7 @@ async def main() -> None:
         if photo := await fetch_unsplash_photo():
             await send_photo(bot, photo)
     logging.info("All tasks done ✓")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
