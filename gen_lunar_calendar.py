@@ -4,10 +4,10 @@
 """
 gen_lunar_calendar.py  
 Генерация lunar_calendar.json для текущего месяца:
-  - phase       — фаза Луны (иконка, название, знак, % освещ.) + эффект
-  - advice      — GPT-совет с конкретным призывом к действию
-  - next_event  — краткий анонс ближайшего события (<– через n дней)
-  - favorable_days, unfavorable_days — списки дат (как раньше)
+  - phase        — фаза Луны (иконка, название, знак, % освещ.) + эффект
+  - advice       — GPT-совет с конкретным призывом к действию
+  - next_event   — краткий анонс ближайшего события (<– через n дней)
+  - favorable_days, unfavorable_days — списки дат
 """
 
 import json
@@ -39,14 +39,13 @@ MOON_ICONS = "🌑🌒🌓🌔🌕🌖🌗🌘"
 
 
 def compute_phase(d: pendulum.Date) -> str:
-    """Вычисляем фазу Луны, знак, % освещ. и эффект для конкретной даты d."""
-    # переводим в UTC datetime
+    """Вычисляем фазу Луны, знак, % освещ. и эффект для даты d."""
     ref = dt.datetime(d.year, d.month, d.day)
     jd = swe.julday(ref.year, ref.month, ref.day)
     sun_lon = swe.calc_ut(jd, swe.SUN)[0][0]
     moon_lon = swe.calc_ut(jd, swe.MOON)[0][0]
 
-    phase = ((moon_lon - sun_lon + 360) % 360) / 360  # 0…1
+    phase = ((moon_lon - sun_lon + 360) % 360) / 360
     illum = round(abs(math.cos(math.pi * phase)) * 100)
     icon = MOON_ICONS[int(phase * 8) % 8]
 
@@ -70,24 +69,22 @@ def generate_calendar(year: int, month: int) -> Dict[str, Dict[str, Any]]:
     d = pendulum.date(year, month, 1)
 
     while d.month == month:
-        key = d.to_date_string()  # "YYYY-MM-DD"
+        key = d.to_date_string()
 
-        # 1) Phase
+        # Фаза
         phase_str = compute_phase(d)
 
-        # 2) GPT-совет (summary + список tips)
+        # GPT-совет
         summary, tips = gpt_blurb(phase_str)
         advice = " ".join(tips) if tips else summary
 
-        # 3) Следующее событие
+        # Следующее событие
         nxt = upcoming_event() or ""
 
-        # 4) Старые списки (можно оставить ваш алгоритм расчёта)
-        # здесь просто заглушка: все дни первого квартала — благоприятны, всё остальное — нейтрально
+        # Пример заполнения favorable/unfavorable
         days_since = (d - pendulum.date(year, month, 1)).days
         favorable = []
         unfavorable = []
-        # пример: первая четверть (day ~ SYNODIC_MONTH*0.25) как благоприятный
         if 0 <= days_since < SYNODIC_MONTH * 0.25:
             favorable.append(d.day)
         else:
