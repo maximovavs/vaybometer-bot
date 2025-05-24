@@ -1,3 +1,4 @@
+# lunar.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -17,10 +18,11 @@ def get_day_lunar_info(d: pendulum.Date) -> Optional[Dict[str, Any]]:
     """
     Возвращает информацию по дате d из lunar_calendar.json:
       {
-        'phase':      строка с фазой Луны,
-        'advice':     общий совет на этот день,
-        'favorable':  [список благоприятных дней месяца],
-        'unfavorable':[список неблагоприятных дней месяца]
+        'phase':         название фазы + знак + процент освещённости,
+        'advice':        конкретный призыв к действию,
+        'next_event':    краткая ссылка на ближайшее событие,
+        'favorable':     [список благоприятных дней месяца],
+        'unfavorable':   [список неблагоприятных дней месяца],
       }
     или None, если файла нет или для даты нет записи.
     """
@@ -34,16 +36,15 @@ def get_day_lunar_info(d: pendulum.Date) -> Optional[Dict[str, Any]]:
     if not info:
         return None
 
-    # приводим к ожидаемому формату
     return {
-        "phase":      info.get("phase", ""),
-        "advice":     info.get("advice", ""),
-        "favorable":  info.get("favorable_days", []),
-        "unfavorable":info.get("unfavorable_days", []),
+        "phase":       info.get("phase", ""),
+        "advice":      info.get("advice", ""),
+        "next_event":  info.get("next_event", ""),
+        "favorable":   info.get("favorable_days", []),
+        "unfavorable": info.get("unfavorable_days", []),
     }
 
-# — простой тест
+# Простой тест
 if __name__ == "__main__":
     today = pendulum.today()
     print(get_day_lunar_info(today))
-
