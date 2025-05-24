@@ -1,10 +1,10 @@
 name: Generate Lunar Calendar
 
-# запускаем вручную из Actions → Run workflow
+# запуск вручную из Actions → Run workflow
 on:
   workflow_dispatch:
 
-# даём Actions-токену право пушить
+# даём токену право пушить обновления
 permissions:
   contents: write
 
@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v3
         with:
           persist-credentials: true
-          fetch-depth: 0       # полная история, чтобы git diff работал
+          fetch-depth: 0
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -27,7 +27,7 @@ jobs:
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pendulum requests swisseph
+          pip install pendulum requests pyswisseph
 
       - name: 🌙 Generate lunar_calendar.json
         run: python gen_lunar_calendar.py
