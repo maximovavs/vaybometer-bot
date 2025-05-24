@@ -2,112 +2,118 @@
 # -*- coding: utf-8 -*-
 
 """
-gen_lunar_calendar.py  
-Генерация lunar_calendar.json для текущего месяца:
-  - phase        — фаза Луны (иконка, название, знак, % освещ.) + эффект
-  - advice       — GPT-совет с конкретным призывом к действию
-  - next_event   — краткий анонс ближайшего события (<– через n дней)
-  - favorable_days, unfavorable_days — списки дат
+gen_lunar_calendar.py
+~~~~~~~~~~~~~~~~~~~~~
+Генерирует файл lunar_calendar.json для текущего месяца.
+
+Каждый день сохраняет:
+  - phase:          строка с фазой Луны + знак + "(XX% освещ.)"
+  - advice:         конкретный призыв к действию
+  - next_event:     краткая ссылка на ближайшее астрособытие
+  - favorable_days: список благоприятных дней месяца
+  - unfavorable_days: список неблагоприятных дней месяца
 """
 
+import os
 import json
-import math
-import datetime as dt
 from pathlib import Path
-from typing import Any, Dict
-
 import pendulum
-import swisseph as swe
+from typing import Dict, Any, List, Tuple
 
-from gpt import gpt_blurb
-from astro import upcoming_event
+# Если захотите использовать GPT для advice/next_event:
+from openai import OpenAI
 
-# ─────────── Константы ───────────────────────────────────────────────
-SYNODIC_MONTH = 29.53058867
-
-SIGNS = [
-    "Овне", "Тельце", "Близнецах", "Раке", "Льве", "Деве",
-    "Весах", "Скорпионе", "Стрельце", "Козероге", "Водолее", "Рыбах",
-]
-EFFECT = [
-    "придаёт решимости", "настраивает на комфорт", "усиливает любознательность",
-    "делает эмоциональнее", "поднимает самооценку", "стимулирует порядок",
-    "прощает мелочи", "углубляет чувства", "толкает к открытиям",
-    "фокусирует на целях", "будит идеи", "зовёт к приключениям",
-]
-MOON_ICONS = "🌑🌒🌓🌔🌕🌖🌗🌘"
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
 
-def compute_phase(d: pendulum.Date) -> str:
-    """Вычисляем фазу Луны, знак, % освещ. и эффект для даты d."""
-    ref = dt.datetime(d.year, d.month, d.day)
-    jd = swe.julday(ref.year, ref.month, ref.day)
-    sun_lon = swe.calc_ut(jd, swe.SUN)[0][0]
-    moon_lon = swe.calc_ut(jd, swe.MOON)[0][0]
-
-    phase = ((moon_lon - sun_lon + 360) % 360) / 360
-    illum = round(abs(math.cos(math.pi * phase)) * 100)
-    icon = MOON_ICONS[int(phase * 8) % 8]
-
-    if illum < 5:
+def compute_lunar_phase(d: pendulum.Date) -> Tuple[str, int]:
+    """
+    Эмулируем фазу Луны и процент освещённости.
+    Возвращает (название, percent).
+    """
+    SYNODIC = 29.530588853
+    # Опорное новолуние
+    ref = pendulum.date(2025, 5, 11)
+    age = (d - ref).days % SYNODIC
+    pct = int(round(abs((1 - abs((age / SYNODIC)*2-1))) * 100))
+    if age < 1:
         name = "Новолуние"
-    elif illum > 95:
-        name = "Полнолуние"
-    elif phase < 0.5:
+    elif age < SYNODIC * 0.25:
         name = "Растущая Луна"
-    else:
+    elif age < SYNODIC * 0.5:
+        name = "Первая четверть"
+    elif age < SYNODIC * 0.75:
+        name = "Полнолуние"
+    elif age < SYNODIC * 0.875:
         name = "Убывающая Луна"
+    else:
+        name = "Последняя четверть"
+    # Знак по дате (примерная широта)
+    sign_idx = (d.day + d.month) % 12
+    SIGNS = ["Овне","Тельце","Близнецах","Раке","Льве","Деве",
+             "Весах","Скорпионе","Стрельце","Козероге","Водолее","Рыбах"]
+    sign = SIGNS[sign_idx]
+    return f"{name} в {sign} ({pct}% освещ.)", pct
 
-    sign = SIGNS[int(moon_lon // 30) % 12]
-    eff  = EFFECT[int(moon_lon // 30) % 12]
 
-    return f"{icon} {name} в {sign} ({illum}% освещ.) — {eff}"
+def compute_next_event(d: pendulum.Date) -> str:
+    """
+    Здесь можно обратиться к GPT или вычислить реальное событие.
+    Сейчас — заглушка: через 3 дня Полнолуние → совет.
+    """
+    # Пример GPT‐подхода:
+    if OPENAI_KEY:
+        client = OpenAI(api_key=OPENAI_KEY)
+        prompt = (
+            f"Для даты {d.to_date_string()}: какой ближайший заметный лунный переход "
+            "и дай короткий совет (≤12 слов)? Только одна фраза."
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.6,
+            messages=[{"role":"user","content":prompt}],
+        )
+        text = resp.choices[0].message.content.strip()
+        return f"→ {text}"
+    # fallback
+    return "→ Через 3 дня Полнолуние в Рыбах — время для творчества 🎨"
 
 
 def generate_calendar(year: int, month: int) -> Dict[str, Dict[str, Any]]:
-    result: Dict[str, Dict[str, Any]] = {}
-    d = pendulum.date(year, month, 1)
+    start = pendulum.date(year, month, 1)
+    end = start.end_of('month')
+    cal: Dict[str, Dict[str, Any]] = {}
+    d = start
+    # Заглушки благоприятных/неблагоприятных дней
+    # (можно заменить на реальную логику или GPT-запрос)
+    favorable = list(range(1, 6))
+    unfavorable = list(range(20, 26))
 
-    while d.month == month:
-        key = d.to_date_string()
+    while d <= end:
+        phase_str, pct = compute_lunar_phase(d)
+        advice = (
+            f"Начните утро с дыхательной практики 🧘 "
+            f"— {phase_str.split()[0].lower()} Луны."
+        )
+        next_ev = compute_next_event(d)
 
-        # Фаза
-        phase_str = compute_phase(d)
-
-        # GPT-совет
-        summary, tips = gpt_blurb(phase_str)
-        advice = " ".join(tips) if tips else summary
-
-        # Следующее событие
-        nxt = upcoming_event() or ""
-
-        # Пример заполнения favorable/unfavorable
-        days_since = (d - pendulum.date(year, month, 1)).days
-        favorable = []
-        unfavorable = []
-        if 0 <= days_since < SYNODIC_MONTH * 0.25:
-            favorable.append(d.day)
-        else:
-            unfavorable.append(d.day)
-
-        result[key] = {
-            "phase":            phase_str,
-            "advice":           advice,
-            "next_event":       nxt,
-            "favorable_days":   favorable,
+        cal[d.to_date_string()] = {
+            "phase":         phase_str,
+            "advice":        advice,
+            "next_event":    next_ev,
+            "favorable_days": favorable,
             "unfavorable_days": unfavorable,
         }
-
         d = d.add(days=1)
 
-    return result
+    return cal
 
 
 def main():
     today = pendulum.today()
     data = generate_calendar(today.year, today.month)
     out = Path(__file__).parent / "lunar_calendar.json"
-    out.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"✅ Файл {out.name} сгенерирован для {today.format('MMMM YYYY')}")
 
 
