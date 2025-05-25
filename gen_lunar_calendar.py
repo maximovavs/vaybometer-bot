@@ -12,7 +12,7 @@ gen_lunar_calendar.py
   - percent       : 100
   - sign          : "Овен"
   - aspects       : ["☌Saturn (+0.4°)", "☍Mars (−0.2°)", …]
-  - void_of_course: {"start":None,"end":None}  # заглушка, можно доработать
+  - void_of_course: {"start":"2025-06-17T04:12:00Z","end":"2025-06-17T13:45:00Z"}
   - next_event    : "→ Через 2 дн. Новолуние в Близнецах"
   - advice        : ["…","…","…"]  # три совета GPT или fallback
   - favorable_days: {"general":[…], "haircut":[…], …}
@@ -24,7 +24,7 @@ import json
 import math
 import random
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 import pendulum
 import swisseph as swe
@@ -106,12 +106,54 @@ FALLBACK_ADVICE: Dict[str, List[str]] = {
     ],
 }
 
-
 def jd_to_datetime(jd: float) -> pendulum.DateTime:
     """Конвертирует юлианское время UT в pendulum DateTime (UTC)."""
     ts = (jd - 2440587.5) * 86400.0
     return pendulum.from_timestamp(ts, tz="UTC")
 
+# ── Реальный Void-of-Course расчёт ─────────────────────────────
+def compute_void_of_course(jd_ut: float,
+                           horizon_days: int = 2,
+                           step_min: int = 30) -> Dict[str, Optional[str]]:
+    """
+    Находит период VOC Луны: от последнего аспекта до смены знака.
+    Возвращает ISO-строки UTC или None.
+    """
+    # 1) найдём ingress — смену знака Луны
+    moon0 = swe.calc_ut(jd_ut, swe.MOON)[0][0]
+    sign0 = int(moon0 // 30)
+    ingress_jd = None
+    jd = jd_ut
+    max_jd = jd_ut + horizon_days
+    delta = step_min / 1440
+    while jd < max_jd:
+        moon = swe.calc_ut(jd, swe.MOON)[0][0]
+        if int(moon // 30) != sign0:
+            ingress_jd = jd
+            break
+        jd += delta
+    if not ingress_jd:
+        return {"start": None, "end": None}
+
+    # 2) ищем последний аспект перед ingress_jd
+    last_jd: Optional[float] = None
+    t = jd_ut
+    while t < ingress_jd:
+        mlon = swe.calc_ut(t, swe.MOON)[0][0]
+        for ang, sym in ASPECTS.items():
+            orb = ORBIS.get(ang, 3.0)
+            for pname, pid in PLANETS.items():
+                plon = swe.calc_ut(t, pid)[0][0]
+                diff = abs((mlon - plon + 180) % 360 - 180)
+                if abs(diff - ang) <= orb:
+                    last_jd = t
+        t += delta
+
+    start_jd = last_jd or jd_ut
+    return {
+        "start": jd_to_datetime(start_jd).to_iso8601_string(),
+        "end":   jd_to_datetime(ingress_jd).to_iso8601_string(),
+    }
 
 def compute_phase_and_sign(jd_ut: float):
     """Вычисляет фазу, % освещённости и знак Луны."""
@@ -120,7 +162,6 @@ def compute_phase_and_sign(jd_ut: float):
     angle    = (moon_lon - sun_lon) % 360.0
     illum    = int(round((1 - math.cos(math.radians(angle))) / 2 * 100))
 
-    # Название фазы по углу
     if   angle < 22.5:     name = "Новолуние"
     elif angle < 67.5:     name = "Растущий серп"
     elif angle < 112.5:    name = "Первая четверть"
@@ -130,15 +171,12 @@ def compute_phase_and_sign(jd_ut: float):
     elif angle < 292.5:    name = "Последняя четверть"
     else:                  name = "Убывающий серп"
 
-    # Знак зодиака
     idx   = int(moon_lon // 30) % 12
     signs = ["Овен","Телец","Близнецы","Рак","Лев","Дева",
              "Весы","Скорпион","Стрелец","Козерог","Водолей","Рыбы"]
     sign  = signs[idx]
 
-    phase_str = f"{name} в {sign} ({illum}% освещ.)"
-    return phase_str, illum, sign
-
+    return f"{name} в {sign} ({illum}% освещ.)", illum, sign
 
 def compute_aspects(jd_ut: float) -> List[str]:
     """Ищет основные аспекты Луны к планетам."""
@@ -153,15 +191,14 @@ def compute_aspects(jd_ut: float) -> List[str]:
                 out.append(f"{sym}{pname} ({diff-ang:+.1f}°)")
     return out
 
-
 def compute_advice_list(d: pendulum.Date, phase_str: str) -> List[str]:
     """Три совета от GPT или случайный fallback."""
     phase_name = phase_str.split(" в ")[0]
     if gpt:
         prompt = (
-            f"Действуй как профессиональный астролог с чувством средиземноморского юмора. Но будь краток, как будто каждое слово стоит дорого."
+            f"Действуй как профессиональный астролог с чувством средиземноморского юмора. "
             f"Дата {d.to_date_string()}, фаза: {phase_str}. "
-            "Сразу без таких слов как конечно или вот рекомендации. Четко и быстро Дай ровно три коротких практических совета с эмодзи в категориях:\n"
+            "Дай ровно три коротких практических совета с эмодзи в категориях:\n"
             "• работа/финансы\n• что отложить\n• ритуал дня"
         )
         resp = gpt.chat.completions.create(
@@ -173,7 +210,6 @@ def compute_advice_list(d: pendulum.Date, phase_str: str) -> List[str]:
     else:
         pool = FALLBACK_ADVICE.get(phase_name, FALLBACK_ADVICE["Новолуние"])
         return random.sample(pool, k=min(3, len(pool)))
-
 
 def generate_calendar(year: int, month: int) -> Dict[str, Any]:
     """Генерирует словарь с подробными данными на каждый день месяца."""
@@ -192,7 +228,7 @@ def generate_calendar(year: int, month: int) -> Dict[str, Any]:
             "percent":         illum,
             "sign":            sign,
             "aspects":         compute_aspects(jd_ut),
-            "void_of_course":  {"start": None, "end": None},  # TODO: настоящий V/C
+            "void_of_course":  compute_void_of_course(jd_ut),
             "next_event":      "",  # заполним ниже
             "advice":          compute_advice_list(d, phase_str),
             "favorable_days":  {cat: CATEGORIES[cat]["favorable"]   for cat in CATEGORIES},
@@ -218,14 +254,12 @@ def generate_calendar(year: int, month: int) -> Dict[str, Any]:
 
     return cal
 
-
 def main():
     today = pendulum.today()
     data  = generate_calendar(today.year, today.month)
     out   = Path(__file__).parent / "lunar_calendar.json"
     out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"✅ lunar_calendar.json сгенерирован для {today.format('MMMM YYYY')}")
-
 
 if __name__ == "__main__":
     main()
