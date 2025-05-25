@@ -1,12 +1,10 @@
 name: Monthly VayboMeter Calendar
 
-# Запуск вручную или последний день каждого месяца в 18:00 UTC
+# Запуск вручную (потом можно будет добавить schedule)
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 18 L * *'  # last day of month, 18:00 UTC
 
-# Нужно право пушить lunar_calendar.json
+# Чтобы иметь право пушить lunar_calendar.json
 permissions:
   contents: write
 
@@ -42,17 +40,13 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add lunar_calendar.json
           if git diff --cached --quiet; then
-            echo "✅ lunar_calendar.json is up to date"
+            echo "✅ lunar_calendar.json up to date"
           else
             git commit -m "chore: update lunar_calendar.json"
             git push
           fi
 
       - name: 🗓️ Send monthly calendar summary
-        # Убедитесь, что у вас есть этот скрипт, 
-        # который читает lunar_calendar.json и шлёт
-        # сообщение по шаблону:
-        # 🌙 Лунный календарь на ИЮНЬ 2025 …
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
