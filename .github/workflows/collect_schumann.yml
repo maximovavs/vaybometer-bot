@@ -20,11 +20,11 @@ jobs:
 
       - name: 📦 Install deps
         run: |
-          pip install requests
+          pip install requests pendulum
 
       - name: 🚀 Fetch Schumann point
         run: |
-          python - <<‘EOF’
+          python - <<EOF
           import json, time
           from pathlib import Path
           from utils import _get
@@ -32,7 +32,7 @@ jobs:
           url = "https://api.glcoherence.org/v1/earth"
           data = _get(url) or {}
           freq = data.get("data",{}).get("sr1",{}).get("frequency_1") or data.get("frequency")
-          amp  = data.get("data",{}).get("sr1",{}).get("amplitude_1")  or data.get("amplitude")
+          amp  = data.get("data",{}).get("sr1",{}).get("amplitude_1") or data.get("amplitude")
           if freq and amp:
               rec = {"ts": int(time.time()), "freq": float(freq), "amp": float(amp)}
               cache = Path("schumann_hourly.json")
