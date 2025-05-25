@@ -36,10 +36,9 @@ jobs:
 
       - name: 🌙 Generate lunar_calendar.json
         env:
-          # если хотите, чтобы compute_next_event() обращался к GPT
+          # если вы хотите, чтобы compute_next_event() обращался к GPT
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          python gen_lunar_calendar.py
+        run: python gen_lunar_calendar.py
 
       - name: ✏️ Commit and push lunar_calendar.json if changed
         run: |
