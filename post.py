@@ -102,7 +102,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
 
     return sch
 
-# ─────────── Build message ─────────────────────────────────────────
+# ─────────── Build message ────────────────────────────────────────
 def build_msg() -> str:
     P: List[str] = []
 
@@ -201,7 +201,7 @@ def build_msg() -> str:
         next_ev = lunar.get("next_event", "")
         if next_ev:
             P.append(next_ev)
-        # 7.3) Категории благоприятных дней
+        # 7.3) Благоприятные дни по категориям
         fav = lunar.get("favorable_days", {})
         if fav.get("general"):
             P.append("✅ Общие благоприятные дни: " + ", ".join(map(str, fav["general"])))
@@ -209,7 +209,7 @@ def build_msg() -> str:
             P.append("✂️ Стрижки: " + ", ".join(map(str, fav["haircut"])))
         if fav.get("travel"):
             P.append("✈️ Путешествия: " + ", ".join(map(str, fav["travel"])))
-        # 7.4) Категории неблагоприятных дней
+        # 7.4) Неблагоприятные дни
         unfav = lunar.get("unfavorable_days", {})
         if unfav.get("general"):
             P.append("❌ Общие неблагоприятные дни: " + ", ".join(map(str, unfav["general"])))
@@ -218,11 +218,11 @@ def build_msg() -> str:
     # 8) Вывод и рекомендации от GPT
     fog    = w.get("fog_alert", False)
     strong = w.get("strong_wind", False)
-    if   fog:            culprit = "туман"
+    if   fog:               culprit = "туман"
     elif kp_state == "буря": culprit = "магнитные бури"
-    elif press < 1007:   culprit = "низкое давление"
-    elif strong:         culprit = "шальной ветер"
-    else:                culprit = "мини-парад планет"
+    elif press < 1007:      culprit = "низкое давление"
+    elif strong:            culprit = "шальной ветер"
+    else:                   culprit = "мини-парад планет"
 
     summary, tips = gpt_blurb(culprit)
     P.append(f"📜 Вывод\n{summary}")
@@ -235,26 +235,67 @@ def build_msg() -> str:
 
     return "\n".join(P)
 
+# ─────────── Отправка сообщений ────────────────────────────────────
 async def send_main_post(bot: Bot) -> None:
-    # без изменений
-    pass
+    html = build_msg()
+    logging.info("Preview: %s", html.replace("\n", " | ")[:200])
+    try:
+        await bot.send_message(
+            CHAT_ID,
+            html,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        logging.info("Message sent ✓")
+    except tg_err.TelegramError as e:
+        logging.error("Telegram error: %s", e)
+        raise
 
 async def send_poll_if_friday(bot: Bot) -> None:
-    # без изменений
-    pass
+    if pendulum.now(TZ).weekday() == 4:
+        try:
+            await bot.send_poll(
+                CHAT_ID,
+                question=POLL_QUESTION,
+                options=POLL_OPTIONS,
+                is_anonymous=False,
+                allows_multiple_answers=False
+            )
+            logging.info("Poll sent ✓")
+        except tg_err.TelegramError as e:
+            logging.warning("Poll send error: %s", e)
 
 async def fetch_unsplash_photo() -> Optional[str]:
-    # без изменений
-    pass
+    if not UNSPLASH_KEY:
+        return None
+    url = "https://api.unsplash.com/photos/random"
+    resp = requests.get(
+        url,
+        params={"query": "cyprus coast sunset", "client_id": UNSPLASH_KEY},
+        timeout=15
+    )
+    return resp.json().get("urls", {}).get("regular")
 
 async def send_photo(bot: Bot, photo_url: str) -> None:
-    # без изменений
-    pass
+    try:
+        await bot.send_photo(
+            CHAT_ID,
+            photo=photo_url,
+            caption="Фото дня • Unsplash"
+        )
+        logging.info("Photo sent ✓")
+    except tg_err.TelegramError as e:
+        logging.warning("Photo send error: %s", e)
 
 async def main() -> None:
-    # без изменений
-    pass
+    bot = Bot(token=TOKEN)
+    await send_main_post(bot)
+    await send_poll_if_friday(bot)
+    if UNSPLASH_KEY and (TODAY.day % 3 == 0):
+        photo = await fetch_unsplash_photo()
+        if photo:
+            await send_photo(bot, photo)
+    logging.info("All tasks done ✓")
 
 if __name__ == "__main__":
     asyncio.run(main())
-
