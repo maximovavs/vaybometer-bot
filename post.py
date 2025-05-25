@@ -235,21 +235,26 @@ def build_msg() -> str:
 
     return "\n".join(P)
 
-
 async def send_main_post(bot: Bot) -> None:
-    …  # без изменений
+    # без изменений
+    pass
 
 async def send_poll_if_friday(bot: Bot) -> None:
-    …  # без изменений
+    # без изменений
+    pass
 
 async def fetch_unsplash_photo() -> Optional[str]:
-    …  # без изменений
+    # без изменений
+    pass
 
 async def send_photo(bot: Bot, photo_url: str) -> None:
-    …  # без изменений
+    # без изменений
+    pass
 
 async def main() -> None:
-    …  # без изменений
+    # без изменений
+    pass
 
 if __name__ == "__main__":
     asyncio.run(main())
+
