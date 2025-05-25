@@ -234,8 +234,8 @@ def compute_aspects(jd_ut: float) -> List[str]:
 def compute_next_event(jd_ut: float) -> str:
     """Находит ближайшее полнолуние или новолуние и возвращает анонс."""
     # ближайшее новолуние
-    nm_jd = swe.next_new_moon(jd_ut)
-    fm_jd = swe.next_full_moon(jd_ut)
+    nm_jd = swe.swe_next_new_moon(jd_ut)
+    fm_jd = swe.swe_next_full_moon(jd_ut)
     now_date = pendulum.from_timestamp((jd_ut - 2440587.5)*86400, tz="UTC").date()
 
     nm_dt = jd_to_datetime(nm_jd).date()
