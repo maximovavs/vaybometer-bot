@@ -190,29 +190,17 @@ def build_msg() -> str:
         P.append(f"🎵 Шуман: {sch.get('msg','н/д')}")
     P.append("———")
 
-    # 7) Астрособытия из lunar_calendar.json
+    # 7) Астрособытия (фаза + первый совет и ближайшее событие)
     lunar = get_day_lunar_info(TODAY)
     if lunar:
         P.append("🌌 <b>Астрособытия</b>")
-        # 7.1) Нумерованный список советов
-        for i, tip in enumerate(lunar.get("advice", []), start=1):
-            P.append(f"{i}. {tip}")
-        # 7.2) Ближайшее событие
+        phase = lunar.get("phase", "")
+        advice = lunar.get("advice", [])
+        if phase and advice:
+            P.append(f"{phase} — {advice[0]}")
         next_ev = lunar.get("next_event", "")
         if next_ev:
             P.append(next_ev)
-        # 7.3) Благоприятные дни по категориям
-        fav = lunar.get("favorable_days", {})
-        if fav.get("general"):
-            P.append("✅ Общие благоприятные дни: " + ", ".join(map(str, fav["general"])))
-        if fav.get("haircut"):
-            P.append("✂️ Стрижки: " + ", ".join(map(str, fav["haircut"])))
-        if fav.get("travel"):
-            P.append("✈️ Путешествия: " + ", ".join(map(str, fav["travel"])))
-        # 7.4) Неблагоприятные дни
-        unfav = lunar.get("unfavorable_days", {})
-        if unfav.get("general"):
-            P.append("❌ Общие неблагоприятные дни: " + ", ".join(map(str, unfav["general"])))
         P.append("———")
 
     # 8) Вывод и рекомендации от GPT
