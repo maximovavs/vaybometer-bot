@@ -14,13 +14,12 @@ TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = int(os.getenv("CHANNEL_ID", 0))
 TZ      = pendulum.timezone("Asia/Nicosia")
 
-
 def build_monthly_message(data: dict) -> str:
     """
     Формирует текст сообщения в Telegram:
     1) Заголовок с месяцем и годом
     2) Для каждой даты: "D MMMM — фаза: первый совет"
-    3) Сводка по категориям благоприятных/неблагоприятных дней
+    3) Сводка по категориям благоприятных и неблагоприятных дней
     """
     # 1) Header
     first_date = next(iter(data))
@@ -38,11 +37,11 @@ def build_monthly_message(data: dict) -> str:
     lines.append("")  # blank before summary
 
     # 3) Summary of favorable/unfavorable days
-    general_fav  = data[first_date]["favorable_days"].get("general", [])
-    general_unf  = data[first_date]["unfavorable_days"].get("general", [])
-    lines.append(f"✅ Общие благоприятные дни месяца: {', '.join(map(str, general_fav))}")
-    if general_unf:
-        lines.append(f"❌ Общие неблагоприятные дни месяца: {', '.join(map(str, general_unf))}")
+    fav_general = data[first_date]["favorable_days"].get("general", [])
+    unf_general = data[first_date]["unfavorable_days"].get("general", [])
+    lines.append(f"✅ Общие благоприятные дни месяца: {', '.join(map(str, fav_general))}")
+    if unf_general:
+        lines.append(f"❌ Общие неблагоприятные дни месяца: {', '.join(map(str, unf_general))}")
 
     # Other categories
     category_icons = {
@@ -58,7 +57,6 @@ def build_monthly_message(data: dict) -> str:
 
     return "\n".join(lines)
 
-
 async def main() -> None:
     # Load lunar_calendar.json
     path = Path(__file__).parent / "lunar_calendar.json"
@@ -71,6 +69,7 @@ async def main() -> None:
 
     bot = Bot(token=TOKEN)
     try:
+        # Здесь важно именно await!
         await bot.send_message(
             CHAT_ID,
             msg,
@@ -80,7 +79,6 @@ async def main() -> None:
         print("✅ Monthly calendar delivered")
     except tg_err.TelegramError as e:
         print(f"❌ Telegram error: {e}")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
