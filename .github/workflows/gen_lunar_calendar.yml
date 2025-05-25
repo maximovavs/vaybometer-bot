@@ -1,6 +1,6 @@
 name: Generate Lunar Calendar
 
-# Запуск ручной из Actions → Run workflow
+# Запуск вручную из Actions → Run workflow
 on:
   workflow_dispatch:
 
@@ -29,14 +29,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install \
-            swisseph \
+            pyswisseph \
             pendulum \
             requests \
             openai
 
       - name: 🌙 Generate lunar_calendar.json
         env:
-          # если вы хотите, чтобы compute_next_event() обращался к GPT
+          # если хотите, чтобы compute_next_event() обращался к GPT
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python gen_lunar_calendar.py
