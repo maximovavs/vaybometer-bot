@@ -4,7 +4,7 @@ name: Generate Lunar Calendar
 on:
   workflow_dispatch:
 
-# Даем GITHUB_TOKEN право пушить изменения
+# Чтобы workflow мог пушить обновлённый JSON
 permissions:
   contents: write
 
@@ -16,11 +16,11 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v3
         with:
-          # нужно, чтобы git diff работал корректно
+          # Чтобы git diff сработал по всей истории
           persist-credentials: true
           fetch-depth: 0
 
-      - name: 🐍 Setup Python 3.11
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
@@ -31,9 +31,11 @@ jobs:
           pip install -r requirements.txt
 
       - name: 🌙 Generate lunar_calendar.json
+        # Передаём ключ, чтобы у нас заработал GPT-блок
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: python gen_lunar_calendar.py
+        run: |
+          python gen_lunar_calendar.py
 
       - name: ✏️ Commit and push lunar_calendar.json if changed
         run: |
