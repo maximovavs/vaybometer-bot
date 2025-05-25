@@ -20,7 +20,7 @@ def build_monthly_message(data: dict) -> str:
     Формирует текст сообщения в Telegram:
     1) Заголовок с месяцем и годом
     2) Для каждой даты: "D MMMM — фаза: первый совет"
-    3) Сводка по категориям благоприятных дней
+    3) Сводка по категориям благоприятных/неблагоприятных дней
     """
     # 1) Header
     first_date = next(iter(data))
@@ -38,9 +38,8 @@ def build_monthly_message(data: dict) -> str:
     lines.append("")  # blank before summary
 
     # 3) Summary of favorable/unfavorable days
-    # General
     general_fav  = data[first_date]["favorable_days"].get("general", [])
-    general_unf = data[first_date]["unfavorable_days"].get("general", [])
+    general_unf  = data[first_date]["unfavorable_days"].get("general", [])
     lines.append(f"✅ Общие благоприятные дни месяца: {', '.join(map(str, general_fav))}")
     if general_unf:
         lines.append(f"❌ Общие неблагоприятные дни месяца: {', '.join(map(str, general_unf))}")
