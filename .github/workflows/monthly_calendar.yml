@@ -1,20 +1,27 @@
-name: Generate Monthly Lunar Calendar
+# .github/workflows/monthly_calendar.yml
+name: Monthly Lunar Calendar
 
-# запуск в последний рабочий день месяца (UTC 00:00)
+# Запуск вручную из Actions → Run workflow
 on:
-  schedule:
-    - cron: '0 0 28 * *'
   workflow_dispatch:
 
+# Чтобы иметь право пушить обновлённый lunar_calendar.json
+permissions:
+  contents: write
+
 jobs:
-  build:
+  monthly:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout repo
+      - name: 📥 Checkout repository
         uses: actions/checkout@v3
+        with:
+          # сохраним креды для пуша и историю
+          persist-credentials: true
+          fetch-depth: 0
 
-      - name: 🐍 Setup Python 3.11
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
@@ -22,20 +29,68 @@ jobs:
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # если у вас в requirements.txt уже pendulum, достаточно:
-          pip install pendulum requests
+          pip install -r requirements.txt
 
-      - name: 🔆 Generate lunar_calendar.json
-        # здесь ваш скрипт, который выводит lunar_calendar.json в корень репо
-        run: python .github/scripts/generate_monthly_calendar.py
+      - name: 🌙 Generate lunar_calendar.json
+        run: python gen_lunar_calendar.py
 
-      - name: ⚙️ Commit & Push lunar_calendar.json
+      - name: ✏️ Commit lunar_calendar.json if changed
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add lunar_calendar.json
-          git commit -m "chore: update lunar_calendar.json for ${{ github.event.workflow }} ${{
- github.run_number }}"
-          git push
-        # чтобы не фейлилось, если нечего коммитить:
-        continue-on-error: true
+          if git diff --cached --quiet; then
+            echo "✅ lunar_calendar.json up to date, nothing to commit."
+          else
+            git commit -m "chore: обновить lunar_calendar.json"
+            git push
+          fi
+
+      - name: 📤 Send monthly summary to Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
+        run: |
+          python - << 'EOF'
+import json, pendulum, os, requests
+
+# 1. Загрузить сгенерированный календарь
+with open('lunar_calendar.json', encoding='utf-8') as f:
+    data = json.load(f)
+
+# 2. Сформировать заголовок
+month_name = pendulum.today().format('MMMM YYYY')
+lines = [f"🌙 <b>Лунный календарь на {month_name}</b>"]
+
+# 3. Пробежаться по всем датам
+for date_str, rec in data.items():
+    d = pendulum.parse(date_str)
+    # День месяца и название, например "1 июня"
+    day_label = d.format('D MMMM')
+    # Фаза и первый совет
+    phase = rec.get('phase','')
+    adv = rec.get('advice',[])
+    tip = adv[0] if adv else ''
+    lines.append(f"{day_label} — {phase}: {tip}")
+
+# 4. Добавить общие списки благоприятных дней
+any_rec = next(iter(data.values()))
+fav = any_rec.get('favorable_days', {})
+lines.append("———")
+lines.append(f"✅ Благоприятные дни месяца (общие): {', '.join(map(str,fav.get('general',[])))}")
+lines.append(f"✂️ Стрижки: {', '.join(map(str,fav.get('haircut',[])))}")
+lines.append(f"✈️ Путешествия: {', '.join(map(str,fav.get('travel',[])))}")
+
+# 5. Отправить сообщение
+text = "\n".join(lines)
+resp = requests.post(
+    f"https://api.telegram.org/bot{os.environ['TELEGRAM_TOKEN']}/sendMessage",
+    json={
+      "chat_id": os.environ['CHANNEL_ID'],
+      "text": text,
+      "parse_mode": "HTML",
+      "disable_web_page_preview": True
+    }
+)
+print("Telegram response:", resp.status_code, resp.text)
+EOF
