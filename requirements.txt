@@ -2,13 +2,10 @@
 requests>=2.32
 python-dateutil>=2.9
 pendulum>=3.1          # удобные даты/время
-pandas>=2.2            # (нужен astropy → swisseph)
+pandas>=2.2            # таблички
 astropy>=7.0           # для астрономических расчётов
 pyswisseph>=2.10       # эфемериды Луны/планет
 
 # ── бот и LLM ───────────────────────────────────────────────────
 python-telegram-bot>=20,<21
 openai>=1.6
-swisseph>=2.10
-
-
