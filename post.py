@@ -183,7 +183,7 @@ def build_msg() -> str:
         if phase:
             P.append(phase)
         for tip in advices[:3]:
-            P.append(f"• {tip}")
+            P.append(f"{tip}")
         P.append("———")
 
     # 8) Вывод и рекомендации GPT
@@ -200,7 +200,7 @@ def build_msg() -> str:
     P.append("———")
     P.append("✅ Рекомендации")
     for t in tips:
-        P.append(f"• {t}")
+        P.append(f"{t}")
     P.append("———")
     P.append(f"📚 {get_fact(TOMORROW)}")
 
