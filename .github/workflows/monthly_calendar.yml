@@ -1,11 +1,12 @@
-# .github/workflows/monthly_calendar.yml
-name: Monthly Lunar Calendar
+name: Monthly VayboMeter Calendar
 
-# Запуск вручную из Actions → Run workflow
+# Запуск вручную или последний день каждого месяца в 18:00 UTC
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 18 L * *'  # last day of month, 18:00 UTC
 
-# Чтобы иметь право пушить обновлённый lunar_calendar.json
+# Нужно право пушить lunar_calendar.json
 permissions:
   contents: write
 
@@ -17,7 +18,6 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v3
         with:
-          # сохраним креды для пуша и историю
           persist-credentials: true
           fetch-depth: 0
 
@@ -32,6 +32,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: 🌙 Generate lunar_calendar.json
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python gen_lunar_calendar.py
 
       - name: ✏️ Commit lunar_calendar.json if changed
@@ -40,57 +42,18 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add lunar_calendar.json
           if git diff --cached --quiet; then
-            echo "✅ lunar_calendar.json up to date, nothing to commit."
+            echo "✅ lunar_calendar.json is up to date"
           else
-            git commit -m "chore: обновить lunar_calendar.json"
+            git commit -m "chore: update lunar_calendar.json"
             git push
           fi
 
-      - name: 📤 Send monthly summary to Telegram
+      - name: 🗓️ Send monthly calendar summary
+        # Убедитесь, что у вас есть этот скрипт, 
+        # который читает lunar_calendar.json и шлёт
+        # сообщение по шаблону:
+        # 🌙 Лунный календарь на ИЮНЬ 2025 …
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
-        run: |
-          python - << 'EOF'
-import json, pendulum, os, requests
-
-# 1. Загрузить сгенерированный календарь
-with open('lunar_calendar.json', encoding='utf-8') as f:
-    data = json.load(f)
-
-# 2. Сформировать заголовок
-month_name = pendulum.today().format('MMMM YYYY')
-lines = [f"🌙 <b>Лунный календарь на {month_name}</b>"]
-
-# 3. Пробежаться по всем датам
-for date_str, rec in data.items():
-    d = pendulum.parse(date_str)
-    # День месяца и название, например "1 июня"
-    day_label = d.format('D MMMM')
-    # Фаза и первый совет
-    phase = rec.get('phase','')
-    adv = rec.get('advice',[])
-    tip = adv[0] if adv else ''
-    lines.append(f"{day_label} — {phase}: {tip}")
-
-# 4. Добавить общие списки благоприятных дней
-any_rec = next(iter(data.values()))
-fav = any_rec.get('favorable_days', {})
-lines.append("———")
-lines.append(f"✅ Благоприятные дни месяца (общие): {', '.join(map(str,fav.get('general',[])))}")
-lines.append(f"✂️ Стрижки: {', '.join(map(str,fav.get('haircut',[])))}")
-lines.append(f"✈️ Путешествия: {', '.join(map(str,fav.get('travel',[])))}")
-
-# 5. Отправить сообщение
-text = "\n".join(lines)
-resp = requests.post(
-    f"https://api.telegram.org/bot{os.environ['TELEGRAM_TOKEN']}/sendMessage",
-    json={
-      "chat_id": os.environ['CHANNEL_ID'],
-      "text": text,
-      "parse_mode": "HTML",
-      "disable_web_page_preview": True
-    }
-)
-print("Telegram response:", resp.status_code, resp.text)
-EOF
+        run: python send_monthly_calendar.py
