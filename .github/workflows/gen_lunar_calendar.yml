@@ -1,10 +1,8 @@
 name: Generate Lunar Calendar
 
-# Запуск вручную из Actions → Run workflow
 on:
   workflow_dispatch:
 
-# Чтобы workflow мог пушить обновлённый JSON
 permissions:
   contents: write
 
@@ -16,7 +14,6 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v3
         with:
-          # Чтобы git diff сработал по всей истории
           persist-credentials: true
           fetch-depth: 0
 
@@ -31,11 +28,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: 🌙 Generate lunar_calendar.json
-        # Передаём ключ, чтобы у нас заработал GPT-блок
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          python gen_lunar_calendar.py
+        run: python gen_lunar_calendar.py
 
       - name: ✏️ Commit and push lunar_calendar.json if changed
         run: |
@@ -43,7 +38,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add lunar_calendar.json
           if git diff --cached --quiet; then
-            echo "✅ lunar_calendar.json up to date, nothing to commit."
+            echo "✅ lunar_calendar.json up to date."
           else
             git commit -m "chore: обновить lunar_calendar.json"
             git push
