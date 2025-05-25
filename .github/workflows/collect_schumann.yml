@@ -59,4 +59,3 @@ jobs:
         with:
           commit_message: "schumann: add hourly point"
           file_pattern: "schumann_hourly.json"
-```
