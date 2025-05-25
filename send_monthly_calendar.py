@@ -1,58 +1,87 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, json
+import os
+import json
+import asyncio
 from pathlib import Path
+
 import pendulum
-from telegram import Bot
+from telegram import Bot, error as tg_err
 
-def load_calendar(path: Path):
-    return json.loads(path.read_text(encoding="utf-8"))
+# ────────────── Configuration ───────────────────
+TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
+CHAT_ID = int(os.getenv("CHANNEL_ID", 0))
+TZ      = pendulum.timezone("Asia/Nicosia")
 
-def build_monthly_summary(cal: dict, year: int, month: int) -> str:
-    title = pendulum.date(year, month, 1).format("MMMM YYYY").upper()
-    lines = [f"🌙 <b>Лунный календарь на {title}</b>\n"]
-    # по дням
-    for day_str, rec in cal.items():
-        d = pendulum.parse(day_str)
-        if d.year == year and d.month == month:
-            phase = rec["phase"]
-            # первый совет из списка advice
-            advice = rec["advice"][0] if rec.get("advice") else ""
-            lines.append(f"{d.format('D MMMM')} — {phase}: {advice}")
-    lines.append("")  # пустая строка
-    # сводка по категориям
-    # берем списки из первой даты (одинаково для всего месяца)
-    sample = next(iter(cal.values()))
-    fav = sample["favorable_days"]
-    unfav = sample["unfavorable_days"]
-    lines.append(f"✅ Благоприятные дни месяца (общие): {', '.join(map(str, fav['general']))}")
-    for cat, days in fav.items():
-        if cat != "general":
-            emoji = {
-                "haircut": "✂️",
-                "travel": "✈️",
-                "shopping": "🛍️",
-                "health": "💊"
-            }.get(cat, "•")
-            lines.append(f"{emoji} {cat.capitalize()}: {', '.join(map(str, days))}")
-    # по желанию можно добавить неблагоприятные дни
+
+def build_monthly_message(data: dict) -> str:
+    """
+    Формирует текст сообщения в Telegram:
+    1) Заголовок с месяцем и годом
+    2) Для каждой даты: "D MMMM — фаза: первый совет"
+    3) Сводка по категориям благоприятных дней
+    """
+    # 1) Header
+    first_date = next(iter(data))
+    month_year = pendulum.parse(first_date).in_tz(TZ).format("MMMM YYYY").upper()
+    lines = [f"🌙 <b>Лунный календарь на {month_year}</b>", ""]
+
+    # 2) Daily lines
+    for date_str, rec in data.items():
+        d = pendulum.parse(date_str).in_tz(TZ)
+        day_label = d.format("D MMMM")
+        phase     = rec.get("phase", "")
+        advice    = rec.get("advice", [])
+        first_tip = advice[0] if advice else ""
+        lines.append(f"{day_label} — {phase}: {first_tip}")
+    lines.append("")  # blank before summary
+
+    # 3) Summary of favorable/unfavorable days
+    # General
+    general_fav  = data[first_date]["favorable_days"].get("general", [])
+    general_unf = data[first_date]["unfavorable_days"].get("general", [])
+    lines.append(f"✅ Общие благоприятные дни месяца: {', '.join(map(str, general_fav))}")
+    if general_unf:
+        lines.append(f"❌ Общие неблагоприятные дни месяца: {', '.join(map(str, general_unf))}")
+
+    # Other categories
+    category_icons = {
+        "haircut": "✂️ Стрижки",
+        "travel":  "✈️ Путешествия",
+        "shopping":"🛍️ Покупки",
+        "health":  "❤️ Здоровье",
+    }
+    for cat, label in category_icons.items():
+        fav = data[first_date]["favorable_days"].get(cat, [])
+        if fav:
+            lines.append(f"{label}: {', '.join(map(str, fav))}")
+
     return "\n".join(lines)
 
-def main():
-    TOKEN = os.getenv("TELEGRAM_TOKEN")
-    CHAT_ID = int(os.getenv("CHANNEL_ID", 0))
+
+async def main() -> None:
+    # Load lunar_calendar.json
+    path = Path(__file__).parent / "lunar_calendar.json"
+    if not path.exists():
+        print("❌ lunar_calendar.json not found.")
+        return
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    msg  = build_monthly_message(data)
+
     bot = Bot(token=TOKEN)
+    try:
+        await bot.send_message(
+            CHAT_ID,
+            msg,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        print("✅ Monthly calendar delivered")
+    except tg_err.TelegramError as e:
+        print(f"❌ Telegram error: {e}")
 
-    cal_path = Path(__file__).parent / "lunar_calendar.json"
-    cal = load_calendar(cal_path)
-
-    # определяем последний месяц (текущий)
-    now = pendulum.now("Asia/Nicosia")
-    year, month = now.year, now.month
-
-    msg = build_monthly_summary(cal, year, month)
-    bot.send_message(CHAT_ID, msg, parse_mode="HTML", disable_web_page_preview=True)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
