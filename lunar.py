@@ -1,4 +1,3 @@
-# lunar.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -12,17 +11,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import pendulum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 def get_day_lunar_info(d: pendulum.Date) -> Optional[Dict[str, Any]]:
     """
-    Возвращает информацию по дате d из lunar_calendar.json:
+    Возвращает информацию по дате d из lunar_calendar.json
+    в формате:
       {
-        'phase':         название фазы + знак + процент освещённости,
-        'advice':        конкретный призыв к действию,
-        'next_event':    краткая ссылка на ближайшее событие,
-        'favorable':     [список благоприятных дней месяца],
-        'unfavorable':   [список неблагоприятных дней месяца],
+        "phase":           str,                  # название фазы + знак + "(XX% освещ.)"
+        "percent":         int,                  # процент освещённости
+        "sign":            str,                  # знак зодиака
+        "aspects":         List[str],            # аспекты Луны к планетам
+        "void_of_course":  Dict[str,str],        # период void-of-course
+        "next_event":      str,                  # "→ через N дней …"
+        "advice":          List[str],            # список практических советов
+        "favorable_days":  Dict[str, List[int]], # по категориям
+        "unfavorable_days":Dict[str, List[int]], # по категориям
       }
     или None, если файла нет или для даты нет записи.
     """
@@ -30,21 +34,29 @@ def get_day_lunar_info(d: pendulum.Date) -> Optional[Dict[str, Any]]:
     if not fn.exists():
         return None
 
-    data = json.loads(fn.read_text(encoding="utf-8"))
-    key = d.format("YYYY-MM-DD")
-    info = data.get(key)
-    if not info:
+    try:
+        data = json.loads(fn.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    rec = data.get(d.format("YYYY-MM-DD"))
+    if not rec:
         return None
 
     return {
-        "phase":       info.get("phase", ""),
-        "advice":      info.get("advice", ""),
-        "next_event":  info.get("next_event", ""),
-        "favorable":   info.get("favorable_days", []),
-        "unfavorable": info.get("unfavorable_days", []),
+        "phase":            rec.get("phase", ""),
+        "percent":          rec.get("percent", 0),
+        "sign":             rec.get("sign", ""),
+        "aspects":          rec.get("aspects", []),
+        "void_of_course":   rec.get("void_of_course", {}),
+        "next_event":       rec.get("next_event", ""),
+        "advice":           rec.get("advice", []),
+        "favorable_days":   rec.get("favorable_days", {}),
+        "unfavorable_days": rec.get("unfavorable_days", {}),
     }
 
 # Простой тест
 if __name__ == "__main__":
     today = pendulum.today()
-    print(get_day_lunar_info(today))
+    from pprint import pprint
+    pprint(get_day_lunar_info(today))
