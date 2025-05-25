@@ -1,10 +1,12 @@
 name: Monthly VayboMeter Calendar
 
-# Запуск вручную (потом можно будет добавить schedule)
+# Run daily (to detect last day) and manually
 on:
+  schedule:
+    - cron: '0 1 * * *'       # every day at 01:00 UTC
   workflow_dispatch:
 
-# Чтобы иметь право пушить lunar_calendar.json
+# Need write access to commit the updated JSON
 permissions:
   contents: write
 
@@ -16,8 +18,16 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v3
         with:
-          persist-credentials: true
+          persist-credentials: true  # so we can push changes
           fetch-depth: 0
+
+      - name: 🕑 Exit unless last day of month
+        run: |
+          # If tomorrow is not the 1st, today is not the month's last day
+          if [ "$(date -d 'tomorrow' '+%d')" != "01" ]; then
+            echo "Not the last day of the month — skipping."
+            exit 0
+          fi
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -46,8 +56,8 @@ jobs:
             git push
           fi
 
-      - name: 🗓️ Send monthly calendar summary
+      - name: 📨 Send monthly calendar summary
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
-        run: python gen_lunar_calendar.py
+        run: python send_monthly_calendar.py
