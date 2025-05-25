@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-astro.py  • возвращает для сегодняшнего дня фазу Луны и совет из lunar_calendar.json
+astro.py  • возвращает для сегодняшнего дня два ключевых поля из lunar_calendar.json:
+   1) фаза + первый совет
+   2) next_event
 """
 
 from __future__ import annotations
@@ -12,15 +14,18 @@ from lunar import get_day_lunar_info
 
 def astro_events() -> List[str]:
     """
-    Для текущей даты (Asia/Nicosia) читает из lunar_calendar.json запись:
+    Для текущей даты в зоне Asia/Nicosia читает из lunar_calendar.json:
       {
-        'phase':       строка с названием и знаком фазы Луны,
-        'advice':      общий совет на этот день,
-        'favorable':   [список благоприятных дней месяца],
-        'unfavorable': [список неблагоприятных дней месяца],
+        "phase":       "...",
+        "advice":      [...],
+        "next_event":  "...",
+        ...
       }
-    и возвращает список:
-      [ "<название фазы и знак>", "<рекомендация на сегодня>" ].
+    и возвращает:
+      [
+        "phase — advice[0]",
+        "next_event"
+      ]
     Если данных нет — возвращает пустой список.
     """
     tz = pendulum.timezone("Asia/Nicosia")
@@ -29,14 +34,17 @@ def astro_events() -> List[str]:
     if not info:
         return []
 
-    events: List[str] = []
     phase = info.get("phase", "").strip()
-    if phase:
-        events.append(phase)
+    advice_list = info.get("advice", [])
+    next_event = info.get("next_event", "").strip()
 
-    advice = info.get("advice", "").strip()
-    if advice:
-        events.append(advice)
+    events: List[str] = []
+    if phase and advice_list:
+        # соединяем фазу и первый совет
+        events.append(f"{phase} — {advice_list[0].strip()}")
+
+    if next_event:
+        events.append(next_event)
 
     return events
 
