@@ -45,7 +45,7 @@ CITIES = {
     "Pafos"   : (34.776, 32.424),
 }
 
-# ─────────── Fetch tomorrow temps ─────────────────────────────────
+# ─────────── Functions ────────────────────────────────────────────
 def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
     date = TOMORROW.to_date_string()
     url = "https://api.open-meteo.com/v1/forecast"
@@ -69,44 +69,38 @@ def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optio
         logging.warning("fetch_tomorrow_temps error: %s", e)
         return None, None
 
-# ─────────── Schumann fallback ────────────────────────────────────
 def get_schumann_with_fallback() -> Dict[str, Any]:
     sch = get_schumann()
     if sch.get("freq") is not None:
         return sch
-
-    cache_path = Path(__file__).parent / "schumann_hourly.json"
-    if cache_path.exists():
+    cache = Path(__file__).parent / "schumann_hourly.json"
+    if cache.exists():
         try:
-            arr = json.loads(cache_path.read_text())
+            arr = json.loads(cache.read_text())
             last = arr[-1]
             pts = arr[-24:]
             freqs = [p["freq"] for p in pts]
             if len(freqs) >= 2:
                 avg = sum(freqs[:-1]) / (len(freqs)-1)
                 delta = freqs[-1] - avg
-                if   delta >= 0.1: trend = "↑"
-                elif delta <= -0.1: trend = "↓"
-                else: trend = "→"
+                trend = "↑" if delta>=0.1 else "↓" if delta<=-0.1 else "→"
             else:
                 trend = "→"
             return {
-                "freq":  round(last["freq"], 2),
-                "amp":   round(last["amp"], 1),
-                "high":  last["freq"] > 8.0 or last["amp"] > 100.0,
+                "freq":  round(last["freq"],2),
+                "amp":   round(last["amp"],1),
+                "high":  last["freq"]>8.0 or last["amp"]>100.0,
                 "trend": trend,
                 "cached": True,
             }
         except Exception as e:
             logging.warning("Schumann fallback parse error: %s", e)
-
     return sch
 
-# ─────────── Build message ────────────────────────────────────────
 def build_msg() -> str:
     P: List[str] = []
 
-    # 1) Приветствие и заголовок
+    # 1) Приветствие
     P.append(f"🌅 Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})")
 
     # 2) Температура моря
@@ -129,47 +123,39 @@ def build_msg() -> str:
     wind_kmh = cur.get("windspeed") or cur.get("wind_speed", 0.0)
     wind_deg = cur.get("winddirection") or cur.get("wind_deg", 0.0)
     press    = cur.get("pressure") or w.get("hourly", {}).get("surface_pressure", [0])[0]
-    clouds_pct = cur.get("clouds")
-    if clouds_pct is None:
-        clouds_pct = w.get("hourly", {}).get("cloud_cover", [0])[0]
-    cloud_w = clouds_word(clouds_pct)
+    clouds   = cur.get("clouds") or w.get("hourly", {}).get("cloud_cover", [0])[0]
+    cloud_w  = clouds_word(clouds)
 
     P.append(
-        f"🌡️ Ср. темп: {avg_temp:.0f} °C • {cloud_w} • "
+        f"🌡️ Ср. темп: {avg_temp:.0f}°C • {cloud_w} • "
         f"💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) • 💧 {press:.0f} гПа {pressure_trend(w)}"
     )
     P.append("———")
 
-    # 4) Рейтинг городов по завтрашней температуре
-    temps: Dict[str, Tuple[float, float]] = {}
-    for city, (la, lo) in CITIES.items():
+    # 4) Рейтинг городов
+    temps: Dict[str, Tuple[float,float]] = {}
+    for city, (la,lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo)
         if d is not None:
             temps[city] = (d, n or d)
     if temps:
         P.append("🎖️ Рейтинг городов (дн./ночь)")
         medals = ["🥇","🥈","🥉","4️⃣"]
-        for i, (city, (d, n)) in enumerate(
-            sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]
-        ):
+        for i,(city,(d,n)) in enumerate(sorted(temps.items(), key=lambda x:x[1][0], reverse=True)[:4]):
             P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
         P.append("———")
 
     # 5) Качество воздуха и пыльца
     air = get_air() or {}
     P.append("🏙️ Качество воздуха")
-    lvl = air.get("lvl", "н/д")
-    P.append(
-        f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
-        f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}"
-    )
+    lvl = air.get("lvl","н/д")
+    P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
+             f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
     pollen = get_pollen() or {}
     if pollen:
         P.append("🌿 Пыльца")
-        P.append(
-            f"Деревья: {pollen['tree']} | Травы: {pollen['grass']} | "
-            f"Сорняки: {pollen['weed']} — риск {pollen['risk']}"
-        )
+        P.append(f"Деревья: {pollen['tree']} | Травы: {pollen['grass']} | "
+                 f"Сорняки: {pollen['weed']} — риск {pollen['risk']}")
     P.append("———")
 
     # 6) Геомагнитка и Шуман
@@ -181,29 +167,26 @@ def build_msg() -> str:
 
     sch = get_schumann_with_fallback()
     if sch.get("freq") is not None:
-        emoji = '⚡' if sch["high"] else '🎵'
-        cached = ' (из кеша)' if sch.get("cached") else ''
-        P.append(
-            f"{emoji} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cached}"
-        )
+        sym = '⚡' if sch["high"] else '🎵'
+        cache = ' (из кеша)' if sch.get("cached") else ''
+        P.append(f"{sym} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cache}")
     else:
         P.append(f"🎵 Шуман: {sch.get('msg','н/д')}")
     P.append("———")
 
-    # 7) Астрособытия (фаза + первый совет и ближайшее событие)
+    # 7) Астрособытия — фаза и 3 совета
     lunar = get_day_lunar_info(TODAY)
     if lunar:
         P.append("🌌 <b>Астрособытия</b>")
-        phase = lunar.get("phase", "")
-        advice = lunar.get("advice", [])
-        if phase and advice:
-            P.append(f"{phase} — {advice[0]}")
-        next_ev = lunar.get("next_event", "")
-        if next_ev:
-            P.append(next_ev)
+        phase = lunar.get("phase","")
+        advices = lunar.get("advice",[])
+        if phase:
+            P.append(phase)
+        for tip in advices[:3]:
+            P.append(f"• {tip}")
         P.append("———")
 
-    # 8) Вывод и рекомендации от GPT
+    # 8) Вывод и рекомендации GPT
     fog    = w.get("fog_alert", False)
     strong = w.get("strong_wind", False)
     if   fog:               culprit = "туман"
@@ -223,10 +206,10 @@ def build_msg() -> str:
 
     return "\n".join(P)
 
-# ─────────── Отправка сообщений ────────────────────────────────────
+# ─────────── Отправка ─────────────────────────────────────────────
 async def send_main_post(bot: Bot) -> None:
     html = build_msg()
-    logging.info("Preview: %s", html.replace("\n", " | ")[:200])
+    logging.info("Preview: %s", html.replace("\n"," | ")[:200])
     try:
         await bot.send_message(
             CHAT_ID,
@@ -249,7 +232,6 @@ async def send_poll_if_friday(bot: Bot) -> None:
                 is_anonymous=False,
                 allows_multiple_answers=False
             )
-            logging.info("Poll sent ✓")
         except tg_err.TelegramError as e:
             logging.warning("Poll send error: %s", e)
 
@@ -257,21 +239,12 @@ async def fetch_unsplash_photo() -> Optional[str]:
     if not UNSPLASH_KEY:
         return None
     url = "https://api.unsplash.com/photos/random"
-    resp = requests.get(
-        url,
-        params={"query": "cyprus coast sunset", "client_id": UNSPLASH_KEY},
-        timeout=15
-    )
-    return resp.json().get("urls", {}).get("regular")
+    resp = requests.get(url, params={"query":"cyprus coast sunset","client_id":UNSPLASH_KEY}, timeout=15)
+    return resp.json().get("urls",{}).get("regular")
 
 async def send_photo(bot: Bot, photo_url: str) -> None:
     try:
-        await bot.send_photo(
-            CHAT_ID,
-            photo=photo_url,
-            caption="Фото дня • Unsplash"
-        )
-        logging.info("Photo sent ✓")
+        await bot.send_photo(CHAT_ID, photo=photo_url, caption="Фото дня • Unsplash")
     except tg_err.TelegramError as e:
         logging.warning("Photo send error: %s", e)
 
@@ -279,7 +252,7 @@ async def main() -> None:
     bot = Bot(token=TOKEN)
     await send_main_post(bot)
     await send_poll_if_friday(bot)
-    if UNSPLASH_KEY and (TODAY.day % 3 == 0):
+    if UNSPLASH_KEY and TODAY.day % 3 == 0:
         photo = await fetch_unsplash_photo()
         if photo:
             await send_photo(bot, photo)
