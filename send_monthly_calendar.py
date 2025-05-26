@@ -1,148 +1,105 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Компактный месячный отчёт в Telegram."""
 
-"""
-send_monthly_calendar.py
-────────────────────────
-Формирует и отправляет в канал компактный месячный отчёт
-по лунным фазам, Void-of-Course и благоприятным дням.
-"""
-
-import os
-import json
-import asyncio
+import os, json, asyncio
 from pathlib import Path
-from collections import OrderedDict, defaultdict
-from typing import Dict, List, Any
+from collections import OrderedDict
 
 import pendulum
 from telegram import Bot, error as tg_err
 
-# ─── Конфигурация ───────────────────────────────────────────────
 TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = int(os.getenv("CHANNEL_ID", 0))
 TZ      = pendulum.timezone("Asia/Nicosia")
 
-# ─── Служебные функции ──────────────────────────────────────────
-def iso_to_tz(dt_iso: str) -> pendulum.DateTime:
-    """ISO-строка → pendulum в целевой тайм-зоне."""
-    return pendulum.parse(dt_iso).in_tz(TZ)
+ICON_PHASE = {
+    "Новолуние":"🌑","Растущий серп":"🌒","Первая четверть":"🌓",
+    "Растущая Луна":"🌔","Полнолуние":"🌕","Убывающая Луна":"🌖",
+    "Последняя четверть":"🌗","Убывающий серп":"🌘",
+}
 
-def short(dt: pendulum.DateTime) -> str:
-    """Короткий формат D.MM HH:mm."""
-    return dt.format("D.MM HH:mm")
-
-# ─── Формирование отчёта ───────────────────────────────────────
-def build_monthly_message(data: Dict[str, Any]) -> str:
-    # гарантируем порядок дат
-    ordered = OrderedDict(sorted(data.items()))
-    first_date = next(iter(ordered))
+# ────────── построение текста ──────────
+def header(first_date:str)->str:
     month_year = pendulum.parse(first_date).in_tz(TZ).format("MMMM YYYY").upper()
+    return f"🌙 <b>Лунный календарь на {month_year}</b> (Asia/Nicosia)"
 
-    lines: List[str] = [f"🌙 <b>Лунный календарь на {month_year}</b>", ""]
-
-    # 1. Группируем по названию фазы
-    segments: List[Dict[str, Any]] = []
-    for date_str, rec in ordered.items():
-        phase_name = rec["phase"].split(" в ")[0]  # «Новолуние», «Полнолуние» …
-        if segments and segments[-1]["phase_name"] == phase_name:
-            segments[-1]["dates"].append(date_str)
+def group_by_phase(data:dict)->list[dict]:
+    segs, last=None, None
+    segs=[]
+    for dstr, rec in data.items():
+        name = rec["phase"].split(" в ")[0]
+        if name!=last:
+            segs.append({
+                "icon": ICON_PHASE.get(name,"◻️"),
+                "title": rec["phase"],
+                "phase_time": rec.get("phase_time",""),
+                "first": dstr, "last": dstr,
+                "vc":   rec.get("void_of_course",{}),
+                "advice": (rec.get("advice") or [""])[0],
+            }); last=name
         else:
-            segments.append({
-                "phase_name": phase_name,
-                "phase":      rec["phase"],         # полная строка
-                "phase_time": iso_to_tz(rec["phase_time"]),
-                "dates":      [date_str],
-                "vc":         rec["void_of_course"],
-                "advice":     rec["advice"][0] if rec.get("advice") else "",
-            })
+            segs[-1]["last"]=dstr
+    return segs
 
-    # 2. Блоки по фазам
-    for seg in segments:
-        start_date = pendulum.parse(seg["dates"][0]).in_tz(TZ)
-        end_date   = pendulum.parse(seg["dates"][-1]).in_tz(TZ)
-        dt_range   = f"{start_date.format('D.MM')}–{end_date.format('D.MM')}" \
-                     if start_date != end_date else start_date.format("D.MM")
-
-        # Заголовок фазы с % освещённости уже внутри seg["phase"]
-        lines.append(f"<b>{seg['phase']}</b> "
-                     f"({seg['phase_time'].format('DD.MM HH:mm')}; {dt_range})")
-
-        # Void-of-Course
-        vc = seg["vc"]
-        if vc and vc["start"] and vc["end"]:
-            lines.append(f"Void-of-Course: {vc['start']} → {vc['end']}")
-
-        # Совет
-        if seg["advice"]:
-            lines.append(seg["advice"])
-
-        lines.append("")  # пустая строка-разделитель
-
-    # 3. Сводные благоприятные / неблагоприятные дни
-    fav_acc   = defaultdict(set)
-    unfav_acc = defaultdict(set)
-    for rec in data.values():
-        for cat, arr in rec["favorable_days"].items():
-            fav_acc[cat].update(arr)
-        for cat, arr in rec["unfavorable_days"].items():
-            unfav_acc[cat].update(arr)
-
-    def fmt(cat_set):  # красивый вывод через запятую
-        return ", ".join(map(str, sorted(cat_set))) if cat_set else "—"
-
-    lines.append("✅ <b>Общие благоприятные дни месяца:</b> " +
-                 fmt(fav_acc["general"]))
-    if unfav_acc["general"]:
-        lines.append("❌ <b>Общие неблагоприятные дни месяца:</b> " +
-                     fmt(unfav_acc["general"]))
-
-    cat_labels = {
-        "haircut":  "✂️ Стрижки",
-        "travel":   "✈️ Путешествия",
-        "shopping": "🛍️ Покупки",
-        "health":   "❤️ Здоровье",
-    }
-    for cat, label in cat_labels.items():
-        if fav_acc[cat]:
-            lines.append(f"{label}: {fmt(fav_acc[cat])}")
-
-    lines.append("")  # отступ перед справкой
-
-    # 4. Короткое пояснение о Void-of-Course
-    lines.append("<i>Что такое Void-of-Course?</i>")
-    lines.append(
-        "Void-of-Course (период «без курса») — это время, когда Луна завершила "
-        "основные аспекты в текущем знаке и до входа в следующий знак новые "
-        "аспекты не образует. Энергия рассеивается: избегайте старта важных "
-        "дел, покупок или подписания контрактов. Полезны отдых, планирование "
-        "и внутренние практики; решающие шаги лучше перенести на время после "
-        "окончания V/C."
-    )
-
+def fmt_seg(s:dict)->str:
+    start = pendulum.parse(s["first"]).format("D.MM")
+    end   = pendulum.parse(s["last"]).format("D.MM")
+    pt    = pendulum.parse(s["phase_time"]).in_tz(TZ).format("DD.MM HH:mm") if s["phase_time"] else "—"
+    lines=[f"<b>{s['icon']} {s['title']}</b> ({pt}; {start}–{end})"]
+    if s["vc"].get("start") and s["vc"].get("end"):
+        lines.append(f"Void-of-Course: {s['vc']['start']} → {s['vc']['end']}")
+    if s["advice"]:
+        lines.append(s["advice"])
     return "\n".join(lines)
 
-# ─── Отправка ───────────────────────────────────────────────────
-async def main() -> None:
-    json_path = Path(__file__).parent / "lunar_calendar.json"
-    if not json_path.exists():
-        print("❌ lunar_calendar.json not found — отмена.")
-        return
+def build_summary(sample:dict)->list[str]:
+    fav = sample.get("favorable_days",{})
+    unf = sample.get("unfavorable_days",{})
+    def j(lst): return ", ".join(map(str,sorted(lst))) if lst else "—"
+    lines=["", f"✅ <b>Общие благоприятные дни месяца:</b> {j(fav.get('general',[]))}"]
+    if unf.get("general"):
+        lines.append(f"❌ <b>Общие неблагоприятные дни месяца:</b> {j(unf['general'])}")
+    icons={"haircut":"✂️ Стрижки","travel":"✈️ Путешествия",
+           "shopping":"🛍️ Покупки","health":"❤️ Здоровье"}
+    for k,lbl in icons.items():
+        if fav.get(k):
+            lines.append(f"{lbl}: {j(fav[k])}")
+    return lines
 
-    data = json.loads(json_path.read_text(encoding="utf-8"))
-    message = build_monthly_message(data)
+def build_message(data:dict)->str:
+    data=OrderedDict(sorted(data.items()))
+    segs=group_by_phase(data)
+    lines=[header(next(iter(data))),""]
+    for s in segs: lines+= [fmt_seg(s), "—"]
+    if lines[-1]=="—": lines.pop()
+    lines+=build_summary(next(iter(data.values())))
+    lines+=["",
+        "<i><b>Что такое Void-of-Course?</b></i>",
+        ("Void-of-Course — интервал, когда Луна завершила все ключевые аспекты "
+         "в текущем знаке и ещё не вошла в следующий. Энергия рассеивается, "
+         "поэтому старт важных дел, подписания договоров и крупные покупки "
+         "лучше переносить на время после окончания V/C.")
+    ]
+    return "\n".join(lines)
 
-    bot = Bot(token=TOKEN)
+# ────────── отправка ──────────
+async def main():
+    cal_file=Path(__file__).parent/"lunar_calendar.json"
+    if not cal_file.exists():
+        print("❌ lunar_calendar.json not found"); return
+    data=json.loads(cal_file.read_text(encoding="utf-8"))
+    text=build_message(data)
+
+    bot=Bot(TOKEN)
     try:
-        await bot.send_message(
-            CHAT_ID,
-            message,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        print("✅ Monthly calendar delivered")
+        while text:
+            chunk,text=text[:4000],text[4000:]
+            await bot.send_message(CHAT_ID,chunk,
+                parse_mode="HTML",disable_web_page_preview=True)
+        print("✅ Monthly message sent")
     except tg_err.TelegramError as e:
         print(f"❌ Telegram error: {e}")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
