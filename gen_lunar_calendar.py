@@ -2,143 +2,146 @@
 # -*- coding: utf-8 -*-
 
 """
-gen_lunar_calendar.py  • строит lunar_calendar.json
-–– добавлены:
-   • phase_time  – ISO-время точного достижения фазы
-   • реальные V/C (ещё черновик: swe.next_void не во всех сборках,
-     но заглушку оставили ↓)
-   • собственная find_next_phase вместо отсутствующих
-     swe.next_new_moon / swe.next_full_moon / …
+send_monthly_calendar.py
+Формирует компактный месячный отчёт и отправляет его в Telegram-канал.
+Группировка по фазам, вывод Void-of-Course и краткого совета.
 """
 
-import os, json, math, random
+import os, json, asyncio
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from collections import OrderedDict
 
 import pendulum
-import swisseph as swe
+from telegram import Bot, error as tg_err
 
-TZ = pendulum.timezone("Asia/Nicosia")
+# ────────── токен / канал ──────────
+TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
+CHAT_ID = int(os.getenv("CHANNEL_ID", 0))
+TZ      = pendulum.timezone("Asia/Nicosia")
 
-# ──────────────────────────────────────────────────────────
-# ► UTILS
-# ----------------------------------------------------------
-def jd_to_dt(jd: float) -> pendulum.DateTime:
-    """Юлианская дата ➜ pendulum UTC"""
-    return pendulum.from_timestamp((jd - 2440587.5) * 86400, tz="UTC")
-
-def lunar_angle(jd: float) -> float:
-    """Разность долгот Луны и Солнца (0…360) на jd (UT)"""
-    lon_moon = swe.calc_ut(jd, swe.MOON)[0][0]
-    lon_sun  = swe.calc_ut(jd, swe.SUN )[0][0]
-    return (lon_moon - lon_sun) % 360.0
-
-PHASE_TARGET = {
-    "Новолуние":          0,
-    "Растущий серп":     45,
-    "Первая четверть":   90,
-    "Растущая Луна":    135,
-    "Полнолуние":       180,
-    "Убывающая Луна":   225,
-    "Последняя четверть":270,
-    "Убывающий серп":   315,
+# ────────── вспомогалки ──────────
+ICON_PHASE = {
+    "Новолуние":        "🌑",
+    "Растущий серп":    "🌒",
+    "Первая четверть":  "🌓",
+    "Растущая Луна":    "🌔",
+    "Полнолуние":       "🌕",
+    "Убывающая Луна":   "🌖",
+    "Последняя четверть":"🌗",
+    "Убывающий серп":   "🌘",
 }
 
-def find_next_phase(jd: float, target_deg: float) -> float:
+def header(date_str: str) -> str:
+    month_year = pendulum.parse(date_str).in_tz(TZ).format("MMMM YYYY").upper()
+    return f"🌙 <b>Лунный календарь на {month_year}</b> (Asia/Nicosia)"
+
+def group_by_phase(data: dict) -> list[dict]:
     """
-    Находит ближайший вперёд момент, когда угол «Луна – Солнце»
-    ≈ target_deg ±0.1°. Сначала идём шагом 0.5 дня, затем
-    бинарно уточняем до ≈1 мин.
+    Возвращает список сегментов:
+      {phase, icon, first_date, last_date, phase_time, vc, advice}
     """
-    step = 0.5        # суток
-    jd1  = jd + step
-    while step > 1/1440:          # пока грубее 1 минуты
-        while (lunar_angle(jd1) - target_deg + 540) % 360 - 180 > 0:
-            jd1 += step
-        # «перепрыгнули» через цель – откатываемся назад и уменьшаем шаг
-        jd1 -= step
-        step /= 2
-        jd1 += step
-    return jd1
+    segments: list[dict] = []
+    last_name = None
+    for dstr, rec in data.items():
+        name = rec["phase"].split(" в ")[0]
+        icon = ICON_PHASE.get(name, "◻️")
+        if name != last_name:
+            segments.append(
+                dict(
+                    phase = rec["phase"],
+                    name  = name,
+                    icon  = icon,
+                    first_date = dstr,
+                    last_date  = dstr,
+                    phase_time = rec.get("phase_time",""),
+                    vc   = rec.get("void_of_course",{}),
+                    advice = rec["advice"][0] if rec.get("advice") else "",
+                )
+            )
+            last_name = name
+        else:
+            segments[-1]["last_date"] = dstr
+    return segments
 
-# ──────────────────────────────────────────────────────────
-# ► MAIN CALCULATIONS  (сокращено до ключевых мест)
-# ----------------------------------------------------------
-SIGNS = ["Овен","Телец","Близнецы","Рак","Лев","Дева",
-         "Весы","Скорпион","Стрелец","Козерог","Водолей","Рыбы"]
-
-def phase_name(angle: float) -> str:
-    if   angle < 22.5:   return "Новолуние"
-    elif angle < 67.5:   return "Растущий серп"
-    elif angle < 112.5:  return "Первая четверть"
-    elif angle < 157.5:  return "Растущая Луна"
-    elif angle < 202.5:  return "Полнолуние"
-    elif angle < 247.5:  return "Убывающая Луна"
-    elif angle < 292.5:  return "Последняя четверть"
-    else:                return "Убывающий серп"
-
-def compute_day_block(jd_midnight: float) -> Tuple[Dict[str,Any], str]:
-    """
-    Возвращает словарь с данными на день + ключ (YYYY-MM-DD)
-    """
-    angle = lunar_angle(jd_midnight)
-    name  = phase_name(angle)
-    illum = int(round((1 - math.cos(math.radians(angle))) / 2 * 100))
-
-    # длинная история со знаком
-    moon_lon = swe.calc_ut(jd_midnight, swe.MOON)[0][0]
-    sign = SIGNS[int(moon_lon // 30) % 12]
-
-    # точный момент данной фазы вперёд
-    target = PHASE_TARGET[name]
-    jd_phase = find_next_phase(jd_midnight - 1.0, target)  # ищем от вчера
-
-    rec = {
-        "phase":       f"{name} в {sign} ({illum}% освещ.)",
-        "percent":     illum,
-        "sign":        sign,
-        "phase_time":  jd_to_dt(jd_phase).in_tz(TZ).to_iso8601_string(),
-        # ----------- далее оставляем прежнюю логику -----------
-        "aspects":     [],        # здесь ваши compute_aspects(...)
-        "void_of_course": {"start": None, "end": None},  # TODO real VC
-        "next_event":  "",        # заполним позже
-        "advice":      ["…", "…", "…"],   # ваш GPT/fallback
-        "favorable_days":   {},   # как было
-        "unfavorable_days": {},
-    }
-    key = jd_to_dt(jd_midnight).format("YYYY-MM-DD")
-    return rec, key
-
-def generate_calendar(year:int, month:int) -> Dict[str,Any]:
-    start = pendulum.date(year,month,1)
-    end   = start.end_of('month')
-    jd0   = swe.julday(start.year, start.month, start.day, 0.0)
-
-    cal: Dict[str,Any] = {}
-    cur = start
-    while cur <= end:
-        jd_mid = swe.julday(cur.year, cur.month, cur.day, 0.0)
-        rec, key = compute_day_block(jd_mid)
-        cal[key] = rec
-        cur = cur.add(days=1)
-
-    # — next_event (как было) —
-    keys = sorted(cal.keys())
-    for i,k in enumerate(keys):
-        for f in keys[i+1:]:
-            if "Новолуние" in cal[f]["phase"] or "Полнолуние" in cal[f]["phase"]:
-                delta = (pendulum.parse(f) - pendulum.parse(k)).days
-                cal[k]["next_event"] = f"→ Через {delta} дн. {cal[f]['phase']}"
-                break
-    return cal
-
-def main():
-    today = pendulum.today()
-    data  = generate_calendar(today.year,today.month)
-    Path("lunar_calendar.json").write_text(
-        json.dumps(data,ensure_ascii=False,indent=2), encoding="utf-8"
+def format_segment(seg: dict) -> str:
+    start = pendulum.parse(seg["first_date"]).format("D.MM")
+    end   = pendulum.parse(seg["last_date"]).format("D.MM")
+    phase_line = (
+        f"<b>{seg['icon']} {seg['phase']}</b> "
+        f"({pendulum.parse(seg['phase_time']).in_tz(TZ).format('DD.MM HH:mm')}; "
+        f"{start}–{end})"
     )
-    print("✅ lunar_calendar.json updated")
+    lines = [phase_line]
+
+    vc = seg["vc"]
+    if vc and vc.get("start") and vc.get("end"):
+        lines.append(f"Void-of-Course: {vc['start']} → {vc['end']}")
+
+    if seg["advice"]:
+        lines.append(seg["advice"])
+
+    return "\n".join(lines)
+
+def build_summary(sample_record: dict) -> list[str]:
+    """Сводка по категориям, берём из любого дня (они одинаковые)."""
+    fav = sample_record["favorable_days"]
+    unf = sample_record["unfavorable_days"]
+
+    def fmt(lst): return ", ".join(map(str, sorted(lst))) if lst else "—"
+
+    lines = ["", "✅ <b>Общие благоприятные дни месяца:</b> " + fmt(fav["general"])]
+    if unf["general"]:
+        lines.append("❌ <b>Общие неблагоприятные дни месяца:</b> " + fmt(unf["general"]))
+
+    icons = {"haircut":"✂️ Стрижки", "travel":"✈️ Путешествия",
+             "shopping":"🛍️ Покупки", "health":"❤️ Здоровье"}
+    for key, label in icons.items():
+        if fav.get(key):
+            lines.append(f"{label}: {fmt(fav[key])}")
+    return lines
+
+def build_month_message(data: dict) -> str:
+    data = OrderedDict(sorted(data.items()))         # хронологический порядок
+    segs = group_by_phase(data)
+
+    lines = [header(next(iter(data)) ), ""]
+    for s in segs: lines += [format_segment(s), "—"]
+
+    # убираем лишний «—» в конце
+    if lines[-1] == "—": lines.pop()
+
+    # добавляем сводку и объяснение V/C
+    lines += build_summary(next(iter(data.values())))
+    lines += [
+        "", "<i><b>Что такое Void-of-Course?</b></i>",
+        ("Void-of-Course (период «без курса») — это интервал, когда Луна завершила все ключевые "
+         "аспекты в текущем знаке и ещё не вошла в следующий. Энергия дней рассеивается; "
+         "для старта важных дел лучше дождаться окончания V/C.")
+    ]
+    return "\n".join(lines)
+
+# ────────── основной асинхронный запуск ──────────
+async def main() -> None:
+    path = Path(__file__).parent / "lunar_calendar.json"
+    if not path.exists():
+        print("❌ lunar_calendar.json not found")
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    msg  = build_month_message(data)
+
+    bot = Bot(token=TOKEN)
+    try:
+        # Telegram лимит 4096 симв. – делим если нужно
+        while msg:
+            chunk, msg = msg[:4000], msg[4000:]
+            await bot.send_message(
+                CHAT_ID, chunk,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+        print("✅ Monthly calendar sent.")
+    except tg_err.TelegramError as e:
+        print(f"❌ Telegram error: {e}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
