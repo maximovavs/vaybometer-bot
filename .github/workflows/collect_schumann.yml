@@ -34,13 +34,47 @@ jobs:
           from pathlib import Path
           from utils import _get
 
+          def _fetch_schumann_data(url, attempts=3, backoff=2.0, timeout=30):
+              for i in range(attempts):
+                  try:
+                      data = _get(url, timeout=timeout) or {}
+                      if data:
+                          print(f"Success: Got data from {url}")
+                          return data
+                      print(f"Retry {i+1}/{attempts} for {url} after {backoff**i}s")
+                      time.sleep(backoff**i)
+                  except Exception as e:
+                      print(f"Retry {i+1}/{attempts} failed for {url}: {e}")
+                      time.sleep(backoff**i)
+              return {}
+
           try:
-              # Запрашиваем данные с API
-              url = "https://api.glcoherence.org/v1/earth"
-              data = _get(url) or {}
+              # Пробуем несколько URL
+              urls = [
+                  "https://api.glcoherence.org/v1/earth",
+                  "https://api.codetabs.com/v1/proxy?quest=https://api.glcoherence.org/v1/earth",
+                  "https://thingproxy.freeboard.io/fetch/https://api.glcoherence.org/v1/earth",
+                  "https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth"
+              ]
+              data = {}
+              for url in urls:
+                  data = _fetch_schumann_data(url)
+                  if data:
+                      break
+
               freq = data.get("data", {}).get("sr1", {}).get("frequency_1") or data.get("frequency")
               amp = data.get("data", {}).get("sr1", {}).get("amplitude_1") or data.get("amplitude")
-              
+
+              if not (freq and amp):
+                  # Fallback на кэш
+                  cache = Path("schumann_hourly.json")
+                  if cache.exists():
+                      arr = json.loads(cache.read_text())
+                      if arr:
+                          last = arr[-1]
+                          freq, amp = last["freq"], last["amp"]
+                          print("Using cached data:", last)
+
               if freq and amp:
                   # Сохраняем точку с временной меткой
                   rec = {"ts": int(time.time()), "freq": float(freq), "amp": float(amp)}
@@ -53,7 +87,7 @@ jobs:
                   cache.write_text(json.dumps(arr, ensure_ascii=False))
                   print("Saved Schumann point:", rec)
               else:
-                  print("No valid freq/amp data received")
+                  print("No valid freq/amp data received, even from cache")
           except Exception as e:
               print(f"Error fetching Schumann data: {e}")
           EOF
