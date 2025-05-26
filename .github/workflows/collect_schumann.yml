@@ -4,6 +4,7 @@ on:
   schedule:
     # Запуск каждый час ровно
     - cron: '0 * * * *'
+  workflow_dispatch: # Добавляем возможность ручного запуска
 
 jobs:
   schumann:
@@ -34,10 +35,11 @@ jobs:
           from pathlib import Path
           from utils import _get
 
-          def _fetch_schumann_data(url, attempts=3, backoff=2.0, timeout=30):
+          def _fetch_schumann_data(url, attempts=5, backoff=2.0, timeout=45):
               for i in range(attempts):
                   try:
                       data = _get(url, timeout=timeout) or {}
+                      print(f"API response from {url}: {data}")
                       if data:
                           print(f"Success: Got data from {url}")
                           return data
@@ -46,6 +48,7 @@ jobs:
                   except Exception as e:
                       print(f"Retry {i+1}/{attempts} failed for {url}: {e}")
                       time.sleep(backoff**i)
+              print(f"All attempts failed for {url}")
               return {}
 
           try:
@@ -54,7 +57,8 @@ jobs:
                   "https://api.glcoherence.org/v1/earth",
                   "https://api.codetabs.com/v1/proxy?quest=https://api.glcoherence.org/v1/earth",
                   "https://thingproxy.freeboard.io/fetch/https://api.glcoherence.org/v1/earth",
-                  "https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth"
+                  "https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth",
+                  "https://gci-api.ucsd.edu/data/latest"
               ]
               data = {}
               for url in urls:
@@ -74,6 +78,10 @@ jobs:
                           last = arr[-1]
                           freq, amp = last["freq"], last["amp"]
                           print("Using cached data:", last)
+                      else:
+                          print("Cache exists but is empty")
+                  else:
+                      print("No cache file found")
 
               if freq and amp:
                   # Сохраняем точку с временной меткой
