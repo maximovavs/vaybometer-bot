@@ -2,7 +2,7 @@ name: Collect Schumann Data
 
 on:
   schedule:
-    # каждый час ровно
+    # Запуск каждый час ровно
     - cron: '0 * * * *'
 
 jobs:
@@ -10,41 +10,55 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Проверяем код репозитория
       - name: 📥 Checkout repo
         uses: actions/checkout@v3
 
+      # Настраиваем Python 3.11
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: 📦 Install deps
+      # Устанавливаем зависимости из requirements.txt
+      - name: 📦 Install dependencies
         run: |
-          pip install requests pendulum
+          pip install -r requirements.txt
 
+      # Получаем данные резонанса Шумана
       - name: 🚀 Fetch Schumann point
         run: |
           python - <<EOF
-          import json, time
+          import json
+          import time
           from pathlib import Path
           from utils import _get
-          # URL и логика как в schumann.py, но только одна точка:
-          url = "https://api.glcoherence.org/v1/earth"
-          data = _get(url) or {}
-          freq = data.get("data",{}).get("sr1",{}).get("frequency_1") or data.get("frequency")
-          amp  = data.get("data",{}).get("sr1",{}).get("amplitude_1") or data.get("amplitude")
-          if freq and amp:
-              rec = {"ts": int(time.time()), "freq": float(freq), "amp": float(amp)}
-              cache = Path("schumann_hourly.json")
-              arr = json.loads(cache.read_text()) if cache.exists() else []
-              arr.append(rec)
-              # храним 7 дней истории (24 * 7 записей)
-              cutoff = int(time.time()) - 7*24*3600
-              arr = [r for r in arr if r["ts"] >= cutoff]
-              cache.write_text(json.dumps(arr, ensure_ascii=False))
-              print("Saved Schumann point:", rec)
+
+          try:
+              # Запрашиваем данные с API
+              url = "https://api.glcoherence.org/v1/earth"
+              data = _get(url) or {}
+              freq = data.get("data", {}).get("sr1", {}).get("frequency_1") or data.get("frequency")
+              amp = data.get("data", {}).get("sr1", {}).get("amplitude_1") or data.get("amplitude")
+              
+              if freq and amp:
+                  # Сохраняем точку с временной меткой
+                  rec = {"ts": int(time.time()), "freq": float(freq), "amp": float(amp)}
+                  cache = Path("schumann_hourly.json")
+                  arr = json.loads(cache.read_text()) if cache.exists() else []
+                  arr.append(rec)
+                  # Ограничиваем историю 7 днями (24 * 7 записей)
+                  cutoff = int(time.time()) - 7*24*3600
+                  arr = [r for r in arr if r["ts"] >= cutoff]
+                  cache.write_text(json.dumps(arr, ensure_ascii=False))
+                  print("Saved Schumann point:", rec)
+              else:
+                  print("No valid freq/amp data received")
+          except Exception as e:
+              print(f"Error fetching Schumann data: {e}")
           EOF
 
+      # Коммитим обновлённый файл кэша
       - name: 🗂️ Commit cache
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
