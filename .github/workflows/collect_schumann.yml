@@ -4,7 +4,7 @@ on:
   schedule:
     # Запуск каждый час ровно
     - cron: '0 * * * *'
-  workflow_dispatch: # Добавляем возможность ручного запуска
+  workflow_dispatch: # Ручной запуск через интерфейс GitHub
 
 jobs:
   schumann:
@@ -28,12 +28,17 @@ jobs:
 
       # Получаем данные резонанса Шумана
       - name: 🚀 Fetch Schumann point
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - <<EOF
           import json
           import time
+          import requests
           from pathlib import Path
           from utils import _get
+          from telegram import Bot
 
           def _fetch_schumann_data(url, attempts=5, backoff=2.0, timeout=45):
               for i in range(attempts):
@@ -82,6 +87,15 @@ jobs:
                           print("Cache exists but is empty")
                   else:
                       print("No cache file found")
+                      # Отправляем уведомление в Telegram
+                      try:
+                          bot = Bot(token="${{ env.TELEGRAM_BOT_TOKEN }}")
+                          bot.send_message(
+                              chat_id="${{ env.TELEGRAM_CHAT_ID }}",
+                              text="⚠️ Schumann API failed: No data received from any URL and no cache available."
+                          )
+                      except Exception as e:
+                          print(f"Failed to send Telegram notification: {e}")
 
               if freq and amp:
                   # Сохраняем точку с временной меткой
@@ -94,10 +108,28 @@ jobs:
                   arr = [r for r in arr if r["ts"] >= cutoff]
                   cache.write_text(json.dumps(arr, ensure_ascii=False))
                   print("Saved Schumann point:", rec)
+                  # Уведомление о высоких значениях
+                  if float(freq) > 8.0 or float(amp) > 100.0:
+                      try:
+                          bot = Bot(token="${{ env.TELEGRAM_BOT_TOKEN }}")
+                          bot.send_message(
+                              chat_id="${{ env.TELEGRAM_CHAT_ID }}",
+                              text=f"🚨 High Schumann! Freq: {freq} Hz, Amp: {amp}"
+                          )
+                      except Exception as e:
+                          print(f"Failed to send Telegram notification: {e}")
               else:
                   print("No valid freq/amp data received, even from cache")
           except Exception as e:
               print(f"Error fetching Schumann data: {e}")
+              try:
+                  bot = Bot(token="${{ env.TELEGRAM_BOT_TOKEN }}")
+                  bot.send_message(
+                      chat_id="${{ env.TELEGRAM_CHAT_ID }}",
+                      text=f"⚠️ Schumann script error: {e}"
+                  )
+              except Exception as te:
+                  print(f"Failed to send Telegram notification: {te}")
           EOF
 
       # Коммитим обновлённый файл кэша
