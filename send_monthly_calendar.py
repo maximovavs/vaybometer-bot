@@ -14,86 +14,118 @@ TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = int(os.getenv("CHANNEL_ID", 0))
 TZ      = pendulum.timezone("Asia/Nicosia")
 
-def build_monthly_lines(data: dict) -> list[str]:
-    """
-    Формирует список строк сообщения:
-    1) Заголовок с месяцем и годом
-    2) Для каждой даты: "D MMMM — фаза: первый совет"
-    3) Сводка по категориям благоприятных/неблагоприятных дней
-    """
-    lines: list[str] = []
 
+def build_monthly_message(data: dict) -> str:
+    """
+    Формирует итоговое сообщение:
+    1) Заголовок с месяцем/годом
+    2) Для каждого сегмента (одна фаза):
+       • название фазы, момент, диапазон дат
+       • Void-of-Course
+       • единый совет (первый из advice)
+    3) Сводка по благоприятным/неблагоприятным дням
+    4) Краткое объяснение, что такое Void-of-Course
+    """
     # 1) Header
     first_date = next(iter(data))
     month_year = pendulum.parse(first_date).in_tz(TZ).format("MMMM YYYY").upper()
-    lines.append(f"🌙 <b>Лунный календарь на {month_year}</b>")
-    lines.append("")
+    lines = [
+        f"🌙 <b>Лунный календарь на {month_year}</b> <i>(Asia/Nicosia)</i>",
+        ""
+    ]
 
-    # 2) Daily lines
-    for date_str, rec in data.items():
-        d = pendulum.parse(date_str).in_tz(TZ)
-        day_label = d.format("D MMMM")
-        phase     = rec.get("phase", "")
-        advice    = rec.get("advice", [])
-        first_tip = advice[0] if advice else ""
-        lines.append(f"{day_label} — {phase}: {first_tip}")
-    lines.append("")
+    # 2) Group by phase
+    segments = []
+    last_phase = None
+    for date_str in sorted(data.keys()):
+        rec = data[date_str]
+        phase_name = rec["phase"].split(" в ")[0]
+        if phase_name != last_phase:
+            segments.append({
+                "phase":      rec["phase"],
+                "phase_time": rec.get("phase_time"),
+                "dates":      [date_str],
+                "vc":         rec.get("void_of_course", {}),
+                "advice":     rec.get("advice", [""])[0],
+            })
+            last_phase = phase_name
+        else:
+            segments[-1]["dates"].append(date_str)
 
-    # 3) Summary of favorable/unfavorable days
-    fav_general = data[first_date]["favorable_days"].get("general", [])
-    unf_general = data[first_date]["unfavorable_days"].get("general", [])
-    lines.append(f"✅ Общие благоприятные дни месяца: {', '.join(map(str, fav_general))}")
-    if unf_general:
-        lines.append(f"❌ Общие неблагоприятные дни месяца: {', '.join(map(str, unf_general))}")
+    # 3) Render each segment
+    for seg in segments:
+        # format moment of phase
+        pt_iso = seg["phase_time"]
+        if pt_iso:
+            dt = pendulum.parse(pt_iso).in_tz(TZ)
+            time_str = dt.format("DD.MM HH:mm")
+        else:
+            time_str = ""
+        start = pendulum.parse(seg["dates"][0]).in_tz(TZ).format("D.MM")
+        end   = pendulum.parse(seg["dates"][-1]).in_tz(TZ).format("D.MM")
+        lines.append(f"<b>{seg['phase']}</b> ({time_str}; {start}–{end})")
 
-    # Other categories
-    category_icons = {
-        "haircut":  "✂️ Стрижки",
-        "travel":   "✈️ Путешествия",
-        "shopping": "🛍️ Покупки",
-        "health":   "❤️ Здоровье",
+        # Void-of-Course
+        vc = seg["vc"]
+        if vc.get("start") and vc.get("end"):
+            lines.append(f"<b>Void-of-Course:</b> {vc['start']} → {vc['end']}")
+
+        # Advice for the whole period
+        lines.append(seg["advice"])
+        lines.append("")  # blank line between segments
+
+    # 4) Summary of favorable/unfavorable days
+    first_key = first_date
+    fav_gen = data[first_key]["favorable_days"].get("general", [])
+    unf_gen = data[first_key]["unfavorable_days"].get("general", [])
+    lines.append(f"✅ <b>Общие благоприятные дни месяца:</b> {', '.join(map(str, fav_gen))}")
+    if unf_gen:
+        lines.append(f"❌ <b>Общие неблагоприятные дни месяца:</b> {', '.join(map(str, unf_gen))}")
+    icons = {
+        "haircut":  "✂️ <b>Стрижки:</b>",
+        "travel":   "✈️ <b>Путешествия:</b>",
+        "shopping": "🛍️ <b>Покупки:</b>",
+        "health":   "❤️ <b>Здоровье:</b>",
     }
-    for cat, label in category_icons.items():
-        fav = data[first_date]["favorable_days"].get(cat, [])
+    for cat, label in icons.items():
+        fav = data[first_key]["favorable_days"].get(cat, [])
         if fav:
-            lines.append(f"{label}: {', '.join(map(str, fav))}")
+            lines.append(f"{label} {', '.join(map(str, fav))}")
 
-    return lines
+    # 5) Final explanation
+    lines.append("")
+    lines.append("<b>Что такое Void-of-Course?</b>")
+    lines.append(
+        "Void-of-Course (период «без курса») — это временной отрезок, когда Луна завершила все основные аспекты "
+        "и ещё не вошла в следующий знак зодиака. Энергия таких дней расссеивается и не подходит для старта "
+        "важных дел, покупок или подписания контрактов. Лучше посвятить это время отдыху, планированию и "
+        "внутренним практикам, а ключевые решения перенести на периоды после окончания V/C."
+    )
+
+    return "\n".join(lines)
+
 
 async def main() -> None:
-    # Load lunar_calendar.json
     path = Path(__file__).parent / "lunar_calendar.json"
     if not path.exists():
         print("❌ lunar_calendar.json not found.")
         return
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    lines = build_monthly_lines(data)
-
-    # Разбиваем на чанки по ~3900 символов
-    chunks: list[str] = []
-    buf = ""
-    for line in lines:
-        # +1 для перевода строки
-        if len(buf) + len(line) + 1 > 3900:
-            chunks.append(buf)
-            buf = ""
-        buf += line + "\n"
-    if buf:
-        chunks.append(buf)
+    msg  = build_monthly_message(data)
 
     bot = Bot(token=TOKEN)
     try:
-        for chunk in chunks:
-            await bot.send_message(
-                CHAT_ID,
-                chunk,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
+        await bot.send_message(
+            CHAT_ID,
+            msg,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
         print("✅ Monthly calendar delivered")
     except tg_err.TelegramError as e:
         print(f"❌ Telegram error: {e}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
