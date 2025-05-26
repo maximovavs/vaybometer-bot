@@ -195,7 +195,7 @@ def day_record(d:pendulum.Date, jd_ut:float,
 # ───────────────────────── генерация месяца ────────────────────────
 def generate_calendar(year:int, month:int)->Dict[str,Any]:
     swe.set_ephe_path(".")
-    first_day=pendulum.date(year,month,1,tz=TZ)
+    first_day=pendulum.datetime(year,month,1,tz=TZ)
     phases=find_phase_time(first_day)
     cal={}
     d=first_day
