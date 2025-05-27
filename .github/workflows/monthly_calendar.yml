@@ -1,12 +1,17 @@
 name: Monthly VayboMeter Calendar
 
-# Run daily (to detect last day) and manually
+# ─── триггеры ────────────────────────────────────────────────
 on:
   schedule:
-    - cron: '0 1 * * *'       # every day at 01:00 UTC
-  workflow_dispatch:
+    - cron: '0 1 * * *'            # ежедневно в 01:00 UTC → выполнится только в последний день
+  workflow_dispatch:               # ручной запуск
 
-# Need write access to commit the updated JSON
+# ─── не позволяем параллельные запуски этого workflow на одной ветке ─────
+concurrency:
+  group: monthly-calendar-${{ github.ref }}
+  cancel-in-progress: false        # пусть текущий run доработает
+
+# ─── репо-доступы ────────────────────────────────────────────
 permissions:
   contents: write
 
@@ -15,48 +20,71 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ── step 1: checkout ───────────────────────────────────
       - name: 📥 Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          persist-credentials: true  # so we can push changes
-          fetch-depth: 0
+          persist-credentials: true      # чтобы мы могли пушить
+          fetch-depth: 0                 # нужен полный лог для rebase
 
-      - name: 🕑 Exit unless last day of month
+      # ── step 2: выходим, если сегодня не последний день месяца ─────────
+      - name: ⏩ Skip if not last day
+        id: skip
         run: |
-          # If tomorrow is not the 1st, today is not the month's last day
-          if [ "$(date -d 'tomorrow' '+%d')" != "01" ]; then
-            echo "Not the last day of the month — skipping."
-            exit 0
+          tomorrow=$(date -d 'tomorrow' '+%d')
+          if [[ "$tomorrow" != "01" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Not the last day of month – skipping…" ; exit 0
           fi
 
+      # ── step 3: Python + deps ──────────────────────────────
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+        with: { python-version: '3.11' }
 
       - name: 📦 Install dependencies
+        if: steps.skip.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ── step 4: сгенерировать lunar_calendar.json ──────────
       - name: 🌙 Generate lunar_calendar.json
+        if: steps.skip.outputs.skip != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python gen_lunar_calendar.py
 
-      - name: ✏️ Commit lunar_calendar.json if changed
+      # ── step 5: commit + защищённый push с попытками reb ase ───────────
+      - name: ✏️ Commit & push calendar (robust)
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          GIT_AUTHOR_NAME:  github-actions[bot]
+          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME:  github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          set -eo pipefail
           git add lunar_calendar.json
-          if git diff --cached --quiet; then
-            echo "✅ lunar_calendar.json up to date"
-          else
-            git commit -m "chore: update lunar_calendar.json"
-            git push
-          fi
+          # nothing staged?
+          git diff --cached --quiet && { echo "✔ Nothing to commit"; exit 0; }
 
+          git commit -m "chore: update lunar_calendar.json"
+
+          tries=0
+          until git pull --rebase --stat origin main && git push origin HEAD:main; do
+              ((tries++))
+              if [[ $tries -ge 3 ]]; then
+                  echo "❌ Failed to push after 3 attempts"; exit 1
+              fi
+              echo "⚠️  Push race detected – retrying ($tries/3)…"
+              sleep 5
+          done
+          echo "✅ calendar pushed successfully"
+
+      # ── step 6: отправить месячное сообщение в канал ──────
       - name: 📨 Send monthly calendar summary
+        if: steps.skip.outputs.skip != 'true'
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
