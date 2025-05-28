@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-send_monthly_calendar.py
-Формирует компактную лунную сводку и шлёт в Telegram-канал.
-Используется Markdown V2 с полным экранированием.
-"""
-
 import os, json, asyncio, re
 from pathlib import Path
 from collections import OrderedDict
@@ -17,97 +11,90 @@ TOKEN   = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = int(os.getenv("CHANNEL_ID", "0"))
 TZ      = pendulum.timezone("Asia/Nicosia")
 
-# ────────────── Markdown V2 escape ──────────────
-MDV2_SPECIAL = r"_*\[\]()~`>#+\-=|{}.!<>"
-ESC_RE = re.compile(f"([{re.escape(MDV2_SPECIAL)}])")
+# ---------- Markdown-V2 escape ----------
+MDV2_CHARS = r"_*\[\]()~`>#+\-=|{}.!<>"
+ESC_RE = re.compile(f"([{re.escape(MDV2_CHARS)}])")
+def esc(t: str) -> str: return ESC_RE.sub(r"\\\1", t)
 
-def esc(txt: str) -> str:
-    """Экранирует спец-символы Markdown V2 во всём тексте."""
-    return ESC_RE.sub(r"\\\1", txt)
-
-# ────────────── построение частей сообщения ──────────────
+# ---------- helpers ----------
 def fmt_range(d1: str, d2: str) -> str:
     a = pendulum.parse(d1).format("D.MM"); b = pendulum.parse(d2).format("D.MM")
-    return f"{a}–{b}" if a != b else a
+    return a if a == b else f"{a}–{b}"
 
 def build_summary(sample: dict) -> str:
-    fav = sample["favorable_days"]; unf = sample["unfavorable_days"]
-    gfav = ", ".join(map(str, fav.get("general", []))) or "—"
-    gunf = ", ".join(map(str, unf.get("general", []))) or "—"
-    def cat(tag): return ", ".join(map(str, fav.get(tag, []))) or "—"
-
+    fav, unf = sample["favorable_days"], sample["unfavorable_days"]
+    def lst(tag, d): 
+        vals = d.get(tag, [])
+        return ", ".join(map(str, vals)) if vals else "—"
     lines = [
-        f"✅ **Общие благоприятные дни месяца:** {gfav}",
-        f"❌ **Общие неблагоприятные дни месяца:** {gunf}",
+        f"✅ **Общие благоприятные дни месяца:** {lst('general', fav)}",
+        f"❌ **Общие неблагоприятные дни месяца:** {lst('general', unf)}",
         "",
-        f"✂️ _Стрижки:_ {cat('haircut')}",
-        f"✈️ _Путешествия:_ {cat('travel')}",
-        f"🛍️ _Покупки:_ {cat('shopping')}",
-        f"❤️ _Здоровье:_ {cat('health')}",
+        f"✂️ _Стрижки:_ {lst('haircut', fav)}",
+        f"✈️ _Путешествия:_ {lst('travel', fav)}",
+        f"🛍️ _Покупки:_ {lst('shopping', fav)}",
+        f"❤️ _Здоровье:_ {lst('health', fav)}",
         "",
         esc("Что такое Void-of-Course?"),
-        esc("Void-of-Course — интервал, когда Луна завершила все ключевые аспекты "
-            "в текущем знаке и ещё не вошла в следующий. Энергия рассеивается, "
-            "поэтому старт важных дел, сделки и крупные покупки лучше перенести "
-            "на время после окончания V/C.")
+        esc("Void-of-Course — интервал, когда Луна завершила все основные "
+            "аспекты в текущем знаке и ещё не вошла в следующий. В это время "
+            "энергия рассеяна, поэтому старт важных дел и крупные покупки "
+            "лучше отложить до конца V/C.")
     ]
     return "\n".join(lines)
 
+# ---------- main builder ----------
 def build_month_message(cal: OrderedDict) -> str:
-    first_date = next(iter(cal))
-    header = pendulum.parse(first_date).in_tz(TZ).format("MMMM YYYY").upper()
+    first = next(iter(cal))
+    header = pendulum.parse(first).in_tz(TZ).format("MMMM YYYY").upper()
     out = [f"🌙 **Лунный календарь на {esc(header)}**"]
 
-    # группируем по фазе
-    segments = []
-    last_name = None
-    for d, rec in cal.items():
+    segments, last_name = [], None
+    for dt, rec in cal.items():
         name = rec["phase"].split(" в ")[0]
         if name != last_name:
             segments.append({
-                "label"      : rec["phase"],
-                "start"      : d,
-                "end"        : d,
-                "phase_time" : rec["phase_time"][:16].replace('T',' '),
-                "vc"         : rec["void_of_course"],
-                "advice"     : rec["advice"][0] if rec["advice"] else "…",
+                "label" : esc(rec["phase"]),
+                "start" : dt,
+                "end"   : dt,
+                "time"  : esc(rec["phase_time"][:16].replace('T',' ')),
+                "vc"    : rec["void_of_course"],
+                "tip"   : esc(rec["advice"][0] if rec["advice"] else "…"),
             })
             last_name = name
         else:
-            segments[-1]["end"] = d
+            segments[-1]["end"] = dt
 
-    # формируем текст сегментов
     for seg in segments:
-        rng   = fmt_range(seg["start"], seg["end"])
-        vc    = seg["vc"]
-        vc_ln = ""
+        rng = fmt_range(seg["start"], seg["end"])
+        vc  = seg["vc"]; vc_line = ""
         if vc.get("start") and vc.get("end"):
-            vc_ln = f"\nVoid-of-Course: {esc(vc['start'])} → {esc(vc['end'])}"
+            vc_line = f"\nVoid\\-of\\-Course: {esc(vc['start'])} → {esc(vc['end'])}"
+        # скобки и двоеточие экранируем: \(   \)  \:
         out.append(
-            "\n**" + esc(seg["label"]) + f"** ({esc(seg['phase_time'])}; {rng})"
-            + vc_ln + "\n" + esc(seg["advice"])
+            f"\n**{seg['label']}** \\({seg['time']}; {rng}\\)"
+            f"{vc_line}\n{seg['tip']}"
         )
 
     out.append("\n" + build_summary(next(iter(cal.values()))))
     return "\n".join(out)
 
-# ────────────── main ──────────────
+# ---------- telegram send ----------
 async def main():
     path = Path(__file__).parent / "lunar_calendar.json"
     if not path.exists():
         print("lunar_calendar.json missing"); return
-
-    data = json.loads(path.read_text("utf-8"), object_pairs_hook=OrderedDict)
-    text = build_month_message(data)
+    data = json.loads(path.read_text('utf-8'), object_pairs_hook=OrderedDict)
+    txt  = build_month_message(data)
 
     bot = Bot(TOKEN)
     try:
         await bot.send_message(
-            CHAT_ID, text,
+            CHAT_ID, txt,
             parse_mode="MarkdownV2",
             disable_web_page_preview=True
         )
-        print("✅ Sent")
+        print("✅ monthly calendar sent")
     except tg_err.TelegramError as e:
         print("❌ Telegram error:", e)
 
