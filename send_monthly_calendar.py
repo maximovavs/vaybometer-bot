@@ -3,9 +3,8 @@
 
 """
 send_monthly_calendar.py
-Отправляет компактную лунную сводку в Telegram-канал.
-— группировка по фазам
-— Markdown V2, чтобы **жирный** и _курсив_ не конфликтовали с HTML
+Формирует компактную лунную сводку и шлёт в Telegram-канал.
+Используется Markdown V2 с полным экранированием.
 """
 
 import os, json, asyncio, re
@@ -18,93 +17,97 @@ TOKEN   = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = int(os.getenv("CHANNEL_ID", "0"))
 TZ      = pendulum.timezone("Asia/Nicosia")
 
-# ─────────────────────────── helpers ────────────────────────────
-def esc(md: str) -> str:
-    """Экранирует спец-символы для Markdown V2."""
-    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', md)
+# ────────────── Markdown V2 escape ──────────────
+MDV2_SPECIAL = r"_*\[\]()~`>#+\-=|{}.!<>"
+ESC_RE = re.compile(f"([{re.escape(MDV2_SPECIAL)}])")
 
-def build_summary(rec: dict) -> str:
-    fav = rec["favorable_days"]; unf = rec["unfavorable_days"]
-    fmt = lambda arr: ", ".join(map(str, arr)) if arr else "—"
+def esc(txt: str) -> str:
+    """Экранирует спец-символы Markdown V2 во всём тексте."""
+    return ESC_RE.sub(r"\\\1", txt)
+
+# ────────────── построение частей сообщения ──────────────
+def fmt_range(d1: str, d2: str) -> str:
+    a = pendulum.parse(d1).format("D.MM"); b = pendulum.parse(d2).format("D.MM")
+    return f"{a}–{b}" if a != b else a
+
+def build_summary(sample: dict) -> str:
+    fav = sample["favorable_days"]; unf = sample["unfavorable_days"]
+    gfav = ", ".join(map(str, fav.get("general", []))) or "—"
+    gunf = ", ".join(map(str, unf.get("general", []))) or "—"
+    def cat(tag): return ", ".join(map(str, fav.get(tag, []))) or "—"
+
     lines = [
-        f"✅ **Общие благоприятные дни месяца:** {fmt(fav.get('general', []))}",
-        f"❌ **Общие неблагоприятные дни месяца:** {fmt(unf.get('general', []))}",
+        f"✅ **Общие благоприятные дни месяца:** {gfav}",
+        f"❌ **Общие неблагоприятные дни месяца:** {gunf}",
         "",
-        f"✂️ *Стрижки:* {fmt(fav.get('haircut', []))}",
-        f"✈️ *Путешествия:* {fmt(fav.get('travel', []))}",
-        f"🛍️ *Покупки:* {fmt(fav.get('shopping', []))}",
-        f"❤️ *Здоровье:* {fmt(fav.get('health', []))}",
+        f"✂️ _Стрижки:_ {cat('haircut')}",
+        f"✈️ _Путешествия:_ {cat('travel')}",
+        f"🛍️ _Покупки:_ {cat('shopping')}",
+        f"❤️ _Здоровье:_ {cat('health')}",
         "",
-        "*Что такое Void-of-Course?*\n"
-        "Void-of-Course — интервал, когда Луна завершила все ключевые аспекты "
-        "в текущем знаке и ещё не вошла в следующий. Энергия рассеивается, "
-        "поэтому старт важных дел, подписания контрактов и крупные покупки "
-        "лучше перенести на время после окончания V/C."
+        esc("Что такое Void-of-Course?"),
+        esc("Void-of-Course — интервал, когда Луна завершила все ключевые аспекты "
+            "в текущем знаке и ещё не вошла в следующий. Энергия рассеивается, "
+            "поэтому старт важных дел, сделки и крупные покупки лучше перенести "
+            "на время после окончания V/C.")
     ]
     return "\n".join(lines)
 
-def build_month_message(data: OrderedDict) -> str:
-    first = next(iter(data))
-    hdr   = pendulum.parse(first).in_tz(TZ).format("MMMM YYYY").upper()
-    msg   = [f"🌙 **Лунный календарь на {hdr}**"]
+def build_month_message(cal: OrderedDict) -> str:
+    first_date = next(iter(cal))
+    header = pendulum.parse(first_date).in_tz(TZ).format("MMMM YYYY").upper()
+    out = [f"🌙 **Лунный календарь на {esc(header)}**"]
 
+    # группируем по фазе
     segments = []
     last_name = None
-    for date_str, rec in data.items():
-        phase_full = rec["phase"]
-        name = phase_full.split(" в ")[0]
+    for d, rec in cal.items():
+        name = rec["phase"].split(" в ")[0]
         if name != last_name:
             segments.append({
-                "name": name,
-                "sign": rec["sign"],
-                "phase": phase_full,
-                "start": date_str,
-                "end": date_str,
-                "phase_time": rec["phase_time"][:16].replace("T"," "),
-                "vc": rec["void_of_course"],
-                "advice": rec["advice"][0] if rec["advice"] else "…"
+                "label"      : rec["phase"],
+                "start"      : d,
+                "end"        : d,
+                "phase_time" : rec["phase_time"][:16].replace('T',' '),
+                "vc"         : rec["void_of_course"],
+                "advice"     : rec["advice"][0] if rec["advice"] else "…",
             })
             last_name = name
         else:
-            segments[-1]["end"] = date_str
+            segments[-1]["end"] = d
 
-    # Форматируем каждый сегмент
+    # формируем текст сегментов
     for seg in segments:
-        d1 = pendulum.parse(seg["start"]).format("D.MM")
-        d2 = pendulum.parse(seg["end"]).format("D.MM")
-        rng = f"{d1}–{d2}" if d1 != d2 else d1
-        vc  = seg["vc"]
-        vc_line = ""
-        if vc["start"] and vc["end"]:
-            vc_line = f"\nVoid-of-Course: {vc['start']} → {vc['end']}"
-        msg.append(
-            f"\n**{esc(seg['phase'])}**"
-            f" ({seg['phase_time']}; {rng}){vc_line}\n"
-            f"{esc(seg['advice'])}"
+        rng   = fmt_range(seg["start"], seg["end"])
+        vc    = seg["vc"]
+        vc_ln = ""
+        if vc.get("start") and vc.get("end"):
+            vc_ln = f"\nVoid-of-Course: {esc(vc['start'])} → {esc(vc['end'])}"
+        out.append(
+            "\n**" + esc(seg["label"]) + f"** ({esc(seg['phase_time'])}; {rng})"
+            + vc_ln + "\n" + esc(seg["advice"])
         )
 
-    # Сводка
-    msg.append("\n" + build_summary(next(iter(data.values()))))
-    return "\n".join(msg)
+    out.append("\n" + build_summary(next(iter(cal.values()))))
+    return "\n".join(out)
 
-# ─────────────────────────── main ───────────────────────────────
+# ────────────── main ──────────────
 async def main():
     path = Path(__file__).parent / "lunar_calendar.json"
     if not path.exists():
-        print("lunar_calendar.json not found"); return
+        print("lunar_calendar.json missing"); return
 
-    data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=OrderedDict)
+    data = json.loads(path.read_text("utf-8"), object_pairs_hook=OrderedDict)
     text = build_month_message(data)
 
     bot = Bot(TOKEN)
     try:
         await bot.send_message(
-            CHAT_ID,
-            text,
+            CHAT_ID, text,
             parse_mode="MarkdownV2",
-            disable_web_page_preview=True,
+            disable_web_page_preview=True
         )
-        print("✅ Monthly report sent")
+        print("✅ Sent")
     except tg_err.TelegramError as e:
         print("❌ Telegram error:", e)
 
