@@ -2,7 +2,7 @@ name: Collect Schumann Data
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 */6 * * *'  # Запуск каждые 6 часов (0:00, 6:00, 12:00, 18:00 UTC)
   workflow_dispatch:
 
 jobs:
@@ -96,13 +96,22 @@ jobs:
                   raw_html = _fetch_schumann_data("https://sosrff.tsu.ru")
                   if raw_html:
                       soup = BeautifulSoup(raw_html, "html.parser")
-                      # Ищем текст с числами и единицами измерения
-                      freq_text = soup.find(string=lambda t: t and re.search(r"\d+\.?\d*\s*Hz", t))
-                      amp_text = soup.find(string=lambda t: t and re.search(r"\d+\.?\d*\s*nT", t))
-                      freq = re.search(r"(\d+\.?\d*)\s*Hz", freq_text) if freq_text else None
-                      amp = re.search(r"(\d+\.?\d*)\s*nT", amp_text) if amp_text else None
-                      freq = freq.group(1) if freq else None
-                      amp = amp.group(1) if amp else None
+                      # Поиск в JavaScript или текстовых элементах
+                      scripts = soup.find_all("script", type="text/javascript")
+                      for script in scripts:
+                          if "Hz" in script.text and "nT" in script.text:
+                              freq_match = re.search(r"(\d+\.?\d*)\s*Hz", script.text)
+                              amp_match = re.search(r"(\d+\.?\d*)\s*nT", script.text)
+                              freq = freq_match.group(1) if freq_match else None
+                              amp = amp_match.group(1) if amp_match else None
+                              if freq and amp:
+                                  break
+                      if not (freq and amp):
+                          # Поиск в текстовых элементах
+                          freq_text = soup.find(string=lambda t: t and re.search(r"\d+\.?\d*\s*Hz", t))
+                          amp_text = soup.find(string=lambda t: t and re.search(r"\d+\.?\d*\s*nT", t))
+                          freq = re.search(r"(\d+\.?\d*)\s*Hz", freq_text).group(1) if freq_text else None
+                          amp = re.search(r"(\d+\.?\d*)\s*nT", amp_text).group(1) if amp_text else None
                       print(f"Parsed from sosrff.tsu.ru: freq={freq}, amp={amp}")
 
               if not (freq and amp):
@@ -118,11 +127,6 @@ jobs:
                           print("Cache exists but is empty")
                   else:
                       print("No cache file found")
-                      send_telegram_message(
-                          "${{ env.TELEGRAM_TOKEN }}",
-                          "${{ env.TELEGRAM_CHAT_ID }}",
-                          "⚠️ Schumann API failed: No data from any URL or cache."
-                      )
 
               if freq and amp:
                   # Сохраняем точку
