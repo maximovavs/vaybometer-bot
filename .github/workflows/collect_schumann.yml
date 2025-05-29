@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: 📥 Checkout repo
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.PAT_TOKEN }}  # Используем PAT для checkout
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -66,14 +68,12 @@ jobs:
               noaa_data = fetch_api_data(noaa_url)
               if noaa_data and len(noaa_data) > 1:
                   last_entry = noaa_data[-1]
-                  # Предполагаем, что данные магнитного поля могут быть в формате [time, Bx, By, Bz]
                   if len(last_entry) >= 4:
                       amp = float(last_entry[3])  # Bz в nT
-                      freq = 7.83  # Фиксируем частоту, так как API не даёт прямых данных о Шумане
+                      freq = 7.83  # Фиксируем частоту
                       print(f"Parsed from NOAA API: freq={freq}, amp={amp}")
 
               if not (freq and amp):
-                  # Fallback на кэш
                   cache = Path("schumann_hourly.json")
                   if cache.exists():
                       arr = json.loads(cache.read_text())
@@ -117,3 +117,7 @@ jobs:
         with:
           commit_message: "schumann: add hourly point"
           file_pattern: "schumann_hourly.json"
+          repository: .
+          commit_user_name: github-actions[bot]
+          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
+          commit_author: maximovavs <maximovavs@users.noreply.github.com>
