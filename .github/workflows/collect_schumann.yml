@@ -72,7 +72,7 @@ jobs:
               freq = None
               amp = None
 
-              # Парсинг sosrff.tsu.ru и новый адрес
+              # Парсинг sosrff.tsu.ru и sos70.ru с изображениями
               if not (freq and amp):
                   for page in ["https://sosrff.tsu.ru", "http://sos70.ru"]:
                       raw_html = _fetch_schumann_data(page)
@@ -104,8 +104,10 @@ jobs:
                               img_tags = soup.find_all("img")
                               for img in img_tags:
                                   img_src = img.get("src", "")
-                                  if "schumann" in img_src.lower() or "resonance" in img_src.lower():
-                                      print(f"Found potential Schumann image: {img_src}")
+                                  if "schumann" in img_src.lower() or "resonance" in img_src.lower() or "shm" in img_src.lower():
+                                      full_url = f"http://sos70.ru{img_src}" if not img_src.startswith('http') else img_src
+                                      print(f"Found potential Schumann image: {full_url}")
+                                      # Здесь можно добавить OCR для анализа
 
               # Парсинг HeartMath
               if not (freq and amp):
@@ -136,31 +138,18 @@ jobs:
                       amp = amp_match.group(1) if amp_match else None
                       print(f"Parsed from BGS: freq={freq}, amp={amp}")
 
-              # Парсинг Sierra Nevada
+              # Парсинг Mikhnevo Observatory
               if not (freq and amp):
-                  raw_html = _fetch_schumann_data("https://www.sciencedirect.com/science/article/pii/S1364682618301200")
+                  raw_html = _fetch_schumann_data("https://idg5.chph.ras.ru/geospheres-dynamics/schumann_resonances/")
                   if raw_html:
                       soup = BeautifulSoup(raw_html, "html.parser")
                       all_text = " ".join(soup.stripped_strings)
-                      print(f"Searching text on Sierra Nevada: {all_text[:200]}...")
+                      print(f"Searching text on Mikhnevo: {all_text[:200]}...")
                       freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
                       amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
                       freq = freq_match.group(1) if freq_match else None
                       amp = amp_match.group(1) if amp_match else None
-                      print(f"Parsed from Sierra Nevada: freq={freq}, amp={amp}")
-
-              # Парсинг Chinese ELF
-              if not (freq and amp):
-                  raw_html = _fetch_schumann_data("http://www.geophys.ac.cn/")
-                  if raw_html:
-                      soup = BeautifulSoup(raw_html, "html.parser")
-                      all_text = " ".join(soup.stripped_strings)
-                      print(f"Searching text on Chinese ELF: {all_text[:200]}...")
-                      freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
-                      amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
-                      freq = freq_match.group(1) if freq_match else None
-                      amp = amp_match.group(1) if amp_match else None
-                      print(f"Parsed from Chinese ELF: freq={freq}, amp={amp}")
+                      print(f"Parsed from Mikhnevo: freq={freq}, amp={amp}")
 
               if not (freq and amp):
                   # Fallback на кэш
