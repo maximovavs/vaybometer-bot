@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-Отправка месячного сообщения «Лунный календарь».
-Требует:
-  • lunar_calendar.json (из gen_lunar_calendar.py)
-  • TELEGRAM_TOKEN, CHANNEL_ID   – в переменных окружения
+Месячный астрокалендарь в Telegram-канал
 """
 
 import os, json, html, asyncio
 from pathlib import Path
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 import pendulum
 from telegram import Bot, error as tg_err
 
@@ -18,82 +14,74 @@ TOKEN   = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = int(os.getenv("CHANNEL_ID", "0"))
 TZ      = pendulum.timezone("Asia/Nicosia")
 
-# сопоставляем чистое имя → emoji, как в генераторе
 EMOJI = {
     "Новолуние":"🌑","Растущий серп":"🌒","Первая четверть":"🌓","Растущая Луна":"🌔",
     "Полнолуние":"🌕","Убывающая Луна":"🌖","Последняя четверть":"🌗","Убывающий серп":"🌘"
 }
 
-def fmt_range(ds: str, de: str) -> str:
-    """'2025-05-01','2025-05-10' → '1–10 мая' с неразрывным пробелом перед «мая»."""
-    sd = pendulum.parse(ds, tz=TZ)
-    ed = pendulum.parse(de, tz=TZ)
-    if sd.month != ed.month:           # случается редко (фаза тянется через месяц)
-        return f"{sd.day} {sd.format('MMM')}–{ed.day} {ed.format('MMM')}"
-    return f"{sd.day}–{ed.day}\u00A0{sd.format('MMM', locale='ru')}".lower()
+def fmt_range(ds, de):
+    s, e = pendulum.parse(ds, tz=TZ), pendulum.parse(de, tz=TZ)
+    if s.month != e.month:
+        return f"{s.day} {s.format('MMM')}–{e.day} {e.format('MMM')}"
+    return f"{s.day}–{e.day}\u00A0{s.format('MMM', locale='ru')}".lower()
 
-def build_message(data: dict) -> str:
-    # --- группировка по фазам ---
-    ordered = OrderedDict()            # сохраняем природный порядок
+def build_message(data: dict):
+    ordered, voc_list = OrderedDict(), []
     for day, rec in data.items():
         name = rec["phase_name"]
         if name not in ordered:
-            ordered[name] = {
-                "emoji": EMOJI.get(name,""),
-                "dates": [day],
-                "desc" : rec["long_desc"]
-            }
+            ordered[name] = {"emoji": EMOJI.get(name,""), "dates":[day], "desc":rec["long_desc"]}
         else:
             ordered[name]["dates"].append(day)
 
-    # --- заголовок ---
+        v = rec["void_of_course"]
+        if v["start"] and v["end"]:
+            voc_list.append((v["start"], v["end"]))
+
     first_date = next(iter(data))
     month_ru   = pendulum.parse(first_date).format("MMMM YYYY", locale="ru").upper()
-    lines = ["<b>🌙 Лунный календарь на " + month_ru + "</b>\n"]
+    out = [f"<b>🌙 Лунный календарь на {month_ru}</b>\n"]
 
-    # --- сами сегменты ---
     for seg in ordered.values():
         seg["dates"].sort()
         rng = fmt_range(seg["dates"][0], seg["dates"][-1])
-        emoji = seg["emoji"]
-        lines.append(f"{emoji} <b>{rng}</b>")
-        lines.append(f"<i>{html.escape(seg['desc'])}</i>\n")
+        out.append(f"{seg['emoji']} <b>{rng}</b>")
+        out.append(f"<i>{html.escape(seg['desc'])}</i>\n")
 
-    # --- сводка благоприятных дней ---
-    any_day = next(iter(data.values()))        # шаблон
-    fav = any_day["favorable_days"]
-    unf = any_day["unfavorable_days"]
-
+    any_day = next(iter(data.values()))
+    fav, unf = any_day["favorable_days"], any_day["unfavorable_days"]
     def lst(L): return ", ".join(map(str,L)) if L else "—"
 
-    lines.append(f"✅ <b>Благоприятные дни:</b> {lst(fav['general']['favorable'])}")
-    lines.append(f"❌ <b>Неблагоприятные:</b> {lst(unf['general']['unfavorable'])}\n")
+    out.append(f"✅ <b>Благоприятные дни:</b> {lst(fav['general']['favorable'])}")
+    out.append(f"❌ <b>Неблагоприятные:</b> {lst(unf['general']['unfavorable'])}\n")
 
     icons = {"haircut":"✂️ Стрижки","travel":"✈️ Путешествия",
              "shopping":"🛍️ Покупки","health":"❤️ Здоровье"}
-    for k, label in icons.items():
-        lines.append(f"{label}: {lst(fav[k]['favorable'])}")
+    for k,lbl in icons.items():
+        out.append(f"{lbl}: {lst(fav[k]['favorable'])}")
 
-    # --- пояснение VoC ---
-    lines.append("\n<i>Void-of-Course — временной отрезок, когда Луна завершила все "
-                 "ключевые аспекты в знаке и ещё не вошла в следующий. В это время "
-                 "энергия рассеяна, поэтому старт важных дел лучше перенести.</i>")
-
-    return "\n".join(lines)
+    # --- пояснение + перечень VoC ---
+    out.append(
+        "\n<i>Void-of-Course — временной отрезок, когда Луна завершила все ключевые "
+        "аспекты в знаке и ещё не вошла в следующий. В это время энергия рассеяна, "
+        "поэтому старт важных дел лучше перенести.</i>\n")
+    if voc_list:
+        out.append("🕳️ <b>Void-of-Course в месяце:</b>")
+        for s,e in voc_list:
+            st = pendulum.parse(s).format('DD.MM HH:mm')
+            en = pendulum.parse(e).format('DD.MM HH:mm')
+            out.append(f"• {st} → {en}")
+    return "\n".join(out)
 
 async def main():
     fn = Path("lunar_calendar.json")
     if not fn.exists():
         print("❌ lunar_calendar.json not found")
         return
-
-    data = json.loads(fn.read_text("utf-8"))
-    txt  = build_message(data)
-
+    txt = build_message(json.loads(fn.read_text("utf-8")))
     bot = Bot(TOKEN)
     try:
-        await bot.send_message(CHAT_ID, txt,
-                               parse_mode="HTML",
+        await bot.send_message(CHAT_ID, txt, parse_mode="HTML",
                                disable_web_page_preview=True)
         print("✅ monthly post sent")
     except tg_err.TelegramError as e:
