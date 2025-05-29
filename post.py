@@ -21,7 +21,7 @@ from weather import get_weather
 from air import get_air, get_sst, get_kp
 from pollen import get_pollen
 from schumann import get_schumann
-from lunar import get_day_lunar_info
+from astro import astro_events        # ← новое!
 from gpt import gpt_blurb
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -81,15 +81,15 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
             pts = arr[-24:]
             freqs = [p["freq"] for p in pts]
             if len(freqs) >= 2:
-                avg = sum(freqs[:-1]) / (len(freqs)-1)
+                avg = sum(freqs[:-1]) / (len(freqs) - 1)
                 delta = freqs[-1] - avg
-                trend = "↑" if delta>=0.1 else "↓" if delta<=-0.1 else "→"
+                trend = "↑" if delta >= 0.1 else "↓" if delta <= -0.1 else "→"
             else:
                 trend = "→"
             return {
-                "freq":  round(last["freq"],2),
-                "amp":   round(last["amp"],1),
-                "high":  last["freq"]>8.0 or last["amp"]>100.0,
+                "freq":  round(last["freq"], 2),
+                "amp":   round(last["amp"], 1),
+                "high":  last["freq"] > 8.0 or last["amp"] > 100.0,
                 "trend": trend,
                 "cached": True,
             }
@@ -133,23 +133,23 @@ def build_msg() -> str:
     P.append("———")
 
     # 4) Рейтинг городов
-    temps: Dict[str, Tuple[float,float]] = {}
-    for city, (la,lo) in CITIES.items():
+    temps: Dict[str, Tuple[float, float]] = {}
+    for city, (la, lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo)
         if d is not None:
             temps[city] = (d, n or d)
     if temps:
         P.append("🎖️ Рейтинг городов (дн./ночь)")
-        medals = ["🥇","🥈","🥉","4️⃣"]
-        for i,(city,(d,n)) in enumerate(sorted(temps.items(), key=lambda x:x[1][0], reverse=True)[:4]):
+        medals = ["🥇", "🥈", "🥉", "4️⃣"]
+        for i, (city, (d, n)) in enumerate(sorted(temps.items(), key=lambda x: x[1][0], reverse=True)[:4]):
             P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
         P.append("———")
 
     # 5) Качество воздуха и пыльца
     air = get_air() or {}
     P.append("🏙️ Качество воздуха")
-    lvl = air.get("lvl","н/д")
-    P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
+    lvl = air.get("lvl", "н/д")
+    P.append(f"{AIR_EMOJI.get(lvl, '⚪')} {lvl} (AQI {air.get('aqi', 'н/д')}) | "
              f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
     pollen = get_pollen() or {}
     if pollen:
@@ -171,19 +171,14 @@ def build_msg() -> str:
         cache = ' (из кеша)' if sch.get("cached") else ''
         P.append(f"{sym} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cache}")
     else:
-        P.append(f"🎵 Шуман: {sch.get('msg','н/д')}")
+        P.append(f"🎵 Шуман: {sch.get('msg', 'н/д')}")
     P.append("———")
 
-    # 7) Астрособытия — фаза и 3 совета
-    lunar = get_day_lunar_info(TODAY)
-    if lunar:
+    # 7) Астрособытия (фаза, советы, VoC, категории)
+    astro = astro_events()          # ← уже готовый список строк
+    if astro:
         P.append("🌌 <b>Астрособытия</b>")
-        phase = lunar.get("phase","")
-        advices = lunar.get("advice",[])
-        if phase:
-            P.append(phase)
-        for tip in advices[:3]:
-            P.append(f"{tip}")
+        P.extend(astro)
         P.append("———")
 
     # 8) Вывод и рекомендации GPT
@@ -209,7 +204,7 @@ def build_msg() -> str:
 # ─────────── Отправка ─────────────────────────────────────────────
 async def send_main_post(bot: Bot) -> None:
     html = build_msg()
-    logging.info("Preview: %s", html.replace("\n"," | ")[:200])
+    logging.info("Preview: %s", html.replace("\n", " | ")[:200])
     try:
         await bot.send_message(
             CHAT_ID,
@@ -239,8 +234,12 @@ async def fetch_unsplash_photo() -> Optional[str]:
     if not UNSPLASH_KEY:
         return None
     url = "https://api.unsplash.com/photos/random"
-    resp = requests.get(url, params={"query":"cyprus coast sunset","client_id":UNSPLASH_KEY}, timeout=15)
-    return resp.json().get("urls",{}).get("regular")
+    resp = requests.get(
+        url,
+        params={"query": "cyprus coast sunset", "client_id": UNSPLASH_KEY},
+        timeout=15
+    )
+    return resp.json().get("urls", {}).get("regular")
 
 async def send_photo(bot: Bot, photo_url: str) -> None:
     try:
