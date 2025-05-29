@@ -2,15 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-Формирует и отправляет “месячный” пост.
-• группировка по «фаза + знак»
-• авто-нарезка на ≤4096 симв.
-• отдельный блок Void-of-Course
+Отправляет «месячный» пост в TG-канал.
+
+• группировка по фазе (без разбиения на знаки)
+• в заголовке сегмента показываем все знаки, встречающиеся в диапазоне
+• авто-нарезка на ≤ 4096 симв.
+• отдельный блок Void-of-Course + пояснение
 """
 
-import json, asyncio, os, math, textwrap
+import json, asyncio, os
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 import pendulum
 from telegram import Bot, Message
 from telegram.error import TelegramError
@@ -18,113 +20,119 @@ from telegram.error import TelegramError
 TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = int(os.getenv("CHANNEL_ID", 0))
 TZ      = pendulum.timezone("Asia/Nicosia")
-MAX_LEN = 4096                     # Telegram hard-limit
+MAX_LEN = 4096                       # лимит Telegram
 
 EMO = {
-    "Новолуние":"🌑","Растущий серп":"🌒","Первая четверть":"🌓","Растущая Луна":"🌔",
-    "Полнолуние":"🌕","Убывающая Луна":"🌖","Последняя четверть":"🌗","Убывающий серп":"🌘",
+    "Новолуние"        :"🌑",
+    "Растущий серп"    :"🌒",
+    "Первая четверть"  :"🌓",
+    "Растущая Луна"    :"🌔",
+    "Полнолуние"       :"🌕",
+    "Убывающая Луна"   :"🌖",
+    "Последняя четверть":"🌗",
+    "Убывающий серп"   :"🌘",
 }
 
-# ── helpers ────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────
 def fmt_range(d1:str, d2:str)->str:
     p1, p2 = pendulum.parse(d1), pendulum.parse(d2)
     if p1.month == p2.month:
         return f"{p1.day}–{p2.day} {p1.format('MMMM', locale='ru')}"
     return f"{p1.format('D MMM', locale='ru')}–{p2.format('D MMM', locale='ru')}"
 
-def collect_segments(data:dict):
-    segs, buf, last = [], [], None
+def split_chunks(text:str, limit:int=MAX_LEN):
+    parts, buf = [], []
+    for ln in text.splitlines(keepends=True):
+        if sum(len(l) for l in buf) + len(ln) > limit:
+            parts.append("".join(buf).rstrip())
+            buf = []
+        buf.append(ln)
+    if buf: parts.append("".join(buf).rstrip())
+    return parts
+
+# ── message builder ──────────────────────────────────
+def build_message(data:dict)->str:
+    first_date = pendulum.parse(next(iter(data))).in_tz(TZ)
+    month_name = first_date.format("MMMM YYYY", locale='ru').upper()
+    lines = [f"🌙 <b>Лунный календарь на {month_name}</b>", ""]
+
+    # 1. сегменты по фазе
+    segs = OrderedDict()                         # {phase: [(date, rec), ...]}
     for date in sorted(data):
         rec = data[date]
-        key = (rec["phase_name"], rec["sign"])
-        if key != last and buf:
-            segs.append(buf); buf=[]
-        buf.append((date, rec)); last = key
-    if buf: segs.append(buf)
-    return segs
+        segs.setdefault(rec["phase_name"], []).append((date, rec))
 
-def build_message(data:dict)->str:
-    month = pendulum.parse(next(iter(data))).in_tz(TZ).format("MMMM YYYY", locale='ru').upper()
-    lines = [f"🌙 <b>Лунный календарь на {month}</b>", ""]
-
-    # основной текст
-    for seg in collect_segments(data):
-        d1, r1 = seg[0]
-        d2, _  = seg[-1]
-        emoji  = EMO[r1["phase_name"]]
-        rng    = fmt_range(d1, d2)
-        sign   = r1["sign"]
-        lines.append(f"{emoji} <b>{rng} • {sign}</b>")
-        if desc := r1.get("long_desc","").strip():
+    for phase, items in segs.items():
+        emoji   = EMO[phase]
+        d1, _   = items[0]
+        d2, _   = items[-1]
+        signs   = ", ".join(OrderedDict.fromkeys(i["sign"] for _, i in items))  # уникальные в порядке появления
+        rng     = fmt_range(d1, d2)
+        lines.append(f"{emoji} <b>{rng}</b> • {signs}")
+        desc = items[0].get("long_desc","").strip()
+        if desc:
             lines.append(f"<i>{desc}</i>")
         lines.append("")
 
-    # сводки
+    # 2. сводки благоприятных / неблагоприятных
     cats = data[next(iter(data))]["favorable_days"]
-    def row(cat, ico):
-        good = ", ".join(map(str, cats[cat]["favorable"]))
-        bad  = cats[cat]["unfavorable"]
-        line = f"{ico} <b>{cat.capitalize()}:</b> {good}"
-        if bad: line += f"  •  {', '.join(map(str,bad))}"
-        return line
+
+    def cat_row(cat, icon):
+        fav = ", ".join(map(str, cats[cat]["favorable"]))
+        bad = cats[cat]["unfavorable"]
+        row = f"{icon} <b>{cat.capitalize()}:</b> {fav}"
+        if bad:
+            row += f"  •  {', '.join(map(str,bad))}"
+        return row
+
     lines += [
         "✅ <b>Благоприятные дни:</b> "   + ", ".join(map(str, cats['general']['favorable'])),
         "❌ <b>Неблагоприятные:</b> "     + ", ".join(map(str, cats['general']['unfavorable'])),
-        row("haircut","✂️"),
-        row("travel","✈️"),
-        row("shopping","🛍️"),
-        row("health","❤️"),
+        cat_row("haircut","✂️"),
+        cat_row("travel","✈️"),
+        cat_row("shopping","🛍️"),
+        cat_row("health","❤️"),
         ""
     ]
 
-    # VoC
-    voc = [f"• {v['start']} → {v['end']}"
-           for v in (rec["void_of_course"] for rec in data.values())
-           if v["start"] and v["end"]]
-    if voc:
+    # 3. Void-of-Course
+    voc_lines = []
+    for rec in data.values():
+        v = rec["void_of_course"]
+        if v["start"] and v["end"]:
+            voc_lines.append(f"• {v['start']} → {v['end']}")
+    if voc_lines:
         lines.append("<b>🕳️ Void-of-Course:</b>")
-        lines.extend(voc)
+        lines.extend(voc_lines)
         lines.append("")
         lines.append(
             "<i>Void-of-Course</i> — период, когда Луна завершила все аспекты в знаке "
-            "и ещё не вошла в следующий; энергия рассеяна, новые начинания лучше отложить."
+            "и ещё не вошла в следующий; энергия рассеяна — новые начинания лучше отложить."
         )
 
     return "\n".join(lines).strip()
 
-def split_chunks(text:str, limit:int=MAX_LEN):
-    """делим по пустым строкам, чтобы не резать середину слова"""
-    parts, buf = [], []
-    for line in text.splitlines(keepends=True):
-        if sum(len(l) for l in buf)+len(line) > limit:
-            parts.append("".join(buf).rstrip())
-            buf = []
-        buf.append(line)
-    if buf: parts.append("".join(buf).rstrip())
-    return parts
-
-# ── main ───────────────────────────────────────────────
+# ── main ──────────────────────────────────────────────
 async def main():
-    data_file = Path("lunar_calendar.json")
-    if not data_file.exists():
-        print("❌ lunar_calendar.json not found"); return
-
-    message = build_message(json.loads(data_file.read_text(encoding="utf-8")))
-    chunks  = split_chunks(message)
+    data_path = Path("lunar_calendar.json")
+    if not data_path.exists():
+        print("❌ lunar_calendar.json отсутствует"); return
+    data = json.loads(data_path.read_text(encoding="utf-8"))
+    text = build_message(data)
+    chunks = split_chunks(text)
 
     bot = Bot(TOKEN)
-    first_msg: Message | None = None
+    first: Message | None = None
     try:
-        for idx, chunk in enumerate(chunks):
-            sent = await bot.send_message(
-                CHAT_ID,
-                chunk,
+        for i, part in enumerate(chunks):
+            msg = await bot.send_message(
+                CHAT_ID, part,
                 parse_mode="HTML",
                 disable_web_page_preview=True,
-                reply_to_message_id=first_msg.id if idx and first_msg else None
+                reply_to_message_id=first.id if i and first else None
             )
-            if idx == 0: first_msg = sent
-        print(f"✅ Sent {len(chunks)} Telegram message(s)")
+            if i == 0: first = msg
+        print(f"✅ Отправлено сообщений: {len(chunks)}")
     except TelegramError as e:
         print(f"❌ Telegram error: {e}")
 
