@@ -91,10 +91,9 @@ jobs:
                       except json.JSONDecodeError:
                           print(f"JSON decode failed for {url}")
 
-              # Парсинг sosrff.tsu.ru
+              # Парсинг sosrff.tsu.ru и альтернативного домена
               if not (freq and amp):
-                  # Проверяем основную страницу и подстраницу
-                  for page in ["https://sosrff.tsu.ru", "http://sosrff.tsu.ru/?page=sc"]:
+                  for page in ["https://sosrff.tsu.ru", "http://sosrff.mipt.ru"]:
                       raw_html = _fetch_schumann_data(page)
                       if raw_html:
                           soup = BeautifulSoup(raw_html, "html.parser")
@@ -103,7 +102,6 @@ jobs:
                           for script in scripts:
                               script_text = script.text.strip()
                               print(f"Analyzing script on {page}: {script_text[:200]}...")
-                              # Ищем JSON с frequency и amplitude
                               json_match = re.search(r"\{.*?\bfrequency\s*:\s*(\d+\.?\d*)\s*,\s*amplitude\s*:\s*(\d+\.?\d*)\s*}", script_text, re.DOTALL)
                               if json_match:
                                   freq = json_match.group(1)
@@ -112,7 +110,7 @@ jobs:
                                   break
                           if freq and amp:
                               break
-                          # Если не найдено в JSON, ищем в тексте
+                          # Поиск в тексте
                           all_text = " ".join(soup.stripped_strings)
                           print(f"Searching text on {page}: {all_text[:200]}...")
                           freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
@@ -125,7 +123,7 @@ jobs:
 
               # Парсинг HeartMath
               if not (freq and amp):
-                  raw_html = _fetch_schumann_data("https://www.heartmath.org/gci/gci-data/")
+                  raw_html = _fetch_schumann_data("https://www.heartmath.org/research/gci/gcms-data-summaries/")
                   if raw_html:
                       soup = BeautifulSoup(raw_html, "html.parser")
                       all_text = " ".join(soup.stripped_strings)
@@ -135,6 +133,19 @@ jobs:
                       freq = freq_match.group(1) if freq_match else None
                       amp = amp_match.group(1) if amp_match else None
                       print(f"Parsed from HeartMath: freq={freq}, amp={amp}")
+
+              # Парсинг BGS Geomagnetism
+              if not (freq and amp):
+                  raw_html = _fetch_schumann_data("https://www.geomag.bgs.ac.uk/data_service/data/high_frequency.html")
+                  if raw_html:
+                      soup = BeautifulSoup(raw_html, "html.parser")
+                      all_text = " ".join(soup.stripped_strings)
+                      print(f"Searching text on BGS: {all_text[:200]}...")
+                      freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
+                      amp_match = re.search(r"(\d+\.?\d*)\s*pT", all_text)  # Используем pT, как указано в источниках
+                      freq = freq_match.group(1) if freq_match else None
+                      amp = amp_match.group(1) if amp_match else None
+                      print(f"Parsed from BGS: freq={freq}, amp={amp}")
 
               if not (freq and amp):
                   # Fallback на кэш
