@@ -14,7 +14,6 @@ jobs:
         uses: actions/checkout@v3
         with:
           repository: maximovavs/vaybometer-bot
-          token: ${{ secrets.PAT_TOKEN }}  # Убедитесь, что PAT_TOKEN существует
           ssh-strict: true
           persist-credentials: true
           clean: true
