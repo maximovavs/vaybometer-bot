@@ -2,7 +2,7 @@ name: Collect Schumann Data
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Запуск каждые 6 часов (0:00, 6:00, 12:00, 18:00 UTC)
+    - cron: '0 * * * *'  # Каждый час
   workflow_dispatch:
 
 jobs:
@@ -96,18 +96,17 @@ jobs:
                   raw_html = _fetch_schumann_data("https://sosrff.tsu.ru")
                   if raw_html:
                       soup = BeautifulSoup(raw_html, "html.parser")
-                      # Поиск в JavaScript или текстовых элементах
+                      # Поиск JSON в <script>
                       scripts = soup.find_all("script", type="text/javascript")
                       for script in scripts:
-                          if "Hz" in script.text and "nT" in script.text:
-                              freq_match = re.search(r"(\d+\.?\d*)\s*Hz", script.text)
-                              amp_match = re.search(r"(\d+\.?\d*)\s*nT", script.text)
-                              freq = freq_match.group(1) if freq_match else None
-                              amp = amp_match.group(1) if amp_match else None
-                              if freq and amp:
+                          if "frequency" in script.text and "amplitude" in script.text:
+                              json_match = re.search(r"\{.*frequency\s*:\s*(\d+\.?\d*).*amplitude\s*:\s*(\d+\.?\d*).*}", script.text, re.DOTALL)
+                              if json_match:
+                                  freq = json_match.group(1)
+                                  amp = json_match.group(2)
                                   break
+                      # Если не найдено в JSON, ищем в тексте
                       if not (freq and amp):
-                          # Поиск в текстовых элементах
                           freq_text = soup.find(string=lambda t: t and re.search(r"\d+\.?\d*\s*Hz", t))
                           amp_text = soup.find(string=lambda t: t and re.search(r"\d+\.?\d*\s*nT", t))
                           freq = re.search(r"(\d+\.?\d*)\s*Hz", freq_text).group(1) if freq_text else None
@@ -138,6 +137,7 @@ jobs:
                   arr = [r for r in arr if r["ts"] >= cutoff]
                   cache.write_text(json.dumps(arr, ensure_ascii=False))
                   print("Saved Schumann point:", rec)
+                  # Уведомление только при аномалиях
                   if float(freq) > 8.0 or float(amp) > 100.0:
                       send_telegram_message(
                           "${{ env.TELEGRAM_TOKEN }}",
