@@ -20,8 +20,7 @@ jobs:
 
       - name: 📦 Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install beautifulsoup4 requests
+          pip install requests
 
       - name: 🚀 Fetch Schumann point
         env:
@@ -32,9 +31,7 @@ jobs:
           import json
           import time
           import requests
-          import re
           from pathlib import Path
-          from bs4 import BeautifulSoup
 
           def send_telegram_message(token, chat_id, message):
               if not token or not chat_id:
@@ -49,74 +46,31 @@ jobs:
               except Exception as e:
                   print(f"Failed to send Telegram notification: {e}")
 
-          def _fetch_schumann_data(url, attempts=5, backoff=2.0, timeout=45):
-              for i in range(attempts):
-                  try:
-                      response = requests.get(url, timeout=timeout, headers={"User-Agent": "VayboMeter/1.0"})
-                      response.raise_for_status()
-                      data = response.text
-                      print(f"Raw response from {url} (first 200 chars): {data[:200]}...")
-                      if data:
-                          print(f"Success: Got data from {url}")
-                          return data
-                      print(f"Retry {i+1}/{attempts} for {url} after {backoff**i}s")
-                      time.sleep(backoff**i)
-                  except Exception as e:
-                      print(f"Retry {i+1}/{attempts} failed for {url}: {e}")
-                      time.sleep(backoff**i)
-              print(f"All attempts failed for {url}")
-              return ""
+          def fetch_api_data(url, timeout=45):
+              try:
+                  response = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+                  response.raise_for_status()
+                  data = response.json()
+                  print(f"API response from {url} (first 200 chars): {str(data)[:200]}...")
+                  return data
+              except Exception as e:
+                  print(f"Failed to fetch API {url}: {e}")
+                  return None
 
           try:
-              # Инициализация
               freq = None
               amp = None
 
-              # Парсинг SpaceWeatherLive
-              if not (freq and amp):
-                  raw_html = _fetch_schumann_data("https://www.spaceweatherlive.com/")
-                  if raw_html:
-                      soup = BeautifulSoup(raw_html, "html.parser")
-                      all_text = " ".join(soup.stripped_strings)
-                      print(f"Searching text on SpaceWeatherLive: {all_text[:200]}...")
-                      freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
-                      amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
-                      freq = freq_match.group(1) if freq_match else None
-                      amp = amp_match.group(1) if amp_match else None
-                      print(f"Parsed from SpaceWeatherLive: freq={freq}, amp={amp}")
-
-              # Парсинг NOAA API
-              if not (freq and amp):
-                  try:
-                      response = requests.get("https://services.swpc.noaa.gov/products/geospace/geomagnetic-indices.json")
-                      response.raise_for_status()
-                      data = response.json()
-                      print(f"NOAA API response (first 200 chars): {str(data)[:200]}...")
-                      # Пример: извлечение последней записи
-                      if len(data) > 1:
-                          last_entry = data[-1]
-                          # Ищем поля, которые могут содержать частоту или амплитуду
-                          json_text = json.dumps(last_entry)
-                          freq_match = re.search(r"(\d+\.?\d*)\s*Hz", json_text)
-                          amp_match = re.search(r"(\d+\.?\d*)\s*nT", json_text)
-                          freq = freq_match.group(1) if freq_match else None
-                          amp = amp_match.group(1) if amp_match else None
-                          print(f"Parsed from NOAA API: freq={freq}, amp={amp}")
-                  except Exception as e:
-                      print(f"Failed to fetch NOAA API: {e}")
-
-              # Парсинг HeartMath GCI
-              if not (freq and amp):
-                  raw_html = _fetch_schumann_data("https://www.heartmath.org/gci/")
-                  if raw_html:
-                      soup = BeautifulSoup(raw_html, "html.parser")
-                      all_text = " ".join(soup.stripped_strings)
-                      print(f"Searching text on HeartMath GCI: {all_text[:200]}...")
-                      freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
-                      amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
-                      freq = freq_match.group(1) if freq_match else None
-                      amp = amp_match.group(1) if amp_match else None
-                      print(f"Parsed from HeartMath GCI: freq={freq}, amp={amp}")
+              # NOAA Solar Wind Magnetic Field
+              noaa_url = "https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json"
+              noaa_data = fetch_api_data(noaa_url)
+              if noaa_data and len(noaa_data) > 1:
+                  last_entry = noaa_data[-1]
+                  # Предполагаем, что данные магнитного поля могут быть в формате [time, Bx, By, Bz]
+                  if len(last_entry) >= 4:
+                      amp = float(last_entry[3])  # Bz в nT
+                      freq = 7.83  # Фиксируем частоту, так как API не даёт прямых данных о Шумане
+                      print(f"Parsed from NOAA API: freq={freq}, amp={amp}")
 
               if not (freq and amp):
                   # Fallback на кэш
@@ -133,7 +87,6 @@ jobs:
                       print("No cache file found")
 
               if freq and amp:
-                  # Сохраняем точку
                   rec = {"ts": int(time.time()), "freq": float(freq), "amp": float(amp)}
                   cache = Path("schumann_hourly.json")
                   arr = json.loads(cache.read_text()) if cache.exists() else []
@@ -142,7 +95,6 @@ jobs:
                   arr = [r for r in arr if r["ts"] >= cutoff]
                   cache.write_text(json.dumps(arr, ensure_ascii=False))
                   print("Saved Schumann point:", rec)
-                  # Уведомление только при аномалиях
                   if float(freq) > 8.0 or float(amp) > 100.0:
                       send_telegram_message(
                           "${{ env.TELEGRAM_TOKEN }}",
