@@ -21,7 +21,7 @@ jobs:
       - name: 📦 Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install beautifulsoup4 requests
+          pip install beautifulsoup4 requests pillow pytesseract
 
       - name: 🚀 Fetch Schumann point
         env:
@@ -35,6 +35,8 @@ jobs:
           import re
           from pathlib import Path
           from bs4 import BeautifulSoup
+          from PIL import Image
+          import pytesseract
 
           def send_telegram_message(token, chat_id, message):
               if not token or not chat_id:
@@ -66,6 +68,20 @@ jobs:
                       time.sleep(backoff**i)
               print(f"All attempts failed for {url}")
               return ""
+
+          def extract_text_from_image(url):
+              try:
+                  response = requests.get(url, timeout=30)
+                  response.raise_for_status()
+                  img = Image.open(requests.get(url, stream=True).raw)
+                  text = pytesseract.image_to_string(img)
+                  print(f"Extracted text from {url}: {text[:200]}...")
+                  freq_match = re.search(r"(\d+\.?\d*)\s*Hz", text)
+                  amp_match = re.search(r"(\d+\.?\d*)\s*nT", text)
+                  return freq_match.group(1) if freq_match else None, amp_match.group(1) if amp_match else None
+              except Exception as e:
+                  print(f"Failed to extract text from image {url}: {e}")
+                  return None, None
 
           try:
               # Инициализация
@@ -107,7 +123,21 @@ jobs:
                                   if "schumann" in img_src.lower() or "resonance" in img_src.lower() or "shm" in img_src.lower():
                                       full_url = f"http://sos70.ru{img_src}" if not img_src.startswith('http') else img_src
                                       print(f"Found potential Schumann image: {full_url}")
-                                      # Здесь можно добавить OCR для анализа
+                                      freq_img, amp_img = extract_text_from_image(full_url)
+                                      if freq_img and amp_img:
+                                          freq = freq_img
+                                          amp = amp_img
+                                          print(f"Extracted from image {full_url}: freq={freq}, amp={amp}")
+                                          break
+                              if freq and amp:
+                                  break
+                              # Прямое обращение к известному изображению
+                              shm_url = "http://sos70.ru/new/shm.jpg"
+                              freq_img, amp_img = extract_text_from_image(shm_url)
+                              if freq_img and amp_img:
+                                  freq = freq_img
+                                  amp = amp_img
+                                  print(f"Extracted from {shm_url}: freq={freq}, amp={amp}")
 
               # Парсинг HeartMath
               if not (freq and amp):
@@ -122,6 +152,20 @@ jobs:
                           freq = freq_match.group(1) if freq_match else None
                           amp = amp_match.group(1) if amp_match else None
                           print(f"Parsed from HeartMath: freq={freq}, amp={amp}")
+                          # Поиск изображений
+                          if not (freq and amp):
+                              img_tags = soup.find_all("img")
+                              for img in img_tags:
+                                  img_src = img.get("src", "")
+                                  if "schumann" in img_src.lower() or "resonance" in img_src.lower():
+                                      full_url = img_src if img_src.startswith('http') else f"https://nocc.heartmath.org{img_src}"
+                                      print(f"Found potential Schumann image: {full_url}")
+                                      freq_img, amp_img = extract_text_from_image(full_url)
+                                      if freq_img and amp_img:
+                                          freq = freq_img
+                                          amp = amp_img
+                                          print(f"Extracted from image {full_url}: freq={freq}, amp={amp}")
+                                          break
                           if freq and amp:
                               break
 
@@ -140,16 +184,19 @@ jobs:
 
               # Парсинг Mikhnevo Observatory
               if not (freq and amp):
-                  raw_html = _fetch_schumann_data("https://idg5.chph.ras.ru/geospheres-dynamics/schumann_resonances/")
-                  if raw_html:
-                      soup = BeautifulSoup(raw_html, "html.parser")
-                      all_text = " ".join(soup.stripped_strings)
-                      print(f"Searching text on Mikhnevo: {all_text[:200]}...")
-                      freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
-                      amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
-                      freq = freq_match.group(1) if freq_match else None
-                      amp = amp_match.group(1) if amp_match else None
-                      print(f"Parsed from Mikhnevo: freq={freq}, amp={amp}")
+                  for url in ["https://idg5.chph.ras.ru/geospheres-dynamics/schumann_resonances/", "https://idg.chph.ras.ru/"]:
+                      raw_html = _fetch_schumann_data(url)
+                      if raw_html:
+                          soup = BeautifulSoup(raw_html, "html.parser")
+                          all_text = " ".join(soup.stripped_strings)
+                          print(f"Searching text on Mikhnevo: {all_text[:200]}...")
+                          freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
+                          amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
+                          freq = freq_match.group(1) if freq_match else None
+                          amp = amp_match.group(1) if amp_match else None
+                          print(f"Parsed from Mikhnevo: freq={freq}, amp={amp}")
+                          if freq and amp:
+                              break
 
               if not (freq and amp):
                   # Fallback на кэш
