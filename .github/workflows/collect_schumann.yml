@@ -21,7 +21,7 @@ jobs:
       - name: 📦 Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install beautifulsoup4 requests pillow pytesseract
+          pip install beautifulsoup4 requests
 
       - name: 🚀 Fetch Schumann point
         env:
@@ -35,8 +35,6 @@ jobs:
           import re
           from pathlib import Path
           from bs4 import BeautifulSoup
-          from PIL import Image
-          import pytesseract
 
           def send_telegram_message(token, chat_id, message):
               if not token or not chat_id:
@@ -69,155 +67,56 @@ jobs:
               print(f"All attempts failed for {url}")
               return ""
 
-          def extract_text_from_image(url):
-              try:
-                  response = requests.get(url, timeout=30)
-                  response.raise_for_status()
-                  img = Image.open(requests.get(url, stream=True).raw)
-                  text = pytesseract.image_to_string(img)
-                  print(f"Extracted text from {url}: {text[:200]}...")
-                  freq_match = re.search(r"(\d+\.?\d*)\s*Hz", text)
-                  amp_match = re.search(r"(\d+\.?\d*)\s*nT", text)
-                  return freq_match.group(1) if freq_match else None, amp_match.group(1) if amp_match else None
-              except Exception as e:
-                  print(f"Failed to extract text from image {url}: {e}")
-                  return None, None
-
           try:
               # Инициализация
               freq = None
               amp = None
 
-              # Парсинг sosrff.tsu.ru и sos70.ru с изображениями
+              # Парсинг SpaceWeatherLive
               if not (freq and amp):
-                  for page in ["https://sosrff.tsu.ru", "http://sos70.ru", "http://sos70.ru/monitor/", "http://sos70.ru/data/"]:
-                      raw_html = _fetch_schumann_data(page)
-                      if raw_html:
-                          soup = BeautifulSoup(raw_html, "html.parser")
-                          # Поиск JSON в <script>
-                          scripts = soup.find_all("script", type="text/javascript")
-                          for script in scripts:
-                              script_text = script.text.strip()
-                              print(f"Analyzing script on {page}: {script_text[:200]}...")
-                              json_match = re.search(r"\{.*?\bfrequency\s*:\s*(\d+\.?\d*)\s*,\s*amplitude\s*:\s*(\d+\.?\d*)\s*}", script_text, re.DOTALL)
-                              if json_match:
-                                  freq = json_match.group(1)
-                                  amp = json_match.group(2)
-                                  print(f"Found in JSON on {page}: freq={freq}, amp={amp}")
-                                  break
-                          if freq and amp:
-                              break
-                          # Поиск в тексте
-                          all_text = " ".join(soup.stripped_strings)
-                          print(f"Searching text on {page}: {all_text[:200]}...")
-                          freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
-                          amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
-                          freq = freq_match.group(1) if freq_match else None
-                          amp = amp_match.group(1) if amp_match else None
-                          print(f"Parsed from {page}: freq={freq}, amp={amp}")
-                          # Поиск ссылок на изображения
-                          if not (freq and amp):
-                              img_tags = soup.find_all("img")
-                              for img in img_tags:
-                                  img_src = img.get("src", "")
-                                  if "schumann" in img_src.lower() or "resonance" in img_src.lower() or "shm" in img_src.lower():
-                                      full_url = f"http://sos70.ru{img_src}" if not img_src.startswith('http') else img_src
-                                      print(f"Found potential Schumann image: {full_url}")
-                                      freq_img, amp_img = extract_text_from_image(full_url)
-                                      if freq_img and amp_img:
-                                          freq = freq_img
-                                          amp = amp_img
-                                          print(f"Extracted from image {full_url}: freq={freq}, amp={amp}")
-                                          break
-                              if freq and amp:
-                                  break
-
-              # Парсинг HeartMath
-              if not (freq and amp):
-                  for url in ["https://www.heartmath.org/gci/gci-data/", "https://nocc.heartmath.org/power_levels/public/charts/power_levels.html"]:
-                      raw_html = _fetch_schumann_data(url)
-                      if raw_html:
-                          soup = BeautifulSoup(raw_html, "html.parser")
-                          all_text = " ".join(soup.stripped_strings)
-                          print(f"Searching text on HeartMath: {all_text[:200]}...")
-                          freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
-                          amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
-                          freq = freq_match.group(1) if freq_match else None
-                          amp = amp_match.group(1) if amp_match else None
-                          print(f"Parsed from HeartMath: freq={freq}, amp={amp}")
-                          # Поиск JavaScript-данных
-                          if not (freq and amp):
-                              scripts = soup.find_all("script")
-                              for script in scripts:
-                                  script_text = script.text.strip()
-                                  if "data" in script_text.lower() and ("hz" in script_text.lower() or "nt" in script_text.lower()):
-                                      print(f"Analyzing JS data on {url}: {script_text[:200]}...")
-                                      freq_match = re.search(r"(\d+\.?\d*)\s*Hz", script_text)
-                                      amp_match = re.search(r"(\d+\.?\d*)\s*nT", script_text)
-                                      freq = freq_match.group(1) if freq_match else None
-                                      amp = amp_match.group(1) if amp_match else None
-                                      print(f"Parsed from JS {url}: freq={freq}, amp={amp}")
-                                      if freq and amp:
-                                          break
-                          if freq and amp:
-                              break
-                          # Поиск изображений
-                          img_tags = soup.find_all("img")
-                          for img in img_tags:
-                              img_src = img.get("src", "")
-                              if "schumann" in img_src.lower() or "resonance" in img_src.lower():
-                                  full_url = img_src if img_src.startswith('http') else f"https://nocc.heartmath.org{img_src}"
-                                  print(f"Found potential Schumann image: {full_url}")
-                                  freq_img, amp_img = extract_text_from_image(full_url)
-                                  if freq_img and amp_img:
-                                      freq = freq_img
-                                      amp = amp_img
-                                      print(f"Extracted from image {full_url}: freq={freq}, amp={amp}")
-                                      break
-                          if freq and amp:
-                              break
-
-              # Парсинг BGS Geomagnetism
-              if not (freq and amp):
-                  raw_html = _fetch_schumann_data("https://geomag.bgs.ac.uk/")
+                  raw_html = _fetch_schumann_data("https://www.spaceweatherlive.com/")
                   if raw_html:
                       soup = BeautifulSoup(raw_html, "html.parser")
                       all_text = " ".join(soup.stripped_strings)
-                      print(f"Searching text on BGS: {all_text[:200]}...")
-                      freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
-                      amp_match = re.search(r"(\d+\.?\d*)\s*pT", all_text)
-                      freq = freq_match.group(1) if freq_match else None
-                      amp = amp_match.group(1) if amp_match else None
-                      print(f"Parsed from BGS: freq={freq}, amp={amp}")
-
-              # Парсинг Mikhnevo Observatory
-              if not (freq and amp):
-                  for url in ["https://idg5.chph.ras.ru/geospheres-dynamics/schumann_resonances/", "https://idg.chph.ras.ru/", "http://www.mikhnevo.ru/"]:
-                      raw_html = _fetch_schumann_data(url)
-                      if raw_html:
-                          soup = BeautifulSoup(raw_html, "html.parser")
-                          all_text = " ".join(soup.stripped_strings)
-                          print(f"Searching text on Mikhnevo: {all_text[:200]}...")
-                          freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
-                          amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
-                          freq = freq_match.group(1) if freq_match else None
-                          amp = amp_match.group(1) if amp_match else None
-                          print(f"Parsed from Mikhnevo: freq={freq}, amp={amp}")
-                          if freq and amp:
-                              break
-
-              # Парсинг NOAA
-              if not (freq and amp):
-                  raw_html = _fetch_schumann_data("https://www.swpc.noaa.gov/")
-                  if raw_html:
-                      soup = BeautifulSoup(raw_html, "html.parser")
-                      all_text = " ".join(soup.stripped_strings)
-                      print(f"Searching text on NOAA: {all_text[:200]}...")
+                      print(f"Searching text on SpaceWeatherLive: {all_text[:200]}...")
                       freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
                       amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
                       freq = freq_match.group(1) if freq_match else None
                       amp = amp_match.group(1) if amp_match else None
-                      print(f"Parsed from NOAA: freq={freq}, amp={amp}")
+                      print(f"Parsed from SpaceWeatherLive: freq={freq}, amp={amp}")
+
+              # Парсинг NOAA API
+              if not (freq and amp):
+                  try:
+                      response = requests.get("https://services.swpc.noaa.gov/products/geospace/geomagnetic-indices.json")
+                      response.raise_for_status()
+                      data = response.json()
+                      print(f"NOAA API response (first 200 chars): {str(data)[:200]}...")
+                      # Пример: извлечение последней записи
+                      if len(data) > 1:
+                          last_entry = data[-1]
+                          # Ищем поля, которые могут содержать частоту или амплитуду
+                          json_text = json.dumps(last_entry)
+                          freq_match = re.search(r"(\d+\.?\d*)\s*Hz", json_text)
+                          amp_match = re.search(r"(\d+\.?\d*)\s*nT", json_text)
+                          freq = freq_match.group(1) if freq_match else None
+                          amp = amp_match.group(1) if amp_match else None
+                          print(f"Parsed from NOAA API: freq={freq}, amp={amp}")
+                  except Exception as e:
+                      print(f"Failed to fetch NOAA API: {e}")
+
+              # Парсинг HeartMath GCI
+              if not (freq and amp):
+                  raw_html = _fetch_schumann_data("https://www.heartmath.org/gci/")
+                  if raw_html:
+                      soup = BeautifulSoup(raw_html, "html.parser")
+                      all_text = " ".join(soup.stripped_strings)
+                      print(f"Searching text on HeartMath GCI: {all_text[:200]}...")
+                      freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
+                      amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
+                      freq = freq_match.group(1) if freq_match else None
+                      amp = amp_match.group(1) if amp_match else None
+                      print(f"Parsed from HeartMath GCI: freq={freq}, amp={amp}")
 
               if not (freq and amp):
                   # Fallback на кэш
