@@ -68,6 +68,10 @@ jobs:
               return ""
 
           try:
+              # Инициализация
+              freq = None
+              amp = None
+
               # Пробуем JSON API
               urls = [
                   "https://api.glcoherence.org/v1/earth",
@@ -75,10 +79,6 @@ jobs:
                   "https://thingproxy.freeboard.io/fetch/https://api.glcoherence.org/v1/earth",
                   "https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth"
               ]
-              data = {}
-              freq = None
-              amp = None
-
               for url in urls:
                   raw_data = _fetch_schumann_data(url)
                   if raw_data:
@@ -93,29 +93,48 @@ jobs:
 
               # Парсинг sosrff.tsu.ru
               if not (freq and amp):
-                  raw_html = _fetch_schumann_data("https://sosrff.tsu.ru")
-                  if raw_html:
-                      soup = BeautifulSoup(raw_html, "html.parser")
-                      # Поиск JSON в <script>
-                      scripts = soup.find_all("script", type="text/javascript")
-                      for script in scripts:
-                          script_text = script.text.strip()
-                          print(f"Analyzing script: {script_text[:200]}...")  # Для диагностики
-                          if "frequency" in script_text and "amplitude" in script_text:
+                  # Проверяем основную страницу и подстраницу
+                  for page in ["https://sosrff.tsu.ru", "http://sosrff.tsu.ru/?page=sc"]:
+                      raw_html = _fetch_schumann_data(page)
+                      if raw_html:
+                          soup = BeautifulSoup(raw_html, "html.parser")
+                          # Поиск JSON в <script>
+                          scripts = soup.find_all("script", type="text/javascript")
+                          for script in scripts:
+                              script_text = script.text.strip()
+                              print(f"Analyzing script on {page}: {script_text[:200]}...")
+                              # Ищем JSON с frequency и amplitude
                               json_match = re.search(r"\{.*?\bfrequency\s*:\s*(\d+\.?\d*)\s*,\s*amplitude\s*:\s*(\d+\.?\d*)\s*}", script_text, re.DOTALL)
                               if json_match:
                                   freq = json_match.group(1)
                                   amp = json_match.group(2)
-                                  print(f"Found in JSON: freq={freq}, amp={amp}")
+                                  print(f"Found in JSON on {page}: freq={freq}, amp={amp}")
                                   break
-                      # Если не найдено в JSON, ищем в тексте
-                      if not (freq and amp):
+                          if freq and amp:
+                              break
+                          # Если не найдено в JSON, ищем в тексте
                           all_text = " ".join(soup.stripped_strings)
+                          print(f"Searching text on {page}: {all_text[:200]}...")
                           freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
                           amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
                           freq = freq_match.group(1) if freq_match else None
                           amp = amp_match.group(1) if amp_match else None
-                      print(f"Parsed from sosrff.tsu.ru: freq={freq}, amp={amp}")
+                          print(f"Parsed from {page}: freq={freq}, amp={amp}")
+                          if freq and amp:
+                              break
+
+              # Парсинг HeartMath
+              if not (freq and amp):
+                  raw_html = _fetch_schumann_data("https://www.heartmath.org/gci/gci-data/")
+                  if raw_html:
+                      soup = BeautifulSoup(raw_html, "html.parser")
+                      all_text = " ".join(soup.stripped_strings)
+                      print(f"Searching text on HeartMath: {all_text[:200]}...")
+                      freq_match = re.search(r"(\d+\.?\d*)\s*Hz", all_text)
+                      amp_match = re.search(r"(\d+\.?\d*)\s*nT", all_text)
+                      freq = freq_match.group(1) if freq_match else None
+                      amp = amp_match.group(1) if amp_match else None
+                      print(f"Parsed from HeartMath: freq={freq}, amp={amp}")
 
               if not (freq and amp):
                   # Fallback на кэш
