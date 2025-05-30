@@ -1,38 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-astro.py  • формирует блок «Астрособытия» для ежедневного поста.
-Возвращает список строк, которые редактор бота вставляет в сообщение.
-
-Теперь включает:
-• VoC (длительностью ≥ 15 мин)
-• Метку «благоприятный / неблагоприятный день»
-• Категории: ✂️ стрижка, ✈️ путешествия, 🛍 покупки, ❤️ здоровье
-• Фазу Луны + 3 совета
-• next_event
+astro.py • формирует блок «Астрособытия» для ежедневного поста.
 """
 
 from __future__ import annotations
 import pendulum
 from typing import Any, Dict, List, Optional
-from lunar import get_day_lunar_info         # функция из lunar.py
+from lunar import get_day_lunar_info          # читает lunar_calendar.json
 
 TZ = pendulum.timezone("Asia/Nicosia")
 
-# ───────────────────────────── helpers ──────────────────────────────
+# ─── helpers ──────────────────────────────────────────────────────────
 def _today_info() -> Optional[Dict[str, Any]]:
-    today = pendulum.now(TZ).date()
-    return get_day_lunar_info(today)
+    return get_day_lunar_info(pendulum.now(TZ).date())
+
+def _parse_voc_time(text: str) -> Optional[pendulum.DateTime]:
+    """
+    Приходит строка «DD.MM HH:mm».  Добавляем текущий год и
+    парсим строго по шаблону, чтобы избежать ParserError.
+    """
+    try:
+        year = pendulum.now(TZ).year
+        return pendulum.from_format(f"{year} {text}", "YYYY DD.MM HH:mm", tz=TZ)
+    except Exception:
+        return None
 
 def _format_voc(rec: Dict[str, Any]) -> Optional[str]:
     voc = rec.get("void_of_course", {})
-    if not voc or not voc.get("start") or not voc.get("end"):
+    start, end = voc.get("start"), voc.get("end")
+    if not (start and end):
         return None
-    t1 = pendulum.parse(voc["start"]).in_tz(TZ)
-    t2 = pendulum.parse(voc["end"]).in_tz(TZ)
-    if (t2 - t1).in_minutes() < 15:          # прячем «микро-VoC»
+
+    t1 = _parse_voc_time(start)
+    t2 = _parse_voc_time(end)
+    if not (t1 and t2):
         return None
-    return f"⚫️ VoC {t1.format('HH:mm')}–{t2.format('HH:mm')}"
+
+    # «микро-VoC» (короче 15 мин) прячем
+    if (t2 - t1).in_minutes() < 15:
+        return None
+
+    return f"⚫️ VoC {t1.format('DD.MM HH:mm')}–{t2.format('HH:mm')}"
 
 def _format_general_day(rec: Dict[str, Any]) -> Optional[str]:
     day = pendulum.now(TZ).day
@@ -44,16 +53,15 @@ def _format_general_day(rec: Dict[str, Any]) -> Optional[str]:
     return None
 
 CAT_EMO = {
-    "haircut":     "✂️",
-    "travel":      "✈️",
-    "shopping":    "🛍",
-    "health":      "❤️",
+    "haircut":   "✂️",
+    "travel":    "✈️",
+    "shopping":  "🛍",
+    "health":    "❤️",
 }
 
 def _format_categories(rec: Dict[str, Any]) -> List[str]:
-    """Строки вида '✂️ Стрижка — благоприятно'."""
-    day = pendulum.now(TZ).day
-    fav  = rec.get("favorable_days", {})
+    day   = pendulum.now(TZ).day
+    fav   = rec.get("favorable_days", {})
     lines: List[str] = []
 
     for cat, emoji in CAT_EMO.items():
@@ -65,45 +73,38 @@ def _format_categories(rec: Dict[str, Any]) -> List[str]:
             lines.append(f"{emoji} {cat.capitalize()} — неблагоприятно")
     return lines
 
-# ───────────────────────── main entry point ────────────────────────
+# ─── public API ──────────────────────────────────────────────────────
 def astro_events() -> List[str]:
-    """
-    Формирует готовый к печати список строк:
-    • доп. маркеры (VoC, благоприятный день, категории)
-    • фаза Луны + советы
-    • next_event
-    """
     info = _today_info()
     if not info:
         return []
 
-    phase   = info.get("phase", "").strip()
-    advice  = info.get("advice", [])
+    phase  = info.get("phase", "").strip()
+    advice = info.get("advice", [])
 
     events: List[str] = []
 
-    # --- Extra markers ------------------------------------------------------
+    # дополнительные маркеры
     for extra in (_format_voc(info), _format_general_day(info)):
         if extra:
             events.append(extra)
 
     events.extend(_format_categories(info))
 
-    # --- Phase & 3 tips -----------------------------------------------------
+    # фаза + советы
     if phase and advice:
         events.append(f"{phase} – {advice[0].strip()}")
         for adv in advice[1:]:
             events.append(f"• {adv.strip()}")
 
-    # --- upcoming event -----------------------------------------------------
+    # ближайшее крупное событие
     nxt = info.get("next_event", "").strip()
     if nxt:
         events.append(nxt)
 
     return events
 
-
-# -------------------------- локальный тест ---------------------------
+# ─── debug ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
     from pprint import pprint
     pprint(astro_events())
