@@ -72,7 +72,7 @@ def build_fav_blocks(rec: Dict[str, Any]) -> str:
     parts = [
         f"✅ <b>Благоприятные:</b> {', '.join(map(str, g['favorable']))}",
         f"❌ <b>Неблагоприятные:</b> {', '.join(map(str, g['unfavorable']))}",
-        f"✂️ <b>Стрижки:</b> {fmt('haircut')}",
+        f"✂️ <b>Стрижка:</b> {fmt('haircut')}",
         f"✈️ <b>Путешевствия:</b> {fmt('travel')}",
         f"🛍️ <b>Покупки:</b> {fmt('shopping')}",
         f"❤️ <b>Здоровье:</b> {fmt('health')}",
@@ -96,7 +96,7 @@ def build_voc_list(data: Dict[str, Any], year: int) -> str:
 
 def build_message(data: Dict[str, Any]) -> str:
     first_day = pendulum.parse(sorted(data.keys())[0])
-    header = f"{MOON_EMOJI} <b>Лунный календарь на {first_day.format('MMMM YYYY', locale='ru').upper()}</b>\n"
+    header = f"{MOON_EMOJI} <b>Лунный календарь {first_day.format('MMMM YYYY', locale='ru').upper()}</b>\n"
 
     phases = build_phase_blocks(data)
     fav    = build_fav_blocks(next(iter(data.values())))
@@ -104,7 +104,7 @@ def build_message(data: Dict[str, Any]) -> str:
 
     return "\n".join([
         header, phases, fav, "", voc,
-        "\n<i>Void-of-Course — время, когда Луна завершила все аспекты в знаке и не вошла в следующий; энергия рассеяна, новые начинания лучше отложить.</i>"
+        "\n<i>Void-of-Course — период, когда Луна завершила все аспекты в знаке и не вошла в следующий; энергия рассеяна, новые начинания лучше отложить.</i>"
     ])
 
 # ── main ──────────────────────────────────────────────────────────────────
