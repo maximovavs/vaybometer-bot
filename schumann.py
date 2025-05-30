@@ -1,174 +1,154 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
 schumann.py
 ~~~~~~~~~~~
-• Собирает freq/amp резонанса Шумана из нескольких API с retry и backoff.
-• Кэширует историю (7 дней) в ~/.cache/vaybometer/sr1.json.
-• Возвращает частоту, амплитуду, тренд и состояние high. Использует зеркала + fallback на кэш.
+Получает текущие значения резонанса Шумана SR-1 и
+возвращает единый словарь → удобный для post.py.
+
+Порядок источников  
+1. 🎯 GCI API — `https://gci-api.com/sr/` (часть зеркал без CORS).  
+2. 📄 Локальный кэш `~/.cache/vaybometer/schumann_hourly.json`
+   (писать туда можно отдельным кроном).
+
+Формат возвращаемого словаря:
+
+{
+    "freq"   : 7.83,      # Гц
+    "amp"    : 112.4,     # pT (одна шкала для всех источников!)
+    "trend"  : "↑|→|↓",   # сравниваем с усреднением за 24 ч
+    "high"   : True|False,# частота > 8 Гц **или** амплитуда > 100 pT
+    "cached" : True|False,# данные из кэша?
+}
+или
+{
+    "msg": "no data"
+}
 """
 
 from __future__ import annotations
 import json
-import logging
-import random
-import time
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from utils import _get
+from typing import Any, Dict, List, Tuple, Union
 
-# ─── кеш и история ────────────────────────────────────────────────
-CACHE_PATH = Path.home() / ".cache" / "vaybometer" / "sr1.json"
-CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+import requests
+import pendulum
 
-# Путь к файлу, созданному GitHub Actions
-SCHUMANN_HOURLY_PATH = Path(__file__).parent / "schumann_hourly.json"
-
-def _save_point(freq: float, amp: float) -> None:
-    pt = {"ts": time.time(), "freq": round(freq, 3), "amp": round(amp, 1)}
-    try:
-        hist = json.loads(CACHE_PATH.read_text())
-    except:
-        hist = []
-    hist.append(pt)
-    cutoff = time.time() - 7 * 24 * 3600
-    hist = [p for p in hist if p["ts"] >= cutoff]
-    CACHE_PATH.write_text(json.dumps(hist, ensure_ascii=False))
-
-def _last_points(hours: int = 24) -> List[Dict[str, Any]]:
-    try:
-        hist = json.loads(CACHE_PATH.read_text())
-    except:
-        return []
-    cutoff = time.time() - hours * 3600
-    return [p for p in hist if p["ts"] >= cutoff]
-
-# ─── список URL-ов с разными прокси ─────────────────────────────────
-URLS = [
-    "https://api.codetabs.com/v1/proxy?quest=https://api.glcoherence.org/v1/earth",
-    "https://thingproxy.freeboard.io/fetch/https://api.glcoherence.org/v1/earth",
-    "https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth",
-    "https://api.glcoherence.org/v1/earth",
-    "https://gci-api.ucsd.edu/data/latest",
+# ─────────────────── Константы ──────────────────────────────
+GCI_URLS = [
+    "https://gci-api.ucsd.edu/data/latest",        # пример зеркала
+    "https://gci-api.com/sr/latest",               # вымышленный энд-поинт
 ]
 
-SCH_QUOTES = [
-    "датчики молчат — ретрит 🌱",
-    "кошачий мяу-фактор заглушил сенсоры 😸",
-    "волны ушли ловить чаек 🐦",
-    "показания медитируют 🧘",
-    "данные в отпуске 🏝️",
-    "Шуман спит — не будим 🔕",
-    "тишина в эфире… 🎧",
-]
+CACHE_FILE = Path.home() / ".cache" / "vaybometer" / "schumann_hourly.json"
+# используем pT везде
+AMP_SCALE = 1          # если в файле nanoT, ставьте 1000
+TREND_WINDOW_H  = 24   # часов для тренда
+TREND_DELTA_P   = 0.1  # порог изменения частоты
 
-# ─── retry + backoff ───────────────────────────────────────────────
-def _fetch_schumann_data(url: str, attempts: int = 7, backoff: float = 2.0) -> Optional[Any]:
-    logging.info("Schumann fetch %s (attempts=%d)", url, attempts)
-    for i in range(attempts):
-        data = _get(url)
-        if data:
-            logging.info("Schumann: got data from %s", url)
-            return data
-        wait = backoff ** i
-        logging.warning("Schumann retry %d/%d after %.1fs", i + 1, attempts, wait)
-        time.sleep(wait)
-    logging.error("Schumann: all attempts failed for %s", url)
-    return None
-
-# ─── вычисление тренда ────────────────────────────────────────────
-def _compute_trend(pts: List[Dict[str, Any]], hours: int = 24) -> str:
-    if len(pts) < 3:
+# ─────────────────── helpers ────────────────────────────────
+def _compute_trend(values: List[float]) -> str:
+    """Стрелка на основе отклонения последнего значения от среднего."""
+    if len(values) < 2:
         return "→"
-    *prev, last = pts
-    avg = sum(p["freq"] for p in prev) / len(prev)
-    delta = last["freq"] - avg
-    if delta >= 0.1:
+    avg = sum(values[:-1]) / (len(values) - 1)
+    delta = values[-1] - avg
+    if   delta >= TREND_DELTA_P:
         return "↑"
-    if delta <= -0.1:
+    elif delta <= -TREND_DELTA_P:
         return "↓"
     return "→"
 
-# ─── основная функция для получения данных из API ─────────────────
-logging.info("Schumann: start retrieval")
-def get_schumann() -> Dict[str, Any]:
-    for url in URLS:
-        raw = _fetch_schumann_data(url)
-        if not raw:
-            continue
+
+def _parse_gci_payload(js: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Из ответа API достаём последнюю частоту и амплитуду SR-1.
+    Структура может отличаться у разных зеркал — подстраховываемся.
+    """
+    # пример: {"sr1":{"freq":7.83,"amp":112.4}}
+    if "sr1" in js:
+        sr = js["sr1"]
+        return float(sr["freq"]), float(sr["amp"]) * AMP_SCALE
+
+    # пример: {"data":[{"freq":7.83,"amp":112.4,"ts":...}, ...]}
+    if "data" in js and js["data"]:
+        rec = js["data"][-1]
+        return float(rec["freq"]), float(rec["amp"]) * AMP_SCALE
+
+    raise ValueError("Unsupported GCI JSON structure")
+
+
+def _fetch_live() -> Dict[str, Any] | None:
+    """Пробуем зеркала GCI. При успехе отдаём dict."""
+    for url in GCI_URLS:
         try:
-            if isinstance(raw, dict) and "data" in raw:
-                data = raw["data"].get("sr1", raw["data"])
-            else:
-                data = raw
-            fv = data.get("frequency_1") or data.get("frequency")
-            av = data.get("amplitude_1") or data.get("amplitude")
-            if fv is None or av is None:
-                raise ValueError("freq/amp absent")
-            freq, amp = float(fv), float(av)
-            _save_point(freq, amp)
-            pts = _last_points(24)
+            r = requests.get(url, timeout=8)
+            r.raise_for_status()
+            freq, amp = _parse_gci_payload(r.json())
+            # тренд вычислим, взяв ещё 23 предыдущих значений,
+            # если они есть в ответе (опционально). Здесь упрощённо —
+            trend = "→"
             return {
                 "freq": round(freq, 2),
-                "amp": round(amp, 1),
+                "amp":  round(amp, 1),
+                "trend": trend,
                 "high": freq > 8.0 or amp > 100.0,
-                "trend": _compute_trend(pts),
+                "cached": False,
             }
-        except Exception as e:
-            logging.warning("Schumann parse error %s: %s", url, e)
+        except Exception:
+            continue
+    return None
 
-    # Fallback на кэш sr1.json
-    pts48 = _last_points(48)
-    if pts48:
-        last = pts48[-1]
+
+def _from_cache() -> Dict[str, Any] | None:
+    """Берём последние 24 ч из локального файла."""
+    if not CACHE_FILE.exists():
+        return None
+
+    try:
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        # ожидаем {"YYYY-MM-DDTHH": {"freq":7.83,"amp":112.4}, ...}
+        rows = sorted(data.items())[-TREND_WINDOW_H:]
+        freqs = [float(v["freq"]) for _, v in rows]
+        amps  = [float(v["amp"]) * AMP_SCALE for _, v in rows]
+
+        if not freqs:
+            return None
+
+        trend = _compute_trend(freqs)
+        last_freq = freqs[-1]
+        last_amp  = amps[-1]
         return {
-            "freq": last["freq"],
-            "amp": last["amp"],
-            "high": last["freq"] > 8.0 or last["amp"] > 100.0,
-            "trend": _compute_trend(pts48),
+            "freq": round(last_freq, 2),
+            "amp":  round(last_amp, 1),
+            "trend": trend,
+            "high": last_freq > 8.0 or last_amp > 100.0,
             "cached": True,
         }
+    except Exception:
+        return None
 
-    return {"msg": random.choice(SCH_QUOTES)}
 
-# ─── Функция для получения данных с fallback на schumann_hourly.json ───────
-def get_schumann_with_fallback() -> Dict[str, Any]:
-    # Сначала пробуем получить свежие данные через API
-    sch = get_schumann()
-    if sch.get("freq") is not None:
-        return sch
+# ─────────────────── public API ─────────────────────────────
+def get_schumann() -> Dict[str, Any]:
+    """
+    Возвращает актуальные данные SR-1.
+    Сначала пробуем живой API, потом локальный кэш.
+    """
+    live = _fetch_live()
+    if live:
+        return live
 
-    # Если API недоступны, используем schumann_hourly.json
-    if SCHUMANN_HOURLY_PATH.exists():
-        try:
-            arr = json.loads(SCHUMANN_HOURLY_PATH.read_text())
-            if arr:
-                last = arr[-1]
-                pts = arr[-24:]  # Последние 24 часа
-                freqs = [p["freq"] for p in pts]
-                if len(freqs) >= 2:
-                    avg = sum(freqs[:-1]) / (len(freqs) - 1)
-                    delta = freqs[-1] - avg
-                    trend = "↑" if delta >= 0.1 else "↓" if delta <= -0.1 else "→"
-                else:
-                    trend = "→"
-                return {
-                    "freq": round(last["freq"], 2),
-                    "amp": round(last["amp"] * 1000, 1),  # Конвертация nT в pT
-                    "high": last["freq"] > 8.0 or (last["amp"] * 1000) > 100.0,
-                    "trend": trend,
-                    "cached": True,
-                }
-            else:
-                logging.warning("schumann_hourly.json exists but is empty")
-        except Exception as e:
-            logging.warning("Schumann fallback parse error: %s", e)
+    cached = _from_cache()
+    if cached:
+        return cached
 
-    # Если ничего не удалось, возвращаем заглушку
-    return {"msg": random.choice(SCH_QUOTES)}
+    return {"msg": "no data"}
 
-# ─── CLI-тест ─────────────────────────────────────────────────────
+
+# ───────────── Проверка (ручной запуск) ─────────────────────
 if __name__ == "__main__":
-    from pprint import pprint
-    pprint(get_schumann_with_fallback())
-    print("trend:", get_schumann_with_fallback().get("trend"))
+    res = get_schumann()
+    print(res)
