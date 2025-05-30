@@ -3,7 +3,7 @@ name: Monthly VayboMeter Calendar
 # ────────── 1. Триггеры ─────────────────────────────────────────────────
 on:
   schedule:
-    - cron: '22 * * *'      # ежедневно 22:00 UTC
+    - cron: '0 18 * * *'      # ежедневно 22:00 UTC
   workflow_dispatch:
     inputs:
       force_run:
