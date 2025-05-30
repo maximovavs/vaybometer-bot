@@ -1,9 +1,9 @@
 name: Monthly VayboMeter Calendar
 
-# ────────── 1. Триггеры ─────────────────────────────────────────────────
+# ────────── 1. Триггеры ────────────────────────────────────────────────
 on:
   schedule:
-    - cron: '0 10 * * *'   # каждый день в 10:00 UTC
+    - cron: '0 10 * * *'     # каждый день в 10:00 UTC
   workflow_dispatch:
     inputs:
       force_run:
@@ -11,16 +11,14 @@ on:
         required: false
         default: "false"
 
-# Репо-токен нужен на push
 permissions:
-  contents: write
+  contents: write            # нужен, чтобы пушить JSON
 
 jobs:
   monthly:
     runs-on: ubuntu-latest
 
     steps:
-
     # ────────── 2. Checkout ────────────────────────────────────────────
     - name: 📥 Checkout repository
       uses: actions/checkout@v4
@@ -30,73 +28,60 @@ jobs:
 
     # ────────── 3. Проверка «последний день?» ─────────────────────────
     - name: 🗓️ Check last day of month
-      id: check_last_day
+      id: last
       run: |
-        tomorrow=$(date -d "tomorrow" '+%d')
-        if [[ "$tomorrow" == "01" ]]; then
-          echo "is_last=true" >> $GITHUB_OUTPUT
+        if [[ $(date -d 'tomorrow' +%d) == "01" ]]; then
+          echo "is_last=true"  >> "$GITHUB_OUTPUT"
         else
-          echo "is_last=false" >> $GITHUB_OUTPUT
+          echo "is_last=false" >> "$GITHUB_OUTPUT"
         fi
-        echo "Tomorrow: $tomorrow"
 
-    # Если запуск вручную с force_run=true → переписываем флаг
-    - name: ⏭️ Override last-day check if requested
-      if: ${{ github.event_name == 'workflow_dispatch' && inputs.force_run == 'true' }}
-      run: echo "is_last=true" >> $GITHUB_OUTPUT
-      id: force
+    # ────────── 3b. Override флага, если запрошено вручную ────────────
+    - name: ⏭️ Override last-day check (manual trigger)
+      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_run == 'true' }}
+      env:
+        GITHUB_OUTPUT: ${{ steps.last.outputs.is_last }}   # прокинем переменную
+      run:  echo "is_last=true" >> "$GITHUB_OUTPUT"
 
-    # Удобная переменная-условие
-    - name: 🏷️ Set run-condition variable
-      run: |
-        RAW="${{ steps.force.outputs.is_last || steps.check_last_day.outputs.is_last }}"
-        echo "RUN_CALENDAR=$RAW" >> $GITHUB_ENV
-
-    # ────────── 4. Setup Python (всегда, быстро) ──────────────────────
+    # ────────── 4. Setup Python (быстро, всегда) ──────────────────────
     - name: 🐍 Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
 
-    # ────────── 5. Install deps ← только если нужно ───────────────────
+    # ────────── 5. Install deps, если нужен расчёт ────────────────────
     - name: 📦 Install dependencies
-      if: env.RUN_CALENDAR == 'true'
+      if:   steps.last.outputs.is_last == 'true'
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # ────────── 6. Сгенерировать JSON ────────────────────────────────
+    # ────────── 6. Сгенерировать календарь ────────────────────────────
     - name: 🌙 Generate lunar_calendar.json
-      if: env.RUN_CALENDAR == 'true'
+      if:   steps.last.outputs.is_last == 'true'
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      run: |
-        python gen_lunar_calendar.py
+      run:  python gen_lunar_calendar.py
 
-    # ────────── 7. Commit & push (робастно) ───────────────────────────
-    - name: ✏️ Commit & push calendar (robust)
-      if: env.RUN_CALENDAR == 'true'
+    # ────────── 7. Commit & push ──────────────────────────────────────
+    - name: ✏️ Commit & push calendar
+      if:   steps.last.outputs.is_last == 'true'
       run: |
         git config user.name  "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-
         git add lunar_calendar.json
         if git diff --cached --quiet; then
-          echo "✅ lunar_calendar.json is already up-to-date."
+          echo "✅ lunar_calendar.json up-to-date"
         else
           git commit -m "chore: update lunar_calendar.json"
-          # попробуем пуш; если неудача → pull --rebase и пуш снова
-          if ! git push; then
-            git pull --rebase
-            git push
-          fi
+          git pull --rebase --autostash || true
+          git push
         fi
 
     # ────────── 8. Отправить отчёт в Telegram ─────────────────────────
-    - name: 📨 Send monthly calendar summary
-      if: env.RUN_CALENDAR == 'true'
+    - name: 📨 Send monthly summary
+      if:   steps.last.outputs.is_last == 'true'
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
-      run: |
-        python send_monthly_calendar.py
+      run: python send_monthly_calendar.py
