@@ -33,7 +33,7 @@ jobs:
         run: |
           pip install requests
 
-      - name: 🚀 Fetch Schumann point
+            - name: 🚀 Fetch Schumann point
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.CHANNEL_ID }}
@@ -78,7 +78,7 @@ jobs:
               if noaa_data and len(noaa_data) > 1:
                   last_entry = noaa_data[-1]
                   if len(last_entry) >= 4:
-                      amp = float(last_entry[3])  # Bz в nT
+                      amp = abs(float(last_entry[3]))  # Модуль bz_gsm
                       freq = 7.83  # Фиксируем частоту
                       print(f"Parsed from NOAA API: freq={freq}, amp={amp}")
 
@@ -104,12 +104,11 @@ jobs:
                   arr = [r for r in arr if r["ts"] >= cutoff]
                   cache.write_text(json.dumps(arr, ensure_ascii=False))
                   print("Saved Schumann point:", rec)
-                  if float(freq) > 8.0 or float(amp) > 100.0:
-                      send_telegram_message(
-                          "${{ env.TELEGRAM_TOKEN }}",
-                          "${{ env.TELEGRAM_CHAT_ID }}",
-                          f"🚨 High Schumann! Freq: {freq} Hz, Amp: {amp}"
-                      )
+                  send_telegram_message(  # Уведомление всегда
+                      "${{ env.TELEGRAM_TOKEN }}",
+                      "${{ env.TELEGRAM_CHAT_ID }}",
+                      f"Schumann update: Freq: {freq} Hz, Amp: {amp} nT"
+                  )
               else:
                   print("No valid freq/amp data received, even from cache")
           except Exception as e:
