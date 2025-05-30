@@ -187,46 +187,81 @@ def build_msg() -> str:
         P.append(line)
     P.append("———")
 
-    # --- GPT вывод -----------------------------------------------
-    summary, tips = gpt_blurb("погода")
-    P.append(f"📜 <b>Вывод</b>\n{summary}")
+    # 8) Вывод и рекомендации GPT
+    fog    = w.get("fog_alert", False)
+    strong = w.get("strong_wind", False)
+    if fog:               culprit = "туман"
+    elif kp_state == "буря": culprit = "магнитные бури"
+    elif press < 1007:      culprit = "низкое давление"
+    elif strong:            culprit = "шальной ветер"
+    else:                   culprit = "мини-парад планет"
+
+    summary, tips = gpt_blurb(culprit)
+    P.append(f"📜 <b>Вывод\n{summary}")
     P.append("———")
     P.append("✅ <b>Рекомендации</b>")
     for t in tips:
-        P.append(f"• {t}")
+        P.append(f"{t}")
     P.append("———")
     P.append(f"📚 {get_fact(TOMORROW)}")
 
     return "\n".join(P)
 
-# ─── Telegram I/O ───────────────────────────────────────────────
-async def send_main_post(bot: Bot) -> None:
-    html = build_msg()
-    logging.info("Preview: %s", html.replace('\n',' | ')[:250])
-    try:
-        await bot.send_message(
-            CHAT_ID, html,
-            parse_mode="HTML", disable_web_page_preview=True
-        )
-        logging.info("Message sent ✓")
-    except tg_err.TelegramError as e:
-        logging.error("Telegram error: %s", e)
-        raise
-
-async def send_poll_if_friday(bot: Bot) -> None:
-    if pendulum.now(TZ).weekday() == 4:
+    # ─────────── Отправка ─────────────────────────────────────────────
+    async def send_main_post(bot: Bot) -> None:
+        html = build_msg()
+        logging.info("Preview: %s", html.replace("\n", " | ")[:200])
         try:
-            await bot.send_poll(
-                CHAT_ID, POLL_QUESTION, POLL_OPTIONS,
-                is_anonymous=False, allows_multiple_answers=False
+            await bot.send_message(
+                CHAT_ID,
+                html,
+                parse_mode="HTML",
+                disable_web_page_preview=True
             )
+            logging.info("Message sent ✓")
         except tg_err.TelegramError as e:
-            logging.warning("Poll send error: %s", e)
-
-async def main() -> None:
-    bot = Bot(token=TOKEN)
-    await send_main_post(bot)
-    await send_poll_if_friday(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            logging.error("Telegram error: %s", e)
+            raise
+    
+    async def send_poll_if_friday(bot: Bot) -> None:
+        if pendulum.now(TZ).weekday() == 4:
+            try:
+                await bot.send_poll(
+                    CHAT_ID,
+                    question=POLL_QUESTION,
+                    options=POLL_OPTIONS,
+                    is_anonymous=False,
+                    allows_multiple_answers=False
+                )
+            except tg_err.TelegramError as e:
+                logging.warning("Poll send error: %s", e)
+    
+    async def fetch_unsplash_photo() -> Optional[str]:
+        if not UNSPLASH_KEY:
+            return None
+        url = "https://api.unsplash.com/photos/random"
+        resp = requests.get(
+            url,
+            params={"query": "cyprus coast sunset", "client_id": UNSPLASH_KEY},
+            timeout=15
+        )
+        return resp.json().get("urls", {}).get("regular")
+    
+    async def send_photo(bot: Bot, photo_url: str) -> None:
+        try:
+            await bot.send_photo(CHAT_ID, photo=photo_url, caption="Фото дня • Unsplash")
+        except tg_err.TelegramError as e:
+            logging.warning("Photo send error: %s", e)
+    
+    async def main() -> None:
+        bot = Bot(token=TOKEN)
+        await send_main_post(bot)
+        await send_poll_if_friday(bot)
+        if UNSPLASH_KEY and TODAY.day % 3 == 0:
+            photo = await fetch_unsplash_photo()
+            if photo:
+                await send_photo(bot, photo)
+        logging.info("All tasks done ✓")
+    
+    if __name__ == "__main__":
+        asyncio.run(main())
