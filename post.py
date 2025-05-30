@@ -20,8 +20,8 @@ from utils import (
 from weather import get_weather
 from air import get_air, get_sst, get_kp
 from pollen import get_pollen
-from schumann import get_schumann
-from astro import astro_events        # ← новое!
+from schumann import get_schumann_with_fallback  # Импортируем обновлённую функцию
+from astro import astro_events
 from gpt import gpt_blurb
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -69,44 +69,16 @@ def fetch_tomorrow_temps(lat: float, lon: float) -> Tuple[Optional[float], Optio
         logging.warning("fetch_tomorrow_temps error: %s", e)
         return None, None
 
-def get_schumann_with_fallback() -> Dict[str, Any]:
-    sch = get_schumann()
-    if sch.get("freq") is not None:
-        return sch
-    cache = Path(__file__).parent / "schumann_hourly.json"
-    if cache.exists():
-        try:
-            arr = json.loads(cache.read_text())
-            last = arr[-1]
-            pts = arr[-24:]
-            freqs = [p["freq"] for p in pts]
-            if len(freqs) >= 2:
-                avg = sum(freqs[:-1]) / (len(freqs) - 1)
-                delta = freqs[-1] - avg
-                trend = "↑" if delta >= 0.1 else "↓" if delta <= -0.1 else "→"
-            else:
-                trend = "→"
-            return {
-                "freq":  round(last["freq"], 2),
-                "amp":   round(last["amp"], 1),
-                "high":  last["freq"] > 8.0 or last["amp"] > 100.0,
-                "trend": trend,
-                "cached": True,
-            }
-        except Exception as e:
-            logging.warning("Schumann fallback parse error: %s", e)
-    return sch
-
 def build_msg() -> str:
     P: List[str] = []
 
     # 1) Приветствие
-    P.append(f"🌅 Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})")
+    P.append(f"🌅 <b>Добрый вечер! Погода на завтра на Кипре ({TOMORROW.format('DD.MM.YYYY')})</b>")
 
     # 2) Температура моря
     sst = get_sst()
     if sst is not None:
-        P.append(f"🌊 Темп. моря: {sst:.1f} °C")
+        P.append(f"🌊 <b>Темп. моря:</b> {sst:.1f} °C")
 
     # 3) Погодный блок (Limassol)
     lat, lon = CITIES["Limassol"]
@@ -127,7 +99,7 @@ def build_msg() -> str:
     cloud_w  = clouds_word(clouds)
 
     P.append(
-        f"🌡️ Ср. темп: {avg_temp:.0f}°C • {cloud_w} • "
+        f"🌡️ <b>Ср. темп:</b> {avg_temp:.0f}°C • {cloud_w} • "
         f"💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) • 💧 {press:.0f} гПа {pressure_trend(w)}"
     )
     P.append("———")
@@ -139,7 +111,7 @@ def build_msg() -> str:
         if d is not None:
             temps[city] = (d, n or d)
     if temps:
-        P.append("🎖️ Рейтинг городов (дн./ночь)")
+        P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣"]
         for i, (city, (d, n)) in enumerate(sorted(temps.items(), key=lambda x: x[1][0], reverse=True)[:4]):
             P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
@@ -147,13 +119,13 @@ def build_msg() -> str:
 
     # 5) Качество воздуха и пыльца
     air = get_air() or {}
-    P.append("🏙️ Качество воздуха")
+    P.append("🏙️ <b>Качество воздуха</b>")
     lvl = air.get("lvl", "н/д")
     P.append(f"{AIR_EMOJI.get(lvl, '⚪')} {lvl} (AQI {air.get('aqi', 'н/д')}) | "
              f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
     pollen = get_pollen() or {}
     if pollen:
-        P.append("🌿 Пыльца")
+        P.append("🌿<b> Пыльца</b>")
         P.append(f"Деревья: {pollen['tree']} | Травы: {pollen['grass']} | "
                  f"Сорняки: {pollen['weed']} — риск {pollen['risk']}")
     P.append("———")
@@ -161,21 +133,21 @@ def build_msg() -> str:
     # 6) Геомагнитка и Шуман
     kp, kp_state = get_kp()
     if kp is not None:
-        P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})")
+        P.append(f"{kp_emoji(kp)} <b>Геомагнитка:</b> Kp={kp:.1f} ({kp_state})")
     else:
-        P.append("🧲 Геомагнитка: н/д")
+        P.append("🧲<b> Геомагнитка:</b> н/д")
 
     sch = get_schumann_with_fallback()
     if sch.get("freq") is not None:
         sym = '⚡' if sch["high"] else '🎵'
         cache = ' (из кеша)' if sch.get("cached") else ''
-        P.append(f"{sym} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cache}")
+        P.append(f"{sym} <b>Шуман:</b> {sch['freq']:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}{cache}")
     else:
-        P.append(f"🎵 Шуман: {sch.get('msg', 'н/д')}")
+        P.append(f"🎵<b> Шуман:</b> {sch.get('msg', 'н/д')}")
     P.append("———")
 
     # 7) Астрособытия (фаза, советы, VoC, категории)
-    astro = astro_events()          # ← уже готовый список строк
+    astro = astro_events()
     if astro:
         P.append("🌌 <b>Астрособытия</b>")
         P.extend(astro)
@@ -184,16 +156,16 @@ def build_msg() -> str:
     # 8) Вывод и рекомендации GPT
     fog    = w.get("fog_alert", False)
     strong = w.get("strong_wind", False)
-    if   fog:               culprit = "туман"
+    if fog:               culprit = "туман"
     elif kp_state == "буря": culprit = "магнитные бури"
     elif press < 1007:      culprit = "низкое давление"
     elif strong:            culprit = "шальной ветер"
     else:                   culprit = "мини-парад планет"
 
     summary, tips = gpt_blurb(culprit)
-    P.append(f"📜 Вывод\n{summary}")
+    P.append(f"📜 <b>Вывод\n{summary}")
     P.append("———")
-    P.append("✅ Рекомендации")
+    P.append("✅ <b>Рекомендации</b>")
     for t in tips:
         P.append(f"{t}")
     P.append("———")
