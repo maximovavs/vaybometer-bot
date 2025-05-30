@@ -95,7 +95,7 @@ def astro_events() -> List[str]:
     if phase and advice:
         events.append(f"{phase} – {advice[0].strip()}")
         for adv in advice[1:]:
-            events.append(f"• {adv.strip()}")
+            events.append(f"{adv.strip()}")
 
     # ближайшее крупное событие
     nxt = info.get("next_event", "").strip()
