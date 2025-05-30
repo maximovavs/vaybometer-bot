@@ -1,27 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-post.py
-~~~~~~~~
-Формирует и отправляет вечерний прогноз «VayboMeter»-бота:
-- Погода, море, воздух, пыльца, Шуман, геомагнитка
-- Короткий астро-блок с фазой Луны, 3-мя советами и Void-of-Course
+post.py – вечерний прогноз «VayboMeter»
 
-Изменения 2025-05-XX
-▪︎ в раздел «🌌 Астрособытия» добавлена строка Void-of-Course
-  (берётся из поля «void_of_course» календаря).
+• Погода, море, воздух, пыльца
+• Геомагнитка, резонанс Шумана
+• Астрособытия (фаза + 3 совета + VoC)
 """
 
-import os
-import asyncio
-import logging
+from __future__ import annotations
+import os, asyncio, logging, json
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
-import json
-import pendulum
-import requests
+import pendulum, requests
 from requests.exceptions import RequestException
 from telegram import Bot, error as tg_err
 
@@ -36,7 +28,6 @@ from pollen   import get_pollen
 from schumann import get_schumann
 from astro    import astro_events
 from gpt      import gpt_blurb
-from lunar    import get_day_lunar_info     # ◀︎ понадобится для VOC
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -60,7 +51,7 @@ CITIES = {
     "Pafos"   : (34.776, 32.424),
 }
 
-# ─────────── Schumann fallback (без изменений) ─────────────────
+# ─────────── Schumann fallback ─────────────────────────────────
 def get_schumann_with_fallback() -> Dict[str, Any]:
     sch = get_schumann()
     if sch.get("freq") is not None:
@@ -72,7 +63,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
             arr = json.loads(cache_path.read_text())
             if arr:
                 last = arr[-1]
-                pts = arr[-24:]
+                pts  = arr[-24:]
                 freqs = [p["freq"] for p in pts]
                 if len(freqs) >= 2:
                     avg   = sum(freqs[:-1]) / (len(freqs)-1)
@@ -81,15 +72,13 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
                 else:
                     trend = "→"
                 return {
-                    "freq":   round(last["freq"], 2),
-                    "amp":    round(last["amp"], 1),
-                    "high":   last["freq"] > 8.0 or last["amp"] > 100.0,
-                    "trend":  trend,
+                    "freq":  round(last["freq"], 2),
+                    "amp":   round(last["amp"], 1),
+                    "trend": trend,
                     "cached": True,
                 }
         except Exception as e:
             logging.warning("Schumann fallback parse error: %s", e)
-
     return sch
 
 # ─────────── helpers ───────────────────────────────────────────
@@ -130,15 +119,15 @@ def build_msg() -> str:
     # 3) Прогноз для Limassol
     lat, lon = CITIES["Limassol"]
     day_max, night_min = fetch_tomorrow_temps(lat, lon)
-    w = get_weather(lat, lon) or {}
+    w   = get_weather(lat, lon) or {}
     cur = w.get("current") or w.get("current_weather", {})
 
-    avg_temp = (day_max + night_min) / 2 if day_max and night_min else cur.get("temperature", 0)
+    avg_temp = (day_max + night_min) / 2 if (day_max and night_min) else cur.get("temperature", 0)
     wind_kmh = cur.get("windspeed") or cur.get("wind_speed", 0.0)
     wind_deg = cur.get("winddirection") or cur.get("wind_deg", 0.0)
     press    = cur.get("pressure") or w.get("hourly", {}).get("surface_pressure", [0])[0]
-
     clouds_pct = cur.get("clouds") or w.get("hourly", {}).get("cloud_cover", [0])[0]
+
     P.append(
         f"🌡️ Ср. темп: {avg_temp:.0f} °C • {clouds_word(clouds_pct)} "
         f"• 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) "
@@ -146,7 +135,23 @@ def build_msg() -> str:
     )
     P.append("———")
 
-    # 4) Качество воздуха
+    # 4) Рейтинг городов (дн./ночь)
+    temps: Dict[str, Tuple[float, float]] = {}
+    for city, (la, lo) in CITIES.items():
+        d, n = fetch_tomorrow_temps(la, lo)
+        if d is not None:
+            temps[city] = (d, n or d)
+
+    if temps:
+        P.append("🎖️ <b>Рейтинг городов (дн./ночь)</b>")
+        medals = ["🥇", "🥈", "🥉", "4️⃣"]
+        for i, (city, (d, n)) in enumerate(
+            sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:4]
+        ):
+            P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C")
+        P.append("———")
+
+    # 5) Воздух и пыльца
     air = get_air() or {}
     P.append("🏙️ <b>Качество воздуха</b>")
     lvl = air.get("lvl", "н/д")
@@ -162,33 +167,25 @@ def build_msg() -> str:
         )
     P.append("———")
 
-    # 5) Геомагнитка + Шуман
+    # 6) Геомагнитка + Шуман («светофор»)
     kp, kp_state = get_kp()
     P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})" if kp else "🧲 Геомагнитка: н/д")
 
     sch = get_schumann_with_fallback()
     if sch.get("freq") is not None:
-        emoji = "⚡" if sch["high"] else "🎵"
-        cached = " (кэш)" if sch.get("cached") else ""
-        P.append(f"{emoji} Шуман: {sch['freq']:.2f} Гц / {sch['amp']:.1f} pT {sch['trend']}{cached}")
+        f = sch["freq"]
+        lamp = "🟢" if 7.6 <= f <= 8.3 else "🔴" if f < 7.6 else "🟣"
+        P.append(f"{lamp} Шуман: {f:.2f} Гц / {sch['amp']:.1f} пТ {sch['trend']}")
     else:
         P.append("🎵 Шуман: н/д")
     P.append("———")
 
-    # 6) Астрособытия
+    # 7) Астрособытия (VoC уже внутри astro_events)
     P.append("🌌 <b>Астрособытия</b>")
-    for line in astro_events():
-        P.append(line)
-
-    # добавляем строку Void-of-Course (для текущего дня в TZ)
-    info_today = get_day_lunar_info(TODAY)
-    if info_today:
-        voc = info_today.get("void_of_course", {})
-        if voc.get("start") and voc.get("end"):
-            P.append(f"🕑 Void-of-Course: {voc['start']} → {voc['end']}")
+    P.extend(astro_events())
     P.append("———")
 
-    # 7) GPT-вывод
+    # 8) GPT-вывод
     culprit = "погода"
     summary, tips = gpt_blurb(culprit)
     P.append(f"📜 <b>Вывод</b>\n{summary}")
