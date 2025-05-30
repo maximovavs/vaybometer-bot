@@ -13,17 +13,7 @@ jobs:
       - name: 📥 Checkout repo
         uses: actions/checkout@v3
         with:
-          repository: maximovavs/vaybometer-bot
-          token: ${{ secrets.PAT_TOKEN }}  # Убедитесь, что PAT_TOKEN существует
-          ssh-strict: true
-          persist-credentials: true
-          clean: true
-          sparse-checkout-cone-mode: true
-          fetch-depth: 1
-          fetch-tags: false
-          lfs: false
-          submodules: false
-          set-safe-directory: true
+          token: ${{ secrets.PAT_TOKEN }}  # Используем PAT для checkout
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -124,8 +114,6 @@ jobs:
 
       - name: 🗂️ Commit cache
         uses: stefanzweifel/git-auto-commit-action@v4
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}  # Используем PAT для push
         with:
           commit_message: "schumann: add hourly point"
           file_pattern: "schumann_hourly.json"
