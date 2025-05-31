@@ -80,7 +80,7 @@ def astro_events(offset_days: int = 1) -> List[str]:
     # фаза + советы
     if phase:
         lines.append(phase)
-    lines.extend(f"• {t}" for t in tips)
+    lines.extend(f"{t}" for t in tips)
 
     # ближайшее событие
     nxt = rec.get("next_event", "").strip()
