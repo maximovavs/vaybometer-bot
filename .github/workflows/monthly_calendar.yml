@@ -1,15 +1,16 @@
 name: Monthly VayboMeter Calendar
 
 ###############################################################################
-# 1.  Триггеры
+# 1. События-триггеры
 ###############################################################################
 on:
   schedule:
-    - cron: '0 10 * * *'          # каждый день 10:00 UTC
-  workflow_dispatch:
+    #   мин   час  день  мес  день-нед
+    - cron:  '0 10 * * *'          # каждый день, 10 UTC
+  workflow_dispatch:               # ← обязательная пустая строка!
     inputs:
       force_run:
-        description: "Сгенерировать календарь для текущего месяца"
+        description: "Сгенерировать календарь на текущий месяц (игнорировать дату)"
         required: false
         default: "false"
 
@@ -23,110 +24,82 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # -------------------------------------------------------------------------
-    # 2.  Checkout
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------ 1
     - name: 📥 Checkout
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
         persist-credentials: true
 
-    # -------------------------------------------------------------------------
-    # 3.  Решаем, нужно ли запускать генератор
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------ 2
     - name: 🔍 Decide if calendar must be built
-      id:   decide
+      id: decide
       run: |
         run=no
-        # 3-a. cron-ветка: строим только если завтра 1-е
+        # (а) автозапуск: строим, если завтра 1-е
         if [[ "${{ github.event_name }}" == "schedule" ]]; then
-          [[ $(date -u -d 'tomorrow' +%d) == "01" ]] && run=yes
+          [[ $(date -u -d 'tomorrow' +%d) == 01 ]] && run=yes
         fi
-        # 3-b. ручной запуск с force_run=true
+        # (б) ручной run + force_run=true
         if [[ "${{ github.event_name }}" == "workflow_dispatch" && \
               "${{ github.event.inputs.force_run }}" == "true" ]]; then
           run=yes
         fi
-        echo "run_calendar=$run"           >> $GITHUB_OUTPUT
-        echo "RUN_CALENDAR=$run"           >> $GITHUB_ENV
+        echo "RUN_CALENDAR=$run" >>"$GITHUB_ENV"
 
-    # -------------------------------------------------------------------------
-    # 4.  Настраиваем Python
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------ 3
     - name: 🐍 Setup Python
-      if:   env.RUN_CALENDAR == 'yes'
+      if: env.RUN_CALENDAR == 'yes'
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
 
-    # -------------------------------------------------------------------------
-    # 5.  Ставим зависимости
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------ 4
     - name: 📦 Install dependencies
-      if:   env.RUN_CALENDAR == 'yes'
+      if: env.RUN_CALENDAR == 'yes'
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install -U pip
         pip install -r requirements.txt
 
-    # -------------------------------------------------------------------------
-    # 6.  Генерируем JSON-календарь
-    #     • в последний день месяца → Δ1 день = следующий месяц
-    #     • force_run=true          → текущий месяц
-    # -------------------------------------------------------------------------
-    - name: 🌙 Build lunar_calendar.json
-      if:   env.RUN_CALENDAR == 'yes'
+    # ------------------------------------------------------------------ 5
+    - name: 🌙 Generate lunar_calendar.json
+      if: env.RUN_CALENDAR == 'yes'
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
-        # Определяем «рабочую» дату, которую передадим скрипту
+        # → автозапуск: завтра 1-е → берём следующий месяц
+        # → ручной    : всегда текущий месяц
         if [[ "${{ github.event_name }}" == "schedule" ]]; then
-          # для cron-запуска берём завтрашнюю дату (следующий месяц)
-          WORK_DATE=$(date -u -d 'tomorrow' '+%Y-%m-01')
+          WORK_DATE=$(date -u -d 'tomorrow' +%Y-%m-01)
         else
-          # ручной запуск → сегодняшнее число
-          WORK_DATE=$(date -u '+%Y-%m-01')
+          WORK_DATE=$(date -u +%Y-%m-01)
         fi
 
-        echo "::group::DEBUG date"
-        echo "WORK_DATE = $WORK_DATE"
-        echo "::endgroup::"
-
-        # Один однострочный python: «подменяем» today()
         python - <<'PY'
-import os, pendulum, importlib.util, runpy, sys
-# дата, которую мы хотим считать «сегодня»
-target = pendulum.parse(os.environ["WORK_DATE"])
-# маленький хак: переопределяем pendulum.today() перед import-ом модуля
-pendulum.today = lambda tz=None: target
-sys.argv = ["gen_lunar_calendar.py"]       # чтобы скрипт считал, что его вызвали напрямую
+import os, pendulum, runpy, sys
+pendulum.today = lambda tz=None: pendulum.parse(os.environ["WORK_DATE"])
+sys.argv = ["gen_lunar_calendar.py"]
 runpy.run_path("gen_lunar_calendar.py", run_name="__main__")
 PY
 
-    # -------------------------------------------------------------------------
-    # 7.  Commit & push
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------ 6
     - name: ✏️ Commit & push
-      if:   env.RUN_CALENDAR == 'yes'
+      if: env.RUN_CALENDAR == 'yes'
       run: |
         git config user.name  "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-
         git add lunar_calendar.json
         if git diff --cached --quiet; then
-          echo "✅ lunar_calendar.json уже актуален"
+          echo "✅ Файл уже актуален"
         else
           git commit -m "chore: update lunar_calendar.json"
-          # защищаемся от гонок
           git pull --rebase --autostash || true
           git push
         fi
 
-    # -------------------------------------------------------------------------
-    # 8.  Telegram — отправляем месячный отчёт
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------ 7
     - name: 📨 Send monthly summary
-      if:   env.RUN_CALENDAR == 'yes'
+      if: env.RUN_CALENDAR == 'yes'
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
