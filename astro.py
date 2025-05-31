@@ -1,106 +1,88 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-astro.py — формирует блок «Астрособытия» для ежедневного поста бот-канала.
+astro.py  ─ формирует блок «Астрособытия» для ежедневного поста.
 
-Особенности
------------
-• По умолчанию анализируется **завтра** (offset_days=1).
-• Убирает проценты освещённости из строки фазы.
-• Советы выводятся маркировкой «•», без нумерации.
-• Показывает VoC ≥ 15 мин, маркеры «благоприятный / неблагоприятный» и четыре категории.
+• параметр offset_days позволяет получать запись на любой день
+  (по умолчанию завтрашний = 1).
+• выводит VoC ≥15 мин, метки «благоприятный/неблагоприятный»,
+  категории ✂️ / ✈️ / 🛍 / ❤️
+• строка фазы без процента, далее 3 совета списком «• …»
+• добавляет next_event
 """
 
 from __future__ import annotations
-
 import pendulum
 from typing import Any, Dict, List, Optional
+from lunar import get_day_lunar_info        # ваши данные
 
-from lunar import get_day_lunar_info   # ← функция из вашего календарного модуля
-
-# ──────────────────────────────────────────────────────────────────
 TZ = pendulum.timezone("Asia/Nicosia")
+CAT_EMO = {"haircut": "✂️", "travel": "✈️", "shopping": "🛍", "health": "❤️"}
 
-CAT_EMO = {
-    "haircut":  "✂️",
-    "travel":   "✈️",
-    "shopping": "🛍",
-    "health":   "❤️",
-}
 
-# ───────── helpers ───────────────────────────────────────────────
-def _rec_for(offset_days: int = 1) -> Optional[Dict[str, Any]]:
-    """Получить запись календаря для даты сегодня+offset_days (UTC+3)."""
-    target = pendulum.now(TZ).add(days=offset_days).date()
-    return get_day_lunar_info(target)
+# ───────── helpers ────────────────────────────────────────────────────
+def _rec_for(day: pendulum.Date) -> Optional[Dict[str, Any]]:
+    return get_day_lunar_info(day)
 
-def _fmt_voc(rec: Dict[str, Any]) -> Optional[str]:
-    voc = rec.get("void_of_course") or {}
-    if not (voc.get("start") and voc.get("end")):
+
+def _format_voc(rec: Dict[str, Any]) -> Optional[str]:
+    voc = rec.get("void_of_course", {})
+    if not voc.get("start") or not voc.get("end"):
         return None
-
     t1 = pendulum.parse(voc["start"]).in_tz(TZ)
     t2 = pendulum.parse(voc["end"]).in_tz(TZ)
-    if (t2 - t1).in_minutes() < 15:
-        return None
-    return f"⚫️ VoC {t1.format('HH:mm')}–{t2.format('HH:mm')}"
+    return (f"⚫️ VoC {t1.format('HH:mm')}–{t2.format('HH:mm')}"
+            if (t2 - t1).in_minutes() >= 15 else None)
 
-def _fmt_good_bad(rec: Dict[str, Any], day: int) -> Optional[str]:
+
+def _good_bad(rec: Dict[str, Any], day_num: int) -> Optional[str]:
     gen = rec.get("favorable_days", {}).get("general", {})
-    if day in gen.get("favorable", []):
+    if day_num in gen.get("favorable", []):
         return "✅ Благоприятный день"
-    if day in gen.get("unfavorable", []):
+    if day_num in gen.get("unfavorable", []):
         return "❌ Неблагоприятный день"
     return None
 
-def _fmt_categories(rec: Dict[str, Any], day: int) -> List[str]:
-    fav = rec.get("favorable_days", {})
-    lines: List[str] = []
-    for cat, emo in CAT_EMO.items():
-        f_list = fav.get(cat, {}).get("favorable", [])
-        u_list = fav.get(cat, {}).get("unfavorable", [])
-        if day in f_list:
-            lines.append(f"{emo} {cat.capitalize()} — благоприятно")
-        elif day in u_list:
-            lines.append(f"{emo} {cat.capitalize()} — неблагоприятно")
-    return lines
 
-# ───────── public entry ──────────────────────────────────────────
-def astro_events(*, offset_days: int = 1) -> List[str]:
-    """
-    Вернуть готовый список строк «Астрособытия» для даты = сегодня + offset_days.
-    • offset_days=1 → завтра (то, что нужно вечернему посту)
-    • offset_days=0 → сегодняшняя дата
-    """
-    rec = _rec_for(offset_days)
+def _categories(rec: Dict[str, Any], day_num: int) -> List[str]:
+    out: List[str] = []
+    fav = rec.get("favorable_days", {})
+    for cat, emo in CAT_EMO.items():
+        f = fav.get(cat, {}).get("favorable", [])
+        u = fav.get(cat, {}).get("unfavorable", [])
+        if day_num in f:
+            out.append(f"{emo} {cat.capitalize()} — благоприятно")
+        elif day_num in u:
+            out.append(f"{emo} {cat.capitalize()} — неблагоприятно")
+    return out
+
+
+# ───────── main entry ────────────────────────────────────────────────
+def astro_events(offset_days: int = 1) -> List[str]:
+    """Возвращает готовый блок строк для сообщения."""
+    target_date = pendulum.now(TZ).add(days=offset_days).date()
+    rec = _rec_for(target_date)
     if not rec:
         return []
 
-    target_day = pendulum.now(TZ).add(days=offset_days).day
-
-    # --- подготовка основных полей --------------------------------
-    phase_full = rec.get("phase", "")
-    phase_clean = phase_full.split(" (")[0].strip()    # без процента
-
-    advice = [s.lstrip("•123. ").strip()
-              for s in rec.get("advice", []) if s.strip()][:3]
+    day_num = target_date.day
+    phase = rec.get("phase", "").split(" (")[0].strip()       # без процента
+    tips = [t.strip() for t in rec.get("advice", []) if t.strip()][:3]
 
     lines: List[str] = []
 
-    # --- маркеры ---------------------------------------------------
-    for extra in (_fmt_voc(rec), _fmt_good_bad(rec, target_day)):
+    # доп-метки
+    for extra in (_format_voc(rec), _good_bad(rec, day_num)):
         if extra:
             lines.append(extra)
+    lines.extend(_categories(rec, day_num))
 
-    lines.extend(_fmt_categories(rec, target_day))
+    # фаза + советы
+    if phase:
+        lines.append(phase)
+    lines.extend(f"• {t}" for t in tips)
 
-    # --- фаза + советы --------------------------------------------
-    if phase_clean:
-        lines.append(phase_clean)
-    for tip in advice:
-        lines.append(f"• {tip}")
-
-    # --- ближайшее событие ----------------------------------------
+    # ближайшее событие
     nxt = rec.get("next_event", "").strip()
     if nxt:
         lines.append(nxt)
@@ -108,9 +90,8 @@ def astro_events(*, offset_days: int = 1) -> List[str]:
     return lines
 
 
-# 🔹 локальный тест ────────────────────────────────────────────────
+# ───────── локальный тест ────────────────────────────────────────────
 if __name__ == "__main__":
     from pprint import pprint
-    pprint(astro_events())          # завтра
-    print("-" * 40)
-    pprint(astro_events(offset_days=0))  # сегодня
+    pprint(astro_events())            # завтра
+    pprint(astro_events(0))           # сегодня
