@@ -105,7 +105,7 @@ def build_msg() -> str:
     P: List[str] = []
 
     # — Заголовок —
-    P.append(f"<b>🌅 Добрый вечер! Погода на завтра ({TOMORROW.format('DD.MM.YYYY')})</b>")
+    P.append(f"<b>🌅 Добрый вечер! Погода Кипра на завтра ({TOMORROW.format('DD.MM.YYYY')})</b>")
 
     # — Температура моря —
     if (sst := get_sst()) is not None:
@@ -189,12 +189,12 @@ def build_msg() -> str:
         tips.append(random.choice(tips))
     P.append("✅ <b>Рекомендации</b>")
     for t in tips[:3]:
-        P.append(f"• {t}")
+        P.append(f"{t}")
     P.append("———")
 
     # — Факт + CTA —
     P.append(f"📚 {get_fact(TOMORROW)}")
-    P.append("\nА вы уже решили, как проведёте вечер? 🌆")
+    P.append("\nА вы уже решили, как проведёте день? 🌆")
 
     return "\n".join(P)
 
