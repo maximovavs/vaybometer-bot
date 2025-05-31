@@ -1,88 +1,79 @@
 name: Monthly VayboMeter Calendar
 
-###############################################################################
-# 1. События-триггеры
-###############################################################################
 on:
   schedule:
-    #   мин   час  день  мес  день-нед
-    - cron:  '0 10 * * *'          # каждый день, 10 UTC
-  workflow_dispatch:               # ← обязательная пустая строка!
+    - cron: '0 10 * * *'          # каждый день 10:00 UTC
+  workflow_dispatch:
     inputs:
       force_run:
-        description: "Сгенерировать календарь на текущий месяц (игнорировать дату)"
-        required: false
+        description: "Запустить независимо от даты"
         default: "false"
+        required: false
 
-###############################################################################
 permissions:
   contents: write
-###############################################################################
 
 jobs:
   monthly:
     runs-on: ubuntu-latest
 
     steps:
-    # ------------------------------------------------------------------ 1
-    - name: 📥 Checkout
-      uses: actions/checkout@v4
+    # 1. Checkout
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        persist-credentials: true
 
-    # ------------------------------------------------------------------ 2
-    - name: 🔍 Decide if calendar must be built
+    # 2. Решаем, нужен ли расчёт
+    - name: 🔍 Decide run condition
       id: decide
+      shell: bash
       run: |
+        # По-умолчанию «нет»
         run=no
-        # (а) автозапуск: строим, если завтра 1-е
-        if [[ "${{ github.event_name }}" == "schedule" ]]; then
-          [[ $(date -u -d 'tomorrow' +%d) == 01 ]] && run=yes
-        fi
-        # (б) ручной run + force_run=true
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" && \
-              "${{ github.event.inputs.force_run }}" == "true" ]]; then
+        # Завтра первое число → генерируем СЛЕДУЮЩИЙ месяц
+        if [[ $(date -d 'tomorrow' +%d) == "01" ]]; then
           run=yes
+          work_date=$(date -d "$(date +%Y-%m-01) +1 month" +%Y-%m-%d)
         fi
-        echo "RUN_CALENDAR=$run" >>"$GITHUB_ENV"
+        # Ручной запуск c force_run=true → текущий месяц
+        if [[ "${{ github.event_name }}" == 'workflow_dispatch' && \
+              "${{ github.event.inputs.force_run }}" == 'true' ]]; then
+          run=yes
+          work_date=$(date +%Y-%m-%d)   # сегодня
+        fi
+        echo "RUN_CALENDAR=$run"  >> $GITHUB_ENV
+        echo "WORK_DATE=${work_date:-}" >> $GITHUB_ENV
 
-    # ------------------------------------------------------------------ 3
-    - name: 🐍 Setup Python
-      if: env.RUN_CALENDAR == 'yes'
-      uses: actions/setup-python@v4
+    # 3. Python
+    - uses: actions/setup-python@v4
       with:
         python-version: '3.11'
 
-    # ------------------------------------------------------------------ 4
+    # 4. Deps
     - name: 📦 Install dependencies
       if: env.RUN_CALENDAR == 'yes'
       run: |
-        python -m pip install -U pip
+        python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # ------------------------------------------------------------------ 5
+    # 5. Генерация календаря
     - name: 🌙 Generate lunar_calendar.json
       if: env.RUN_CALENDAR == 'yes'
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        WORK_DATE:      ${{ env.WORK_DATE }}
       run: |
-        # → автозапуск: завтра 1-е → берём следующий месяц
-        # → ручной    : всегда текущий месяц
-        if [[ "${{ github.event_name }}" == "schedule" ]]; then
-          WORK_DATE=$(date -u -d 'tomorrow' +%Y-%m-01)
-        else
-          WORK_DATE=$(date -u +%Y-%m-01)
-        fi
+        # Если WORK_DATE задана → «переопределяем» pendulum.today()
+        python <<'PY'
+        import os, pendulum, runpy, sys
+        wd = os.getenv("WORK_DATE")
+        if wd:
+            pendulum.today = lambda tz=None: pendulum.parse(wd)
+        sys.argv = ["gen_lunar_calendar.py"]
+        runpy.run_path("gen_lunar_calendar.py", run_name="__main__")
+        PY
 
-        python - <<'PY'
-import os, pendulum, runpy, sys
-pendulum.today = lambda tz=None: pendulum.parse(os.environ["WORK_DATE"])
-sys.argv = ["gen_lunar_calendar.py"]
-runpy.run_path("gen_lunar_calendar.py", run_name="__main__")
-PY
-
-    # ------------------------------------------------------------------ 6
+    # 6. Commit & push
     - name: ✏️ Commit & push
       if: env.RUN_CALENDAR == 'yes'
       run: |
@@ -90,14 +81,14 @@ PY
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git add lunar_calendar.json
         if git diff --cached --quiet; then
-          echo "✅ Файл уже актуален"
+          echo "✅ lunar_calendar.json актуален"
         else
           git commit -m "chore: update lunar_calendar.json"
           git pull --rebase --autostash || true
           git push
         fi
 
-    # ------------------------------------------------------------------ 7
+    # 7. Telegram summary
     - name: 📨 Send monthly summary
       if: env.RUN_CALENDAR == 'yes'
       env:
