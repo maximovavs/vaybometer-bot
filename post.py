@@ -100,7 +100,7 @@ def astro_block() -> List[str]:
     # Фаза + советы
     phase = rec.get("phase", "")
     # убираем процент освещения, чтобы короче
-    phase = re.sub(r"\s*\d+%.*?⟩?", "", phase).strip()
+    phase = re.sub(r"\s*\(\d+%.*?⟩?\)", "", phase).strip()
     if phase: out.append(phase)
 
     tips = rec.get("advice", [])[:3]
