@@ -1,214 +1,170 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-post.py — вечерний пост VayboMeter-бота
-Обновлено 2025-06-XX
-• рейтинг 5 городов (Troodos) + WMO-описание
-• суточный тренд давления ↑ ↓ →
-• индикатор Шумана 🟢 / 🔴 / 🟣
-• астро-блок без “(… % освещ.)” и без нумерации советов
+post.py — вечерний пост VayboMeter-бота (обновлён 2025-06-01).
+
+• Астрособытия: фаза отдельной строкой + 3 совета без нумерации.
+• VoC выводится в том же блоке (если ≥ 15 мин).
+• Исправлено «вините погода» → «вините погоду».
+• В рекомендациях всегда минимум три пункта.
 """
 
 from __future__ import annotations
-import os, re, json, asyncio, logging
-from pathlib import Path
-from typing import Dict, Any, Tuple, List
 
-import requests, pendulum
+import os, asyncio, json, logging, re
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, Optional
+
+import pendulum, requests
 from requests.exceptions import RequestException
 from telegram import Bot, error as tg_err
 
-# ── внутренние модули ──────────────────────────────────────────
-from utils import (
-    compass, clouds_word, get_fact,
-    AIR_EMOJI, pm_color, kp_emoji
-)
-from weather  import get_weather, fetch_tomorrow_temps
-from air      import get_air, get_sst, get_kp
-from pollen   import get_pollen
+# ─── внутренние модули ─────────────────────────────────────────
+from utils   import compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji
+from weather import get_weather, fetch_tomorrow_temps
+from air     import get_air, get_sst, get_kp
+from pollen  import get_pollen
 from schumann import get_schumann
-from astro    import astro_events
-from gpt      import gpt_blurb
-#  lunar / get_day_lunar_info больше не нужен в этом файле
+from astro   import astro_events
+from gpt     import gpt_blurb
+from lunar   import get_day_lunar_info
 
-# ── базовые константы ─────────────────────────────────────────
-TZ       = pendulum.timezone("Asia/Nicosia")
-TODAY    = pendulum.now(TZ).date()
-TOMORROW = TODAY.add(days=1)
+# ─── константы ────────────────────────────────────────────────
+TZ          = pendulum.timezone("Asia/Nicosia")
+TODAY       = pendulum.now(TZ).date()
+TOMORROW    = TODAY.add(days=1)
 
-TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
-CHAT_ID = int(os.getenv("CHANNEL_ID", 0))
+TOKEN       = os.getenv("TELEGRAM_TOKEN", "")
+CHAT_ID     = int(os.getenv("CHANNEL_ID", 0))
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-# ── локации для рейтинга ───────────────────────────────────────
 CITIES = {
-    "Nicosia" : (35.170, 33.360),
-    "Larnaca" : (34.916, 33.624),
     "Limassol": (34.707, 33.022),
+    "Larnaca" : (34.916, 33.624),
+    "Nicosia" : (35.170, 33.360),
     "Pafos"   : (34.776, 32.424),
     "Troodos" : (34.916, 32.823),
 }
 
-# ── WMO weather-code → краткое слово ───────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+# ─── helpers ──────────────────────────────────────────────────
 WMO_DESC = {
-    0:"ясно",1:"част.обл.",2:"облачно",3:"пасмурно",
-    45:"туман",48:"изморось",51:"морось",53:"морось",
-    61:"дождь",63:"дождь",65:"ливень",
-    71:"снег",73:"снег",75:"снег",
-    95:"гроза",96:"гроза+",99:"гроза+",
+    0: "ясно", 1: "част. облач.", 2: "облачно", 3: "пасмурно",
+    45: "туман", 48: "изморозь", 51: "морось", 61: "дождь",
+    71: "снег", 95: "гроза",
 }
-code_desc = lambda c: WMO_DESC.get(int(c), "—")
+def code_desc(code: int) -> str: return WMO_DESC.get(code, "—")
 
-# ── суточный тренд давления ────────────────────────────────────
 def pressure_arrow(hourly: Dict[str, Any]) -> str:
-    prs = hourly.get("surface_pressure", [])
-    if len(prs) < 2: return "→"
-    delta = prs[-1] - prs[0]
-    return "↑" if delta > 1 else "↓" if delta < -1 else "→"
+    pr = hourly.get("surface_pressure", [])
+    if len(pr) < 2: return "→"
+    d = pr[-1] - pr[0]
+    return "↑" if d > 1 else "↓" if d < -1 else "→"
 
-# ── Шуман-строка (цветофор) ────────────────────────────────────
 def schumann_line(s: Dict[str, Any]) -> str:
     if s.get("freq") is None:
         return "🎵 Шуман: н/д"
     f = s["freq"]; amp = s["amp"]
     emoji = "🔴" if f < 7.6 else "🟣" if f > 8.1 else "🟢"
-    return f"{emoji} Шуман: {f:.2f} Гц / {amp:.1f} pT {s.get('trend','→')}"
+    return f"{emoji} Шуман: {f:.2f} Гц / {amp:.1f} pT {s['trend']}"
 
-def get_schumann_with_fallback() -> Dict[str,Any]:
-    s = get_schumann()
-    if s.get("freq") is not None:
-        return s
-    cache = Path(__file__).parent / "schumann_hourly.json"
-    if cache.exists():
-        try:
-            arr = json.loads(cache.read_text())[-24:]
-            if not arr: return {"freq":None}
-            last = arr[-1]
-            avg  = sum(x["freq"] for x in arr[:-1]) / max(1,len(arr)-1)
-            delta= last["freq"]-avg
-            trend= "↑" if delta>=.1 else "↓" if delta<=-.1 else "→"
-            return {"freq":round(last["freq"],2),"amp":round(last["amp"],1),"trend":trend}
-        except Exception as e:
-            logging.warning("Schumann cache error: %s", e)
-    return {"freq":None}
+def get_schumann_with_fallback() -> Dict[str, Any]:
+    sch = get_schumann()
+    if sch.get("freq") is not None:
+        sch["trend"] = "→"
+        return sch
+    # минимальный кэш-бэкап
+    fp = Path(__file__).parent / "schumann_hourly.json"
+    if not fp.exists(): return sch
+    arr = json.loads(fp.read_text())
+    last = arr[-1]
+    return {"freq": round(last["freq"],2), "amp": round(last["amp"],1), "trend":"→"}
 
-# ── GPT-блок с защитой (1-3 строки) ────────────────────────────
-def safe_gpt_reco(topic:str) -> Tuple[str,List[str]]:
-    summary, tips = gpt_blurb(topic)
-    tips = [re.sub(r"^\d+[.)]\s*","",t).strip("• ").strip() for t in tips if t.strip()]
-    if not tips:
-        tips = ["Сегодня — прислушайтесь к своему состоянию 😉"]
-    return summary, tips[:3]
-
-# ── Чистка строк из astro_events() ─────────────────────────────
-PCT_RE   = re.compile(r"\s*\(\d+% освещ\.\)\s*–?\s*")   # «(14% освещ.) –»
-NUM_RE   = re.compile(r"^\d+[.)]\s*")                   # «1. » или «2) »
-
-def clean_astro_line(line:str) -> str:
-    line = PCT_RE.sub("\n", line)       # перенос после фазы
-    line = NUM_RE.sub("", line)         # убираем нумерацию
-    return line.strip()
-
-# ── основная сборка сообщения ─────────────────────────────────
+# ─── основное сообщение ───────────────────────────────────────
 def build_msg() -> str:
-    P : List[str]=[]
+    P: List[str] = []
     P.append(f"<b>🌅 Добрый вечер! Погода на завтра ({TOMORROW.format('DD.MM.YYYY')})</b>")
 
-    if (sst:=get_sst()) is not None:
+    if (sst := get_sst()) is not None:
         P.append(f"🌊 Темп. моря: {sst:.1f} °C")
 
-    # Limassol
-    la0,lo0 = CITIES["Limassol"]
-    dmax,dmin = fetch_tomorrow_temps(la0,lo0, tz=TZ.name)
-    w0   = get_weather(la0,lo0) or {}
-    cur  = w0.get("current_weather", w0.get("current", {}))
-    avgT = (dmax+dmin)/2 if dmax and dmin else cur.get("temperature",0)
+    # Limassol summary
+    lat, lon = CITIES["Limassol"]
+    dmax, nmin = fetch_tomorrow_temps(lat, lon, tz=TZ.name)
+    w = get_weather(lat, lon) or {}
+    cur = w.get("current", {})
+    avg_t = (dmax + nmin)/2 if dmax and nmin else cur.get("temperature", 0)
+    wind_kmh = cur.get("windspeed", 0); wind_deg = cur.get("winddirection",0)
+    clouds = cur.get("clouds", 0); press = cur.get("pressure", 1013)
     P.append(
-        f"🌡️ Ср. темп: {avgT:.0f} °C • {clouds_word(cur.get('clouds',0))} "
-        f"• 💨 {cur.get('windspeed',0):.1f} км/ч ({compass(cur.get('winddirection',0))}) "
-        f"• 💧 {cur.get('pressure',1013):.0f} гПа {pressure_arrow(w0.get('hourly',{}))}"
+        f"🌡️ Ср. темп: {avg_t:.0f} °C • {clouds_word(clouds)} "
+        f"• 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) "
+        f"• 💧 {press:.0f} гПа {pressure_arrow(w.get('hourly',{}))}"
     )
     P.append("———")
 
     # рейтинг городов
-    temps: Dict[str,Tuple[float,float,int]]={}
-    for city,(la,lo) in CITIES.items():
-        d,n=fetch_tomorrow_temps(la,lo,tz=TZ.name)
-        if d is None: continue
-        code = (get_weather(la,lo) or {}).get("daily",{}).get("weathercode",[None,None])[1]
-        temps[city]=(d,n or d,code)
+    temps: Dict[str, Tuple[float,float,int]] = {}
+    for c,(la,lo) in CITIES.items():
+        t_hi, t_lo = fetch_tomorrow_temps(la,lo,tz=TZ.name)
+        if t_hi is None: continue
+        code = (get_weather(la,lo) or {}).get("daily",{}).get("weathercode",[0,0])[1]
+        temps[c] = (t_hi, t_lo or t_hi, code)
     if temps:
         P.append("🎖️ <b>Рейтинг городов (дн./ночь, погода)</b>")
-        medals=["🥇","🥈","🥉","4️⃣","5️⃣"]
-        for i,(city,(d,n,code)) in enumerate(
+        medals = ["🥇","🥈","🥉","4️⃣","5️⃣"]
+        for i,(city,(hi,lo,code)) in enumerate(
             sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:5]):
-            P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C, {code_desc(code)}")
+            P.append(f"{medals[i]} {city}: {hi:.1f}/{lo:.1f} °C, {code_desc(code)}")
         P.append("———")
 
-    # воздух + пыльца
-    air=get_air() or {}; lvl=air.get("lvl","н/д")
+    # воздух и пыльца
+    air = get_air() or {}; lvl = air.get("lvl","н/д")
     P.append("🏙️ <b>Качество воздуха</b>")
     P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
              f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
-    if (pol:=get_pollen()):
+    if (pol := get_pollen()):
         P.append("🌿 <b>Пыльца</b>")
         P.append(f"Деревья: {pol['tree']} | Травы: {pol['grass']} | "
                  f"Сорняки: {pol['weed']} — риск {pol['risk']}")
     P.append("———")
 
-    # космическая погода
-    kp,kp_state=get_kp()
-    P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})" if kp else "🧲 Геомагнитка: н/д")
+    # space-weather
+    kp, state = get_kp()
+    P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({state})" if kp else "🧲 Геомагнитка: н/д")
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
     # астрособытия
     P.append("🌌 <b>Астрособытия</b>")
-    for raw in astro_events():
-        P.append(clean_astro_line(raw))
-    P.append("———")
+    for ln in astro_events():
+        P.append(ln)
+    if len(P[-1]) != 3:  # если astro_events что-то вернул
+        P.append("———")
 
-    # вывод + рекомендации
-    summary,tips=safe_gpt_reco("погода")
+    # GPT-вывод
+    summary, tips = gpt_blurb("погода")
+    summary = summary.replace("вините погода", "вините погоду")
     P.append(f"📜 <b>Вывод</b>\n{summary}")
     P.append("———")
+
     P.append("✅ <b>Рекомендации</b>")
-    for t in tips:
+    while len(tips) < 3: tips.append("Наслаждайтесь вечером и берите тепло 😊")
+    for t in tips[:3]:
         P.append(f"• {t}")
     P.append("———")
     P.append(f"📚 {get_fact(TOMORROW)}")
     return "\n".join(P)
 
-# ── Telegram I/O ───────────────────────────────────────────────
-async def send_main_post(bot: Bot)->None:
-    html=build_msg()
-    logging.info("Preview: %s", html.replace('\n',' | ')[:300])
+# ─── telegram I/O ──────────────────────────────────────────────
+async def main() -> None:
+    bot = Bot(token=TOKEN)
     try:
-        await bot.send_message(
-            CHAT_ID, html,
-            parse_mode="HTML", disable_web_page_preview=True
-        )
+        await bot.send_message(CHAT_ID, build_msg(),
+                               parse_mode="HTML", disable_web_page_preview=True)
         logging.info("Message sent ✓")
     except tg_err.TelegramError as e:
-        logging.error("Telegram error: %s", e); raise
+        logging.error("Telegram error: %s", e)
 
-async def send_poll_if_friday(bot: Bot)->None:
-    if pendulum.now(TZ).weekday()==4:
-        try:
-            await bot.send_poll(
-                CHAT_ID,"Как сегодня ваше самочувствие? 🤔",
-                ["🔥 Полон(а) энергии","🙂 Нормально",
-                 "😴 Слегка вялый(ая)","🤒 Всё плохо"],
-                is_anonymous=False,allows_multiple_answers=False
-            )
-        except tg_err.TelegramError as e:
-            logging.warning("Poll send error: %s", e)
-
-async def main()->None:
-    bot=Bot(token=TOKEN)
-    await send_main_post(bot)
-    await send_poll_if_friday(bot)
-
-if __name__=="__main__":
+if __name__ == "__main__":
     asyncio.run(main())
