@@ -4,48 +4,46 @@
 """
 post.py — вечерний пост VayboMeter-бота.
 
-Формирует и отправляет вечерний прогноз:
-1) Погода, море, воздух, пыльца, Шуман, геомагнитка
-2) Рейтинг городов (дн./ночь, погода)
-3) Астрособытия на завтра (фаза Луны + 3 совета + VoC)
-4) GPT-вывод и рекомендации из gpt_blurb
-5) Интересный факт о месте / дате
+Основная логика:
+  1) Собирает погоду, море, воздух, пыльцу, Шумана, геомагнитку
+  2) Формирует рейтинг городов (теперь 5 городов)
+  3) Блок «Астрособытия» для ЗАВТРА (offset_days=1)
+  4) GPT-вывод и Рекомендации (три совета)
+  5) Факт «начала завтра» в конце
 """
 
-from __future__ import annotations
 import os
 import asyncio
 import logging
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
-import pendulum
 import requests
+import pendulum
 from requests.exceptions import RequestException
 from telegram import Bot, error as tg_err
 
-from utils import (
-    compass, clouds_word, get_fact,
-    AIR_EMOJI, pm_color, kp_emoji, pressure_trend
-)
-from weather import get_weather, fetch_tomorrow_temps
-from air     import get_air, get_sst, get_kp
-from pollen  import get_pollen
+from utils    import compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji
+from weather  import get_weather, fetch_tomorrow_temps
+from air      import get_air, get_sst, get_kp
+from pollen   import get_pollen
 from schumann import get_schumann
 from astro    import astro_events
 from gpt      import gpt_blurb
 from lunar    import get_day_lunar_info
 
-# ─── Настройки и константы ──────────────────────────────────────
-TZ       = pendulum.timezone("Asia/Nicosia")
+# ─── Настройки ─────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+TZ = pendulum.timezone("Asia/Nicosia")
 TODAY    = pendulum.now(TZ).date()
 TOMORROW = TODAY.add(days=1)
 
 TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = int(os.getenv("CHANNEL_ID", 0))
 
-# Список городов для рейтинга (дн./ночь)
+# Города для рейтинга (теперь 5)
 CITIES = {
     "Limassol": (34.707, 33.022),
     "Larnaca" : (34.916, 33.624),
@@ -54,71 +52,35 @@ CITIES = {
     "Troodos" : (34.916, 32.823),
 }
 
-# Превращаем WMO-коды в эмоджи/строку
-WMO_DESC = {
-    0:   "☀️ ясно",
-    1:   "🌤 мал. облаков",
-    2:   "⛅️ переменная облачность",
-    3:   "☁️ пасмурно",
-    45:  "🌫 туман",
-    48:  "🌫 изморозь",
-    51:  "🌧 морось",
-    61:  "🌧 дождь",
-    71:  "❄️ снег",
-    95:  "⛈ гроза",
-}
-def code_desc(code: int) -> str:
-    return WMO_DESC.get(code, "—")
+# ─── Helpers ────────────────────────────────────────────────────
 
-
-# ─── Schumann helper ────────────────────────────────────────────
-def get_schumann_with_fallback() -> Dict[str, Any]:
+def pressure_arrow(hourly: Dict[str, Any]) -> str:
     """
-    Получаем текущие Schumann-данные. Если нет «свежих» — читаем из cached файла schumann_hourly.json,
-    считаем тренд и возвращаем последнее значение как «кэш».
+    Если давление (surface_pressure) растёт за сутки — ↑
+    Если падает — ↓, иначе — →
     """
-    sch = get_schumann()
-    if sch.get("freq") is not None:
-        # свежие данные есть — помечаем cached=False
-        sch["cached"] = False
-        return sch
+    pr = hourly.get("surface_pressure", [])
+    if len(pr) < 2:
+        return "→"
+    delta = pr[-1] - pr[0]
+    if delta > 1.0:
+        return "↑"
+    if delta < -1.0:
+        return "↓"
+    return "→"
 
-    # fallback: берем последние 24 пункта из schumann_hourly.json
-    cache_path = Path(__file__).parent / "schumann_hourly.json"
-    if cache_path.exists():
-        try:
-            arr = json.loads(cache_path.read_text(encoding="utf-8"))
-            if arr:
-                last = arr[-1]
-                pts = arr[-24:]
-                freqs = [p["freq"] for p in pts if p.get("freq") is not None]
-                if len(freqs) >= 2:
-                    avg   = sum(freqs[:-1]) / (len(freqs) - 1)
-                    delta = freqs[-1] - avg
-                    trend = "↑" if delta >= 0.1 else "↓" if delta <= -0.1 else "→"
-                else:
-                    trend = "→"
-                return {
-                    "freq":   round(last["freq"], 2),
-                    "amp":    round(last["amp"], 1),
-                    "trend":  trend,
-                    "cached": True,
-                }
-        except Exception as e:
-            logging.warning("Schumann fallback parse error: %s", e)
-
-    return sch
 
 def schumann_line(sch: Dict[str, Any]) -> str:
     """
-    Форматируем строку «Шуман»: цветовая индикация по частоте
-    🔴 если freq < 7.6, 🟣 если > 8.1, 🟢 в норме (7.6–8.1).
-    Плюс амплитуда и тренд.
+    Форматирует строку с показателем Шумана:
+    🟢 норма (≈7.8–8.1), 🟣 выше нормы (>8.1), 🔴 ниже нормы (<7.6)
+    и тренд ↑/↓/→
     """
     if sch.get("freq") is None:
         return "🎵 Шуман: н/д"
     f = sch["freq"]
     amp = sch["amp"]
+    # цветовой индикатор
     if f < 7.6:
         emoji = "🔴"
     elif f > 8.1:
@@ -128,79 +90,125 @@ def schumann_line(sch: Dict[str, Any]) -> str:
     return f"{emoji} Шуман: {f:.2f} Гц / {amp:.1f} pT {sch['trend']}"
 
 
-# ─── Основной билдер текста ──────────────────────────────────────
+def get_schumann_with_fallback() -> Dict[str, Any]:
+    """
+    Если живые данные Шумана появились — возвращаем их.
+    Иначе берём из schumann_hourly.json, вычисляем тренд, помечаем cached=True.
+    """
+    sch = get_schumann()
+    if sch.get("freq") is not None:
+        sch["cached"] = False
+        return sch
+
+    cache_path = Path(__file__).parent / "schumann_hourly.json"
+    if cache_path.exists():
+        try:
+            arr = json.loads(cache_path.read_text(encoding="utf-8"))
+            if arr:
+                last = arr[-1]
+                pts  = arr[-24:]
+                freqs = [p["freq"] for p in pts if "freq" in p]
+                if len(freqs) >= 2:
+                    avg   = sum(freqs[:-1]) / (len(freqs) - 1)
+                    delta = freqs[-1] - avg
+                    trend = "↑" if delta >= 0.1 else "↓" if delta <= -0.1 else "→"
+                else:
+                    trend = "→"
+                return {
+                    "freq":  round(last["freq"], 2),
+                    "amp":   round(last["amp"], 1),
+                    "trend": trend,
+                    "high":  False,
+                    "cached": True,
+                }
+        except Exception as e:
+            logging.warning("Schumann fallback parse error: %s", e)
+
+    return sch
+
+
+def fetch_tomorrow_temps(lat: float, lon: float, tz: str) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Берёт из Open-Meteo прогнозную максимальную и минимальную температуру
+    для указанной координаты на TOMORROW.
+    """
+    date = TOMORROW.to_date_string()
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude":   lat,
+        "longitude":  lon,
+        "timezone":   tz,
+        "daily":      "temperature_2m_max,temperature_2m_min",
+        "start_date": date,
+        "end_date":   date,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        daily = r.json().get("daily", {})
+        tmax = daily.get("temperature_2m_max", [])
+        tmin = daily.get("temperature_2m_min", [])
+        return (tmax[0] if tmax else None,
+                tmin[0] if tmin else None)
+    except RequestException as e:
+        logging.warning("fetch_tomorrow_temps error: %s", e)
+        return None, None
+
+
+# ─── Основной сборщик сообщения ─────────────────────────────────────
 def build_msg() -> str:
-    """
-    Собираем весь блок «вечернего поста»:
-    1) Заголовок
-    2) Темп моря (для Limassol по дефолту)
-    3) Погода на завтра (Limassol)
-    4) Рейтинг городов (Limassol, Larnaca, Nicosia, Pafos, Troodos)
-    5) Качество воздуха + пыльца
-    6) Геомагнитка (Kp) + Шуман
-    7) Астрособытия на завтра
-    8) GPT-вывод («Вывод» + «Рекомендации»)
-    9) Интересный факт
-    """
-    P: list[str] = []
+    P: List[str] = []
 
     # 1) Заголовок
     P.append(f"<b>🌅 Добрый вечер! Погода на завтра ({TOMORROW.format('DD.MM.YYYY')})</b>")
 
-    # 2) Температура моря — для нашей основной локации Limassol
+    # 2) Температура моря (SST)
     if (sst := get_sst()) is not None:
-        P.append(f"🌊 Темп. моря: {sst:.1f} °C")
+        P.append(f"🌊 Темп моря: {sst:.1f} °C")
 
-    # 3) Прогноз погоды для Limassol на завтра
+    # 3) Основной прогноз для Limassol
     lat, lon = CITIES["Limassol"]
     day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=TZ.name)
     w = get_weather(lat, lon) or {}
-    cur = w.get("current_weather", {}) or w.get("current", {}) or {}
+    cur = w.get("current", {}) or {}
+    avg_temp = (day_max + night_min) / 2 if day_max and night_min else cur.get("temperature", 0)
 
-    avg_temp = (day_max + night_min)/2 if (day_max is not None and night_min is not None) else cur.get("temperature", 0.0)
-    wind_kmh = cur.get("windspeed") or cur.get("wind_speed", 0.0)
-    wind_deg = cur.get("winddirection") or cur.get("wind_deg", 0.0)
-    clouds   = cur.get("clouds") or cur.get("weathercode", 0)  # если вернулся WMO-код
-    # Получаем именно проценты облачности, если они есть:
-    try:
-        clouds_pct = cur.get("clouds", 0)
-    except:
-        clouds_pct = 0
+    wind_kmh = cur.get("windspeed", 0.0)
+    wind_deg = cur.get("winddirection", 0.0)
+    press    = cur.get("pressure", 1013)
+    clouds   = cur.get("clouds", 0)
 
-    # Давление и тренд по Open-Meteo hourly
-    press     = cur.get("pressure") or w.get("hourly", {}).get("surface_pressure", [1013])[0]
-    press_arr = w.get("hourly", {})
-    arrow = pressure_trend(press_arr)
-
+    arrow = pressure_arrow(w.get("hourly", {}))
     P.append(
-        f"🌡️ Ср. темп: {avg_temp:.0f} °C • {clouds_word(clouds_pct)} "
+        f"🌡️ Ср. темп: {avg_temp:.0f} °C • {clouds_word(clouds)} "
         f"• 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) "
         f"• 💧 {press:.0f} гПа {arrow}"
     )
     P.append("———")
 
-    # 4) Рейтинг городов (дн./ночь, погода) — топ-5 по дню
-    temps: Dict[str, Tuple[float,float,int]] = {}
+    # 4) Рейтинг городов (дн./ночь, описание WMO-кода)
+    temps: Dict[str, Tuple[float, float, int]] = {}
     for city, (la, lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo, tz=TZ.name)
         if d is None:
             continue
+        # вытаскиваем WMO код завтра
         wcodes = get_weather(la, lo) or {}
-        # WMO-код погоды на завтра:
-        code_arr = wcodes.get("daily", {}).get("weathercode", [])
-        code_tmr = code_arr[1] if len(code_arr) > 1 else (code_arr[0] if code_arr else 0)
+        code_daily = wcodes.get("daily", {}).get("weathercode", [])
+        code_tmr = code_daily[1] if len(code_daily) > 1 else code_daily[0] if code_daily else 0
         temps[city] = (d, n or d, code_tmr)
 
     if temps:
         P.append("🎖️ <b>Рейтинг городов (дн./ночь, погода)</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-        # сортируем по дн. температуре по убыванию, берём первые 5
-        sorted_cities = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:5]
-        for i, (city, (d, n, code)) in enumerate(sorted_cities):
-            P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C, {code_desc(code)}")
+        # сортируем по дневной температуре по убыванию
+        sorted_cities = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)
+        for i, (city, (d, n, code)) in enumerate(sorted_cities[:5]):
+            desc = clouds_word(code) if isinstance(code, int) else code
+            P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C, {desc}")
         P.append("———")
 
-    # 5) Качество воздуха + пыльца
+    # 5) Качество воздуха и пыльца
     air = get_air() or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏙️ <b>Качество воздуха</b>")
@@ -216,33 +224,38 @@ def build_msg() -> str:
         )
     P.append("———")
 
-    # 6) Геомагнитка + Шуман
+    # 6) Геомагнитка и Шуман
     kp, kp_state = get_kp()
     if kp is not None:
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})")
     else:
         P.append("🧲 Геомагнитка: н/д")
 
-    P.append(schumann_line(get_schumann_with_fallback()))
+    sch = get_schumann_with_fallback()
+    P.append(schumann_line(sch))
     P.append("———")
 
-    # 7) Астрособытия на завтра
-    P.append("🌌 <b>Астрособытия (на завтра)</b>")
-    astro_lines = astro_events(offset_days=1)  # <-- теперь передаём offset_days=1
-    for line in astro_lines:
-        P.append(line)
+    # 7) Астрособытия (на завтра: offset_days=1)
+    P.append("🌌 <b>Астрособытия</b>")
+    astro_lines = astro_events(offset_days=1)
+    if astro_lines:
+        for line in astro_lines:
+            P.append(line)
+    else:
+        P.append("—")  # если данных нет
+
     P.append("———")
 
-    # 8) GPT-вывод: «Вывод» + «Рекомендации»
+    # 8) GPT-вывод + рекомендации
     summary, tips = gpt_blurb("погода")
     P.append(f"📜 <b>Вывод</b>\n{summary}")
     P.append("———")
     P.append("✅ <b>Рекомендации</b>")
-    for t in tips:
-        P.append(f"• {t}")
-    P.append("———")
+    # выводим ровно три совета (если есть)
+    for t in tips[:3]:
+        P.append(f"• {t.strip()}")
 
-    # 9) Интересный факт
+    P.append("———")
     P.append(f"📚 {get_fact(TOMORROW)}")
 
     return "\n".join(P)
@@ -251,7 +264,7 @@ def build_msg() -> str:
 # ─── Telegram I/O ───────────────────────────────────────────────
 async def send_main_post(bot: Bot) -> None:
     html = build_msg()
-    logging.info("Preview: %s", html.replace("\n", " | ")[:200])
+    logging.info("Preview: %s", html.replace("\n", " | ")[:250])
     try:
         await bot.send_message(
             CHAT_ID,
@@ -265,11 +278,27 @@ async def send_main_post(bot: Bot) -> None:
         raise
 
 
+async def send_poll_if_friday(bot: Bot) -> None:
+    # если пятница, то опрос
+    if pendulum.now(TZ).weekday() == 4:
+        try:
+            await bot.send_poll(
+                CHAT_ID,
+                question="Как сегодня ваше самочувствие? 🤔",
+                options=["🔥 Полон(а) энергии", "🙂 Нормально",
+                         "😴 Слегка вялый(ая)", "🤒 Всё плохо"],
+                is_anonymous=False,
+                allows_multiple_answers=False
+            )
+        except tg_err.TelegramError as e:
+            logging.warning("Poll send error: %s", e)
+
+
 async def main() -> None:
     bot = Bot(token=TOKEN)
     await send_main_post(bot)
+    await send_poll_if_friday(bot)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     asyncio.run(main())
