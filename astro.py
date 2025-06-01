@@ -51,4 +51,3 @@ return lines
 ───────── локальный тест ────────────────────────────────────────────
 
 if name == "main": from pprint import pprint pprint(astro_events())            # завтра pprint(astro_events(0))           # сегодня
-
