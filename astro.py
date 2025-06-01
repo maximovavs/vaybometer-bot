@@ -3,143 +3,149 @@
 
 """
 astro.py  • формирует блок «Астрособытия» для ежедневного поста.
-Возвращает список строк, которые редактор бота вставляет в сообщение.
-
-Теперь включает:
-• VoC (длительностью ≥ 15 мин)
-• Метку «благоприятный / неблагоприятный день»
-• Категории: ✂️ стрижка, ✈️ путешествия, 🛍 покупки, ❤️ здоровье
-• Фазу Луны + 3 совета
-• next_event
+Теперь умеет:
+• Показать астрособытия не только на сегодня, но и на offset_days (например, завтрашний день).
+• Показать Void-of-Course, если он есть.
+• Показать маркер «благоприятный/неблагоприятный день» (по общему списку).
+• Убрать нумерацию советов, каждый совет с новой строки.
 """
 
 from __future__ import annotations
 import pendulum
 from typing import Any, Dict, List, Optional
-from lunar import get_day_lunar_info  # функция из lunar.py
+from lunar import get_day_lunar_info  # возвращает всю структуру из lunar_calendar.json
 
-# Установим часовой пояс
 TZ = pendulum.timezone("Asia/Nicosia")
-
-
-def _today_info() -> Optional[Dict[str, Any]]:
-    """
-    Возвращает словарь с данными из lunar_calendar.json для текущей даты.
-    """
-    today = pendulum.now(TZ).date()
-    return get_day_lunar_info(today)
 
 
 def _format_voc(rec: Dict[str, Any]) -> Optional[str]:
     """
-    Форматирует период Void-of-Course (если он длится ≥ 15 минут).
-    Возвращает строку вида "⚫️ VoC 14:23–16:05" или None.
+    Форматирует Void-of-Course (VoC) в виде строки:
+    ⚫️ VoC HH:mm–HH:mm
+    Если VoC менее 15 минут или нет полей start/end — возвращает None.
     """
     voc = rec.get("void_of_course", {})
-    if not voc or not voc.get("start") or not voc.get("end"):
+    start = voc.get("start")
+    end = voc.get("end")
+    if not start or not end:
         return None
 
-    t1 = pendulum.parse(voc["start"]).in_tz(TZ)
-    t2 = pendulum.parse(voc["end"]).in_tz(TZ)
-    # Если период меньше 15 минут, игнорируем
+    try:
+        t1 = pendulum.parse(start).in_tz(TZ)
+        t2 = pendulum.parse(end).in_tz(TZ)
+    except Exception:
+        return None
+
     if (t2 - t1).in_minutes() < 15:
+        # Считаем «микро-VoC» (<15 минут) неактуальным
         return None
 
     return f"⚫️ VoC {t1.format('HH:mm')}–{t2.format('HH:mm')}"
 
 
-def _format_general_day(rec: Dict[str, Any]) -> Optional[str]:
+def _format_general_day(rec: Dict[str, Any], date_obj: pendulum.Date) -> Optional[str]:
     """
-    Определяет, является ли текущий день:
-    • благоприятным ("✅ Благоприятный день")
-    • неблагоприятным ("❌ Неблагоприятный день")
-    или None, если нейтрально.
+    Пометка, если сегодня (или дата offset) — благоприятный или неблагоприятный день:
+    ✅ Благоприятный день
+    ❌ Неблагоприятный день
     """
-    day = pendulum.now(TZ).day
-    gen = rec.get("favorable_days", {}).get("general", {})
-    if day in gen.get("favorable", []):
+    day = date_obj.day
+    fav_general = rec.get("favorable_days", {}).get("general", {}).get("favorable", [])
+    unf_general = rec.get("favorable_days", {}).get("general", {}).get("unfavorable", [])
+    if day in fav_general:
         return "✅ Благоприятный день"
-    if day in gen.get("unfavorable", []):
+    if day in unf_general:
         return "❌ Неблагоприятный день"
     return None
 
 
-# Словарь эмодзи для категорий
-CAT_EMO = {
-    "haircut":  "✂️",
-    "travel":   "✈️",
-    "shopping": "🛍️",
-    "health":   "❤️",
+CAT_EMOJI = {
+    "haircut": "✂️",
+    "travel":  "✈️",
+    "shopping":"🛍️",
+    "health":  "❤️",
 }
 
-
-def _format_categories(rec: Dict[str, Any]) -> List[str]:
+def _format_categories(rec: Dict[str, Any], date_obj: pendulum.Date) -> List[str]:
     """
-    Для каждой категории (стрижки, путешествия, покупки, здоровье)
-    проверяет, попадает ли текущая дата в список благоприятных / неблагоприятных дней.
-    Возвращает список строк вида "✂️ Стрижка — благоприятно" или "🛍️ Покупки — неблагоприятно".
+    Возвращает список строк вида:
+    ✂️ Стрижка — благоприятно
+    ✈️ Путешествия — неблагоприятно
+    и т.д., если категория актуальна для данной даты.
     """
-    day = pendulum.now(TZ).day
-    fav = rec.get("favorable_days", {})
+    day = date_obj.day
     lines: List[str] = []
+    fav = rec.get("favorable_days", {})
 
-    for cat, emoji in CAT_EMO.items():
-        label = cat.capitalize()  # 'haircut' → 'Haircut'
-        f_list = fav.get(cat, {}).get("favorable", [])
-        u_list = fav.get(cat, {}).get("unfavorable", [])
-        if day in f_list:
+    for cat, emoji in CAT_EMOJI.items():
+        fav_list = fav.get(cat, {}).get("favorable", [])
+        unf_list = fav.get(cat, {}).get("unfavorable", [])
+        label = cat.capitalize()
+        if day in fav_list:
             lines.append(f"{emoji} {label} — благоприятно")
-        elif day in u_list:
+        elif day in unf_list:
             lines.append(f"{emoji} {label} — неблагоприятно")
 
     return lines
 
 
-def astro_events() -> List[str]:
+def astro_events(offset_days: int = 0) -> List[str]:
     """
-    Формирует готовый к печати список строк:
-    1) Дополнительные маркеры:
-       • Void-of-Course
-       • Благоприятный / неблагоприятный день
-       • Категории (стрижка, путешествия, покупки, здоровье)
-    2) Фаза Луны + советы на сегодня (по три строки)
-    3) Ближайшее событие ("→ Через X дн. ...")
-    Возвращает [] если данных нет.
+    Формирует список строк «Астрособытия» для поста.
+
+    Параметр offset_days:
+      0 — сегодня
+      1 — завтра
+      и т.д.
+
+    Возвращаемый список может содержать:
+    • VoC (если есть)
+    • Маркер благоприятного/неблагоприятного дня
+    • Категории (✂️, ✈️, 🛍️, ❤️)
+    • Фазу Луны (включая знак), после неё — три совета, каждый с новой строки (без нумерации)
+    • next_event («→ Через N дн. ...»)
     """
-    info = _today_info()
-    if not info:
+    target_date = pendulum.now(TZ).date().add(days=offset_days)
+    rec = get_day_lunar_info(target_date)
+    if not rec:
         return []
 
-    phase  = info.get("phase", "").strip()
-    advice = info.get("advice", [])
+    lines: List[str] = []
 
-    events: List[str] = []
+    # 1) Void-of-Course
+    voc_line = _format_voc(rec)
+    if voc_line:
+        lines.append(voc_line)
 
-    # 1) Extra markers: VoC и общий «благоприятный/неблагоприятный» день
-    for extra in (_format_voc(info), _format_general_day(info)):
-        if extra:
-            events.append(extra)
+    # 2) Общий благоприятный/неблагоприятный день
+    gen_line = _format_general_day(rec, target_date)
+    if gen_line:
+        lines.append(gen_line)
 
-    # 2) Отметки по категориям
-    events.extend(_format_categories(info))
+    # 3) Категории
+    lines.extend(_format_categories(rec, target_date))
 
-    # 3) Фаза Луны и сами советы
-    if phase and advice:
-        # Сначала сам текст фазы
-        events.append(phase)
-        # Затем по одной строке на каждый совет:
-        for adv in advice:
-            events.append(adv.strip())
+    # 4) Фаза Луны + три совета, каждый на новой строке
+    phase = rec.get("phase", "").strip()
+    advice_list = rec.get("advice", [])
+    if phase:
+        lines.append(phase)  # сама фраза «Новолуние в Близнецах (0% освещ.)»
+        # пробел перед советами
+        for adv in advice_list:
+            lines.append(f"• {adv.strip()}")
 
-    # 4) «Ближайшее событие»
-    nxt = info.get("next_event", "").strip()
-    if nxt:
-        events.append(nxt)
+    # 5) next_event
+    next_ev = rec.get("next_event", "").strip()
+    if next_ev:
+        lines.append(next_ev)
 
-    return events
+    return lines
 
 
 # Локальный тест
 if __name__ == "__main__":
     from pprint import pprint
-    pprint(astro_events())
+    print("=== Астрособытия на сегодня ===")
+    pprint(astro_events(0))
+    print("=== Астрособытия на завтра ===")
+    pprint(astro_events(1))
