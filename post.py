@@ -19,7 +19,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, Tuple, List, Optional
+from typing import Dict, Any, Tuple, List
 
 import pendulum
 from telegram import Bot, error as tg_err
@@ -39,13 +39,18 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 # Часовой пояс Кипра
 TZ = pendulum.timezone("Asia/Nicosia")
 
-# Сегодня и Завтра (в часовой зоне TZ)
+# Сегодня и Завтра (в часовом поясе TZ)
 TODAY    = pendulum.now(TZ).date()
 TOMORROW = TODAY.add(days=1)
 
 # Telegram-параметры
 TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = int(os.getenv("CHANNEL_ID", "0"))
+
+# Если обязательные переменные не заданы, выходим
+if not TOKEN or CHAT_ID == 0:
+    logging.error("Не заданы TELEGRAM_TOKEN и/или CHANNEL_ID")
+    exit(1)
 
 # Список городов Кипра и их координаты
 CITIES: Dict[str, Tuple[float, float]] = {
@@ -72,14 +77,14 @@ WMO_DESC: Dict[int, str] = {
 
 def code_desc(code: int) -> str:
     """
-    Преобразует WMO-код в русский текст + эмоджи.
+    Преобразует WMO-код в русский текст.
     """
     return WMO_DESC.get(code, "—")
 
 def pressure_arrow(hourly: Dict[str, Any]) -> str:
     """
-    Сравнивает давление в начале и конце суток → возвращает стрелку.
-    Если данных недостаточно — «→».
+    Сравнивает давление в начале и в конце суток (список hourly.surface_pressure).
+    Если данных мало — возвращает «→».
     """
     pr = hourly.get("surface_pressure", [])
     if len(pr) < 2:
@@ -93,11 +98,11 @@ def pressure_arrow(hourly: Dict[str, Any]) -> str:
 
 def schumann_line(sch: Dict[str, Any]) -> str:
     """
-    Форматирует строку «Шуман» с цветовым индикатором по частоте:
-      – 🔴 если < 7.6 Гц
-      – 🟢 если 7.6–8.1
-      – 🟣 если > 8.1
-    Добавляет амплитуду и тренд.
+    Форматирует строку «Шуман» с цветовой индикацией частоты и тренда:
+      – 🔴 если freq < 7.6 Гц
+      – 🟢 если 7.6 ≤ freq ≤ 8.1
+      – 🟣 если freq > 8.1
+    Добавляем амплитуду (amp) и стрелку тренда (trend).
     """
     if sch.get("freq") is None:
         return "🎵 Шуман: н/д"
@@ -113,13 +118,13 @@ def schumann_line(sch: Dict[str, Any]) -> str:
 
 def get_schumann_with_fallback() -> Dict[str, Any]:
     """
-    Сначала пытаемся получить «живые» данные Schumann из get_schumann(),
-    если не удалось (freq=None), читаем последние 24 часа из schumann_hourly.json,
-    считаем тренд и возвращаем.
+    Сначала пробуем получить «живые» данные из get_schumann().
+    Если там freq == None, читаем из локального кеша schumann_hourly.json
+    и рассчитываем тренд по последним 24 часам.
     """
     sch = get_schumann()
     if sch.get("freq") is not None:
-        # Уточняем, что это реальные данные
+        # Это реальные свежие данные
         sch["cached"] = False
         return sch
 
@@ -129,8 +134,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
             arr = json.loads(cache_path.read_text(encoding="utf-8"))
             if arr:
                 last = arr[-1]
-                # Берём не более 24 точек для тренда
-                pts = arr[-24:]
+                pts  = arr[-24:]
                 freqs = [p["freq"] for p in pts if isinstance(p.get("freq"), (int, float))]
                 if len(freqs) > 1:
                     avg   = sum(freqs[:-1]) / (len(freqs) - 1)
@@ -147,16 +151,13 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
         except Exception as e:
             logging.warning("Schumann fallback parse error: %s", e)
 
-    # Если и это не помогло, возвращаем оригинальный словарь (возможно пустой)
+    # Если не удалось ничего взять из кеша, возвращаем исходный словарь (возможно пустой)
     return sch
 
 
 def build_msg() -> str:
     """
-    Собирает всё сообщение «вечернего поста» для Telegram;
-    каждый блок отделён строкой «———» для наглядного разделения.
-
-    Структура:
+    Собирает всё сообщение «вечернего поста» для Telegram:
       1) Заголовок
       2) Температура моря
       3) Прогноз для Limassol (avg temp, облака, ветер, давление)
@@ -167,6 +168,7 @@ def build_msg() -> str:
       8) Короткий вывод
       9) Рекомендации (GPT или фолбек)
      10) Факт дня
+    Каждый крупный блок разделён строкой «———» для визуальной сегментации.
     """
     P: List[str] = []
 
@@ -188,7 +190,7 @@ def build_msg() -> str:
     if day_max is not None and night_min is not None:
         avg_temp = (day_max + night_min) / 2
     else:
-        # fallback на «текущую» температуру
+        # Если нет данных от fetch_tomorrow_temps, fallback на cur["temperature"]
         avg_temp = cur.get("temperature", 0.0)
 
     wind_kmh  = cur.get("windspeed", 0.0)
@@ -260,12 +262,8 @@ def build_msg() -> str:
 
     # 7) Астрособытия на завтра
     P.append("🌌 <b>Астрособытия</b>")
-    # Рассчитываем, на сколько дней смещена «завтра» относительно pendulum.now(TZ).date()
-    offset_days = (TOMORROW - pendulum.now(TZ).date()).days
-    if offset_days < 0:
-        offset_days = 1
-
-    astro_lines: List[str] = astro_events(offset_days=offset_days, show_all_voc=True)
+    # Принудительно берём завтрашний день: offset_days=1
+    astro_lines: List[str] = astro_events(offset_days=1, show_all_voc=True)
     if astro_lines:
         P.extend(astro_lines)
     else:
@@ -286,7 +284,7 @@ def build_msg() -> str:
     P.append("———")
 
     # 10) Факт дня
-    # Важное исправление: get_fact теперь вызывается только с одной переменной
+    # get_fact принимает только дату, без региона
     P.append(f"📚 {get_fact(TOMORROW)}")
 
     return "\n".join(P)
@@ -300,8 +298,8 @@ async def send_main_post(bot: Bot) -> None:
     logging.info("Preview: %s", html.replace("\n", " | ")[:200])
     try:
         await bot.send_message(
-            CHAT_ID,
-            html,
+            chat_id=CHAT_ID,
+            text=html,
             parse_mode="HTML",
             disable_web_page_preview=True
         )
@@ -313,12 +311,12 @@ async def send_main_post(bot: Bot) -> None:
 
 async def send_poll_if_friday(bot: Bot) -> None:
     """
-    По пятницам отправляем опрос в тот же чат (необязательно).
+    Если сегодня пятница, дополнительно отправляем опрос.
     """
     if pendulum.now(TZ).weekday() == 4:
         try:
             await bot.send_poll(
-                CHAT_ID,
+                chat_id=CHAT_ID,
                 question="Как сегодня ваше самочувствие? 🤔",
                 options=[
                     "🔥 Полон(а) энергии",
