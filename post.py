@@ -224,7 +224,7 @@ def build_msg() -> str:
 
     # 7) Астрособытия
     P.append("🌌 <b>Астрособытия</b>")
-    astro = astro_events()  # список строк от astro_events()
+    astro = astro_events(1)  # список строк от astro_events(1)
 
     if astro:
         for line in astro:
