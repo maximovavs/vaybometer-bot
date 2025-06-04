@@ -327,7 +327,7 @@ def build_msg() -> str:
     # 9) Блок «Рекомендации» (GPT-фоллбэк или health-coach)
     P.append("✅ <b>Рекомендации</b>")
     summary, tips = gpt_blurb(culprit_text)
-    # Выводим только три совета (tips), без повторения фразы «Вините…»
+    # Выводим только три совета (tips), без повторения фразы «Если завтра что-то пойдёт не так, вините…»
     for advice in tips[:3]:
         P.append(f"• {advice.strip()}")
     P.append("———")
