@@ -179,7 +179,7 @@ def astro_events(
         for adv in advice_list:
             txt = adv.strip()
             # Каждый совет — новая строка, без цифр
-            lines.append(f"• {txt}")
+            lines.append(f"{txt}")
 
     # 5) next_event (если есть)
     next_ev = rec.get("next_event", "").strip()
