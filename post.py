@@ -221,7 +221,7 @@ def build_msg() -> str:
         sorted_cities = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:5]
         for i, (city, (d, n, code)) in enumerate(sorted_cities):
             desc = code_desc(code)
-            P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} , {desc}, 🌊 {sst_city:.1f}")
+            P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} , {desc}")
         P.append("———")
 
     # 5) Качество воздуха + Пыльца
