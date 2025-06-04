@@ -321,7 +321,7 @@ def build_msg() -> str:
 
     # 8) Формируем блок «Вывод»
     P.append("📜 <b>Вывод</b>")
-    P.append(f"Вините {culprit_text}! 😉")
+    P.append(f"Если завтра что-то пойдёт не так, вините {culprit_text}! 😉")
     P.append("———")
 
     # 9) Блок «Рекомендации» (GPT-фоллбэк или health-coach)
