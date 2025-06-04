@@ -9,7 +9,7 @@ post.py — вечерний пост VayboMeter-бота для Кипра.
 – Геомагнитка + Шуман
 – Астрособытия на завтра (VoC, фаза Луны, советы, next_event)
 – Короткий вывод
-– Рекомендации (GPT или фолбек)
+– Рекомендации (GPT-фоллбэк или health-coach)
 – Факт дня
 """
 
@@ -47,7 +47,6 @@ TOMORROW = TODAY.add(days=1)
 TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = int(os.getenv("CHANNEL_ID", "0"))
 
-# Если обязательные переменные не заданы, выходим
 if not TOKEN or CHAT_ID == 0:
     logging.error("Не заданы TELEGRAM_TOKEN и/или CHANNEL_ID")
     exit(1)
@@ -124,7 +123,6 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
     """
     sch = get_schumann()
     if sch.get("freq") is not None:
-        # Это реальные свежие данные
         sch["cached"] = False
         return sch
 
@@ -151,9 +149,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
         except Exception as e:
             logging.warning("Schumann fallback parse error: %s", e)
 
-    # Если не удалось ничего взять из кеша, возвращаем исходный словарь (возможно пустой)
     return sch
-
 
 def build_msg() -> str:
     """
@@ -166,7 +162,7 @@ def build_msg() -> str:
       6) Геомагнитка + Шуман
       7) Астрособытия на завтра (VoC, фаза, советы, next_event)
       8) Короткий вывод
-      9) Рекомендации (GPT или фолбек)
+      9) Рекомендации (GPT-фоллбэк или health-coach)
      10) Факт дня
     Каждый крупный блок разделён строкой «———» для визуальной сегментации.
     """
@@ -190,7 +186,6 @@ def build_msg() -> str:
     if day_max is not None and night_min is not None:
         avg_temp = (day_max + night_min) / 2
     else:
-        # Если нет данных от fetch_tomorrow_temps, fallback на cur["temperature"]
         avg_temp = cur.get("temperature", 0.0)
 
     wind_kmh  = cur.get("windspeed", 0.0)
@@ -215,12 +210,8 @@ def build_msg() -> str:
             continue
 
         wcod = get_weather(la, lo) or {}
-        code_tmr: int = 0
         daily_codes = wcod.get("daily", {}).get("weathercode", [])
-        if isinstance(daily_codes, list) and len(daily_codes) > 1:
-            code_tmr = daily_codes[1]
-        else:
-            code_tmr = 0
+        code_tmr: int = daily_codes[1] if (isinstance(daily_codes, list) and len(daily_codes) > 1) else 0
 
         temps[city] = (d, n if n is not None else d, code_tmr)
 
@@ -241,7 +232,6 @@ def build_msg() -> str:
         f"{AIR_EMOJI.get(lvl, '⚪')} {lvl} (AQI {air.get('aqi', 'н/д')}) | "
         f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}"
     )
-
     if (pollen := get_pollen()):
         P.append("🌿 <b>Пыльца</b>")
         P.append(
@@ -262,7 +252,6 @@ def build_msg() -> str:
 
     # 7) Астрособытия на завтра
     P.append("🌌 <b>Астрособытия</b>")
-    # Принудительно берём завтрашний день: offset_days=1
     astro_lines: List[str] = astro_events(offset_days=1, show_all_voc=True)
     if astro_lines:
         P.extend(astro_lines)
@@ -275,7 +264,7 @@ def build_msg() -> str:
     P.append("Если завтра что-то пойдёт не так, вините погоду! 😉")
     P.append("———")
 
-    # 9) Рекомендации (GPT или фолбек)
+    # 9) Рекомендации (GPT-фоллбэк или health-coach)
     P.append("✅ <b>Рекомендации</b>")
     summary, tips = gpt_blurb("погода")
     if tips:
@@ -284,7 +273,6 @@ def build_msg() -> str:
     P.append("———")
 
     # 10) Факт дня
-    # get_fact принимает только дату, без региона
     P.append(f"📚 {get_fact(TOMORROW)}")
 
     return "\n".join(P)
