@@ -238,7 +238,7 @@ def build_msg() -> str:
         temps[city] = (d, n if n is not None else d, code_tmr, sst_city)
 
     if temps:
-        P.append("🎖️ <b>Рейтинг городов (дн./ночь °C, погода, 🌊 SST)</b>")
+        P.append("🎖️ <b>Рейтинг городов (дн./н.°C, погода, 🌊)</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣","❄️"]
         sorted_cities = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:6]
         for i, (city, (d, n, code, sst_city)) in enumerate(sorted_cities):
@@ -355,7 +355,7 @@ def build_msg() -> str:
     summary, tips = gpt_blurb(culprit_text)
     # Выводим только три совета (tips), без повторения фразы «Если завтра что-то пойдёт не так, вините…»
     for advice in tips[:3]:
-        P.append(f"• {advice.strip()}")
+        P.append(f"{advice.strip()}")
     P.append("———")
 
     # 11) Факт дня
