@@ -185,9 +185,9 @@ def build_msg() -> str:
             sst_values.append(tmp)
     if sst_values:
         avg_sst = sum(sst_values) / len(sst_values)
-        P.append(f"🌊 Ср. темп. моря (Larnaca, Limassol, Pafos, Ayia Napa): {avg_sst:.1f} °C")
+        P.append(f"🌊 Ср. темп. моря: {avg_sst:.1f} °C")
     else:
-        P.append("🌊 Ср. темп. моря (Larnaca, Limassol, Pafos, Ayia Napa): н/д")
+        P.append("🌊 Ср. темп. моря: н/д")
 
     # 3) Температура моря (SST) в Limassol (отдельно)
     lat_lims, lon_lims = CITIES["Limassol"]
