@@ -10,7 +10,7 @@ air.py
 
 • merge_air_sources() — объединяет словари, приоритет IQAir → Open-Meteo
 • get_air() — возвращает dict {'lvl','aqi','pm25','pm10'}
-• get_sst(lat, lon) — текущая температура поверхности моря (SST) для переданных координат
+• get_sst(lat, lon) — текущая температура поверхности моря (SST) по заданным координатам
 • get_kp() — текущий индекс Kp с retry, кешем и двумя проверенными endpoint’ами
 """
 from __future__ import annotations
@@ -24,8 +24,8 @@ from typing import Dict, Any, Optional, Tuple, Union
 from utils import _get
 
 # ────────── Константы ───────────────────────────────────────────────
-# По умолчанию координаты Limassol, но get_sst теперь принимает любые lat/lon
-DEFAULT_LAT, DEFAULT_LON = 34.707, 33.022
+# По умолчанию Limassol (если не переданы lat/lon в get_sst)
+LAT, LON = 34.707, 33.022  # Limassol
 AIR_KEY = os.getenv("AIRVISUAL_KEY")
 
 # Путь для кеша Kp
@@ -46,102 +46,54 @@ def _aqi_level(aqi: float | int | str) -> str:
     if aqi in ("н/д", None):
         return "н/д"
     aqi = float(aqi)
-    if aqi <= 50:
-        return "хороший"
-    if aqi <= 100:
-        return "умеренный"
-    if aqi <= 150:
-        return "вредный"
-    if aqi <= 200:
-        return "оч. вредный"
+    if aqi <= 50: return "хороший"
+    if aqi <= 100: return "умеренный"
+    if aqi <= 150: return "вредный"
+    if aqi <= 200: return "оч. вредный"
     return "опасный"
 
-
 def _kp_state(kp: float) -> str:
-    if kp < 3:
-        return "спокойно"
-    if kp < 5:
-        return "неспокойно"
+    if kp < 3: return "спокойно"
+    if kp < 5: return "неспокойно"
     return "буря"
-
 
 # ────────── Источники качества воздуха ──────────────────────────────
 def _src_iqair() -> Optional[Dict[str, Any]]:
-    """
-    Запрашивает IQAir для координат DEFAULT_LAT, DEFAULT_LON.
-    Если нужно получать AQI для других координат, измените вызов get_air().
-    """
     if not AIR_KEY:
         return None
-    try:
-        j = _get(
-            "https://api.airvisual.com/v2/nearest_city",
-            lat=DEFAULT_LAT,
-            lon=DEFAULT_LON,
-            key=AIR_KEY
-        )
-    except Exception as e:
-        logging.warning("IQAir request error: %s", e)
-        return None
-
+    j = _get("https://api.airvisual.com/v2/nearest_city", lat=LAT, lon=LON, key=AIR_KEY)
     if not j or "data" not in j:
         return None
-
     try:
         p = j["data"]["current"]["pollution"]
-        return {
-            "aqi":  p.get("aqius", "н/д"),
-            "pm25": p.get("p2"),
-            "pm10": p.get("p1"),
-        }
+        return {"aqi": p.get("aqius", "н/д"), "pm25": p.get("p2"), "pm10": p.get("p1")}  # type: ignore
     except Exception as e:
         logging.warning("IQAir parse error: %s", e)
         return None
 
-
 def _src_openmeteo() -> Optional[Dict[str, Any]]:
-    """
-    Запрашивает Open-Meteo Air-Quality для координат DEFAULT_LAT, DEFAULT_LON.
-    """
-    try:
-        j = _get(
-            "https://air-quality-api.open-meteo.com/v1/air-quality",
-            latitude=DEFAULT_LAT,
-            longitude=DEFAULT_LON,
-            hourly="pm10,pm2_5,us_aqi",
-            timezone="UTC"
-        )
-    except Exception as e:
-        logging.warning("Open-Meteo AQ request error: %s", e)
-        return None
-
+    j = _get(
+        "https://air-quality-api.open-meteo.com/v1/air-quality",
+        latitude=LAT, longitude=LON,
+        hourly="pm10,pm2_5,us_aqi", timezone="UTC"
+    )
     if not j or "hourly" not in j:
         return None
-
     try:
         h = j["hourly"]
-        aqi = h.get("us_aqi", [])
-        pm25 = h.get("pm2_5", [])
-        pm10 = h.get("pm10", [])
-
-        aqi_val = aqi[0] if aqi else "н/д"
-        pm25_val = pm25[0] if pm25 else None
-        pm10_val = pm10[0] if pm10 else None
-
-        aqi_norm = aqi_val if isinstance(aqi_val, (int, float)) and aqi_val >= 0 else "н/д"
-        pm25_norm = pm25_val if isinstance(pm25_val, (int, float)) and pm25_val >= 0 else None
-        pm10_norm = pm10_val if isinstance(pm10_val, (int, float)) and pm10_val >= 0 else None
-
-        return {"aqi": aqi_norm, "pm25": pm25_norm, "pm10": pm10_norm}
+        aqi = h["us_aqi"][0] if h["us_aqi"] else "н/д"
+        pm25 = h["pm2_5"][0] if h["pm2_5"] else None
+        pm10 = h["pm10"][0] if h["pm10"] else None
+        # Приводим к норме
+        aqi = aqi if isinstance(aqi, (int, float)) and aqi >= 0 else "н/д"
+        pm25 = pm25 if isinstance(pm25, (int, float)) and pm25 >= 0 else None
+        pm10 = pm10 if isinstance(pm10, (int, float)) and pm10 >= 0 else None
+        return {"aqi": aqi, "pm25": pm25, "pm10": pm10}
     except Exception as e:
         logging.warning("Open-Meteo AQ parse error: %s", e)
         return None
 
-
-def merge_air_sources(
-    src1: Optional[Dict[str, Any]],
-    src2: Optional[Dict[str, Any]]
-) -> Dict[str, Any]:
+def merge_air_sources(src1: Optional[Dict[str, Any]], src2: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     base: Dict[str, Union[str, float, None]] = {"aqi": "н/д", "pm25": None, "pm10": None}
     for k in ("aqi", "pm25", "pm10"):  # type: ignore
         v1 = src1.get(k) if src1 else None
@@ -153,44 +105,33 @@ def merge_air_sources(
     base["lvl"] = _aqi_level(base["aqi"])  # type: ignore
     return base  # type: ignore
 
-
 def get_air() -> Dict[str, Any]:
-    """
-    Возвращает объединённые данные качества воздуха для координат DEFAULT_LAT, DEFAULT_LON.
-    """
     return merge_air_sources(_src_iqair(), _src_openmeteo())
 
-
 # ────────── Sea Surface Temperature ─────────────────────────────────
-def get_sst(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Optional[float]:
+def get_sst(latitude: float = None, longitude: float = None) -> Optional[float]:
     """
-    Запрашивает температуру поверхности моря (SST) по заданным координатам.
-    Использует Open-Meteo с параметром hourly=sea_surface_temperature.
-    При ошибке возвращает None.
+    Возвращает SST (Sea Surface Temperature) для заданных координат.
+    Если latitude и longitude не переданы, по умолчанию берет Limassol (LAT/LON).
     """
-    try:
-        j = _get(
-            "https://api.open-meteo.com/v1/forecast",
-            latitude=lat,
-            longitude=lon,
-            hourly="sea_surface_temperature",
-            timezone="UTC"
-        )
-    except Exception as e:
-        logging.warning("SST request error: %s", e)
-        return None
+    lat = latitude if latitude is not None else LAT
+    lon = longitude if longitude is not None else LON
 
+    j = _get(
+        "https://api.open-meteo.com/v1/forecast",
+        latitude=lat, longitude=lon,
+        hourly="soil_temperature_0cm", timezone="UTC",
+        cell_selection="sea"
+    )
     if not j or "hourly" not in j:
         return None
-
     try:
-        arr = j["hourly"].get("sea_surface_temperature", [])
+        arr = j["hourly"].get("soil_temperature_0cm", [])
         val = arr[0] if arr else None
         return float(val) if isinstance(val, (int, float)) else None
     except Exception as e:
         logging.warning("SST parse error: %s", e)
         return None
-
 
 # ────────── Kp-индекс с retry и кешем ──────────────────────────────
 def _load_kp_cache() -> Tuple[Optional[float], Optional[int]]:
@@ -200,13 +141,8 @@ def _load_kp_cache() -> Tuple[Optional[float], Optional[int]]:
     except Exception:
         return None, None
 
-
 def _save_kp_cache(kp: float) -> None:
-    try:
-        KP_CACHE.write_text(json.dumps({"kp": kp, "ts": int(time.time())}, ensure_ascii=False))
-    except Exception as e:
-        logging.warning("Kp cache write error: %s", e)
-
+    KP_CACHE.write_text(json.dumps({"kp": kp, "ts": int(time.time())}, ensure_ascii=False))
 
 def _fetch_kp_data(url: str, attempts: int = 3, backoff: float = 2.0) -> Optional[Any]:
     for i in range(attempts):
@@ -215,7 +151,6 @@ def _fetch_kp_data(url: str, attempts: int = 3, backoff: float = 2.0) -> Optiona
             return data
         time.sleep(backoff ** i)
     return None
-
 
 def get_kp() -> Tuple[Optional[float], str]:
     """
@@ -229,42 +164,39 @@ def get_kp() -> Tuple[Optional[float], str]:
         if not data:
             continue
         try:
-            raw_val: Any = None
-            if isinstance(data, list) and data:
-                first = data[0]
-                if isinstance(first, list):
+            # Сначала обрабатываем лист
+            raw_val = None
+            if isinstance(data, list):
+                # формат 1: [[...], [...]] суточный — вложенные списки
+                if isinstance(data[0], list):
                     entry = data[1]
                     raw_val = entry[-1]
-                elif isinstance(first, dict):
-                    entry = first
+                # формат 2: [{...}, {...}] минутный — словари
+                elif isinstance(data[0], dict):
+                    entry = data[0]
                     raw_val = entry.get("kp_index") or entry.get("estimated_kp") or entry.get("kp")
+            # Если не list — пропускаем
             if raw_val is None:
                 raise ValueError("raw Kp not found")
-
+            # Убираем возможные суффиксы, например 'Z'
             raw_str = str(raw_val).rstrip("Z").replace(",", ".")
-            kp_val = float(raw_str)
-            _save_kp_cache(kp_val)
-            return kp_val, _kp_state(kp_val)
+            kp = float(raw_str)
+            _save_kp_cache(kp)
+            return kp, _kp_state(kp)
         except Exception as e:
             logging.warning("Kp parse error %s: %s", url, e)
-
-    # Фоллбэк: кеш
+    # 2) Фоллбэк: кеш
     kp_cached, ts = _load_kp_cache()
     if kp_cached is not None:
         logging.info("Using cached Kp=%s ts=%s", kp_cached, ts)
         return kp_cached, _kp_state(kp_cached)
-
     return None, "н/д"
 
 
 # ────────── CLI-тестирование ────────────────────────────────────────
 if __name__ == "__main__":
     from pprint import pprint
-
-    print("Air:", end=" ")
-    pprint(get_air())
-
-    print("\nSST (Limassol):", get_sst(34.707, 33.022))
-    print("SST (примерные координаты):", get_sst())
-
-    print("\nKp:", get_kp())
+    print("Air:", end=" "); pprint(get_air())
+    print("SST Limassol:", get_sst())       # по умолчанию Limassol
+    print("SST Larnaca:", get_sst(34.916, 33.624))
+    print("Kp:", get_kp())
