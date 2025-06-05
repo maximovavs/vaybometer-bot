@@ -19,7 +19,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Any
 
 import pendulum
 from telegram import Bot, error as tg_err
@@ -163,7 +163,7 @@ def build_msg() -> str:
       4) Рейтинг городов (топ-5 по дневным температурам) с SST для каждого
       5) Качество воздуха + Пыльца
       6) Геомагнитка + Шуман
-      7) Астрособытия на завтра (VoC, фаза, советы, next_event)
+      7) Астрособытия на завтра (VoC, фаза Луны, советы, next_event)
       8) Динамический «Вывод»: «Вините ...»
       9) Рекомендации (GPT-фоллбэк или health-coach) с тем же «виновником»
      10) Факт дня
