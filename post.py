@@ -4,7 +4,7 @@
 post.py — вечерний пост VayboMeter-бота для Кипра.
 
 – Публикует прогноз на завтра (температура, ветер, давление и т. д.)
-– Рейтинг городов
+– Рейтинг городов (топ-5 по дневной температуре) с SST (темп. моря) для каждого
 – Качество воздуха + пыльца
 – Геомагнитка + Шуман
 – Астрособытия на завтра (VoC, фаза Луны, советы, next_event)
@@ -51,27 +51,28 @@ if not TOKEN or CHAT_ID == 0:
     logging.error("Не заданы TELEGRAM_TOKEN и/или CHANNEL_ID")
     exit(1)
 
-# Список городов Кипра и их координаты
+# Список городов Кипра и их координаты (добавлена Ayia Napa)
 CITIES: Dict[str, Tuple[float, float]] = {
-    "Nicosia":  (35.170, 33.360),
-    "Larnaca":  (34.916, 33.624),
-    "Limassol": (34.707, 33.022),
-    "Pafos":    (34.776, 32.424),
-    "Troodos":  (34.916, 32.823),
+    "Nicosia":   (35.170, 33.360),
+    "Larnaca":   (34.916, 33.624),
+    "Limassol":  (34.707, 33.022),
+    "Pafos":     (34.776, 32.424),
+    "Troodos":   (34.916, 32.823),
+    "Ayia Napa": (34.988, 34.012),  # добавлена Айя Напа
 }
 
 # WMO-коды → краткое описание
 WMO_DESC: Dict[int, str] = {
-    0:  "☀️ясно",
-    1:  "⛅️малооблачно",
-    2:  "☁️облачно",
+    0:  "☀️ ясно",
+    1:  "⛅️ малооблачно",
+    2:  "☁️ облачно",
     3:  "🌥 пасмурно",
     45: "🌫 туман",
     48: "🌫 изморозь",
     51: "🌦 морось",
-    61: "🌧дождь",
-    71: "❄️снег",
-    95: "⛈гроза",
+    61: "🌧 дождь",
+    71: "❄️ снег",
+    95: "⛈ гроза",
 }
 
 def code_desc(code: int) -> str:
@@ -123,6 +124,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
     """
     sch = get_schumann()
     if sch.get("freq") is not None:
+        # Это реальные свежие данные
         sch["cached"] = False
         return sch
 
@@ -149,15 +151,16 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
         except Exception as e:
             logging.warning("Schumann fallback parse error: %s", e)
 
+    # Если не удалось взять из кеша, возвращаем исходный словарь (возможно пустой)
     return sch
 
 def build_msg() -> str:
     """
     Собирает всё сообщение «вечернего поста» для Telegram:
       1) Заголовок
-      2) Температура моря
+      2) Температура моря (SST) в Limassol
       3) Прогноз для Limassol (avg temp, облака, ветер, давление)
-      4) Рейтинг городов (топ-5 по дневным температурам)
+      4) Рейтинг городов (топ-5 по дневным температурам) с SST для каждого
       5) Качество воздуха + Пыльца
       6) Геомагнитка + Шуман
       7) Астрособытия на завтра (VoC, фаза, советы, next_event)
@@ -171,27 +174,29 @@ def build_msg() -> str:
     # 1) Заголовок
     P.append(f"<b>🌅 Добрый вечер! Погода на завтра ({TOMORROW.format('DD.MM.YYYY')})</b>")
 
-    # 2) Температура моря (SST)
-    if (sst := get_sst()) is not None:
-        P.append(f"🌊 Темп. моря: {sst:.1f} °C")
+    # 2) Температура моря (SST) в Limassol
+    lat_lims, lon_lims = CITIES["Limassol"]
+    sst_lims = get_sst(lat_lims, lon_lims)
+    if sst_lims is not None:
+        P.append(f"🌊 Темп. моря (Limassol): {sst_lims:.1f} °C")
     else:
-        P.append("🌊 Темп. моря: н/д")
+        P.append("🌊 Темп. моря (Limassol): н/д")
 
     # 3) Прогноз для Limassol
-    lat, lon = CITIES["Limassol"]
-    day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=TZ.name)
-    w = get_weather(lat, lon) or {}
+    day_max, night_min = fetch_tomorrow_temps(lat_lims, lon_lims, tz=TZ.name)
+    w = get_weather(lat_lims, lon_lims) or {}
     cur = w.get("current", {}) or {}
 
     if day_max is not None and night_min is not None:
         avg_temp = (day_max + night_min) / 2
     else:
+        # Если нет данных от fetch_tomorrow_temps, fallback на cur["temperature"]
         avg_temp = cur.get("temperature", 0.0)
 
-    wind_kmh  = cur.get("windspeed", 0.0)
-    wind_deg  = cur.get("winddirection", 0.0)
-    press     = cur.get("pressure", 1013)
-    clouds    = cur.get("clouds", 0)
+    wind_kmh = cur.get("windspeed", 0.0)
+    wind_deg = cur.get("winddirection", 0.0)
+    press    = cur.get("pressure", 1013)
+    clouds   = cur.get("clouds", 0)
 
     arrow = pressure_arrow(w.get("hourly", {}))
 
@@ -202,8 +207,8 @@ def build_msg() -> str:
     )
     P.append("———")
 
-    # 4) Рейтинг городов (топ-5 по дневным температурам)
-    temps: Dict[str, Tuple[float, float, int]] = {}
+    # 4) Рейтинг городов (топ-5 по дневным температурам) с SST для каждого
+    temps: Dict[str, Tuple[float, float, int, Any]] = {}
     for city, (la, lo) in CITIES.items():
         d, n = fetch_tomorrow_temps(la, lo, tz=TZ.name)
         if d is None:
@@ -213,15 +218,20 @@ def build_msg() -> str:
         daily_codes = wcod.get("daily", {}).get("weathercode", [])
         code_tmr: int = daily_codes[1] if (isinstance(daily_codes, list) and len(daily_codes) > 1) else 0
 
-        temps[city] = (d, n if n is not None else d, code_tmr)
+        # Добавляем SST (температура моря) для каждого города
+        sst_city: Any = get_sst(la, lo)
+        temps[city] = (d, n if n is not None else d, code_tmr, sst_city)
 
     if temps:
-        P.append("🎖️ <b>Рейтинг городов (дн./ночь °C, погода)</b>")
+        P.append("🎖️ <b>Рейтинг городов (дн./ночь °C, погода, 🌊 SST)</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
         sorted_cities = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:5]
-        for i, (city, (d, n, code)) in enumerate(sorted_cities):
+        for i, (city, (d, n, code, sst_city)) in enumerate(sorted_cities):
             desc = code_desc(code)
-            P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} , {desc}")
+            if sst_city is not None:
+                P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C, {desc}, 🌊 {sst_city:.1f} °C")
+            else:
+                P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C, {desc}")
         P.append("———")
 
     # 5) Качество воздуха + Пыльца
@@ -266,12 +276,11 @@ def build_msg() -> str:
     #   1) Если Kp ≥ 5 («буря») → «магнитные бури»
     #   2) Иначе, если t_max ≥ 30 → «жару»
     #   3) Иначе, если t_min ≤ 5 → «резкое похолодание»
-    #   4) Иначе, если завтра WMO-код в {95, 71, 48} → 
-    #         «гроза» / «снег» / «изморозь»
+    #   4) Иначе, если завтра WMO-код в {95, 71, 48} → «гроза» / «снег» / «изморозь»
     #   5) Иначе → «астрологический фактор»
     #
     #   При выборе «астрологического фактора» берём из astro_lines первую строку,
-    #   содержащую «новолуние», «полнолуние» или «четверть».
+    #   содержащую «новолуние», «полнолуние» или «четверть». 
     #   Приводим к виду «фазу луны — {PhaseName, Sign}».
     culprit_text: str
 
@@ -288,7 +297,11 @@ def build_msg() -> str:
         else:
             # 4) Проверяем опасный WMO-код
             daily_codes_main = w.get("daily", {}).get("weathercode", [])
-            tomorrow_code = daily_codes_main[1] if (isinstance(daily_codes_main, list) and len(daily_codes_main) > 1) else None
+            tomorrow_code = (
+                daily_codes_main[1] 
+                if isinstance(daily_codes_main, list) and len(daily_codes_main) > 1 
+                else None
+            )
             if tomorrow_code == 95:
                 culprit_text = "гроза"
             elif tomorrow_code == 71:
@@ -309,9 +322,7 @@ def build_msg() -> str:
                         clean = clean.split("(")[0].strip()
                         # Нормализуем пробелы и запятые
                         clean = clean.replace(" ,", ",").strip()
-                        # Если есть « в » перед знаком, оставляем
-                        # Пример: "Первая четверть в Весы"
-                        # Переводим первую букву в заглавную, остальное оставляем
+                        # Делаем первую букву заглавной
                         clean = clean[0].upper() + clean[1:]
                         culprit_text = f"фазу луны — {clean}"
                         break
