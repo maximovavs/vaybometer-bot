@@ -61,8 +61,8 @@ CITIES: Dict[str, Tuple[float, float]] = {
     "Ayia Napa": (34.988, 34.012),
 }
 
-# Определяем список «прибрежных» городов для усреднения SST:
-COASTAL_CITIES = ["Limassol", "Larnaca", "Pafos", "Ayia Napa"]
+# Прибрежные города, из которых будем усреднять SST
+COASTAL_CITIES = ["Larnaca", "Limassol", "Pafos", "Ayia Napa"]
 
 # WMO-коды → краткое описание
 WMO_DESC: Dict[int, str] = {
@@ -122,12 +122,11 @@ def schumann_line(sch: Dict[str, Any]) -> str:
 def get_schumann_with_fallback() -> Dict[str, Any]:
     """
     Сначала пробуем получить «живые» данные из get_schumann().
-    Если там freq == None, читаем из локального кеша schumann_hourly.json
+    Если там freq == None, читаем последние 24 часа из schumann_hourly.json
     и рассчитываем тренд по последним 24 часам.
     """
     sch = get_schumann()
     if sch.get("freq") is not None:
-        # Это реальные свежие данные
         sch["cached"] = False
         return sch
 
@@ -154,7 +153,6 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
         except Exception as e:
             logging.warning("Schumann fallback parse error: %s", e)
 
-    # Если не удалось взять из кеша, возвращаем исходный словарь (возможно пустой)
     return sch
 
 def build_msg() -> str:
@@ -191,7 +189,7 @@ def build_msg() -> str:
     else:
         P.append("🌊 Ср. темп. моря (Larnaca, Limassol, Pafos, Ayia Napa): н/д")
 
-    # 3) Температура моря (SST) в Limassol
+    # 3) Температура моря (SST) в Limassol (отдельно)
     lat_lims, lon_lims = CITIES["Limassol"]
     sst_lims = get_sst(lat_lims, lon_lims)
     if sst_lims is not None:
