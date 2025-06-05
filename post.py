@@ -67,9 +67,9 @@ COASTAL_CITIES = ["Larnaca", "Limassol", "Pafos", "Ayia Napa"]
 # WMO-коды → краткое описание
 WMO_DESC: Dict[int, str] = {
     0:  "☀️ ясно",
-    1:  "⛅️ малооблачно",
-    2:  "☁️ облачно",
-    3:  "🌥 пасмурно",
+    1:  "⛅️ ч.обл",
+    2:  "☁️ обл",
+    3:  "🌥 пасм.",
     45: "🌫 туман",
     48: "🌫 изморозь",
     51: "🌦 морось",
@@ -239,14 +239,14 @@ def build_msg() -> str:
 
     if temps:
         P.append("🎖️ <b>Рейтинг городов (дн./ночь °C, погода, 🌊 SST)</b>")
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-        sorted_cities = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:5]
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣","❄️"]
+        sorted_cities = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:6]
         for i, (city, (d, n, code, sst_city)) in enumerate(sorted_cities):
             desc = code_desc(code)
             if sst_city is not None:
-                P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C, {desc}, 🌊 {sst_city:.1f} °C")
+                P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f}, {desc}, 🌊 {sst_city:.1f}")
             else:
-                P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f} °C, {desc}")
+                P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f}, {desc}")
         P.append("———")
 
     # 6) Качество воздуха + Пыльца
