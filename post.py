@@ -67,7 +67,7 @@ COASTAL_CITIES = {"Larnaca", "Limassol", "Pafos", "Ayia Napa"}
 
 # WMO-коды → краткое описание
 WMO_DESC: Dict[int, str] = {
-    0:  "☀️ ясн",
+    0:  "☀️ ясно",
     1:  "⛅️ ч.обл",
     2:  "☁️ обл",
     3:  "🌥 пасм",
@@ -203,20 +203,39 @@ def build_msg() -> str:
     # 4) Прогноз для Limassol
     day_max, night_min = fetch_tomorrow_temps(lat_lims, lon_lims, tz=TZ.name)
     w = get_weather(lat_lims, lon_lims) or {}
+
+    # --- Логика для вытягивания ветра из почасового прогноза на 12:00 завтрашнего дня ---
+    wind_kmh = 0.0
+    wind_deg = 0.0
     cur = w.get("current", {}) or {}
+
+    hourly = w.get("hourly", {}) or {}
+    times = hourly.get("time", [])
+    ws_vals = hourly.get("windspeed_10m", [])
+    wd_vals = hourly.get("winddirection_10m", [])
+
+    if times and ws_vals and wd_vals:
+        target = TOMORROW.format("YYYY-MM-DD") + "T12:00"
+        try:
+            idx = times.index(target)
+            wind_kmh = float(ws_vals[idx])
+            wind_deg = float(wd_vals[idx])
+        except ValueError:
+            wind_kmh = cur.get("windspeed", 0.0)
+            wind_deg = cur.get("winddirection", 0.0)
+    else:
+        wind_kmh = cur.get("windspeed", 0.0)
+        wind_deg = cur.get("winddirection", 0.0)
+    # --- Конец логики ветра ---
+
+    press    = cur.get("pressure", 1013)
+    clouds   = cur.get("clouds", 0)
+    arrow    = pressure_arrow(hourly)
 
     if day_max is not None and night_min is not None:
         avg_temp = (day_max + night_min) / 2
     else:
-        # Если нет данных от fetch_tomorrow_temps, fallback на cur["temperature"]
         avg_temp = cur.get("temperature", 0.0)
-
-    wind_kmh = cur.get("windspeed", 0.0)
-    wind_deg = cur.get("winddirection", 0.0)
-    press    = cur.get("pressure", 1013)
-    clouds   = cur.get("clouds", 0)
-
-    arrow = pressure_arrow(w.get("hourly", {}))
 
     P.append(
         f"🌡️ Ср. темп: {avg_temp:.0f} °C • {clouds_word(clouds)} "
@@ -246,7 +265,7 @@ def build_msg() -> str:
 
     if temps:
         P.append("🎖️ <b>Рейтинг городов (д./н.°C, погода,🌊)</b>")
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣","❄️"]
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "❄️"]
         sorted_cities = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:6]
         for i, (city, (d, n, code, sst_city)) in enumerate(sorted_cities):
             desc = code_desc(code)
@@ -335,7 +354,7 @@ def build_msg() -> str:
                 culprit_text = None
                 for line in astro_lines:
                     low = line.lower()
-                    if "новолуние" in low or "полнолуние" in low or "четверть" in low:
+                    if "новолуние" in low or "полнулуние" in low or "четверть" in low:
                         clean = line
                         # Убираем эмоджи Луны
                         for ch in ("🌑", "🌕", "🌓", "🌒", "🌙"):
