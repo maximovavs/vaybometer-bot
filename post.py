@@ -210,17 +210,26 @@ def build_msg() -> str:
     cur = w.get("current", {}) or {}
 
     hourly = w.get("hourly", {}) or {}
-    times = hourly.get("time", [])
+    times  = hourly.get("time", [])
     ws_vals = hourly.get("windspeed_10m", [])
     wd_vals = hourly.get("winddirection_10m", [])
 
     if times and ws_vals and wd_vals:
-        target = TOMORROW.format("YYYY-MM-DD") + "T12:00"
-        try:
-            idx = times.index(target)
-            wind_kmh = float(ws_vals[idx])
-            wind_deg = float(wd_vals[idx])
-        except ValueError:
+        # Ищем индекс, где строка времени начинается с "YYYY-MM-DDT12:"
+        date_prefix = TOMORROW.format("YYYY-MM-DD") + "T12:"
+        found_idx = None
+        for idx, t in enumerate(times):
+            if t.startswith(date_prefix):
+                found_idx = idx
+                break
+        if found_idx is not None:
+            try:
+                wind_kmh = float(ws_vals[found_idx])
+                wind_deg = float(wd_vals[found_idx])
+            except Exception:
+                wind_kmh = cur.get("windspeed", 0.0)
+                wind_deg = cur.get("winddirection", 0.0)
+        else:
             wind_kmh = cur.get("windspeed", 0.0)
             wind_deg = cur.get("winddirection", 0.0)
     else:
@@ -228,9 +237,9 @@ def build_msg() -> str:
         wind_deg = cur.get("winddirection", 0.0)
     # --- Конец логики ветра ---
 
-    press    = cur.get("pressure", 1013)
-    clouds   = cur.get("clouds", 0)
-    arrow    = pressure_arrow(hourly)
+    press  = cur.get("pressure", 1013)
+    clouds = cur.get("clouds", 0)
+    arrow  = pressure_arrow(hourly)
 
     if day_max is not None and night_min is not None:
         avg_temp = (day_max + night_min) / 2
@@ -354,7 +363,7 @@ def build_msg() -> str:
                 culprit_text = None
                 for line in astro_lines:
                     low = line.lower()
-                    if "новолуние" in low or "полнулуние" in low or "четверть" in low:
+                    if "новолуние" in low or "полнолуние" in low or "четверть" in low:
                         clean = line
                         # Убираем эмоджи Луны
                         for ch in ("🌑", "🌕", "🌓", "🌒", "🌙"):
