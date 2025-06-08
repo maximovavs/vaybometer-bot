@@ -9,12 +9,15 @@ weather.py
 3) Фоллбэк — Open-Meteo «current_weather»
 
 Дополнительно:
-• fetch_tomorrow_temps(lat, lon, tz="UTC")  →  (t_max, t_min)
+• fetch_tomorrow_temps(lat, lon, tz="UTC")  →  (t_max, t_min) с retry
   Быстрый запрос только завтрашних max/min — им пользуется post.py
 """
 
 from __future__ import annotations
-import os, pendulum, logging
+import os
+import pendulum
+import logging
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from utils import _get
@@ -22,30 +25,36 @@ from utils import _get
 OWM_KEY = os.getenv("OWM_KEY")            # может быть None
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
-# ────────────────────────────────────────────────────────────
+
 def fetch_tomorrow_temps(lat: float, lon: float,
-                         tz: str | None = "UTC") -> Tuple[Optional[float], Optional[float]]:
+                         tz: str | None = "UTC",
+                         retries: int = 2,
+                         delay: float = 1.0
+) -> Tuple[Optional[float], Optional[float]]:
     """
-    Возвращает (t_max, t_min) на завтра одним недорогим запросом.
-    Если сервис недоступен — оба значения = None.
+    Пытаемся получить (t_max, t_min) на завтра с retry:
+    – всего retries+1 попыток
+    – задержка delay * (2**attempt) между ними
     """
-    tomorrow = pendulum.today().add(days=1).to_date_string()  # 'YYYY-MM-DD'
-    j = _get(
-        OPEN_METEO_URL,
-        latitude=lat, longitude=lon,
-        timezone=tz or "UTC",
-        daily="temperature_2m_max,temperature_2m_min",
-        start_date=tomorrow,
-        end_date=tomorrow,
-    )
-    try:
-        d = j["daily"]
-        t_max = d["temperature_2m_max"][0]
-        t_min = d["temperature_2m_min"][0]
-        return t_max, t_min
-    except Exception as e:
-        logging.warning("fetch_tomorrow_temps: %s", e)
-        return None, None
+    for attempt in range(retries + 1):
+        tomorrow = pendulum.today().add(days=1).to_date_string()  # 'YYYY-MM-DD'
+        j = _get(
+            OPEN_METEO_URL,
+            latitude=lat, longitude=lon,
+            timezone=tz or "UTC",
+            daily="temperature_2m_max,temperature_2m_min",
+            start_date=tomorrow,
+            end_date=tomorrow,
+        )
+        try:
+            d = j["daily"]
+            return d["temperature_2m_max"][0], d["temperature_2m_min"][0]
+        except Exception as e:
+            logging.warning("fetch_tomorrow_temps (attempt %s): %s", attempt + 1, e)
+            time.sleep(delay * (2 ** attempt))
+    # все попытки не удались
+    return None, None
+
 
 # -----------------------------------------------------------------
 def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
