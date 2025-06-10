@@ -14,10 +14,7 @@ post.py — вечерний пост VayboMeter-бота для Кипра.
 """
 
 from __future__ import annotations
-import os
-import asyncio
-import json
-import logging
+import os, json, logging, asyncio
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
 
@@ -35,10 +32,9 @@ from lunar     import get_day_lunar_info
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-# ─────────────────────────────────────────────────────────────────────────────
-TZ = pendulum.timezone("Asia/Nicosia")
-TODAY    = pendulum.now(TZ).date()
-TOMORROW = TODAY.add(days=1)
+TZ        = pendulum.timezone("Asia/Nicosia")
+TODAY     = pendulum.now(TZ).date()
+TOMORROW  = TODAY.add(days=1)
 
 TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = int(os.getenv("CHANNEL_ID", "0"))
@@ -46,7 +42,7 @@ if not TOKEN or CHAT_ID == 0:
     logging.error("Не заданы TELEGRAM_TOKEN и/или CHANNEL_ID")
     exit(1)
 
-CITIES: Dict[str, Tuple[float, float]] = {
+CITIES = {
     "Nicosia":   (35.170, 33.360),
     "Larnaca":   (34.916, 33.624),
     "Limassol":  (34.707, 33.022),
@@ -56,17 +52,10 @@ CITIES: Dict[str, Tuple[float, float]] = {
 }
 COASTAL_CITIES = {"Larnaca", "Limassol", "Pafos", "Ayia Napa"}
 
-WMO_DESC: Dict[int, str] = {
-    0:  "☀️ ясно",
-    1:  "⛅️ ч.обл",
-    2:  "☁️ обл",
-    3:  "🌥 пасм",
-    45: "🌫 туман",
-    48: "🌫 изморозь",
-    51: "🌦 морось",
-    61: "🌧 дождь",
-    71: "❄️ снег",
-    95: "⛈ гроза",
+WMO_DESC = {
+    0:  "☀️ ясно", 1: "⛅️ ч.обл", 2: "☁️ обл", 3: "🌥 пасм",
+   45:  "🌫 туман", 48: "🌫 изморозь", 51: "🌦 морось",
+   61:  "🌧 дождь", 71: "❄️ снег", 95: "⛈ гроза",
 }
 
 def code_desc(code: int) -> str:
@@ -74,17 +63,15 @@ def code_desc(code: int) -> str:
 
 def pressure_arrow(hourly: Dict[str, Any]) -> str:
     """
-    Стрелочка по изменению давления за сутки:
-    ↑ если Δ > +1 hPa, ↓ если Δ < -1, иначе →
+    Стрелка по изменению давления:
+     ↑ если Δ > +1 hPa, ↓ если Δ < -1, иначе →
+     Δ = last(surface_pressure) - first(surface_pressure)
     """
     pr = hourly.get("surface_pressure", [])
-    if len(pr) < 2:
-        return "→"
-    delta = pr[-1] - pr[0]
-    if delta > 1.0:
-        return "↑"
-    if delta < -1.0:
-        return "↓"
+    if len(pr) >= 2:
+        delta = pr[-1] - pr[0]
+        if delta > 1:  return "↑"
+        if delta < -1: return "↓"
     return "→"
 
 def schumann_line(sch: Dict[str, Any]) -> str:
@@ -108,97 +95,88 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
             trend = "→"
             if len(freqs) > 1:
                 avg = sum(freqs[:-1])/(len(freqs)-1)
-                delta = freqs[-1] - avg
-                trend = "↑" if delta>=0.1 else "↓" if delta<=-0.1 else "→"
+                Δ   = freqs[-1] - avg
+                trend = "↑" if Δ>=0.1 else "↓" if Δ<=-0.1 else "→"
             last = arr[-1]
-            return {
-                "freq":   round(last["freq"],2),
-                "amp":    round(last["amp"],1),
-                "trend":  trend,
-                "cached": True,
-            }
-        except Exception:
+            return {"freq": round(last["freq"],2), "amp": round(last["amp"],1),
+                    "trend": trend, "cached": True}
+        except:
             pass
     return sch
 
 def build_msg() -> str:
     P: List[str] = []
 
-    # 1) Заголовок
+    # Заголовок
     P.append(f"<b>🌅 Добрый вечер! Погода на завтра ({TOMORROW.format('DD.MM.YYYY')})</b>")
 
-    # 2) Усреднённая SST
+    # 1) Усреднённая SST
     vals = []
-    for ct in COASTAL_CITIES:
-        lat, lon = CITIES[ct]
-        t = get_sst(lat, lon)
-        if t is not None:
-            vals.append(t)
+    for c in COASTAL_CITIES:
+        t = get_sst(*CITIES[c])
+        if t is not None: vals.append(t)
     if vals:
         P.append(f"🌊 Ср. темп. моря: {sum(vals)/len(vals):.1f} °C")
     else:
         P.append("🌊 Ср. темп. моря: н/д")
     P.append("———")
 
-    # 3) Прогноз для Limassol
-    lat_lims, lon_lims = CITIES["Limassol"]
-    day_max, night_min = fetch_tomorrow_temps(lat_lims, lon_lims, tz=TZ.name)
-    w = get_weather(lat_lims, lon_lims) or {}
-    cur = w.get("current", {}) or {}
+    # 2) Прогноз Limassol
+    lat, lon = CITIES["Limassol"]
+    d_max, d_min = fetch_tomorrow_temps(lat, lon, tz=TZ.name)
+    w = get_weather(lat, lon) or {}
+    cur = w.get("current",{}) or {}
 
-    # 3a) ветер в полдень из hourly
-    wind_kmh = cur.get("windspeed", 0.0)
-    wind_deg = cur.get("winddirection", 0.0)
-    hourly = w.get("hourly", {}) or {}
-    times  = hourly.get("time", [])
-    ws10   = hourly.get("wind_speed_10m", []) or hourly.get("windspeed_10m", [])
-    wd10   = hourly.get("wind_direction_10m", []) or hourly.get("winddirection_10m", [])
+    # ветер в 12:00
+    wind_kmh = cur.get("windspeed",0.0)
+    wind_deg = cur.get("winddirection",0.0)
+    hr = w.get("hourly",{}) or {}
+    times = hr.get("time",[])
+    ws10  = hr.get("wind_speed_10m",[]) or hr.get("windspeed_10m",[])
+    wd10  = hr.get("wind_direction_10m",[]) or hr.get("winddirection_10m",[])
     if times and ws10 and wd10:
-        prefix = TOMORROW.format("YYYY-MM-DD")+"T12:"
+        pref = TOMORROW.format("YYYY-MM-DD")+"T12:"
         for i,t in enumerate(times):
-            if t.startswith(prefix):
+            if t.startswith(pref):
                 try:
-                    wind_kmh = float(ws10[i])
-                    wind_deg = float(wd10[i])
-                except:
-                    pass
+                    wind_kmh = float(ws10[i]); wind_deg = float(wd10[i])
+                except: pass
                 break
 
-    press  = cur.get("pressure", 1013)
-    clouds = cur.get("clouds", 0)
-    arrow  = pressure_arrow(hourly)
+    press  = cur.get("pressure",1013)
+    clouds = cur.get("clouds",0)
+    arrow  = pressure_arrow(hr)
+    avg_t  = ((d_max+d_min)/2) if d_max is not None and d_min is not None else cur.get("temperature",0.0)
 
-    avg_t = ((day_max + night_min)/2) if day_max is not None and night_min is not None else cur.get("temperature", 0.0)
     P.append(
         f"🌡️ Ср. темп: {avg_t:.0f} °C • {clouds_word(clouds)} "
         f"• 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) • 💧 {press:.0f} гПа {arrow}"
     )
     P.append("———")
 
-    # 4) Рейтинг городов
-    temps: Dict[str, Tuple[float, float, int, Optional[float]]] = {}
+    # 3) Рейтинг городов
+    temps: Dict[str,Tuple[float,float,int,Optional[float]]] = {}
     for city,(la,lo) in CITIES.items():
-        d,n = fetch_tomorrow_temps(la, lo, tz=TZ.name)
-        if d is None: continue
-        src = get_weather(la, lo) or {}
-        codes = src.get("daily", {}).get("weathercode", [])
-        code_tmr = codes[1] if isinstance(codes, list) and len(codes)>1 else 0
-        sst_c = get_sst(la, lo) if city in COASTAL_CITIES else None
-        temps[city] = (d, n if n is not None else d, code_tmr, sst_c)
+        tmax, tmin = fetch_tomorrow_temps(la,lo, tz=TZ.name)
+        if tmax is None: continue
+        src = get_weather(la,lo) or {}
+        codes = src.get("daily",{}).get("weathercode",[])
+        wc = codes[1] if isinstance(codes,list) and len(codes)>1 else 0
+        sst = get_sst(la,lo) if city in COASTAL_CITIES else None
+        temps[city] = (tmax, tmin or tmax, wc, sst)
 
     if temps:
         P.append("🎖️ <b>Рейтинг городов (д./н.°C, погода, 🌊)</b>")
         medals = ["🥇","🥈","🥉","4️⃣","5️⃣","❄️"]
-        top = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:6]
-        for i,(city,(d,n,code,sst_c)) in enumerate(top):
-            desc = code_desc(code)
-            line = f"{medals[i]} {city}: {d:.1f}/{n:.1f}, {desc}"
-            if sst_c is not None:
-                line += f", 🌊 {sst_c:.1f}"
+        for i,(city,(tmax,tmin,code,sst)) in enumerate(sorted(temps.items(),
+                                    key=lambda kv: kv[1][0], reverse=True)[:6]):
+            line = f"{medals[i]} {city}: {tmax:.1f}/{tmin:.1f}, {code_desc(code)}"
+            if sst is not None:
+                line += f", 🌊 {sst:.1f}"
             P.append(line)
         P.append("———")
 
-    # 5) Качество воздуха + пыльца
+    # 4) Air & pollen
     air = get_air() or {}
     lvl = air.get("lvl","н/д")
     P.append("🏭 <b>Качество воздуха</b>")
@@ -206,25 +184,25 @@ def build_msg() -> str:
         f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
         f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}"
     )
-    if (p := get_pollen()):
+    if (p:=get_pollen()):
         P.append("🌿 <b>Пыльца</b>")
         P.append(f"Деревья: {p['tree']} | Травы: {p['grass']} | Сорняки: {p['weed']} — риск {p['risk']}")
     P.append("———")
 
-    # 6) Геомагнитка + Шуман
+    # 5) Геомагнитка & Шуман
     kp, ks = get_kp()
-    P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp is not None else "🧲 Геомагнитка: н/д")
+    P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp else "🧲 Геомагнитка: н/д")
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # 7) Астрособытия
+    # 6) Астрособытия
     P.append("🌌 <b>Астрособытия</b>")
     astro = astro_events(offset_days=1, show_all_voc=True)
     P.extend(astro if astro else ["— нет данных —"])
     P.append("———")
 
-    # 8) Вывод и рекомендации
-    culprit = "неблагоприятный прогноз погоды"  # здесь ваша логика выбора
+    # 7) Вывод & советы
+    culprit = "неблагоприятный прогноз погоды"  # ваша логика выбора
     P.append("📜 <b>Вывод</b>")
     P.append(f"Если что-то пойдёт не так, вините {culprit}! 😉")
     P.append("———")
@@ -234,7 +212,7 @@ def build_msg() -> str:
         P.append(f"• {tip.strip()}")
     P.append("———")
 
-    # 9) Факт дня
+    # Факт дня
     P.append(f"📚 {get_fact(TOMORROW)}")
 
     return "\n".join(P)
@@ -245,26 +223,13 @@ async def send_main_post(bot: Bot) -> None:
     try:
         await bot.send_message(chat_id=CHAT_ID, text=text,
                                parse_mode="HTML", disable_web_page_preview=True)
-        logging.info("Сообщение отправлено ✓")
+        logging.info("Отправлено ✓")
     except tg_err.TelegramError as e:
         logging.error("Telegram error: %s", e)
-
-async def send_poll_if_friday(bot: Bot) -> None:
-    if pendulum.now(TZ).weekday() == 4:
-        try:
-            await bot.send_poll(
-                chat_id=CHAT_ID,
-                question="Как сегодня ваше самочувствие? 🤔",
-                options=["🔥 Полон(а) энергии","🙂 Нормально","😴 Слегка вялый(ая)","🤒 Всё плохо"],
-                is_anonymous=False, allows_multiple_answers=False
-            )
-        except tg_err.TelegramError:
-            pass
 
 async def main() -> None:
     bot = Bot(token=TOKEN)
     await send_main_post(bot)
-    await send_poll_if_friday(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
