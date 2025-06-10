@@ -9,7 +9,7 @@ post.py — вечерний пост VayboMeter-бота для Кипра.
 – Геомагнитка + Шуман
 – Астрособытия на завтра (VoC, фаза Луны, советы, next_event)
 – Короткий вывод (динамический «Вините …»)
-– Рекомендации (GPT-фоллбэк или health-coach) с тем же «виновником»
+– Рекомендации (GPT-фоллбэк или health-coach)
 – Факт дня
 """
 
@@ -33,7 +33,6 @@ from astro     import astro_events
 from gpt       import gpt_blurb
 from lunar     import get_day_lunar_info
 
-# logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -74,6 +73,10 @@ def code_desc(code: int) -> str:
     return WMO_DESC.get(code, "—")
 
 def pressure_arrow(hourly: Dict[str, Any]) -> str:
+    """
+    Стрелочка по изменению давления за сутки:
+    ↑ если Δ > +1 hPa, ↓ если Δ < -1, иначе →
+    """
     pr = hourly.get("surface_pressure", [])
     if len(pr) < 2:
         return "→"
@@ -100,21 +103,20 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
     if cache.exists():
         try:
             arr = json.loads(cache.read_text(encoding="utf-8"))
-            if arr:
-                last = arr[-1]
-                pts  = arr[-24:]
-                freqs = [p["freq"] for p in pts if isinstance(p.get("freq"), (int, float))]
-                trend = "→"
-                if len(freqs) > 1:
-                    avg = sum(freqs[:-1])/(len(freqs)-1)
-                    delta = freqs[-1] - avg
-                    trend = "↑" if delta>=0.1 else "↓" if delta<=-0.1 else "→"
-                return {
-                    "freq":   round(last["freq"],2),
-                    "amp":    round(last["amp"],1),
-                    "trend":  trend,
-                    "cached": True,
-                }
+            pts  = arr[-24:]
+            freqs = [p["freq"] for p in pts if isinstance(p.get("freq"), (int, float))]
+            trend = "→"
+            if len(freqs) > 1:
+                avg = sum(freqs[:-1])/(len(freqs)-1)
+                delta = freqs[-1] - avg
+                trend = "↑" if delta>=0.1 else "↓" if delta<=-0.1 else "→"
+            last = arr[-1]
+            return {
+                "freq":   round(last["freq"],2),
+                "amp":    round(last["amp"],1),
+                "trend":  trend,
+                "cached": True,
+            }
         except Exception:
             pass
     return sch
@@ -126,15 +128,14 @@ def build_msg() -> str:
     P.append(f"<b>🌅 Добрый вечер! Погода на завтра ({TOMORROW.format('DD.MM.YYYY')})</b>")
 
     # 2) Усреднённая SST
-    sst_vals = []
-    for city in COASTAL_CITIES:
-        lat, lon = CITIES[city]
-        tmp = get_sst(lat, lon)
-        if tmp is not None:
-            sst_vals.append(tmp)
-    if sst_vals:
-        avg_sst = sum(sst_vals)/len(sst_vals)
-        P.append(f"🌊 Ср. темп. моря: {avg_sst:.1f} °C")
+    vals = []
+    for ct in COASTAL_CITIES:
+        lat, lon = CITIES[ct]
+        t = get_sst(lat, lon)
+        if t is not None:
+            vals.append(t)
+    if vals:
+        P.append(f"🌊 Ср. темп. моря: {sum(vals)/len(vals):.1f} °C")
     else:
         P.append("🌊 Ср. темп. моря: н/д")
     P.append("———")
@@ -145,29 +146,31 @@ def build_msg() -> str:
     w = get_weather(lat_lims, lon_lims) or {}
     cur = w.get("current", {}) or {}
 
-    # ветер на 12:00 из hourly
+    # 3a) ветер в полдень из hourly
     wind_kmh = cur.get("windspeed", 0.0)
     wind_deg = cur.get("winddirection", 0.0)
     hourly = w.get("hourly", {}) or {}
     times  = hourly.get("time", [])
-    ws     = hourly.get("wind_speed_10m", []) or hourly.get("windspeed_10m", [])
-    wd     = hourly.get("wind_direction_10m", []) or hourly.get("winddirection_10m", [])
-    if times and ws and wd:
+    ws10   = hourly.get("wind_speed_10m", []) or hourly.get("windspeed_10m", [])
+    wd10   = hourly.get("wind_direction_10m", []) or hourly.get("winddirection_10m", [])
+    if times and ws10 and wd10:
         prefix = TOMORROW.format("YYYY-MM-DD")+"T12:"
         for i,t in enumerate(times):
             if t.startswith(prefix):
                 try:
-                    wind_kmh = float(ws[i]); wind_deg = float(wd[i])
-                except: ...
+                    wind_kmh = float(ws10[i])
+                    wind_deg = float(wd10[i])
+                except:
+                    pass
                 break
 
     press  = cur.get("pressure", 1013)
     clouds = cur.get("clouds", 0)
     arrow  = pressure_arrow(hourly)
 
-    avg_temp = ((day_max + night_min)/2) if day_max is not None and night_min is not None else cur.get("temperature", 0.0)
+    avg_t = ((day_max + night_min)/2) if day_max is not None and night_min is not None else cur.get("temperature", 0.0)
     P.append(
-        f"🌡️ Ср. темп: {avg_temp:.0f} °C • {clouds_word(clouds)} "
+        f"🌡️ Ср. темп: {avg_t:.0f} °C • {clouds_word(clouds)} "
         f"• 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) • 💧 {press:.0f} гПа {arrow}"
     )
     P.append("———")
@@ -177,8 +180,8 @@ def build_msg() -> str:
     for city,(la,lo) in CITIES.items():
         d,n = fetch_tomorrow_temps(la, lo, tz=TZ.name)
         if d is None: continue
-        wcod = get_weather(la, lo) or {}
-        codes = wcod.get("daily", {}).get("weathercode", [])
+        src = get_weather(la, lo) or {}
+        codes = src.get("daily", {}).get("weathercode", [])
         code_tmr = codes[1] if isinstance(codes, list) and len(codes)>1 else 0
         sst_c = get_sst(la, lo) if city in COASTAL_CITIES else None
         temps[city] = (d, n if n is not None else d, code_tmr, sst_c)
@@ -189,10 +192,10 @@ def build_msg() -> str:
         top = sorted(temps.items(), key=lambda kv: kv[1][0], reverse=True)[:6]
         for i,(city,(d,n,code,sst_c)) in enumerate(top):
             desc = code_desc(code)
+            line = f"{medals[i]} {city}: {d:.1f}/{n:.1f}, {desc}"
             if sst_c is not None:
-                P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f}, {desc}, 🌊 {sst_c:.1f}")
-            else:
-                P.append(f"{medals[i]} {city}: {d:.1f}/{n:.1f}, {desc}")
+                line += f", 🌊 {sst_c:.1f}"
+            P.append(line)
         P.append("———")
 
     # 5) Качество воздуха + пыльца
@@ -209,11 +212,8 @@ def build_msg() -> str:
     P.append("———")
 
     # 6) Геомагнитка + Шуман
-    kp, kp_state = get_kp()
-    P.append(
-        f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})"
-        if kp is not None else "🧲 Геомагнитка: н/д"
-    )
+    kp, ks = get_kp()
+    P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp is not None else "🧲 Геомагнитка: н/д")
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
@@ -223,20 +223,18 @@ def build_msg() -> str:
     P.extend(astro if astro else ["— нет данных —"])
     P.append("———")
 
-    # 8) Динамический «Вывод»
-    culprit = "неблагоприятный прогноз погоды"  # ваша логика выбора
+    # 8) Вывод и рекомендации
+    culprit = "неблагоприятный прогноз погоды"  # здесь ваша логика выбора
     P.append("📜 <b>Вывод</b>")
     P.append(f"Если что-то пойдёт не так, вините {culprit}! 😉")
     P.append("———")
-
-    # 9) Рекомендации
     P.append("✅ <b>Рекомендации</b>")
     _, tips = gpt_blurb(culprit)
     for tip in tips[:3]:
         P.append(f"• {tip.strip()}")
     P.append("———")
 
-    # 10) Факт дня
+    # 9) Факт дня
     P.append(f"📚 {get_fact(TOMORROW)}")
 
     return "\n".join(P)
@@ -245,14 +243,11 @@ async def send_main_post(bot: Bot) -> None:
     text = build_msg()
     logging.info("Preview: %s", text[:200].replace("\n"," | "))
     try:
-        await bot.send_message(chat_id=CHAT_ID,
-                               text=text,
-                               parse_mode="HTML",
-                               disable_web_page_preview=True)
+        await bot.send_message(chat_id=CHAT_ID, text=text,
+                               parse_mode="HTML", disable_web_page_preview=True)
         logging.info("Сообщение отправлено ✓")
     except tg_err.TelegramError as e:
         logging.error("Telegram error: %s", e)
-        raise
 
 async def send_poll_if_friday(bot: Bot) -> None:
     if pendulum.now(TZ).weekday() == 4:
