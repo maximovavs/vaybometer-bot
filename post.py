@@ -7,13 +7,13 @@ post.py — вечерний пост VayboMeter-бота (Кипр).
 • Рейтинг городов (с SST для прибрежных)
 • Качество воздуха + пыльца + ☢️ Радиация
 • Kp-индекс + резонанс Шумана
-• Астрособытия
+• Астрособытия (знак Луны → ♈-♓)
 • «Вините …» + рекомендации
 • Факт дня
 """
 
 from __future__ import annotations
-import os, json, logging, asyncio
+import os, json, logging, asyncio, re
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
 
@@ -27,7 +27,7 @@ from pollen  import get_pollen
 from schumann import get_schumann
 from astro   import astro_events
 from gpt     import gpt_blurb
-import radiation                                   # ← NEW
+import radiation                                       # ← данные радиации
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -45,7 +45,7 @@ if not TOKEN or CHAT_ID == 0:
 CITIES: Dict[str, Tuple[float, float]] = {
     "Nicosia":   (35.170, 33.360),
     "Larnaca":   (34.916, 33.624),
-    "Limassol":  (34.707, 33.022),          # базовый город
+    "Limassol":  (34.707, 33.022),
     "Pafos":     (34.776, 32.424),
     "Troodos":   (34.916, 32.823),
     "Ayia Napa": (34.988, 34.012),
@@ -101,6 +101,19 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
             pass
     return sch
 
+# ────────── Зодиак-замена для астрособытий ──────────
+_ZODIAC = {
+    "овен": "♈", "телец": "♉", "близнецы": "♊", "рак": "♋",
+    "лев": "♌", "дева": "♍", "весы": "♎", "скорпион": "♏",
+    "стрелец": "♐", "козерог": "♑", "водолей": "♒", "рыбы": "♓",
+}
+_z_regex = re.compile(r"\b[Вв]\s+(%s)" % "|".join(_ZODIAC.keys()), flags=re.I)
+
+def zodiac_replace(s: str) -> str:
+    def sub(m):
+        return " " + _ZODIAC[m.group(1).lower()]
+    return _z_regex.sub(sub, s)
+
 # ───────────────────────── build_msg ─────────────────────────
 def build_msg() -> str:
     P: List[str] = []
@@ -114,13 +127,13 @@ def build_msg() -> str:
              else "🌊 Ср. темп. моря: н/д")
     P.append("———")
 
-    # Прогноз для Limassol
+    # Limassol прогноз
     lat, lon = CITIES["Limassol"]
     day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=TZ.name)
     w   = get_weather(lat, lon) or {}
     cur = w.get("current", {}) or {}
 
-    # ветер в 12-00
+    # ветер на 12-00
     wind_kmh = cur.get("windspeed",0.0)
     wind_deg = cur.get("winddirection",0.0)
     hr   = w.get("hourly",{}) or {}
@@ -167,7 +180,7 @@ def build_msg() -> str:
             P.append(line)
         P.append("———")
 
-    # Качество воздуха + пыльца
+    # Air + pollen
     air = get_air() or {}
     lvl = air.get("lvl","н/д")
     P.append("🏭 <b>Качество воздуха</b>")
@@ -177,7 +190,7 @@ def build_msg() -> str:
         P.append("🌿 <b>Пыльца</b>")
         P.append(f"Деревья: {p['tree']} | Травы: {p['grass']} | Сорняки: {p['weed']} — риск {p['risk']}")
 
-    # ☢️ Радиация (по координатам Limassol)
+    # ☢️ Радиация
     rad = radiation.get_radiation(lat, lon)
     if rad and rad.get("value") is not None:
         P.append(f"☢️ Радиация: {rad['value']:.2f} µSv/h")
@@ -189,39 +202,32 @@ def build_msg() -> str:
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # Астрособытия
+    # Астрособытия (с заменой знака)
     P.append("🌌 <b>Астрособытия</b>")
     astro_lines = astro_events(offset_days=1, show_all_voc=True)
-    P.extend(astro_lines if astro_lines else ["— нет данных —"])
+    formatted = [zodiac_replace(l) for l in astro_lines] if astro_lines else ["— нет данных —"]
+    P.extend(formatted)
     P.append("———")
 
-    # ───── умный «Вывод»  (как в Калининграде) ─────
+    # «Умный» вывод
     culprit: str
-    # 1) магнитные бури
-    if kp is not None and ks.lower() == "буря":
+    if kp and ks.lower() == "буря":
         culprit = "магнитные бури"
-    # 2) жара / похолодание
     elif day_max and day_max >= 30:
         culprit = "жару"
     elif night_min and night_min <= 5:
         culprit = "резкое похолодание"
     else:
-        # 3) опасный WMO-код
         d_codes = (w or {}).get("daily",{}).get("weathercode",[])
         t_code  = d_codes[1] if isinstance(d_codes,list) and len(d_codes)>1 else None
         if   t_code == 95: culprit = "гроза"
-        elif t_code == 71:  culprit = "снег"
-        elif t_code == 48:  culprit = "изморозь"
+        elif t_code == 71: culprit = "снег"
+        elif t_code == 48: culprit = "изморозь"
         else:
-            # 4) фаза Луны из astro_lines
             culprit = "неблагоприятный прогноз погоды"
-            for line in astro_lines:
-                low = line.lower()
-                if any(x in low for x in ("новолуние","полнолуние","четверть")):
-                    cl = line
-                    for ch in ("🌑","🌕","🌓","🌒","🌙"):
-                        cl = cl.replace(ch,"")
-                    cl = cl.split("(")[0].strip().replace(" ,",",")
+            for l in formatted:
+                if any(k in l.lower() for k in ("новолуние","полнолуние","четверть")):
+                    cl = re.sub(r"🌑|🌕|🌓|🌒|🌙","",l).split("(")[0].strip().replace(" ,",",")
                     culprit = f"фазу Луны — {cl[0].upper()+cl[1:]}"
                     break
 
