@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # чтобы коммитить в репозиторий
+  contents: write
 
 concurrency:
   group: collect-schumann
@@ -26,25 +26,50 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Если есть requirements.txt — раскомментируй установку
-      # - name: Install deps
-      #   run: |
-      #     python -m pip install --upgrade pip
-      #     pip install -r requirements.txt
-
-      # ВАЖНО: тут предполагается, что collect_schumann.py уже лежит в корне репо.
-      # Если он в подкаталоге — поправь путь.
-      - name: Run collector
+      - name: Install deps
         run: |
-          python collect_schumann.py
+          python -m pip install --upgrade pip
+          pip install requests
 
-      - name: Show last row
+      - name: Run collector (writes schumann_hourly.json v2)
+        env:
+          # — файл истории
+          SCHU_GCI_ENABLE: "1"          # включаем HeartMath scraper
+          SCHU_GCI_STATION: "GCI003"    # Литва
+          SCHU_GCI_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
+          SCHU_GCI_IFRAME: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
+
+          SCHU_FILE: schumann_hourly.json
+          SCHU_MAX_LEN: "5000"
+          SCHU_HEARTMATH_HTML: data/gcms_magnetometer_heartmath.html
+
+          # — базовые настройки
+          SCHU_AMP_SCALE: "1"
+          SCHU_TREND_WINDOW: "24"
+          SCHU_TREND_DELTA: "0.1"
+          SCHU_ALLOW_CACHE_ON_FAIL: "1"    # не падать, если live недоступен
+
+          # — опциональный твой JSON-эндпоинт с freq/amp
+          # Пример: {"freq":7.83,"amp":1.2} или вложенный JSON — код сам найдёт.
+          SCHU_CUSTOM_URL: ""
+
+          # — GCI Magnetometer: скрейпинг Power (hourly)
+          GCMS_PAGE_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
+          GCMS_SITE: "GCI003"   # Lithuania (по умолчанию для этого воркфлоу)
+
+          # — 7-я гармоника (если есть спектр)
+          H7_URL: ""            # эндпоинт спектра (если появится)
+          H7_TARGET_HZ: "54.81"
+          H7_WINDOW_H: "48"
+          H7_Z: "2.5"
+          H7_MIN_ABS: "0.2"
         run: |
+          python schumann.py --collect
+          echo "Last record:"
           tail -n 1 schumann_hourly.json || true
           echo "File size:"
           wc -c schumann_hourly.json || true
 
-      # Коммитим ТОЛЬКО если файл реально изменился
       - name: Commit & push if changed
         run: |
           set -e
@@ -52,7 +77,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet -- schumann_hourly.json; then
             git add schumann_hourly.json
-            git commit -m "schumann: update (ver2: ts,freq,amp,h7_amp,h7_spike)"
+            git commit -m "schumann: update (v2, live GCI power, cache-safe, H7-ready)"
             git push
           else
             echo "No changes in schumann_hourly.json"
