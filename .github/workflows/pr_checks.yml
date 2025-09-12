@@ -1,4 +1,4 @@
-name: PR checks (Cyprus: smoke daily & FX)
+name: PR checks (Cyprus smoke daily & FX)
 
 on:
   pull_request:
