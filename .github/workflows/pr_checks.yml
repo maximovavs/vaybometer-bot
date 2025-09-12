@@ -1,4 +1,4 @@
-name: "PR checks (Cyprus: smoke daily & FX)"
+name: PR checks (Cyprus: smoke daily & FX)
 
 on:
   pull_request:
@@ -16,13 +16,15 @@ jobs:
     name: Build daily & FX (dry-run)
     runs-on: ubuntu-latest
     env:
-      # фиктивные секреты, чтобы ранние проверки импорта не падали
-      TELEGRAM_TOKEN_CYP: "dummy"
-      CHANNEL_ID_CYP: "0"
-      CHANNEL_ID_TEST_CYP: "0"
+      # фиктивные секреты, чтобы ранние импорты не падали
+      TELEGRAM_TOKEN: "dummy"
+      CHANNEL_ID: "0"
+      CHANNEL_ID_TEST: "0"
+      # чтобы LLM и короткие генерации не мешали
       DISABLE_LLM_DAILY: "1"
       GEN_SKIP_SHORT: "1"
       TZ: "Asia/Nicosia"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,10 +39,15 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      - name: Lin py_compile
+        run: |
+          python -m py_compile post.py
+
       - name: Smoke daily post (dry-run)
         run: |
           python post.py --dry-run || true
 
-      - name: Smoke: FX block (dry-run)
+      - name: Smoke FX block (dry-run)
         run: |
-          python post.py --fx-only --dry-run || true
+          # на случай другой раскладки флагов попробуем обе
+          python post.py --fx-only --dry-run || python post.py --dry-run --fx-only || true
