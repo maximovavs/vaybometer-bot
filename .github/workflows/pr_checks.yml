@@ -50,7 +50,9 @@ jobs:
           set -e
           FILES=()
           for f in post.py post_kld.py post_common.py *.py scripts/*.py tools/*.py; do
-            [ -f "$f" ] && FILES+=("$f")
+            if [ -f "$f" ]; then
+              FILES+=("$f")
+            fi
           done
           if [ ${#FILES[@]} -eq 0 ]; then
             echo "No Python files to compile."
