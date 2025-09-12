@@ -44,15 +44,14 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile all tracked Python files (no hardcoded names)
+      - name: Compile all Python files (auto-discover; no hardcoded names)
         shell: bash
         run: |
           python - <<'PY'
           import pathlib, py_compile, sys
-          files = [str(p) for p in pathlib.Path(".").rglob("*.py")]
+          files = sorted(str(p) for p in pathlib.Path(".").rglob("*.py"))
           if not files:
-            print("No Python files to compile.")
-            sys.exit(0)
+            print("No Python files to compile."); sys.exit(0)
           for f in files:
             py_compile.compile(f, doraise=True)
           print("Compiled:", len(files), "files")
