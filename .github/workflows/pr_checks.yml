@@ -1,4 +1,4 @@
-name: PR checks (Cyprus smoke daily & FX)
+name: PR checks (Cyprus smoke)
 
 on:
   pull_request:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   smoke:
-    name: Build & smoke (dry-run, safe)
+    name: Build & smoke (no hardcoded filenames)
     runs-on: ubuntu-latest
     env:
       TELEGRAM_TOKEN: "dummy"
@@ -44,12 +44,12 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile all Python files (auto-discover; no hardcoded names)
+      - name: Compile all Python files (auto-discover)
         shell: bash
         run: |
           python - <<'PY'
           import pathlib, py_compile, sys
-          files = sorted(str(p) for p in pathlib.Path(".").rglob("*.py"))
+          files = [str(p) for p in pathlib.Path(".").rglob("*.py")]
           if not files:
             print("No Python files to compile."); sys.exit(0)
           for f in files:
@@ -57,7 +57,7 @@ jobs:
           print("Compiled:", len(files), "files")
           PY
 
-      - name: Smoke daily post (dry-run, safe args)
+      - name: Smoke daily post (dry-run)
         shell: bash
         run: |
           if [ -f post.py ]; then
