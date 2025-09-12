@@ -29,14 +29,25 @@ jobs:
       - name: Checkout PR head (not base)
         uses: actions/checkout@v4
         with:
+          # Явно указываем репозиторий: maximovavs/vaybometer-bot
+          repository: maximovavs/vaybometer-bot
+          # Чекаутим код из головы PR (если есть), иначе текущий SHA
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
 
-      - name: Debug running workflow
+      - name: Debug which workflow is running
         shell: bash
         run: |
-          echo "WORKFLOW_REF=$GITHUB_WORKFLOW_REF"
-          echo "EVENT=$GITHUB_EVENT_NAME  REPO=$GITHUB_REPOSITORY  SHA=$GITHUB_SHA"
-          echo "List workflows in repo:"
+          echo "EVENT=${GITHUB_EVENT_NAME}"
+          echo "REPO=${GITHUB_REPOSITORY} (expected: maximovavs/vaybometer-bot)"
+          echo "SHA=${GITHUB_SHA}"
+          echo "PR_HEAD_REPO=${{ github.event.pull_request.head.repo.full_name || '' }}"
+          echo "PR_HEAD_REF=${{ github.event.pull_request.head.ref || '' }}"
+          echo "PR_BASE_REPO=${{ github.event.pull_request.base.repo.full_name || '' }}"
+          echo "PR_BASE_REF=${{ github.event.pull_request.base.ref || '' }}"
+          echo "RUN_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "WORKFLOW_REF=${GITHUB_WORKFLOW_REF}"
+          echo "List .github/workflows in checked-out tree:"
           ls -la .github/workflows || true
 
       - name: Setup Python 3.11
