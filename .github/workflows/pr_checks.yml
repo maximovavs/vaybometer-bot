@@ -1,7 +1,9 @@
 name: PR checks (Cyprus smoke)
 
 on:
-  pull_request:
+  # ВАЖНО: этот workflow должен лежать в main и заменять старый,
+  # иначе GitHub будет запускать старую версию из main.
+  pull_request_target:
     branches: [ main, feat/merge-from-kld ]
     paths:
       - "**/*.py"
@@ -17,7 +19,7 @@ concurrency:
 
 jobs:
   smoke:
-    name: Build & smoke (this repo only, no hardcoded filenames)
+    name: Build & smoke (this repo only; no hardcoded filenames)
     if: github.repository == 'maximovavs/vaybometer-bot'
     runs-on: ubuntu-latest
     env:
@@ -31,7 +33,7 @@ jobs:
       TO_TEST: "true"
 
     steps:
-      - name: Checkout current repo HEAD
+      - name: Checkout current repo HEAD (PR head if exists)
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
@@ -42,7 +44,7 @@ jobs:
         shell: bash
         run: |
           echo "EVENT=${GITHUB_EVENT_NAME}"
-          echo "REPO=${GITHUB_REPOSITORY} (must be maximovavs/vaybometer-bot)"
+          echo "REPO=${GITHUB_REPOSITORY}"
           echo "SHA=${GITHUB_SHA}"
           echo "RUN=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           echo "WORKFLOW_REF=${GITHUB_WORKFLOW_REF}"
@@ -64,7 +66,7 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile tracked Python files (no post_common.py hardcode)
+      - name: Compile tracked Python files (NO post_common.py hardcode)
         shell: bash
         run: |
           set -e
