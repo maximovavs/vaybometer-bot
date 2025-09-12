@@ -1,7 +1,7 @@
 name: PR checks (Cyprus smoke)
 
 on:
-  pull_request_target:
+  pull_request:
     branches: [ main, feat/merge-from-kld ]
     paths:
       - "**/*.py"
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   smoke:
-    name: Build & smoke (no hardcoded filenames)
+    name: Build & smoke (stay in this repo)
     runs-on: ubuntu-latest
     env:
       TELEGRAM_TOKEN: "dummy"
@@ -26,29 +26,21 @@ jobs:
       TO_TEST: "true"
 
     steps:
-      - name: Checkout PR head (not base)
+      - name: Checkout this repo only
         uses: actions/checkout@v4
         with:
-          # Явно указываем репозиторий: maximovavs/vaybometer-bot
-          repository: maximovavs/vaybometer-bot
-          # Чекаутим код из головы PR (если есть), иначе текущий SHA
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Жёстко берём текущий репозиторий и текущий SHA события
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Debug which workflow is running
+      - name: Debug context
         shell: bash
         run: |
           echo "EVENT=${GITHUB_EVENT_NAME}"
-          echo "REPO=${GITHUB_REPOSITORY} (expected: maximovavs/vaybometer-bot)"
+          echo "REPO=${GITHUB_REPOSITORY} (must be maximovavs/vaybometer-bot)"
           echo "SHA=${GITHUB_SHA}"
-          echo "PR_HEAD_REPO=${{ github.event.pull_request.head.repo.full_name || '' }}"
-          echo "PR_HEAD_REF=${{ github.event.pull_request.head.ref || '' }}"
-          echo "PR_BASE_REPO=${{ github.event.pull_request.base.repo.full_name || '' }}"
-          echo "PR_BASE_REF=${{ github.event.pull_request.base.ref || '' }}"
-          echo "RUN_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          echo "WORKFLOW_REF=${GITHUB_WORKFLOW_REF}"
-          echo "List .github/workflows in checked-out tree:"
-          ls -la .github/workflows || true
+          echo "List workflows in tree:"; ls -la .github/workflows || true
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -65,7 +57,7 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile all Python files (auto-discover; no hardcoded names)
+      - name: Compile tracked Python files (no hardcoded names, no other repo)
         shell: bash
         run: |
           set -e
