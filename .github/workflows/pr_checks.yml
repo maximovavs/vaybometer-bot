@@ -16,13 +16,14 @@ jobs:
     name: Build daily & FX (dry-run)
     runs-on: ubuntu-latest
     env:
-      # фиктивные секреты, чтобы ранние импорты не падали
+      # фиктивные «секреты», чтобы импорты не падали
       TELEGRAM_TOKEN: "dummy"
       CHANNEL_ID: "0"
       CHANNEL_ID_TEST: "0"
-      # чтобы LLM и короткие генерации не мешали
+      # отключим LLM и короткие генерации
       DISABLE_LLM_DAILY: "1"
       GEN_SKIP_SHORT: "1"
+      # Кипрская TZ
       TZ: "Asia/Nicosia"
 
     steps:
@@ -39,15 +40,24 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Lint: py_compile
+      - name: Lint: py_compile (auto-detect targets)
         run: |
-          python -m py_compile post.py
+          python - <<'PY'
+          import os, py_compile, sys
+          targets = ["post.py", "post_common.py", "post_kld.py"]
+          compiled = []
+          for f in targets:
+              if os.path.exists(f):
+                  py_compile.compile(f, doraise=True)
+                  compiled.append(f)
+          print("Compiled:", ", ".join(compiled) if compiled else "nothing (no target files present)")
+          PY
 
-      - name: Smoke: daily post (dry-run)
+      - name: Smoke daily post (dry-run)
         run: |
           python post.py --dry-run || true
 
-      - name: Smoke: FX block (dry-run)
+      - name: Smoke FX block (dry-run)
         run: |
           # на случай другой раскладки флагов попробуем обе
           python post.py --fx-only --dry-run || python post.py --dry-run --fx-only || true
