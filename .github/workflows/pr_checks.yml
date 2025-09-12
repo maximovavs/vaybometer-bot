@@ -1,7 +1,6 @@
-name: PR checks (Cyprus smoke — feature branch only)
+name: PR checks (Cyprus • feature branch only)
 
 on:
-  # ТОЛЬКО ваша рабочая ветка; берётся workflow из этой же ветки (не из main)
   push:
     branches: [ feat/merge-from-kld ]
     paths:
@@ -18,8 +17,8 @@ concurrency:
 
 jobs:
   smoke:
-    name: Build & smoke (no hardcoded filenames; this repo/branch only)
-    if: github.repository == 'maximovavs/vaybometer-bot' && endsWith(github.ref, '/feat/merge-from-kld')
+    name: Build & smoke (no hardcoded filenames)
+    if: github.repository == 'maximovavs/vaybometer-bot'
     runs-on: ubuntu-latest
     env:
       TELEGRAM_TOKEN: "dummy"
@@ -37,16 +36,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Debug context
+      - name: Debug: ensure this workflow is used (and find old hardcodes)
         shell: bash
         run: |
           echo "EVENT=${GITHUB_EVENT_NAME}"
           echo "REPO=${GITHUB_REPOSITORY}"
           echo "REF=${GITHUB_REF}  REF_NAME=${GITHUB_REF_NAME}"
           echo "SHA=${GITHUB_SHA}"
-          echo "RUN=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          echo "Workflows in this branch:"; ls -la .github/workflows || true
-          echo "Show this file:"; sed -n '1,220p' .github/workflows/pr_checks.yml || true
+          echo "Workflows present in THIS BRANCH:"
+          ls -la .github/workflows || true
+          echo "Searching for hardcoded 'post_common.py' in workflows (should be empty):"
+          grep -R --line-number "post_common.py" .github/workflows || echo "OK: no hardcodes"
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -63,7 +63,7 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile tracked Python files (no post_common.py hardcode)
+      - name: Compile tracked Python files (auto-discover; no hardcoded names)
         shell: bash
         run: |
           set -e
