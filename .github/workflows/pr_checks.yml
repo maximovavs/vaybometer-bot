@@ -31,14 +31,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Debug which workflow is running
+      - name: Debug running workflow
         shell: bash
         run: |
-          echo "Workflow file ref: $GITHUB_WORKFLOW_REF"
-          echo "Event: $GITHUB_EVENT_NAME"
-          echo "Repo:  $GITHUB_REPOSITORY"
-          echo "SHA:   $GITHUB_SHA"
-          echo "Listing .github/workflows:"
+          echo "WORKFLOW_REF=$GITHUB_WORKFLOW_REF"
+          echo "EVENT=$GITHUB_EVENT_NAME  REPO=$GITHUB_REPOSITORY  SHA=$GITHUB_SHA"
+          echo "List workflows in repo:"
           ls -la .github/workflows || true
 
       - name: Setup Python 3.11
@@ -56,23 +54,21 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile all Python files (auto-discover; skip hardcoded names)
+      - name: Compile all Python files (auto-discover; no hardcoded names)
         shell: bash
         run: |
-          python - <<'PY'
-          import pathlib, py_compile, sys
-          files = sorted(str(p) for p in pathlib.Path(".").rglob("*.py"))
-          if not files:
-            print("No Python files to compile."); sys.exit(0)
-          print("Compiling", len(files), "files...")
-          for f in files:
-            try:
-              py_compile.compile(f, doraise=True)
-            except Exception as e:
-              print(f"[compile error] {f}: {e}")
-              raise
-          print("OK")
-          PY
+          set -e
+          FILES="$(git ls-files '*.py' || true)"
+          if [ -z "$FILES" ]; then
+            echo "No Python files to compile."
+            exit 0
+          fi
+          echo "Compiling tracked files:"
+          echo "$FILES"
+          while IFS= read -r f; do
+            [ -n "$f" ] && python -m py_compile "$f"
+          done <<< "$FILES"
+          echo "OK"
 
       - name: Smoke daily post (dry-run)
         shell: bash
