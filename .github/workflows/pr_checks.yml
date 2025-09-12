@@ -63,20 +63,21 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt"; fi
 
-      - name: Syntax check (compile only existing files)
+      - name: Syntax check (compile only existing tracked *.py)
         shell: bash
         run: |
           set -e
-          FILES=()
-          for f in post.py *.py scripts/*.py tools/*.py; do
-            [ -f "$f" ] && FILES+=("$f")
-          done
-          if [ ${#FILES[@]} -eq 0 ]; then
+          FILES="$(git ls-files '*.py' || true)"
+          if [ -z "$FILES" ]; then
             echo "No Python files to compile."
             exit 0
           fi
-          echo "Compiling: ${FILES[*]}"
-          python -m py_compile "${FILES[@]}"
+          echo "Compiling:"
+          echo "$FILES"
+          while IFS= read -r f; do
+            [ -n "$f" ] && python -m py_compile "$f"
+          done <<< "$FILES"
+          echo "OK"
 
   daily:
     name: Run daily post
