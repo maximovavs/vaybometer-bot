@@ -44,18 +44,21 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile all Python files (auto-discover)
+      - name: Compile tracked Python files (safe)
         shell: bash
         run: |
-          python - <<'PY'
-          import pathlib, py_compile, sys
-          files = [str(p) for p in pathlib.Path(".").rglob("*.py")]
-          if not files:
-            print("No Python files to compile."); sys.exit(0)
-          for f in files:
-            py_compile.compile(f, doraise=True)
-          print("Compiled:", len(files), "files")
-          PY
+          set -e
+          FILES="$(git ls-files '*.py' || true)"
+          if [ -z "$FILES" ]; then
+            echo "No Python files to compile."
+            exit 0
+          fi
+          echo "Compiling:"
+          echo "$FILES"
+          echo "$FILES" | while read -r f; do
+            [ -n "$f" ] && python -m py_compile "$f"
+          done
+          echo "OK"
 
       - name: Smoke daily post (dry-run)
         shell: bash
