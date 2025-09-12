@@ -13,51 +13,64 @@ permissions:
 
 jobs:
   smoke:
-    name: Build daily & FX (dry-run)
+    name: Build & smoke (dry-run, safe)
     runs-on: ubuntu-latest
     env:
-      # фиктивные «секреты», чтобы импорты не падали
       TELEGRAM_TOKEN: "dummy"
       CHANNEL_ID: "0"
       CHANNEL_ID_TEST: "0"
-      # отключим LLM и короткие генерации
       DISABLE_LLM_DAILY: "1"
       GEN_SKIP_SHORT: "1"
-      # Кипрская TZ
       TZ: "Asia/Nicosia"
+      DRY_RUN: "true"
+      TO_TEST: "true"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install deps (if any)
+        shell: bash
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt"; fi
 
-      - name: Lint py_compile (auto-detect targets)
+      - name: Lint py_compile (auto-detect existing targets)
+        shell: bash
         run: |
-          python - <<'PY'
-          import os, py_compile, sys
-          targets = ["post.py", "post_common.py", "post_kld.py"]
-          compiled = []
-          for f in targets:
-              if os.path.exists(f):
-                  py_compile.compile(f, doraise=True)
-                  compiled.append(f)
-          print("Compiled:", ", ".join(compiled) if compiled else "nothing (no target files present)")
-          PY
+          set -e
+          FILES=()
+          for f in post.py post_common.py post_kld.py *.py scripts/*.py tools/*.py; do
+            [ -f "$f" ] && FILES+=("$f")
+          done
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No Python files to compile."
+          else
+            echo "Compiling: ${FILES[*]}"
+            python -m py_compile "${FILES[@]}"
+          fi
 
-      - name: Smoke daily post (dry-run)
+      - name: Smoke daily post (dry-run, safe args)
+        shell: bash
         run: |
-          python post.py --dry-run || true
+          if [ -f post.py ]; then
+            echo "Running: python post.py --dry-run --to-test"
+            python post.py --dry-run --to-test || true
+          else
+            echo "post.py not found, skipping."
+          fi
 
-      - name: Smoke FX block (dry-run)
+      - name: Smoke FX block (if supported)
+        shell: bash
         run: |
-          # на случай другой раскладки флагов попробуем обе
-          python post.py --fx-only --dry-run || python post.py --dry-run --fx-only || true
+          if [ -f post.py ]; then
+            echo "Trying FX mode (if exists)..."
+            python post.py --fx-only --dry-run || python post.py --dry-run --fx-only || true
+          else
+            echo "post.py not found, skipping FX smoke."
+          fi
