@@ -11,9 +11,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pr-checks-cy
+  cancel-in-progress: true
+
 jobs:
   smoke:
-    name: Build & smoke (stay in this repo)
+    name: Build & smoke (this repo only, no hardcoded filenames)
+    if: github.repository == 'maximovavs/vaybometer-bot'
     runs-on: ubuntu-latest
     env:
       TELEGRAM_TOKEN: "dummy"
@@ -26,12 +31,11 @@ jobs:
       TO_TEST: "true"
 
     steps:
-      - name: Checkout this repo only
+      - name: Checkout current repo HEAD
         uses: actions/checkout@v4
         with:
-          # Жёстко берём текущий репозиторий и текущий SHA события
           repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Debug context
@@ -40,7 +44,10 @@ jobs:
           echo "EVENT=${GITHUB_EVENT_NAME}"
           echo "REPO=${GITHUB_REPOSITORY} (must be maximovavs/vaybometer-bot)"
           echo "SHA=${GITHUB_SHA}"
-          echo "List workflows in tree:"; ls -la .github/workflows || true
+          echo "RUN=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "WORKFLOW_REF=${GITHUB_WORKFLOW_REF}"
+          echo "Workflows in tree:"; ls -la .github/workflows || true
+          echo "Show this pr_checks.yml:"; sed -n '1,200p' .github/workflows/pr_checks.yml || true
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -57,7 +64,7 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile tracked Python files (no hardcoded names, no other repo)
+      - name: Compile tracked Python files (no post_common.py hardcode)
         shell: bash
         run: |
           set -e
