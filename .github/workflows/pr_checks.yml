@@ -48,7 +48,7 @@ env:
 
 jobs:
   smoke:
-    name: Smoke (syntax only, auto-detect files)
+    name: Smoke (syntax only, no hardcoded filenames)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +63,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt"; fi
 
-      - name: Syntax check (compile only existing tracked *.py)
+      - name: Syntax check (compile only tracked *.py)
         shell: bash
         run: |
           set -e
