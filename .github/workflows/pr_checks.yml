@@ -1,8 +1,8 @@
 name: PR checks (Cyprus smoke)
 
 on:
-  pull_request:
-    branches: [ main ]
+  pull_request_target:
+    branches: [ feat/merge-from-kld ]
     paths:
       - "**/*.py"
       - ".github/workflows/pr_checks.yml"
@@ -28,6 +28,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Для pull_request_target проверяем код из PR
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -44,21 +47,18 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile tracked Python files (safe)
+      - name: Compile all Python files (auto-discover)
         shell: bash
         run: |
-          set -e
-          FILES="$(git ls-files '*.py' || true)"
-          if [ -z "$FILES" ]; then
-            echo "No Python files to compile."
-            exit 0
-          fi
-          echo "Compiling:"
-          echo "$FILES"
-          echo "$FILES" | while read -r f; do
-            [ -n "$f" ] && python -m py_compile "$f"
-          done
-          echo "OK"
+          python - <<'PY'
+          import pathlib, py_compile, sys
+          files = sorted(str(p) for p in pathlib.Path(".").rglob("*.py"))
+          if not files:
+            print("No Python files to compile."); sys.exit(0)
+          for f in files:
+            py_compile.compile(f, doraise=True)
+          print("Compiled:", len(files), "files")
+          PY
 
       - name: Smoke daily post (dry-run)
         shell: bash
