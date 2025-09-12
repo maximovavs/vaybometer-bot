@@ -44,22 +44,19 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Lint py_compile (auto-detect existing targets)
+      - name: Compile all tracked Python files (no hardcoded names)
         shell: bash
         run: |
-          set -e
-          FILES=()
-          for f in post.py post_kld.py post_common.py *.py scripts/*.py tools/*.py; do
-            if [ -f "$f" ]; then
-              FILES+=("$f")
-            fi
-          done
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "No Python files to compile."
-            exit 0
-          fi
-          echo "Compiling: ${FILES[*]}"
-          python -m py_compile "${FILES[@]}"
+          python - <<'PY'
+          import pathlib, py_compile, sys
+          files = [str(p) for p in pathlib.Path(".").rglob("*.py")]
+          if not files:
+            print("No Python files to compile.")
+            sys.exit(0)
+          for f in files:
+            py_compile.compile(f, doraise=True)
+          print("Compiled:", len(files), "files")
+          PY
 
       - name: Smoke daily post (dry-run, safe args)
         shell: bash
