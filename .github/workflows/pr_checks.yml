@@ -2,7 +2,7 @@ name: PR checks (Cyprus smoke)
 
 on:
   pull_request_target:
-    branches: [ feat/merge-from-kld ]
+    branches: [ main, feat/merge-from-kld ]
     paths:
       - "**/*.py"
       - ".github/workflows/pr_checks.yml"
@@ -26,11 +26,20 @@ jobs:
       TO_TEST: "true"
 
     steps:
-      - name: Checkout
+      - name: Checkout PR head (not base)
         uses: actions/checkout@v4
         with:
-          # Для pull_request_target проверяем код из PR
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Debug which workflow is running
+        shell: bash
+        run: |
+          echo "Workflow file ref: $GITHUB_WORKFLOW_REF"
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Repo:  $GITHUB_REPOSITORY"
+          echo "SHA:   $GITHUB_SHA"
+          echo "Listing .github/workflows:"
+          ls -la .github/workflows || true
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -47,7 +56,7 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile all Python files (auto-discover)
+      - name: Compile all Python files (auto-discover; skip hardcoded names)
         shell: bash
         run: |
           python - <<'PY'
@@ -55,9 +64,14 @@ jobs:
           files = sorted(str(p) for p in pathlib.Path(".").rglob("*.py"))
           if not files:
             print("No Python files to compile."); sys.exit(0)
+          print("Compiling", len(files), "files...")
           for f in files:
-            py_compile.compile(f, doraise=True)
-          print("Compiled:", len(files), "files")
+            try:
+              py_compile.compile(f, doraise=True)
+            except Exception as e:
+              print(f"[compile error] {f}: {e}")
+              raise
+          print("OK")
           PY
 
       - name: Smoke daily post (dry-run)
