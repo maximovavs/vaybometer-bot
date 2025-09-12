@@ -3,19 +3,23 @@
 
 """
 utils.py • Вспомогательные функции и константы для VayboMeter (Кипр).
-
-Содержит:
- - Компас/облака/ветер: compass(), clouds_word(), wind_phrase()
- - Скорости: kmh_to_ms(), ms_to_kmh()
- - Форматирование: safe()
- - AQI/PM: aqi_color(), pm_color(), smoke_index()
- - Погода: pressure_trend()
- - Геомагнитка: kp_emoji()
- - Факт дня: get_fact(date)
+Импортируемые в post.py: compass, clouds_word, get_fact, AIR_EMOJI,
+pm_color, kp_emoji, kmh_to_ms (+ совместимые алиасы), и др.
 """
 
 from __future__ import annotations
 from typing import Any, Dict, Optional, List, Tuple
+
+__all__ = [
+    "compass", "clouds_word", "wind_phrase",
+    "kmh_to_ms", "ms_to_kmh",
+    "safe",
+    "aqi_color", "pm_color", "smoke_index",
+    "WEATHER_ICONS", "AIR_EMOJI",
+    "kp_emoji",
+    "pressure_trend",
+    "FACTS", "DEFAULT_FACTS", "get_fact",
+]
 
 # ─────────────────────── Компас, облака, ветер ───────────────────────────
 
@@ -25,17 +29,14 @@ COMPASS = [
 ]
 
 def compass(deg: float) -> str:
-    """Возвращает сторону света (из 16) по углу deg (0–360)."""
     return COMPASS[int((deg/22.5)+0.5) % 16]
 
 def clouds_word(pc: int) -> str:
-    """<25% → «ясно», <70% → «переменная», иначе «пасмурно»."""
     if pc < 25:  return "ясно"
     if pc < 70:  return "переменная"
     return "пасмурно"
 
 def wind_phrase(km_h: float) -> str:
-    """Качественная оценка по скорости ветра (км/ч)."""
     if km_h < 2:   return "штиль"
     if km_h < 8:   return "слабый"
     if km_h < 14:  return "умеренный"
@@ -57,20 +58,20 @@ def ms_to_kmh(v_ms: Optional[float]) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
+# бэкенд-совместимые алиасы
+kmph_to_ms = kmh_to_ms
+mps_to_kmph = ms_to_kmh
+
 def safe(v: Any, unit: str = "") -> str:
-    """None/«—» → «—». Число форматируется с 1 знаком после запятой."""
     if v in (None, "None", "—"): return "—"
     return f"{v:.1f}{unit}" if isinstance(v, (int, float)) else f"{v}{unit}"
 
 # ─────────────────────────── AQI / PM ────────────────────────────────────
 
 def aqi_color(aqi: int | float | str) -> str:
-    """Эмодзи уровня AQI."""
     if aqi in ("—", "н/д"): return "⚪"
-    try:
-        v = float(aqi)
-    except (TypeError, ValueError):
-        return "⚪"
+    try: v = float(aqi)
+    except (TypeError, ValueError): return "⚪"
     if v <=  50: return "🟢"
     if v <= 100: return "🟡"
     if v <= 150: return "🟠"
@@ -79,37 +80,24 @@ def aqi_color(aqi: int | float | str) -> str:
     return "🟤"
 
 def pm_color(pm: Optional[float | int | str], with_unit: bool = False) -> str:
-    """
-    Цветовая индикация концентрации PM₂.₅/PM₁₀.
-    None/«—»/«н/д» → «⚪ н/д».
-    """
     if pm in (None, "—", "н/д"):
         return "⚪ н/д"
     try:
         val = float(pm)
     except (TypeError, ValueError):
         return "⚪ н/д"
-
     if val <= 12:    col = "🟢"
     elif val <= 35:  col = "🟡"
     elif val <= 55:  col = "🟠"
     elif val <=150:  col = "🔴"
     elif val <=250:  col = "🟣"
     else:            col = "🟤"
-
     txt = f"{int(round(val))}"
-    if with_unit:
-        txt += " µg/м³"
+    if with_unit: txt += " µg/м³"
     return f"{col}{txt}"
 
 def smoke_index(pm25: Optional[float|int|str],
                 pm10:  Optional[float|int|str]) -> Tuple[str, str]:
-    """
-    «Задымление» по PM:
-      базово по PM2.5: ≤25 низкое, ≤55 среднее, >55 высокое.
-      модификатор: если PM2.5≥20 и PM10>0 и (PM2.5/PM10)>0.70 → +1 ступень.
-    Возврат: (эмодзи, «низкое|среднее|высокое|н/д»)
-    """
     def _f(x):
         try: return float(x)
         except (TypeError, ValueError): return None
@@ -141,10 +129,6 @@ def kp_emoji(kp: Optional[float]) -> str:
 # ───────────────────────── Погода (тренды) ───────────────────────────────
 
 def pressure_trend(w: Dict[str, Any]) -> str:
-    """
-    ↑ если ближайший час > +2 гПа, ↓ если < −2, иначе →.
-    Требуется w['hourly']['surface_pressure'] как список.
-    """
     hp = w.get("hourly", {}).get("surface_pressure", [])
     if len(hp) < 2: return "→"
     diff = hp[1] - hp[0]
@@ -153,6 +137,7 @@ def pressure_trend(w: Dict[str, Any]) -> str:
     return "→"
 
 # ──────────────────────── «Факт дня» ─────────────────────────────────────
+
 FACTS: Dict[str, str] = {
     "01-03": "3 января — Фестиваль гранатов в Ормидии: дегустации и танцы под звездами, а в 1960 году Кипр стал республикой 🍎",
     "01-07": "7 января — День святого Иоанна Крестителя: службы в монастырях и пироги с оливками, а оливковые рощи начинают цвести 🥖🌳",
@@ -250,17 +235,12 @@ DEFAULT_FACTS: List[str] = [
 ]
 
 def get_fact(date_obj, region: str = "") -> str:
-    """
-    Факт дня для Кипра.
-    Приоритет: FACTS по ключу MM-DD → иначе детерминированный выбор из DEFAULT_FACTS.
-    """
-    # date_obj может быть datetime/date/pendulum — берём месяц/день
+    """Факт дня для Кипра: FACTS[MM-DD] → fallback из DEFAULT_FACTS."""
     mm = f"{getattr(date_obj,'month',None) or getattr(date_obj,'month',0):02d}"
     dd = f"{getattr(date_obj,'day',None) or getattr(date_obj,'day',0):02d}"
     key = f"{mm}-{dd}"
     if key in FACTS:
         return FACTS[key]
-    # детерминированный fallback по номеру дня
     try:
         idx = (int(dd) - 1) % len(DEFAULT_FACTS)
     except Exception:
