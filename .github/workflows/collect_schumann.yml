@@ -2,83 +2,90 @@ name: Collect Schumann
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # каждые 30 минут
-  workflow_dispatch:
+    - cron: "*/30 * * * *"    # каждые 30 минут
+  workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
   group: collect-schumann
-  cancel-in-progress: false
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Nicosia              # кипрская TZ для меток времени в картинках/коммитах
+  # Включите/выключите отправку в TG через Repository variables:
+  #   TG_NOTIFY_SCHUMANN = 1 | true | on
+  TG_NOTIFY_SCHUMANN: ${{ vars.TG_NOTIFY_SCHUMANN }}
 
 jobs:
   collect:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
       - name: Install deps
         run: |
-          python -m pip install --upgrade pip
-          pip install requests
+          set -e
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install pendulum requests pillow numpy matplotlib
+          fi
 
-      - name: Run collector (writes schumann_hourly.json v2)
-        env:
-          # — файл истории
-          SCHU_GCI_ENABLE: "1"          # включаем HeartMath scraper
-          SCHU_GCI_STATION: "GCI003"    # Литва
-          SCHU_GCI_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
-          SCHU_GCI_IFRAME: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
-
-          SCHU_FILE: schumann_hourly.json
-          SCHU_MAX_LEN: "5000"
-          SCHU_HEARTMATH_HTML: data/gcms_magnetometer_heartmath.html
-
-          # — базовые настройки
-          SCHU_AMP_SCALE: "1"
-          SCHU_TREND_WINDOW: "24"
-          SCHU_TREND_DELTA: "0.1"
-          SCHU_ALLOW_CACHE_ON_FAIL: "1"    # не падать, если live недоступен
-
-          # — опциональный твой JSON-эндпоинт с freq/amp
-          # Пример: {"freq":7.83,"amp":1.2} или вложенный JSON — код сам найдёт.
-          SCHU_CUSTOM_URL: ""
-
-          # — GCI Magnetometer: скрейпинг Power (hourly)
-          GCMS_PAGE_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
-          GCMS_SITE: "GCI003"   # Lithuania (по умолчанию для этого воркфлоу)
-
-          # — 7-я гармоника (если есть спектр)
-          H7_URL: ""            # эндпоинт спектра (если появится)
-          H7_TARGET_HZ: "54.81"
-          H7_WINDOW_H: "48"
-          H7_Z: "2.5"
-          H7_MIN_ABS: "0.2"
+      # Сбор данных + отрисовка картинок.
+      # Если в вашем schumann.py есть ключи/флаги — добавьте их здесь.
+      - name: Run collector
         run: |
-          python schumann.py --collect
-          echo "Last record:"
-          tail -n 1 schumann_hourly.json || true
-          echo "File size:"
-          wc -c schumann_hourly.json || true
+          set -e
+          python schumann.py --save
+          # Ожидаемые выходы:
+          #   schumann_hourly.json
+          #   schumann_amp_48h.png
+          #   schumann_amp_7d.png
 
-      - name: Commit & push if changed
+      - name: Commit & push artifacts
         run: |
           set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- schumann_hourly.json; then
-            git add schumann_hourly.json
-            git commit -m "schumann: update (v2, live GCI power, cache-safe, H7-ready)"
+
+          git add schumann_hourly.json schumann_amp_48h.png schumann_amp_7d.png 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "schumann: update $(date +'%Y-%m-%d %H:%M %Z')"
             git push
           else
-            echo "No changes in schumann_hourly.json"
+            echo "No changes to commit."
           fi
+
+      - name: Send to Telegram (optional)
+        if: ${{ env.TG_NOTIFY_SCHUMANN == '1' || env.TG_NOTIFY_SCHUMANN == 'true' || env.TG_NOTIFY_SCHUMANN == 'on' }}
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID:   ${{ secrets.CHANNEL_ID }}
+        run: |
+          set -e
+          CAPTION="Schumann update • $(date +'%Y-%m-%d %H:%M %Z')"
+          curl -s -F chat_id="$CHAT_ID" -F caption="$CAPTION (48h)" -F parse_mode="HTML" \
+               -F photo="@schumann_amp_48h.png" \
+               "https://api.telegram.org/bot$BOT_TOKEN/sendPhoto"
+          curl -s -F chat_id="$CHAT_ID" -F caption="$CAPTION (7d)" -F parse_mode="HTML" \
+               -F photo="@schumann_amp_7d.png" \
+               "https://api.telegram.org/bot$BOT_TOKEN/sendPhoto"
