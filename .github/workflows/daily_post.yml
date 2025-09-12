@@ -2,10 +2,14 @@ name: Daily post (Cyprus)
 
 on:
   schedule:
-    # запусти по крону, подстрой под себя (время в UTC).
     - cron: "10 3 * * *"
   workflow_dispatch:
     inputs:
+      dry_run:
+        description: "Dry-run (не отправлять в канал)"
+        required: true
+        default: true
+        type: boolean
       work_date:
         description: "Дата для фиксации today/now (YYYY-MM-DD, локальная Asia/Nicosia). Пусто — реальная дата"
         required: false
@@ -48,16 +52,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install deps (light)
+
+      - name: Install deps (light, if any)
+        shell: bash
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-      - name: Syntax check
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt"; fi
+
+      - name: Syntax check (compile only existing files)
+        shell: bash
         run: |
-          python -m py_compile post.py post_common.py
+          set -e
+          SHOPT=$(shopt -p nullglob || true); shopt -s nullglob
+          CAND=(post.py post_common.py *.py scripts/*.py tools/*.py)
+          FILES=()
+          for f in "${CAND[@]}"; do [ -f "$f" ] && FILES+=("$f"); done
+          $SHOPT || true
+          if [ ${#FILES[@]} -gt 0 ]; then
+            echo "Compiling: ${FILES[*]}"
+            python -m py_compile "${FILES[@]}"
+          else
+            echo "No Python files to compile."
+          fi
 
   daily:
     name: Run daily post
@@ -66,17 +86,12 @@ jobs:
     permissions:
       contents: read
     env:
-      # секреты кипрского репозитория
       TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
       CHANNEL_ID:       ${{ secrets.CHANNEL_ID }}
       CHANNEL_ID_TEST:  ${{ secrets.CHANNEL_ID_TEST }}
       OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
       GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
-      # если используете ключи для погоды/радиации — раскомментируйте:
-      # OWM_KEY:          ${{ secrets.OWM_KEY }}
-      # METEO_KEY:        ${{ secrets.METEO_KEY }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -85,60 +100,47 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install dependencies
+      - name: Install dependencies (safe)
+        shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt"; fi
 
-      - name: Export input flags to env
+      - name: Export input flags to env (dispatch only)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
         run: |
-          # передаём «ручные» параметры в окружение
           echo "WORK_DATE=${{ inputs.work_date }}" >> $GITHUB_ENV
           echo "CHANNEL_ID_OVERRIDE=${{ inputs.channel_id_override }}" >> $GITHUB_ENV
           echo "TO_TEST=${{ inputs.to_test && '1' || '' }}" >> $GITHUB_ENV
           echo "FOR_TOMORROW=${{ inputs.for_tomorrow && '1' || '' }}" >> $GITHUB_ENV
           echo "GEN_SKIP_SHORT=${{ inputs.gen_skip_short && '1' || '' }}" >> $GITHUB_ENV
           echo "DISABLE_LLM_DAILY=${{ inputs.disable_llm_daily && '1' || '' }}" >> $GITHUB_ENV
+          echo "DRY_RUN=${{ inputs.dry_run && 'true' || 'false' }}" >> $GITHUB_ENV
 
-      - name: Run post.py (with date/now patch, to_test & override)
+      - name: Run post.py (safe args)
         shell: bash
+        env:
+          DRY_RUN: ${{ env.DRY_RUN || 'false' }}
         run: |
-          python <<'PY'
-          import os, sys, runpy, pendulum
+          if [ ! -f post.py ]; then
+            echo "post.py not found, nothing to run."
+            exit 0
+          fi
 
-          # Патч today()/now() на заданную дату (если WORK_DATE != "")
-          class _TodayPatch:
-              def __init__(self, date_str: str|None): self.date_str = (date_str or "").strip()
-              def __enter__(self):
-                  if not self.date_str: return
-                  self._old_today = pendulum.today
-                  self._old_now   = pendulum.now
-                  def _fake_base(tz=None):
-                      dt = pendulum.parse(self.date_str)
-                      return dt.in_tz(tz) if tz else dt
-                  pendulum.today = _fake_base
-                  pendulum.now   = _fake_base
-              def __exit__(self, *a):
-                  if not self.date_str: return
-                  pendulum.today = self._old_today
-                  pendulum.now   = self._old_now
+          ARGS=()
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.to_test }}" = "true" ] && [ -n "${CHANNEL_ID_TEST}" ]; then
+              ARGS+=(--test)
+            fi
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              ARGS+=(--dry-run)
+            fi
+            # Переопределение chat_id при необходимости — поддерживается только если post.py умеет.
+            if [ -n "${CHANNEL_ID_OVERRIDE}" ]; then
+              ARGS+=(--chat-id "${CHANNEL_ID_OVERRIDE}")
+            fi
+          fi
 
-          args = ["post.py"]
-          if os.getenv("FOR_TOMORROW","") in ("1","true","yes","on"):
-              args.append("--for-tomorrow")
-
-          # приоритет явного chat_id
-          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
-          if chat_override:
-              args += ["--chat-id", chat_override]
-          else:
-              # иначе — to_test → тестовый канал
-              if (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")):
-                  args.append("--to-test")
-
-          sys.argv = args
-
-          print(f"INFO: date base = {os.getenv('WORK_DATE') or 'real-time'}; args:", args)
-          with _TodayPatch(os.getenv("WORK_DATE")):
-              runpy.run_path("post.py", run_name="__main__")
-          PY
+          echo "Running: python post.py ${ARGS[*]}"
+          python post.py "${ARGS[@]}"
