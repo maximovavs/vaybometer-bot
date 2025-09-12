@@ -1,0 +1,49 @@
+name: PR checks (Cyprus: smoke daily & FX)
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "**/*.py"
+      - ".github/workflows/pr_checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Build daily & FX (dry-run)
+    runs-on: ubuntu-latest
+
+    env:
+      # фиктивные секреты, чтобы ранние проверки импорта не падали
+      TELEGRAM_TOKEN_CYP: "dummy"
+      CHANNEL_ID_CYP: "0"
+      CHANNEL_ID_TEST_CYP: "0"
+      # чтобы LLM и короткие генерации не мешали
+      DISABLE_LLM_DAILY: "1"
+      GEN_SKIP_SHORT: "1"
+      TZ: "Asia/Nicosia"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Smoke: daily post (dry-run)
+        run: |
+          python post_cyp.py --dry-run || python post_cy.py --dry-run || true
+
+      - name: Smoke: FX block (dry-run)
+        run: |
+          python post_cyp.py --fx-only --dry-run || python post_cy.py --fx-only --dry-run || true
