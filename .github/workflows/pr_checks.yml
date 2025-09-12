@@ -1,12 +1,12 @@
-name: PR checks (Cyprus smoke • feature branch only)
+name: PR checks (Cyprus smoke — feature branch only)
 
 on:
-  # Запускается ТОЛЬКО на вашей ветке, без pull_request; берётся workflow из этой же ветки
+  # ТОЛЬКО ваша рабочая ветка; берётся workflow из этой же ветки (не из main)
   push:
     branches: [ feat/merge-from-kld ]
     paths:
       - "**/*.py"
-      - ".github/workflows/pr_checks_feat.yml"
+      - ".github/workflows/pr_checks.yml"
   workflow_dispatch:
 
 permissions:
@@ -18,8 +18,8 @@ concurrency:
 
 jobs:
   smoke:
-    name: Build & smoke (this repo, this branch)
-    if: github.repository == 'maximovavs/vaybometer-bot'
+    name: Build & smoke (no hardcoded filenames; this repo/branch only)
+    if: github.repository == 'maximovavs/vaybometer-bot' && endsWith(github.ref, '/feat/merge-from-kld')
     runs-on: ubuntu-latest
     env:
       TELEGRAM_TOKEN: "dummy"
@@ -35,7 +35,7 @@ jobs:
       - name: Checkout current branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # без переходов в чужие репы
+          fetch-depth: 0
 
       - name: Debug context
         shell: bash
@@ -45,8 +45,8 @@ jobs:
           echo "REF=${GITHUB_REF}  REF_NAME=${GITHUB_REF_NAME}"
           echo "SHA=${GITHUB_SHA}"
           echo "RUN=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          echo "Listing workflows in this branch:"
-          ls -la .github/workflows || true
+          echo "Workflows in this branch:"; ls -la .github/workflows || true
+          echo "Show this file:"; sed -n '1,220p' .github/workflows/pr_checks.yml || true
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -63,7 +63,7 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile tracked Python files (no hardcoded names)
+      - name: Compile tracked Python files (no post_common.py hardcode)
         shell: bash
         run: |
           set -e
@@ -72,7 +72,7 @@ jobs:
             echo "No Python files to compile."
             exit 0
           fi
-          echo "Compiling files:"
+          echo "Compiling tracked files:"
           echo "$FILES"
           while IFS= read -r f; do
             [ -n "$f" ] && python -m py_compile "$f"
