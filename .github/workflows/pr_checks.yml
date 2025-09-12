@@ -1,25 +1,24 @@
-name: PR checks (Cyprus smoke)
+name: PR checks (Cyprus smoke • feature branch only)
 
 on:
-  # ВАЖНО: этот workflow должен лежать в main и заменять старый,
-  # иначе GitHub будет запускать старую версию из main.
-  pull_request_target:
-    branches: [ main, feat/merge-from-kld ]
+  # Запускается ТОЛЬКО на вашей ветке, без pull_request; берётся workflow из этой же ветки
+  push:
+    branches: [ feat/merge-from-kld ]
     paths:
       - "**/*.py"
-      - ".github/workflows/pr_checks.yml"
+      - ".github/workflows/pr_checks_feat.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pr-checks-cy
+  group: pr-checks-cy-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   smoke:
-    name: Build & smoke (this repo only; no hardcoded filenames)
+    name: Build & smoke (this repo, this branch)
     if: github.repository == 'maximovavs/vaybometer-bot'
     runs-on: ubuntu-latest
     env:
@@ -33,23 +32,21 @@ jobs:
       TO_TEST: "true"
 
     steps:
-      - name: Checkout current repo HEAD (PR head if exists)
+      - name: Checkout current branch
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 0  # без переходов в чужие репы
 
       - name: Debug context
         shell: bash
         run: |
           echo "EVENT=${GITHUB_EVENT_NAME}"
           echo "REPO=${GITHUB_REPOSITORY}"
+          echo "REF=${GITHUB_REF}  REF_NAME=${GITHUB_REF_NAME}"
           echo "SHA=${GITHUB_SHA}"
           echo "RUN=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          echo "WORKFLOW_REF=${GITHUB_WORKFLOW_REF}"
-          echo "Workflows in tree:"; ls -la .github/workflows || true
-          echo "Show this pr_checks.yml:"; sed -n '1,200p' .github/workflows/pr_checks.yml || true
+          echo "Listing workflows in this branch:"
+          ls -la .github/workflows || true
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -66,7 +63,7 @@ jobs:
             echo "No requirements.txt"
           fi
 
-      - name: Compile tracked Python files (NO post_common.py hardcode)
+      - name: Compile tracked Python files (no hardcoded names)
         shell: bash
         run: |
           set -e
@@ -75,7 +72,7 @@ jobs:
             echo "No Python files to compile."
             exit 0
           fi
-          echo "Compiling tracked files:"
+          echo "Compiling files:"
           echo "$FILES"
           while IFS= read -r f; do
             [ -n "$f" ] && python -m py_compile "$f"
