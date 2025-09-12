@@ -39,15 +39,15 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Lin py_compile
+      - name: Lint: py_compile
         run: |
           python -m py_compile post.py
 
-      - name: Smoke daily post (dry-run)
+      - name: Smoke: daily post (dry-run)
         run: |
           python post.py --dry-run || true
 
-      - name: Smoke FX block (dry-run)
+      - name: Smoke: FX block (dry-run)
         run: |
           # на случай другой раскладки флагов попробуем обе
           python post.py --fx-only --dry-run || python post.py --dry-run --fx-only || true
