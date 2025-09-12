@@ -1,4 +1,4 @@
-name: PR checks (Cyprus: smoke daily & FX)
+name: "PR checks (Cyprus: smoke daily & FX)"
 
 on:
   pull_request:
@@ -15,17 +15,14 @@ jobs:
   smoke:
     name: Build daily & FX (dry-run)
     runs-on: ubuntu-latest
-
     env:
       # фиктивные секреты, чтобы ранние проверки импорта не падали
       TELEGRAM_TOKEN_CYP: "dummy"
       CHANNEL_ID_CYP: "0"
       CHANNEL_ID_TEST_CYP: "0"
-      # чтобы LLM и короткие генерации не мешали
       DISABLE_LLM_DAILY: "1"
       GEN_SKIP_SHORT: "1"
       TZ: "Asia/Nicosia"
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,8 +39,8 @@ jobs:
 
       - name: Smoke: daily post (dry-run)
         run: |
-          python post_cyp.py --dry-run || python post_cy.py --dry-run || true
+          python post.py --dry-run || true
 
       - name: Smoke: FX block (dry-run)
         run: |
-          python post_cyp.py --fx-only --dry-run || python post_cy.py --fx-only --dry-run || true
+          python post.py --fx-only --dry-run || true
