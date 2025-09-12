@@ -38,22 +38,26 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt"; fi
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "No requirements.txt"
+          fi
 
       - name: Lint py_compile (auto-detect existing targets)
         shell: bash
         run: |
           set -e
           FILES=()
-          for f in post.py post_common.py post_kld.py *.py scripts/*.py tools/*.py; do
+          for f in post.py post_kld.py post_common.py *.py scripts/*.py tools/*.py; do
             [ -f "$f" ] && FILES+=("$f")
           done
           if [ ${#FILES[@]} -eq 0 ]; then
             echo "No Python files to compile."
-          else
-            echo "Compiling: ${FILES[*]}"
-            python -m py_compile "${FILES[@]}"
+            exit 0
           fi
+          echo "Compiling: ${FILES[*]}"
+          python -m py_compile "${FILES[@]}"
 
       - name: Smoke daily post (dry-run, safe args)
         shell: bash
@@ -62,7 +66,7 @@ jobs:
             echo "Running: python post.py --dry-run --to-test"
             python post.py --dry-run --to-test || true
           else
-            echo "post.py not found, skipping."
+            echo "post.py not found, skipping daily smoke."
           fi
 
       - name: Smoke FX block (if supported)
