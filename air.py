@@ -485,8 +485,10 @@ def get_solar_wind() -> Dict[str, Any]:
     return {}
 
 # ────────── CLI-тестирование ────────────────────────────────────────
+
 if __name__ == "__main__":
     from pprint import pprint
-    print("Air Limassol:", end=" "); pprint(get_air())
-    print("SST Limassol:", get_sst())
+    print("Air:", end=" "); pprint(get_air())
+    print("SST Limassol:", get_sst())       # по умолчанию Limassol
+    print("SST Larnaca:", get_sst(34.916, 33.624))
     print("Kp:", get_kp())
