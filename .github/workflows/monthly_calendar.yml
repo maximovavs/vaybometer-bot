@@ -1,8 +1,8 @@
-name: Monthly VayboMeter Calendar
+name: Monthly VayboMeter Calendar (KLD)
 
 on:
   schedule:
-    - cron: '0 10 * * *'     # ежедневно 10:00 UTC
+    - cron: '0 10 * * *'          # каждый день 10:00 UTC
   workflow_dispatch:
     inputs:
       force_run:
@@ -23,59 +23,78 @@ permissions:
   contents: write
 
 env:
-  TZ: Asia/Nicosia
-
-concurrency:
-  group: monthly-calendar-${{ github.ref }}
-  cancel-in-progress: false
+  TZ: Europe/Kaliningrad
 
 jobs:
-  monthly_calendar:
+  monthly:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🛎️ Checkout
+      # 1. Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
+      # 2. Решаем, нужен ли расчёт
+      - name: Decide run condition
+        id: decide
+        shell: bash
+        run: |
+          run=no
+          # Завтра первое число → генерируем СЛЕДУЮЩИЙ месяц
+          if [[ $(date -d 'tomorrow' +%d) == "01" ]]; then
+            run=yes
+            work_date=$(date -d "$(date +%Y-%m-01) +1 month" +%Y-%m-%d)
+          fi
+          # Ручной запуск c force_run=true → текущий месяц
+          if [[ "${{ github.event_name }}" == 'workflow_dispatch' && \
+                "${{ github.event.inputs.force_run }}" == 'true' ]]; then
+            run=yes
+            work_date=$(date +%Y-%m-%d)
+          fi
+          echo "RUN_CALENDAR=$run"  >> $GITHUB_ENV
+          echo "WORK_DATE=${work_date:-}" >> $GITHUB_ENV
+
+      # 3. Python
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: 📦 Install deps
+      # 4. Deps
+      - name: Install dependencies
+        if: ${{ env.RUN_CALENDAR == 'yes' }}
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 📅 Decide if we should run today
-        id: gate
+      # 5. Генерация календаря
+      - name: Generate lunar_calendar.json
+        if: ${{ env.RUN_CALENDAR == 'yes' }}
         env:
-          FORCE: ${{ github.event.inputs.force_run }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
+          GEN_SKIP_SHORT: "1"
+          DEBUG_VOC:      "1"
+          WORK_DATE:      ${{ env.WORK_DATE }}
         run: |
-          D=$(date +%d)       # учитывает TZ из env
-          if [[ "$FORCE" == "true" || "$D" == "01" ]]; then
-            echo "RUN_CALENDAR=yes" >> $GITHUB_ENV
-            echo "ℹ️ Calendar run: YES"
-          else
-            echo "RUN_CALENDAR=no"  >> $GITHUB_ENV
-            echo "ℹ️ Calendar run: NO"
-          fi
+          python <<'PY'
+          import os, pendulum, runpy, sys
+          wd = os.getenv("WORK_DATE")
+          if wd:
+              pendulum.today = lambda tz=None: pendulum.parse(wd)
+          sys.argv = ["gen_lunar_calendar.py"]
+          runpy.run_path("gen_lunar_calendar.py", run_name="__main__")
+          PY
 
-      - name: 📅 Export dispatch flags
-        if: env.RUN_CALENDAR == 'yes' && github.event_name == 'workflow_dispatch'
-        run: |
-          echo "TO_TEST=${{ inputs.to_test && '1' || '' }}" >> $GITHUB_ENV
-          echo "CHANNEL_ID_OVERRIDE=${{ inputs.channel_override }}" >> $GITHUB_ENV
-
-      - name: 🌙 Generate lunar_calendar.json
-        if: env.RUN_CALENDAR == 'yes'
-        run: python gen_lunar_calendar.py
-
-      - name: 💾 Commit updates (if any)
-        if: env.RUN_CALENDAR == 'yes'
+      # 6. Commit & push
+      - name: Commit & push
+        if: ${{ env.RUN_CALENDAR == 'yes' }}
         run: |
           git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add lunar_calendar.json
           if git diff --cached --quiet; then
             echo "✅ lunar_calendar.json актуален"
@@ -85,19 +104,22 @@ jobs:
             git push
           fi
 
-      - name: 📨 Send monthly summary
-        if: env.RUN_CALENDAR == 'yes'
+      # 7. Telegram summary (с выбором тестового канала)
+      - name: Send monthly summary
+        if: ${{ env.RUN_CALENDAR == 'yes' }}
         env:
-          TELEGRAM_TOKEN:  ${{ secrets.TELEGRAM_TOKEN }}
-          CHANNEL_ID:      ${{ secrets.CHANNEL_ID }}
-          CHANNEL_ID_TEST: ${{ secrets.CHANNEL_ID_TEST }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
+          CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
         shell: bash
         run: |
-          CHAT="$CHANNEL_ID"
-          if [ -n "${CHANNEL_ID_OVERRIDE:-}" ]; then
-            CHAT="$CHANNEL_ID_OVERRIDE"
-          elif [ "${TO_TEST:-}" = "1" ]; then
-            CHAT="$CHANNEL_ID_TEST"
+          CHAT="${{ github.event.inputs.channel_override }}"
+          if [[ -z "$CHAT" ]]; then
+            if [[ "${{ github.event.inputs.to_test }}" == 'true' ]]; then
+              CHAT="$CHANNEL_ID_TEST"
+            else
+              CHAT="$CHANNEL_ID"
+            fi
           fi
           echo "→ Sending to chat: $CHAT"
-          CHANNEL_ID="$CHAT" python send_monthly_calendar.py
+          CHANNEL_ID_KLG="$CHAT" python send_monthly_calendar.py
