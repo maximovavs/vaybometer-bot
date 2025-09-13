@@ -9,6 +9,15 @@ on:
         description: "Запустить независимо от даты"
         default: "false"
         required: false
+      to_test:
+        description: "Публиковать в тестовый канал?"
+        type: boolean
+        default: false
+        required: false
+      channel_override:
+        description: "Явный chat_id канала (перебивает параметры выше)"
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -52,6 +61,12 @@ jobs:
             echo "ℹ️ Calendar run: NO"
           fi
 
+      - name: 📅 Export dispatch flags
+        if: env.RUN_CALENDAR == 'yes' && github.event_name == 'workflow_dispatch'
+        run: |
+          echo "TO_TEST=${{ inputs.to_test && '1' || '' }}" >> $GITHUB_ENV
+          echo "CHANNEL_ID_OVERRIDE=${{ inputs.channel_override }}" >> $GITHUB_ENV
+
       - name: 🌙 Generate lunar_calendar.json
         if: env.RUN_CALENDAR == 'yes'
         run: python gen_lunar_calendar.py
@@ -60,7 +75,7 @@ jobs:
         if: env.RUN_CALENDAR == 'yes'
         run: |
           git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add lunar_calendar.json
           if git diff --cached --quiet; then
             echo "✅ lunar_calendar.json актуален"
@@ -73,6 +88,16 @@ jobs:
       - name: 📨 Send monthly summary
         if: env.RUN_CALENDAR == 'yes'
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
-        run: python send_monthly_calendar.py
+          TELEGRAM_TOKEN:  ${{ secrets.TELEGRAM_TOKEN }}
+          CHANNEL_ID:      ${{ secrets.CHANNEL_ID }}
+          CHANNEL_ID_TEST: ${{ secrets.CHANNEL_ID_TEST }}
+        shell: bash
+        run: |
+          CHAT="$CHANNEL_ID"
+          if [ -n "${CHANNEL_ID_OVERRIDE:-}" ]; then
+            CHAT="$CHANNEL_ID_OVERRIDE"
+          elif [ "${TO_TEST:-}" = "1" ]; then
+            CHAT="$CHANNEL_ID_TEST"
+          fi
+          echo "→ Sending to chat: $CHAT"
+          CHANNEL_ID="$CHAT" python send_monthly_calendar.py
