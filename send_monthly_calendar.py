@@ -29,15 +29,15 @@ CAL_FILE = "lunar_calendar.json"
 MIN_VOC_MINUTES = 15
 MOON_EMOJI = "🌙"
 
-TOKEN = os.getenv("TELEGRAM_TOKEN_KLG", "")
-CHAT_ID = os.getenv("CHANNEL_ID_KLG", "")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+CHAT_ID = os.getenv("CHANNEL_ID", "")
 if not TOKEN or not CHAT_ID:
-    raise RuntimeError("TELEGRAM_TOKEN_KLG / CHANNEL_ID_KLG не заданы")
+    raise RuntimeError("TELEGRAM_TOKEN / CHANNEL_ID не заданы")
 
 try:
     CHAT_ID_INT = int(CHAT_ID)
 except ValueError:
-    raise RuntimeError("CHANNEL_ID_KLG должен быть числом")
+    raise RuntimeError("CHANNEL_ID должен быть числом")
 
 
 # ── helpers (общие) ────────────────────────────────────────────────────────
