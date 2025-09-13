@@ -23,16 +23,25 @@ __all__ = [
     "_get",
 ]
 
-# лёгкая обёртка над requests.get для модулей (weather.py и др.)
+# лёгкая обёртка над requests.get для модулей (weather.py, air.py и др.)
 def _get(
     url: str,
     params: Optional[Dict[str, Any]] = None,
     headers: Optional[Dict[str, str]] = None,
     timeout: int = 15,
-):
-    resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+    **query: Any,
+) -> Any:
+    """
+    GET с поддержкой именованных query-параметров.
+    Возвращает распарсенный JSON (dict/list).
+    Пример: _get(url, latitude=34.7, longitude=33.0, date="2025-09-13")
+    """
+    merged = dict(params or {})
+    merged.update({k: v for k, v in (query or {}).items() if v is not None})
+    resp = requests.get(url, params=merged or None, headers=headers, timeout=timeout)
     resp.raise_for_status()
-    return resp
+    return resp.json()
+
 
 # ─────────────────────── Компас, облака, ветер ───────────────────────────
 
