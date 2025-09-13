@@ -3,12 +3,13 @@
 
 """
 utils.py • Вспомогательные функции и константы для VayboMeter (Кипр).
-Импортируемые в post.py: compass, clouds_word, get_fact, AIR_EMOJI,
+Импортируемые в post.py: compass, clouds_word, get_fact, AIR_EMОJI,
 pm_color, kp_emoji, kmh_to_ms (+ совместимые алиасы), и др.
 """
 
 from __future__ import annotations
 from typing import Any, Dict, Optional, List, Tuple
+import requests
 
 __all__ = [
     "compass", "clouds_word", "wind_phrase",
@@ -19,7 +20,19 @@ __all__ = [
     "kp_emoji",
     "pressure_trend",
     "FACTS", "DEFAULT_FACTS", "get_fact",
+    "_get",
 ]
+
+# лёгкая обёртка над requests.get для модулей (weather.py и др.)
+def _get(
+    url: str,
+    params: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 15,
+):
+    resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    return resp
 
 # ─────────────────────── Компас, облака, ветер ───────────────────────────
 
