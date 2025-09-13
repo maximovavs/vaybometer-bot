@@ -1,55 +1,72 @@
-name: Daily VayboMeter Post
+name: Daily VayboMeter (Cyprus)
 
 on:
   schedule:
     # 14:00 UTC → 19:00 Asia/Nicosia
     - cron: '0 14 * * *'
   workflow_dispatch:
+    inputs:
+      to_test:
+        description: "Публиковать в тестовый канал?"
+        type: boolean
+        default: true
+        required: false
+      channel_override:
+        description: "Явный chat_id канала (перебивает параметры выше)"
+        type: string
+        required: false
 
 jobs:
   post:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Nicosia
+      OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
+      TELEGRAM_TOKEN:  ${{ secrets.TELEGRAM_TOKEN }}
+      CHANNEL_ID:      ${{ secrets.CHANNEL_ID }}
+      CHANNEL_ID_TEST: ${{ secrets.CHANNEL_ID_TEST }}
 
     steps:
       - name: 📥 Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: 🔍 Проверка сети Schumann и Open-Meteo
         run: |
           echo "=== Проверка Schumann API через зеркала ==="
-          # зеркало через CodeTabs
           curl -I https://api.codetabs.com/v1/proxy?quest=https://api.glcoherence.org/v1/earth || true
-          # зеркало через Freeboard ThingProxy
           curl -I https://thingproxy.freeboard.io/fetch/https://api.glcoherence.org/v1/earth || true
-          # зеркало через AllOrigins
-          curl -I https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth || true
-          # прямой основной endpoint
+          curl -I "https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth" || true
           curl -I https://api.glcoherence.org/v1/earth || true
-          # второй источник
           curl -I https://gci-api.ucsd.edu/data/latest || true
           echo "---"
           echo "=== Проверка Open-Meteo Forecast ==="
           curl -I "https://api.open-meteo.com/v1/forecast?latitude=34.707&longitude=33.022&hourly=soil_temperature_0cm" || true
 
       - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: 📦 Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt \
-              requests python-dateutil pendulum astropy
+          pip install -r requirements.txt requests python-dateutil pendulum astropy
+
+      - name: Export dispatch flags
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          echo "TO_TEST=${{ inputs.to_test && '1' || '' }}" >> $GITHUB_ENV
+          echo "CHANNEL_ID_OVERRIDE=${{ inputs.channel_override }}" >> $GITHUB_ENV
 
       - name: 🚀 Run VayбоМетр poster
-        env:
-          OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
-          TELEGRAM_TOKEN:  ${{ secrets.TELEGRAM_TOKEN }}
-          CHANNEL_ID:      ${{ secrets.CHANNEL_ID }}
-          OWM_KEY:         ${{ secrets.OWM_KEY }}
-          AIRVISUAL_KEY:   ${{ secrets.AIRVISUAL_KEY }}
-          AMBEE_KEY:       ${{ secrets.AMBEE_KEY }}
-          COPERNICUS_USER: ${{ secrets.COPERNICUS_USER }}
-          COPERNICUS_PASS: ${{ secrets.COPERNICUS_PASS }}
-        run: python post.py
+        shell: bash
+        run: |
+          args=()
+          if [[ -n "${CHANNEL_ID_OVERRIDE}" ]]; then
+            args+=(--chat-id "${CHANNEL_ID_OVERRIDE}")
+          elif [[ "${TO_TEST}" == "1" ]]; then
+            args+=(--to-test)
+          fi
+          echo "Running: python post.py ${args[*]}"
+          python post.py "${args[@]}"
