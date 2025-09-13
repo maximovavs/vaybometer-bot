@@ -1,25 +1,24 @@
-# .github/workflows/daily_post.yml
-name: Daily VayboMeter (Cyprus)
+name: Daily VayboMeter (KLD)
 
 on:
   schedule:
-    - cron: '0 14 * * *'
+    # Вечерний пост: 15:00 UTC (оставляю как в примере)
+    - cron: '0 15 * * *'
+    # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
+    - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
       run_evening:
         description: "Запустить вечерний пост"
-        type: boolean
-        default: true
+        default: "true"
         required: false
       run_noon_fx:
         description: "Запустить пост только с курсами"
-        type: boolean
-        default: false
+        default: "false"
         required: false
       work_date:
         description: "Переопределить дату (YYYY-MM-DD)"
         required: false
-        type: string
       to_test:
         description: "Публиковать в тестовый канал?"
         type: boolean
@@ -28,59 +27,38 @@ on:
       channel_override:
         description: "Явный chat_id канала (перебивает параметры выше)"
         required: false
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
   group: daily-post-cy
-  cancel-in-progress: true
+  cancel-in-progress: false
 
+# общие переменные окружения для всех джоб
 env:
-  TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
-  CHANNEL_ID:       ${{ secrets.CHANNEL_ID }}
-  CHANNEL_ID_TEST:  ${{ secrets.CHANNEL_ID_TEST }}
-  OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
-  GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
-  GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+  TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+  CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
+  CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
+  # опц. явная переадресация канала из inputs
+  CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
+  # вкл/выкл микро-LLM, таймзона, дата для ручного запуска
+  OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+  GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+  GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
+  GEN_SKIP_SHORT: "1"
+  DISABLE_LLM_DAILY: "0"
   TZ: Asia/Nicosia
   WORK_DATE: ${{ github.event.inputs.work_date }}
-  TO_TEST:   ${{ github.event.inputs.to_test }}
-  CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
+  # прокинем флаг в скрипт
+  TO_TEST: ${{ github.event.inputs.to_test }}
 
 jobs:
-  smoke:
-    name: Smoke (syntax only)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Compile only existing *.py (no hardcoded post_common.py)
-        shell: bash
-        run: |
-          set -e
-          FILES=()
-          for f in post.py *.py scripts/*.py tools/*.py; do
-            [ -f "$f" ] && FILES+=("$f")
-          done
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "No Python files to compile."
-            exit 0
-          fi
-          echo "Compiling: ${FILES[*]}"
-          python -m py_compile "${FILES[@]}"
-
-  daily:
-    name: Daily post
-    needs: smoke
+  evening:
+    name: Evening post (for tomorrow)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 15 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
        (!github.event.inputs.run_evening || github.event.inputs.run_evening == 'true'))
     steps:
@@ -88,57 +66,80 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: "pip"
+          python-version: '3.11'
+          cache: 'pip'
 
-      - name: Install requirements if present
-        shell: bash
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "no requirements.txt"; fi
+          pip install -r requirements.txt
 
-      - name: Export dispatch flags to env
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Post daily (announce tomorrow)
         shell: bash
         run: |
-          echo "RUN_NOON_FX=${{ github.event.inputs.run_noon_fx }}" >> $GITHUB_ENV
-          echo "RUN_EVENING=${{ github.event.inputs.run_evening }}" >> $GITHUB_ENV
-
-      - name: Run post.py
-        shell: bash
-        run: |
-          if [ ! -f post.py ]; then
-            echo "post.py not found"; exit 0
-          fi
           python <<'PY'
-          import os, sys, runpy, pendulum
-
-          # Патч today()/now() при ручной дате
-          wd = (os.getenv("WORK_DATE") or "").strip()
+          import os, runpy, sys, pendulum
+          wd = os.getenv("WORK_DATE")
           if wd:
-              tz = pendulum.timezone(os.getenv("TZ","Asia/Nicosia"))
-              def _fake(_tz=None):
+              def _fake_today(tz=None):
                   dt = pendulum.parse(wd)
-                  return dt.in_tz(_tz or tz)
-              pendulum.today = _fake
-              pendulum.now   = _fake
+                  return dt.in_tz(tz) if tz else dt
+              pendulum.today = _fake_today
 
           args = ["post.py"]
-
-          # FX-only по запросу из UI (для ручного прогона)
-          if (os.getenv("RUN_NOON_FX","").strip().lower() in ("1","true","yes","on")):
-              args.append("--fx-only")
-
-          # Канал: override → тест
-          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
-          if chat_override:
-              args += ["--chat-id", chat_override]
+          # явный override из input — передадим как --chat-id
+          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
+          if chat_override.strip():
+              args += ["--chat-id", chat_override.strip()]
           else:
-              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
+              # иначе чекбокс to_test
+              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
               if to_test:
                   args.append("--to-test")
 
-          print("Running:", " ".join(["python"]+args))
+          sys.argv = args
+          runpy.run_path("post.py", run_name="__main__")
+          PY
+
+  noon_fx:
+    name: Noon FX only (12:00 MSK)
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_noon_fx == 'true')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Post FX only (12:00 MSK)
+        shell: bash
+        run: |
+          python <<'PY'
+          import os, runpy, sys, pendulum
+          wd = os.getenv("WORK_DATE")
+          if wd:
+              def _fake_today(tz=None):
+                  dt = pendulum.parse(wd)
+                  return dt.in_tz(tz) if tz else dt
+              pendulum.today = _fake_today
+
+          args = ["post.py", "--fx-only"]
+          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
+          if chat_override.strip():
+              args += ["--chat-id", chat_override.strip()]
+          else:
+              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
+              if to_test:
+                  args.append("--to-test")
           sys.argv = args
           runpy.run_path("post.py", run_name="__main__")
           PY
