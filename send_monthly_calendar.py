@@ -1,292 +1,325 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-send_monthly_calendar.py — полная версия (паритет с KLD), адаптированная под Кипр.
+send_monthly_calendar.py
 
-Функции:
-- Читает lunar_calendar.json и рендерит «короткое резюме» + «детальный календарь по дням».
-- Делит длинный текст на чанки ≤ 4096 символов (ограничение Telegram).
-- HTML-экранирование, чтобы не ломать разметку.
-- Отправляет последовательно несколько сообщений + прикрепляет JSON-файл.
-- Ретраи отправки (3 попытки, экспоненциальный бэкофф).
-- Гибкая маршрутизация чата:
-    1) CHANNEL_ID_OVERRIDE (CLI: --chat-id) — самый высокий приоритет
-    2) если TO_TEST ∈ {1,true,yes,on} или CLI: --to-test → CHANNEL_ID_TEST
-    3) иначе → CHANNEL_ID
-  Совместимость: fallbacks на *_KLG при отсутствии кипрских переменных.
+Отправка месячного лунного поста-резюме в Telegram-канал.
 
-CLI:
-    --chat-id <id>   — принудительный chat_id
-    --to-test        — публиковать в тестовый канал
-    --no-file        — не прикладывать файл lunar_calendar.json
-    --dry-run        — печатать в stdout вместо отправки
-
-Ожидаемые ENV:
-- TELEGRAM_TOKEN (или TELEGRAM_TOKEN_KLG)
-- CHANNEL_ID, CHANNEL_ID_TEST (или *_KLG фоллбэки)
-- CHANNEL_ID_OVERRIDE (опционально)
-- TO_TEST=1|true|yes|on (опционально)
-- TZ (по умолчанию Asia/Nicosia)
-- LUNAR_JSON_PATH (по умолчанию lunar_calendar.json)
+• читает lunar_calendar.json (новый формат {"days": ..., "month_voc": ...}
+  или старый — даты на верхнем уровне)
+• формирует красивый HTML-текст
+• корректно собирает/склеивает Void-of-Course и фильтрует интервалы короче MIN_VOC_MINUTES
 """
 
-from __future__ import annotations
 import os
-import sys
 import json
-import time
+import asyncio
 import html
-import argparse
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Dict, Any, List, Optional, Tuple
+from collections import OrderedDict
 
-import requests
 import pendulum
+from telegram import Bot, constants
 
-# ───────────────────────────── Конфиг/ENV ─────────────────────────────
+# ── настройки ──────────────────────────────────────────────────────────────
 
-def _envb(name: str) -> bool:
-    return (os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on"))
+TZ = pendulum.timezone("Asia/Nicosia")
+CAL_FILE = "lunar_calendar.json"
+MIN_VOC_MINUTES = 15
+MOON_EMOJI = "🌙"
 
-TZ = pendulum.timezone(os.getenv("TZ", "Asia/Nicosia"))
+TOKEN = os.getenv("TELEGRAM_TOKEN_KLG", "")
+CHAT_ID = os.getenv("CHANNEL_ID_KLG", "")
+if not TOKEN or not CHAT_ID:
+    raise RuntimeError("TELEGRAM_TOKEN_KLG / CHANNEL_ID_KLG не заданы")
 
-TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_TOKEN_KLG") or ""
-if not TOKEN:
-    # дадим осмысленную ошибку, чтобы workflow сразу подсказал, что не так
-    raise RuntimeError("TELEGRAM_TOKEN не задан (ни TELEGRAM_TOKEN, ни TELEGRAM_TOKEN_KLG)")
+try:
+    CHAT_ID_INT = int(CHAT_ID)
+except ValueError:
+    raise RuntimeError("CHANNEL_ID_KLG должен быть числом")
 
-JSON_PATH = Path(os.getenv("LUNAR_JSON_PATH", "lunar_calendar.json"))
 
-# ───────────────────────────── Telegram API ───────────────────────────
+# ── helpers (общие) ────────────────────────────────────────────────────────
 
-TG_MAX = 4096
-
-def _post_json(url: str, **data: Any) -> Dict[str, Any]:
-    r = requests.post(url, data=data, timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-def _post_multipart(url: str, files: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
-    r = requests.post(url, data=data, files=files, timeout=60)
-    r.raise_for_status()
-    return r.json()
-
-def tg_send_message(token: str, chat_id: str, text: str, parse_mode: str = "HTML",
-                    disable_web_page_preview: bool = True) -> Dict[str, Any]:
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    return _post_json(url, chat_id=chat_id, text=text, parse_mode=parse_mode,
-                      disable_web_page_preview=str(disable_web_page_preview).lower())
-
-def tg_send_document(token: str, chat_id: str, file_path: Path, caption: str = "") -> Dict[str, Any]:
-    url = f"https://api.telegram.org/bot{token}/sendDocument"
-    with file_path.open("rb") as f:
-        files = {"document": (file_path.name, f, "application/json")}
-        data = {"chat_id": chat_id, "caption": caption}
-        return _post_multipart(url, files=files, data=data)
-
-def _retry(fn, *args, **kwargs) -> Dict[str, Any]:
-    delay = 2.0
-    for i in range(3):
+def _parse_dt(s: str, year: int) -> Optional[pendulum.DateTime]:
+    """
+    Парсит строку вида "DD.MM HH:mm" или ISO-строку,
+    возвращает pendulum.DateTime в таймзоне TZ.
+    """
+    try:
+        # пробуем ISO
+        return pendulum.parse(s).in_tz(TZ)
+    except Exception:
         try:
-            return fn(*args, **kwargs)
-        except Exception as e:
-            if i == 2:
-                raise
-            time.sleep(delay)
-            delay *= 2
-    return {}  # не дойдём
+            # формат "DD.MM HH:mm"
+            dmy, hm = s.split()
+            day, mon = map(int, dmy.split("."))
+            hh, mm = map(int, hm.split(":"))
+            return pendulum.datetime(year, mon, day, hh, mm, tz=TZ)
+        except Exception:
+            return None
 
-# ───────────────────────────── Утилиты форматирования ─────────────────
 
-RUS_MONTHS_NOM = {
-    1: "январь", 2: "февраль", 3: "март", 4: "апрель",
-    5: "май", 6: "июнь", 7: "июль", 8: "август",
-    9: "сентябрь", 10: "октябрь", 11: "ноябрь", 12: "декабрь",
-}
+def _merge_intervals(
+    intervals: List[Tuple[pendulum.DateTime, pendulum.DateTime]],
+    tol_min: int = 1
+) -> List[Tuple[pendulum.DateTime, pendulum.DateTime]]:
+    """Склейка пересекающихся/смежных интервалов (допускаем стык ±tol_min)."""
+    if not intervals:
+        return []
+    intervals = sorted(intervals, key=lambda ab: ab[0])
+    out = [intervals[0]]
+    tol = pendulum.duration(minutes=tol_min)
+    for s, e in intervals[1:]:
+        ps, pe = out[-1]
+        if s <= pe + tol:  # пересечение или почти стык
+            out[-1] = (ps, max(pe, e))
+        else:
+            out.append((s, e))
+    return out
 
-PHASE_EMO = {
-    "Новолуние":"🌑","Растущий серп":"🌒","Первая четверть":"🌓","Растущая Луна":"🌔",
-    "Полнолуние":"🌕","Убывающая Луна":"🌖","Последняя четверть":"🌗","Убывающий серп":"🌘",
-}
 
-def esc(s: Any) -> str:
-    return html.escape(str(s or ""), quote=False)
+def _parse_voc_entry_local(obj: Dict[str, Any]) -> Tuple[Optional[pendulum.DateTime], Optional[pendulum.DateTime]]:
+    """Парсинг дневного VoC из локальных строк 'DD.MM HH:mm' → pendulum в TZ."""
+    if not obj or not obj.get("start") or not obj.get("end"):
+        return None, None
+    try:
+        s = pendulum.from_format(obj["start"], "DD.MM HH:mm", tz=TZ)
+        e = pendulum.from_format(obj["end"],   "DD.MM HH:mm", tz=TZ)
+    except Exception:
+        return None, None
+    if e <= s:
+        return None, None
+    return s, e
 
-def chunk_text(text: str, limit: int = TG_MAX) -> List[str]:
-    if len(text) <= limit:
-        return [text]
-    parts: List[str] = []
-    cur = ""
-    for line in text.splitlines(True):
-        if len(cur) + len(line) > limit:
-            if cur:
-                parts.append(cur)
-                cur = ""
-            # если строка длиннее лимита — жёстко режем
-            while len(line) > limit:
-                parts.append(line[:limit])
-                line = line[limit:]
-        cur += line
-    if cur:
-        parts.append(cur)
-    return parts
 
-# ───────────────────────────── Рендер календаря ──────────────────────
+def _format_voc_interval(start: pendulum.DateTime, end: pendulum.DateTime) -> str:
+    """
+    Единый стиль для VoC:
+      • если в одни сутки:  02.06 09:10–13:25
+      • если на разные дни: 02.06 23:10–03.06 01:05
+    """
+    same_day = (start.date() == end.date())
+    if same_day:
+        return f"{start.format('DD.MM')} {start.format('HH:mm')}–{end.format('HH:mm')}"
+    return f"{start.format('DD.MM HH:mm')}–{end.format('DD.MM HH:mm')}"
 
-def _summarize_calendar(cal: Dict[str, Any]) -> str:
-    days: Dict[str, Any] = cal.get("days", {})
-    if not days:
-        return "🌙 <b>Лунный календарь</b>\nДанные не найдены."
 
-    # месяц/год по первой дате
-    sample_date = sorted(days.keys())[0]
-    dt = pendulum.parse(sample_date, tz=TZ)
-    month_name = RUS_MONTHS_NOM.get(dt.month, f"{dt.month:02d}")
-    year = dt.year
+def load_calendar(src: Any = None
+) -> Tuple[OrderedDict[str, Dict[str, Any]], List[Tuple[pendulum.DateTime, pendulum.DateTime]], Dict[str, Any]]:
+    """
+    Нормализованный загрузчик календаря.
 
-    # ключевые фазы
-    phase_dates: Dict[str, List[int]] = {k: [] for k in ("Новолуние","Первая четверть","Полнолуние","Последняя четверть")}
-    for dstr, rec in sorted(days.items()):
-        ph = str(rec.get("phase_name") or "")
-        if ph in phase_dates:
-            phase_dates[ph].append(int(dstr[-2:]))
+    Вход: путь к файлу, Path, либо уже разобранный dict.
+    Выход:
+      days_map  — OrderedDict[YYYY-MM-DD] -> запись дня
+      month_voc — список (start_dt, end_dt) в TZ (локальные даты/время)
+      cats      — словарь категорий месяца
+    """
+    if src is None:
+        obj = json.loads(Path(CAL_FILE).read_text("utf-8"))
+    elif isinstance(src, (str, Path)):
+        obj = json.loads(Path(src).read_text("utf-8"))
+    else:
+        obj = src  # уже dict
 
-    # VoC статистика
-    month_voc = cal.get("month_voc", []) or []
-    voc_lines: List[str] = []
-    for it in month_voc[:6]:
-        s, e = it.get("start"), it.get("end")
-        if s and e:
-            voc_lines.append(f"• {esc(s)}–{esc(e)}")
+    # Новый формат
+    if isinstance(obj, dict) and "days" in obj:
+        days_map: OrderedDict[str, Dict[str, Any]] = OrderedDict(sorted(obj["days"].items()))
+        first_day = next(iter(days_map.values()), {})
+        cats = first_day.get("favorable_days") or {}
 
+        # month_voc из корня, если есть
+        voc_list: List[Tuple[pendulum.DateTime, pendulum.DateTime]] = []
+        for it in obj.get("month_voc") or []:
+            try:
+                s = pendulum.from_format(it["start"], "DD.MM HH:mm", tz=TZ)
+                e = pendulum.from_format(it["end"],   "DD.MM HH:mm", tz=TZ)
+                if e > s:
+                    voc_list.append((s, e))
+            except Exception:
+                continue
+
+        # Если month_voc нет — собираем из дневных кусков
+        if not voc_list:
+            pieces: List[Tuple[pendulum.DateTime, pendulum.DateTime]] = []
+            for rec in days_map.values():
+                s, e = _parse_voc_entry_local(rec.get("void_of_course"))
+                if s and e:
+                    pieces.append((s, e))
+            voc_list = _merge_intervals(pieces)
+
+    # Старый формат
+    else:
+        days_map = OrderedDict(sorted(obj.items()))
+        first_day = next(iter(days_map.values()), {})
+        cats = first_day.get("favorable_days") or {}
+
+        pieces: List[Tuple[pendulum.DateTime, pendulum.DateTime]] = []
+        for rec in days_map.values():
+            s, e = _parse_voc_entry_local(rec.get("void_of_course"))
+            if s and e:
+                pieces.append((s, e))
+        voc_list = _merge_intervals(pieces)
+
+    # Обрежем интервалы VoC рамками месяца на всякий случай
+    y, m = map(int, next(iter(days_map.keys())).split("-")[:2])
+    month_start = pendulum.datetime(y, m, 1, 0, 0, tz=TZ)
+    month_end   = month_start.end_of("month")
+    clipped: List[Tuple[pendulum.DateTime, pendulum.DateTime]] = []
+    for s, e in voc_list:
+        if s < month_end and e > month_start:
+            s2 = max(s, month_start)
+            e2 = min(e, month_end)
+            if e2 > s2:
+                clipped.append((s2, e2))
+    voc_list = _merge_intervals(clipped)
+
+    return days_map, voc_list, cats
+
+
+# ── рендер блоков ──────────────────────────────────────────────────────────
+
+def build_phase_blocks(data: Dict[str, Any]) -> str:
+    """
+    Группирует подряд идущие дни одной фазы и формирует блок HTML-строк:
+    <b>🌒 1–3</b> <i>(Лев, Дева)</i>\n<i>Описание периода…</i>\n
+    """
+    zodiac_order = [
+        "Овен","Телец","Близнецы","Рак","Лев","Дева",
+        "Весы","Скорпион","Стрелец","Козерог","Водолей","Рыбы"
+    ]
+
+    days = sorted(data.keys())
     lines: List[str] = []
-    lines.append(f"🌙 <b>Лунный календарь на {esc(month_name)} {year}</b>")
-    lines.append("")
-    for name in ("Новолуние","Первая четверть","Полнолуние","Последняя четверть"):
-        dates = phase_dates[name]
-        if dates:
-            emo = PHASE_EMO.get(name, "•")
-            lines.append(f"{emo} <b>{esc(name)}:</b> " + ", ".join(str(x) for x in dates))
-    if month_voc:
-        lines.append("")
-        lines.append(f"⚫️ <b>Void of Course</b> — всего: {len(month_voc)}")
-        lines.extend(voc_lines)
-    lines.append("")
-    lines.append("Файл календаря во вложении.")
+    i = 0
+    while i < len(days):
+        start = days[i]
+        rec = data[start]
+        name = rec.get("phase_name", "")
+        # "phase" хранит строку вида "🌒 Первая четверть , Дева"
+        emoji = rec.get("phase", "").split()[0]
+        signs = {rec.get("sign", "")}
+
+        # ищем, пока фаза остаётся той же
+        j = i
+        while j + 1 < len(days) and data[days[j + 1]].get("phase_name") == name:
+            j += 1
+            signs.add(data[days[j]].get("sign", ""))
+
+        # форматируем диапазон дат
+        d1 = pendulum.parse(start).format("D")
+        d2 = pendulum.parse(days[j]).format("D MMM", locale="ru")
+        span = f"{d1}–{d2}" if i != j else d2
+
+        # список знаков в нужном порядке
+        sorted_signs = sorted(signs, key=lambda x: zodiac_order.index(x) if x in zodiac_order else 0)
+        signs_str = ", ".join(sorted_signs)
+
+        # длинное описание (long_desc) может содержать HTML
+        desc = html.escape(rec.get("long_desc", "").strip())
+
+        lines.append(f"<b>{emoji} {span}</b> <i>({signs_str})</i>\n<i>{desc}</i>\n")
+        i = j + 1
+
     return "\n".join(lines)
 
-def _render_detail(cal: Dict[str, Any]) -> str:
-    """Детальный рендер по дням, близко к KLD: дата • фаза • знак • % • VoC и 1–2 совета."""
-    days: Dict[str, Any] = cal.get("days", {})
-    if not days:
+
+def build_fav_blocks(rec_or_cats: Dict[str, Any]) -> str:
+    """
+    Формирует блок «благоприятных/неблагоприятных дней».
+    Функция принимает либо запись дня с ключом 'favorable_days', либо сам словарь категорий.
+    """
+    fav = rec_or_cats.get("favorable_days") if "favorable_days" in rec_or_cats else rec_or_cats
+    fav = fav or {}
+    general = fav.get("general", {})
+
+    def fmt_list(key: str) -> str:
+        lst = fav.get(key, {}).get("favorable", [])
+        return ", ".join(map(str, lst)) if lst else "—"
+
+    parts = [
+        f"✅ <b>Благоприятные:</b> {', '.join(map(str, general.get('favorable', [])) or ['—'])}",
+        f"❌ <b>Неблагоприятные:</b> {', '.join(map(str, general.get('unfavorable', [])) or ['—'])}",
+        f"✂️ <b>Стрижка:</b> {fmt_list('haircut')}",
+        f"✈️ <b>Путешествия:</b> {fmt_list('travel')}",
+        f"🛍️ <b>Покупки:</b> {fmt_list('shopping')}",
+        f"❤️ <b>Здоровье:</b> {fmt_list('health')}",
+    ]
+    return "\n".join(parts)
+
+
+def build_voc_block(voc_list: List[Tuple[pendulum.DateTime, pendulum.DateTime]]) -> str:
+    """
+    Рендерит месячный список VoC из уже нормализованных интервалов.
+    Применяет порог MIN_VOC_MINUTES и единый стиль форматирования.
+    """
+    items: List[str] = []
+    for s, e in voc_list:
+        if (e - s).in_minutes() < MIN_VOC_MINUTES:
+            continue
+        items.append(_format_voc_interval(s, e))
+
+    if not items:
         return ""
+    return "<b>⚫️ VoC (Void-of-Course):</b>\n" + "\n".join(items)
 
-    lines: List[str] = []
-    for dstr, rec in sorted(days.items()):
-        dt = pendulum.parse(dstr, tz=TZ)
-        dd = dt.format("DD.MM")
-        phase = str(rec.get("phase") or rec.get("phase_name") or "")
-        sign = str(rec.get("sign") or "")
-        perc = rec.get("percent")
-        perc_s = f"{int(perc)}%" if isinstance(perc, (int, float)) else "—"
 
-        head = f"<b>{esc(dd)}</b> • {esc(phase)}"
-        if sign:
-            head += f" • {esc(sign)}"
-        head += f" • {esc(perc_s)}"
-        lines.append(head)
+# ── сборка финального сообщения ────────────────────────────────────────────
 
-        # VoC (локальный)
-        voc = rec.get("void_of_course") or rec.get("voc") or {}
-        if isinstance(voc, dict):
-            s, e = voc.get("start"), voc.get("end")
-            if s and e:
-                lines.append(f"  ⚫️ VoC: {esc(s)}–{esc(e)}")
+def build_message(days_map: Dict[str, Any],
+                  month_voc: List[Tuple[pendulum.DateTime, pendulum.DateTime]],
+                  cats: Dict[str, Any]) -> str:
+    """
+    Собирает полный HTML-текст для месячного поста:
+    1) Заголовок с месяцем и годом
+    2) Блок фаз
+    3) Блок благоприятных дней
+    4) Блок VoC (если есть)
+    5) Пояснение про VoC
+    """
+    first_key = next(iter(days_map.keys()))
+    first_day = pendulum.parse(first_key)
+    header = f"{MOON_EMOJI} <b>Лунный календарь {first_day.format('MMMM YYYY', locale='ru').upper()}</b>\n"
 
-        # Советы
-        adv = rec.get("advice") or []
-        if isinstance(adv, list) and adv:
-            # возьмём до 2 строк на день
-            for a in adv[:2]:
-                a = str(a or "").strip()
-                if a:
-                    # не экранируем эмодзи/буллеты, но HTML — да
-                    lines.append(f"  • {esc(a)}")
-        lines.append("")  # пустая строка-разделитель
+    phases_block = build_phase_blocks(days_map)
+    fav_block = build_fav_blocks(cats)
+    voc_block = build_voc_block(month_voc)
 
-    return "\n".join(lines).rstrip()
+    footer = (
+        "\n<i>⚫️ Void-of-Course — период, когда Луна завершила все аспекты "
+        "в знаке и не вошла в следующий; энергия рассеяна, новые начинания "
+        "лучше отложить.</i>"
+    )
 
-# ───────────────────────────── Выбор чата ────────────────────────────
+    parts = [header, phases_block, fav_block]
+    if voc_block:
+        parts.append(voc_block)
+    parts.append(footer)
+    return "\n\n".join(parts)
 
-def resolve_chat_id(cli_chat_id: Optional[str], cli_to_test: bool) -> str:
-    override = (cli_chat_id or os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
-    if override:
-        return override
 
-    # режим теста — CLI флаг выше по приоритету, затем ENV
-    to_test = cli_to_test or _envb("TO_TEST")
-    if to_test:
-        chat = os.getenv("CHANNEL_ID_TEST", "") or os.getenv("CHANNEL_ID_TEST_KLG", "")
-        if chat:
-            return chat
+# ── main ──────────────────────────────────────────────────────────────────
 
-    # основной канал
-    chat = os.getenv("CHANNEL_ID", "") or os.getenv("CHANNEL_ID_KLG", "")
-    if not chat:
-        # максимально информативно
-        raise RuntimeError("Не найден chat_id: задайте CHANNEL_ID или CHANNEL_ID_TEST (или *_KLG), "
-                           "либо передайте --chat-id/CHANNEL_ID_OVERRIDE")
-    return chat
+async def main():
+    # читаем lunar_calendar.json
+    raw = Path(CAL_FILE).read_text("utf-8")
+    obj = json.loads(raw)
 
-# ───────────────────────────── Главный сценарий ─────────────────────
+    # нормализуем данные (работает и с новым, и со старым форматом)
+    days_map, month_voc, cats = load_calendar(obj)
 
-def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--chat-id", dest="chat_id", default=None)
-    p.add_argument("--to-test", dest="to_test", action="store_true", default=False)
-    p.add_argument("--no-file", dest="no_file", action="store_true", default=False)
-    p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False)
-    p.add_argument("-h", "--help", action="help", help="show this help message and exit")
-    args = p.parse_args(argv)
+    text = build_message(days_map, month_voc, cats)
 
-    if not JSON_PATH.exists():
-        raise FileNotFoundError(f"{JSON_PATH} не найден. Сначала сгенерируйте lunar_calendar.json")
-
-    cal = json.loads(JSON_PATH.read_text(encoding="utf-8"))
-
-    # 1) Короткое резюме
-    summary = _summarize_calendar(cal)
-    # 2) Детальный блок
-    detail = _render_detail(cal)
-
-    # Нарежем на чанки (первым уйдёт summary)
-    chunks: List[str] = []
-    chunks.extend(chunk_text(summary))
-    if detail:
-        chunks.extend(chunk_text(detail))
-
-    chat_id = resolve_chat_id(args.chat_id, args.to_test)
-    print(f"→ Sending to chat: {chat_id}")
-
-    if args.dry_run:
-        print("---- DRY RUN ----")
-        for i, ch in enumerate(chunks, 1):
-            print(f"\n--- Message {i}/{len(chunks)} ({len(ch)} chars) ---\n{ch}")
-        if not args.no_file:
-            print(f"\n--- File attach ---\n{JSON_PATH}")
-        return 0
-
-    # Отправка сообщений с ретраями
-    for ch in chunks:
-        _retry(tg_send_message, TOKEN, chat_id, ch)
-
-    # Прикрепляем файл (по умолчанию)
-    if not args.no_file:
-        _retry(tg_send_document, TOKEN, chat_id, JSON_PATH, caption="lunar_calendar.json")
-
-    return 0
+    bot = Bot(TOKEN)
+    await bot.send_message(
+        chat_id=CHAT_ID_INT,
+        text=text,
+        parse_mode=constants.ParseMode.HTML,
+        disable_web_page_preview=True
+    )
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    asyncio.run(main())
