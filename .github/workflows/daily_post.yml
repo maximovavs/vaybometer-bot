@@ -6,13 +6,20 @@ on:
     - cron: "10 3 * * *"
   workflow_dispatch:
     inputs:
-      run_daily:
-        description: "Запустить дневной пост"
-        default: "true"
+      run_evening:
+        description: "Запустить вечерний пост"
+        type: boolean
+        default: true
+        required: false
+      run_noon_fx:
+        description: "Запустить пост только с курсами"
+        type: boolean
+        default: false
         required: false
       work_date:
-        description: "Переопределить дату (YYYY-MM-DD, локальная Asia/Nicosia)"
+        description: "Переопределить дату (YYYY-MM-DD)"
         required: false
+        type: string
       to_test:
         description: "Публиковать в тестовый канал?"
         type: boolean
@@ -21,11 +28,7 @@ on:
       channel_override:
         description: "Явный chat_id канала (перебивает параметры выше)"
         required: false
-      dry_run:
-        description: "Dry-run (печать без отправки)"
-        type: boolean
-        default: true
-        required: false
+        type: string
 
 permissions:
   contents: read
@@ -45,7 +48,6 @@ env:
   WORK_DATE: ${{ github.event.inputs.work_date }}
   TO_TEST:   ${{ github.event.inputs.to_test }}
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
-  DRY_RUN:   ${{ github.event.inputs.dry_run }}
 
 jobs:
   smoke:
@@ -53,20 +55,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Compile only existing *.py
+
+      - name: Compile only existing *.py (no hardcoded post_common.py)
         shell: bash
         run: |
           set -e
-          shopt -s nullglob
-          files=(post.py post_common.py *.py scripts/*.py tools/*.py)
-          if [ ${#files[@]} -gt 0 ]; then
-            python -m py_compile "${files[@]}"
-          else
-            echo "No python files"
+          FILES=()
+          for f in post.py *.py scripts/*.py tools/*.py; do
+            [ -f "$f" ] && FILES+=("$f")
+          done
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No Python files to compile."
+            exit 0
           fi
+          echo "Compiling: ${FILES[*]}"
+          python -m py_compile "${FILES[@]}"
 
   daily:
     name: Daily post
@@ -75,18 +82,27 @@ jobs:
     if: >
       (github.event_name == 'schedule') ||
       (github.event_name == 'workflow_dispatch' &&
-       (!github.event.inputs.run_daily || github.event.inputs.run_daily == 'true'))
+       (!github.event.inputs.run_evening || github.event.inputs.run_evening == 'true'))
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
+
       - name: Install requirements if present
         shell: bash
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "no requirements.txt"; fi
+
+      - name: Export dispatch flags to env
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          echo "RUN_NOON_FX=${{ github.event.inputs.run_noon_fx }}" >> $GITHUB_ENV
+          echo "RUN_EVENING=${{ github.event.inputs.run_evening }}" >> $GITHUB_ENV
 
       - name: Run post.py
         shell: bash
@@ -108,7 +124,12 @@ jobs:
               pendulum.now   = _fake
 
           args = ["post.py"]
-          # KLD-совместимые флаги
+
+          # FX-only по запросу из UI (для ручного прогона)
+          if (os.getenv("RUN_NOON_FX","").strip().lower() in ("1","true","yes","on")):
+              args.append("--fx-only")
+
+          # Канал: override → тест
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           if chat_override:
               args += ["--chat-id", chat_override]
@@ -116,9 +137,6 @@ jobs:
               to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
               if to_test:
                   args.append("--to-test")
-
-          if (os.getenv("DRY_RUN","").strip().lower() in ("1","true","yes","on")):
-              args.append("--dry-run")
 
           print("Running:", " ".join(["python"]+args))
           sys.argv = args
