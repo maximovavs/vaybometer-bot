@@ -3,7 +3,7 @@ name: Daily VayboMeter (Cyprus)
 
 on:
   schedule:
-    - cron: "10 3 * * *"
+    - cron: '0 14 * * *'
   workflow_dispatch:
     inputs:
       run_evening:
