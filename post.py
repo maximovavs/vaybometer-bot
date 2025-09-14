@@ -6,8 +6,9 @@ post.py — вечерний пост VayboMeter-бота (Кипр).
 • Прогноз на завтра (день/ночь, ветер, порывы, RH, давление)
 • Рейтинг городов (с SST для прибрежных)
 • Качество воздуха + пыльца + ☢️ Радиация
-• Kp-индекс + резонанс Шумана (фоллбэк из JSON)
-• Астрособытия (из lunar_calendar.json; знаки → ♈-♓ + VoC)
+• Kp-индекс (+ «свежесть») + Солнечный ветер
+• Резонанс Шумана (фоллбэк из JSON)
+• Астрособытия (из lunar_calendar.json; знаки → ♈-♓ + VoC + LLM-буллеты)
 • Умный «Вывод» + рекомендации
 • Факт дня
 """
@@ -20,9 +21,9 @@ from typing import Dict, Any, Tuple, List, Optional
 import pendulum
 from telegram import Bot, error as tg_err
 
-from utils   import compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index
+from utils   import compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index, _get
 from weather import get_weather, fetch_tomorrow_temps, day_night_stats
-from air     import get_air, get_sst, get_kp
+from air     import get_air, get_sst
 from pollen  import get_pollen
 from schumann import get_schumann
 from gpt     import gpt_blurb  # (LLM-советы)
@@ -225,6 +226,50 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any]) -> Dict[str, Any]:
         "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else "",
     }
 
+# ────────── NOAA: Kp с «свежестью» ──────────
+def fetch_kp_recent() -> Tuple[Optional[float], Optional[str], Optional[int]]:
+    try:
+        j = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json", timeout=20).json()
+        if isinstance(j, list) and len(j) >= 2:
+            last = j[-1]
+            # ["time_tag","kp_index","a_index","station_count"]
+            t = pendulum.parse(str(last[0])).in_tz("UTC")
+            kp = float(last[1])
+            age_h = int((pendulum.now("UTC") - t).total_hours())
+            status = "спокойно" if kp < 3 else ("умеренно" if kp < 5 else "буря")
+            return kp, status, age_h
+    except Exception:
+        pass
+    return None, None, None
+
+# ────────── NOAA: Солнечный ветер ──────────
+def fetch_solar_wind() -> Optional[Dict[str, float|str]]:
+    # Пытаемся взять summary; если не вышло — None
+    try:
+        j = _get("https://services.swpc.noaa.gov/products/summary/solar-wind.json", timeout=20).json()
+        def pick(obj, key):
+            x = obj.get(key)
+            if isinstance(x, dict):
+                return x.get("value")
+            return None
+        if isinstance(j, dict):
+            bz = pick(j, "bz"); bt = pick(j, "bt")
+            v  = pick(j, "speed"); n = pick(j, "density")
+            vals = {}
+            for k,vv in (("bz",bz),("bt",bt),("v_kms",v),("n",n)):
+                try: vals[k] = float(vv) if vv is not None else None
+                except Exception: vals[k] = None
+            # оценка состояния
+            bzv = vals.get("bz"); vv = vals.get("v_kms"); dn = vals.get("n")
+            danger = (bzv is not None and bzv <= -10) or (vv is not None and vv >= 600) or (dn is not None and dn >= 20)
+            warn   = (bzv is not None and bzv <= -6) or (vv is not None and vv >= 500) or (dn is not None and dn >= 10)
+            mood = "буря" if danger else ("возмущённо" if warn else "спокойно")
+            vals["mood"] = mood
+            return vals
+    except Exception:
+        pass
+    return None
+
 # ────────── Шуман: фоллбэк / рендер 2 строки ──────────
 def _trend_text(sym: str) -> str:
     return {"↑": "растёт", "↓": "снижается", "→": "стабильно"}.get(sym, "стабильно")
@@ -366,12 +411,23 @@ def build_astro_section_for_tomorrow() -> List[str]:
     else:
         base = f"🌙 Фаза: {phase_name}"
         prm  = f" ({percent}%)" if percent else ""
-        lines += [base + prm, (_zsym(f"♒ Знак: {sign}") if sign else "— знак Луны н/д")]
+        lines += [base + prm, (_zsym(f"Знак: {sign}") if sign else "— знак Луны н/д")]
 
     voc = _voc_interval(rec, tz_local=tz.name)
     if voc:
         t1, t2 = voc
         lines.append(f"⚫️ VoC: {t1.format('HH:mm')}–{t2.format('HH:mm')}")
+
+    # LLM-добавка (не более 2 строк)
+    if os.getenv("DISABLE_LLM_DAILY","0").lower() not in ("1","true","yes","on"):
+        try:
+            _, tips = gpt_blurb("астрология")
+            tips = [t.strip() for t in tips if t.strip()][:2]
+            if tips:
+                lines += tips
+        except Exception:
+            pass
+
     return lines
 
 # ───────────────────────── build_msg ─────────────────────────
@@ -403,7 +459,6 @@ def build_msg() -> str:
     wind_ms, wind_dir, press_hpa, p_trend, gust_max = pick_header_metrics(wm)
     storm = storm_flags_for_tomorrow(wm)
 
-    # Шапка как в KLD: d/n, погода, ветер(+порывы), RH, давление
     wind_part = (
         f"💨 {wind_ms:.1f} м/с ({compass(wind_dir)})" if isinstance(wind_ms, (int, float)) and wind_dir is not None
         else (f"💨 {wind_ms:.1f} м/с" if isinstance(wind_ms, (int, float)) else "💨 н/д")
@@ -469,60 +524,76 @@ def build_msg() -> str:
         P.append(f"☢️ Радиация: {float(val):.3f} µSv/h")
     P.append("———")
 
-    # Геомагнитка + Шуман
-    try:
-        kp, ks = get_kp()
-    except Exception:
-        kp, ks = None, "н/д"
-    P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if isinstance(kp, (int, float)) else "🧲 Геомагнитка: н/д")
+    # Геомагнитка с «свежестью»
+    kp_recent, kp_status, kp_age = fetch_kp_recent()
+    kp_val = kp_recent
+    if kp_val is not None:
+        ago = f", {kp_age}ч назад" if kp_age is not None else ""
+        P.append(f"{kp_emoji(kp_val)} Геомагнитка: Kp={kp_val:.1f} ({kp_status}{ago})")
+    else:
+        # запасной вариант (без «свежести»)
+        try:
+            from air import get_kp  # локальный провайдер
+            _kp, _ks = get_kp()
+        except Exception:
+            _kp, _ks = None, "н/д"
+        P.append(f"{kp_emoji(_kp)} Геомагнитка: Kp={_kp:.1f} ({_ks})" if isinstance(_kp,(int,float)) else "🧲 Геомагнитка: н/д")
 
+    # Солнечный ветер
+    sw = fetch_solar_wind()
+    if sw:
+        bz = sw.get("bz"); bt = sw.get("bt"); v = sw.get("v_kms"); n = sw.get("n"); mood = sw.get("mood","—")
+        def fmt(x, unit="", ndash="н/д"): return (f"{x:.1f}{unit}" if isinstance(x,(int,float,float)) else ndash)
+        P.append(f"☀️ Солнечный ветер: Bz {fmt(bz,' nT')}, Bt {fmt(bt,' nT')}, V {fmt(v,' km/s')}, n {fmt(n,' см⁻³')} — {mood}")
+    else:
+        P.append("☀️ Солнечный ветер: н/д")
+
+    # Шуман
     schu_state = get_schumann_with_fallback()
     P.extend(schumann_lines(schu_state))
     P.append("———")
 
-    # Астрособытия (из lunar_calendar.json)
+    # Астрособытия (из lunar_calendar.json + LLM)
     P.extend(build_astro_section_for_tomorrow())
     P.append("———")
 
     # «Умный» вывод
     P.append("📜 <b>Вывод</b>")
-    P.extend(
-        (lambda air=air, kp=kp, ks=ks, storm=storm, schu=schu_state: (
-            (lambda lines: lines)(
-                [] if False else
-                __import__('builtins') or []
-            )
-        ))()  # placeholder to keep scope
-    )
-    # фактически используем старую реализацию с учётом шторм-флага:
-    P[-1:] = []  # удаляем placeholder
-    P.extend((lambda: (
-        # основной драйвер: порывы/воздух/kp/шуман
-        (lambda air_bad, air_label, air_reason: (
-            ( ["Основной фактор — штормовая погода: " +
-                (", ".join([s for s in [
-                    (f"порывы до {storm.get('max_gust_ms'):.0f} м/с" if isinstance(storm.get('max_gust_ms'), (int,float)) else None),
-                    ("ливни" if storm.get("heavy_rain") else None),
-                    ("гроза"  if storm.get("thunder") else None),
-                ] if s])) + ". Планируйте дела с учётом погоды."]
-              if storm.get("warning") else
-              ([f"Основной фактор — качество воздуха: {air_label} ({air_reason}). Сократите время на улице и проветривание по ситуации."]
-               if air_bad else
-               ([f"Основной фактор — магнитная активность: Kp≈{kp:.1f} ({ks}). Возможна чувствительность у метеозависимых."]
-                if (isinstance(kp,(int,float)) and kp>=5) else
-                (["Основной фактор — волны Шумана: отмечаются сильные отклонения."]
-                 if (schu_state or {}).get("status","").startswith("🔴") else
-                 ["Серьёзных факторов риска не видно — ориентируйтесь на текущую погоду и планы."]))))
-        ))(*_is_air_bad(air))
-    ))())
+    kp_for_logic = kp_val if isinstance(kp_val,(int,float)) else None
+    air_bad, air_label, air_reason = _is_air_bad(air)
+    schu_main = (schu_state or {}).get("status","").startswith("🔴")
+    if storm.get("warning"):
+        parts = [t for t in [
+            (f"порывы до {storm.get('max_gust_ms'):.0f} м/с" if isinstance(storm.get('max_gust_ms'), (int,float)) else None),
+            ("ливни" if storm.get("heavy_rain") else None),
+            ("гроза" if storm.get("thunder") else None),
+        ] if t]
+        P.append("Основной фактор — штормовая погода: " + ", ".join(parts) + ". Планируйте дела с учётом погоды.")
+    elif air_bad:
+        P.append(f"Основной фактор — качество воздуха: {air_label} ({air_reason}). Сократите время на улице и проветривание по ситуации.")
+    elif isinstance(kp_for_logic,(int,float)) and kp_for_logic >= 5:
+        P.append(f"Основной фактор — магнитная активность: Kp≈{kp_for_logic:.1f}. Возможна чувствительность у метеозависимых.")
+    elif schu_main:
+        P.append("Основной фактор — волны Шумана: отмечаются сильные отклонения.")
+    else:
+        P.append("Серьёзных факторов риска не видно — ориентируйтесь на текущую погоду и планы.")
+
+    secondary: List[str] = []
+    if isinstance(storm.get("max_gust_ms"), (int,float)) and not storm.get("warning"):
+        secondary.append(f"порывы до {storm['max_gust_ms']:.0f} м/с")
+    if air_bad: secondary.append(f"качество воздуха: {air_label}")
+    if isinstance(kp_for_logic,(int,float)) and kp_for_logic >= 5: secondary.append(f"магнитная активность Kp≈{kp_for_logic:.1f}")
+    if schu_main: secondary.append("отклонения Шумана")
+    if secondary:
+        P.append("Также обратите внимание: " + "; ".join(secondary[:2]) + ".")
+    P.append("———")
 
     # рекомендации
-    P.append("———")
     try:
         theme = (
             "плохая погода" if storm.get("warning") else
-            ("магнитные бури" if isinstance(kp, (int, float)) and kp >= 5 else
-             ("плохой воздух" if _is_air_bad(air)[0] else "здоровый день"))
+            ("магнитные бури" if isinstance(kp_for_logic, (int, float)) and kp_for_logic >= 5 else
+             ("плохой воздух" if air_bad else "здоровый день"))
         )
         _, tips = gpt_blurb(theme)
         for tip in tips[:3]:
