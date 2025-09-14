@@ -247,6 +247,6 @@ def astro_events(
 if __name__ == "__main__":
     from pprint import pprint
     print("=== Астрособытия на сегодня ===")
-    pprint(astro_events(offset_days=0, show_all_voc=False, tz=os.getenv("TZ_LOCAL","Asia/Nicosia")))
+    pprint(astro_events(offset_days=0, show_all_voc=False, tz=os.getenv("TZ_LOCAL","Europe/Kaliningrad")))
     print("\n=== Астрособытия на завтра (показывать короткие VoC) ===")
     pprint(astro_events(offset_days=1, show_all_voc=True, tz=os.getenv("LUNAR_TZ","Asia/Nicosia")))
