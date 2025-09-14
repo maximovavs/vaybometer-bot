@@ -32,13 +32,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: daily-post-cy
+  group: daily-post-klg
   cancel-in-progress: false
 
 # общие переменные окружения для всех джоб
 env:
-  TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-  CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
+  TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
+  CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
   CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
   # опц. явная переадресация канала из inputs
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
@@ -48,7 +48,7 @@ env:
   GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
   GEN_SKIP_SHORT: "1"
   DISABLE_LLM_DAILY: "0"
-  TZ: Asia/Nicosia
+  TZ: Europe/Kaliningrad
   WORK_DATE: ${{ github.event.inputs.work_date }}
   # прокинем флаг в скрипт
   TO_TEST: ${{ github.event.inputs.to_test }}
