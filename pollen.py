@@ -1,55 +1,60 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-pollen.py (Cyprus)
-~~~~~~~~~~~~~~~~~~
-Пыльца из Open-Meteo Air Quality API с улучшениями из KLD:
+pollen.py
+~~~~~~~~~
+Получение данных о концентрациях пыльцы (берёзы, травы, амброзии) из Open-Meteo Air Quality API.
 
-• Безопасный HTTP с таймаутом (HTTP_TIMEOUT, сек).
-• Берём значения по БЛИЖАЙШЕМУ ПРОШЕДШЕМУ часу (а не первый элемент).
-• Округление до 0.1; единый риск по максимуму из трёх показателей.
-• Всегда возвращаем словарь (без None), чтобы не ломать вызовы.
-
-Возвращаемый формат:
-{
+get_pollen(lat, lon) → None | {
   "tree":  float|None,   # birch_pollen
   "grass": float|None,   # grass_pollen
   "weed":  float|None,   # ragweed_pollen
   "risk":  "низкий"|"умеренный"|"высокий"|"экстремальный"|"н/д"
 }
+
+Все сетевые вызовы обёрнуты в try/except, используется общий таймаут HTTP_TIMEOUT (сек).
 """
 
 from __future__ import annotations
 import os
 import math
 import logging
-from time import gmtime, strftime
 from typing import Dict, Any, Optional, List, Union
 
-from utils import _get  # ожидание: _get(url, **query) -> parsed JSON (dict)
+from utils import _get  # ваша HTTP-обёртка
 
+# ───────────────────────── Логирование / таймаут ────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 REQUEST_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "10"))
 
-# дефолт — Лимассол
+# ───────────────────────── Константы (дефолт) ───────────────────────────────
+# По умолчанию — Лимассол (Кипр). Для Калининграда передавайте координаты явно.
 DEFAULT_LAT = 34.707
 DEFAULT_LON = 33.022
 
-
+# ───────────────────────── Безопасная HTTP-обёртка ──────────────────────────
 def _safe_http_get(url: str, **params) -> Optional[Dict[str, Any]]:
-    """Пробуем _get с timeout, при несовместимости — без него; ошибки → None."""
+    """Пробует вызвать utils._get с таймаутом (если поддерживается). При ошибке → None."""
     try:
         try:
-            return _get(url, timeout=REQUEST_TIMEOUT, **params)  # type: ignore[call-arg]
+            return _get(url, timeout=REQUEST_TIMEOUT, **params)
         except TypeError:
+            # если ваша _get не принимает timeout
             return _get(url, **params)
     except Exception as e:
         logging.warning("pollen: HTTP error: %s", e)
         return None
 
-
+# ───────────────────────── Вспомогательные функции ──────────────────────────
 def _risk_level(val: Optional[float]) -> str:
+    """
+    По максимальной концентрации возвращает:
+      < 10  → "низкий"
+      < 30  → "умеренный"
+      < 70  → "высокий"
+      ≥ 70  → "экстремальный"
+      None → "н/д"
+    """
     if val is None:
         return "н/д"
     if val < 10:
@@ -60,38 +65,44 @@ def _risk_level(val: Optional[float]) -> str:
         return "высокий"
     return "экстремальный"
 
-
 def _pick_nearest_past_hour(times: List[str], values: List[Any]) -> Optional[float]:
-    """Берём значение по ближайшему прошедшему часу (UTC)."""
+    """
+    Берёт значение по ближайшему ПРОШЕДШЕМУ часу (UTC). Если нет валидных — None.
+    """
     if not times or not values or len(times) != len(values):
         return None
-    now_iso = strftime("%Y-%m-%dT%H:00", gmtime())
-    idxs = [i for i, t in enumerate(times) if isinstance(t, str) and t <= now_iso]
-    if not idxs:
-        return None
-    v = values[max(idxs)]
-    if isinstance(v, (int, float)) and math.isfinite(v) and v >= 0:
-        return float(v)
+    try:
+        # формат меток у Open-Meteo: 'YYYY-MM-DDTHH:MM'
+        from time import gmtime, strftime
+        now_iso = strftime("%Y-%m-%dT%H:00", gmtime())
+        idxs = [i for i, t in enumerate(times) if isinstance(t, str) and t <= now_iso]
+        if not idxs:
+            return None
+        v = values[max(idxs)]
+        if isinstance(v, (int, float)) and math.isfinite(v) and v >= 0:
+            return float(v)
+    except Exception:
+        pass
     return None
 
-
-def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, Any]:
+# ───────────────────────── Публичное API ────────────────────────────────────
+def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Optional[Dict[str, Any]]:
     """
-    Публичный API: возвращает словарь с концентрациями и риском.
-    Ошибки/нет данных → значения None и risk="н/д".
+    Запрашивает концентрации пыльцы (birch, grass, ragweed) из Open-Meteo Air Quality API.
+    Возвращает None при любой ошибке или словарь с данными (см. шапку файла).
     """
-    empty = {"tree": None, "grass": None, "weed": None, "risk": "н/д"}
+    url = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    params = {
+        "latitude":  lat,
+        "longitude": lon,
+        "hourly":    "birch_pollen,grass_pollen,ragweed_pollen",
+        "timezone":  "UTC",
+    }
 
-    j = _safe_http_get(
-        "https://air-quality-api.open-meteo.com/v1/air-quality",
-        latitude=lat,
-        longitude=lon,
-        hourly="birch_pollen,grass_pollen,ragweed_pollen",
-        timezone="UTC",
-    )
+    j = _safe_http_get(url, **params)
     if not j or "hourly" not in j:
         logging.debug("pollen: нет hourly в ответе")
-        return empty
+        return None
 
     try:
         h = j["hourly"]
@@ -104,10 +115,15 @@ def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, 
         grass_val = _pick_nearest_past_hour(times, grass)
         weed_val  = _pick_nearest_past_hour(times, ragweed)
 
+        # округлим до 1 знака, оставляя None как есть
         def _rnd(x: Optional[float]) -> Optional[float]:
             return round(float(x), 1) if isinstance(x, (int, float)) and math.isfinite(x) else None
 
-        tree_r, grass_r, weed_r = _rnd(tree_val), _rnd(grass_val), _rnd(weed_val)
+        tree_r  = _rnd(tree_val)
+        grass_r = _rnd(grass_val)
+        weed_r  = _rnd(weed_val)
+
+        # риск по максимальной доступной концентрации; если все None → "н/д"
         candidates = [v for v in (tree_r, grass_r, weed_r) if isinstance(v, (int, float))]
         max_val = max(candidates) if candidates else None
 
@@ -117,11 +133,15 @@ def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, 
             "weed":  weed_r,
             "risk":  _risk_level(max_val),
         }
+
     except Exception as e:
         logging.warning("pollen: parse error: %s", e)
-        return empty
+        return None
 
-
+# ───────────────────────── CLI ──────────────────────────────────────────────
 if __name__ == "__main__":
     from pprint import pprint
+    print("Пыльца для Лимассола:")
+    pprint(get_pollen(34.68, 33.04))
+    print("\nПыльца (дефолт):")
     pprint(get_pollen())
