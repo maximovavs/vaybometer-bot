@@ -88,18 +88,26 @@ jobs:
               pendulum.today = _fake_today
               pendulum.now   = _fake_today
 
-          # Определяем канал доставки:
+          # Выбор канала:
           # 1) channel_override → прямой chat_id
-          # 2) to_test=true     → подставляем CHANNEL_ID_TEST в CHANNEL_ID (post.py читает CHANNEL_ID)
+          # 2) to_test=true     → CHANNEL_ID_TEST
+          # 3) иначе            → CHANNEL_ID (прод)
+          src = "prod"
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           if chat_override:
               os.environ["CHANNEL_ID"] = chat_override
+              src = "override"
           else:
               to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
               if to_test:
                   test_id = (os.getenv("CHANNEL_ID_TEST") or "").strip()
                   if test_id:
                       os.environ["CHANNEL_ID"] = test_id
+                      src = "test"
+                  else:
+                      src = "prod (no CHANNEL_ID_TEST)"
+
+          print("Resolved CHANNEL_ID:", os.environ.get("CHANNEL_ID"), "| source:", src, "| TO_TEST:", os.getenv("TO_TEST"))
 
           # Запуск
           sys.argv = ["post.py"]
@@ -139,17 +147,24 @@ jobs:
               pendulum.today = _fake_today
               pendulum.now   = _fake_today
 
+          src = "prod"
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           if chat_override:
               os.environ["CHANNEL_ID"] = chat_override
+              src = "override"
           else:
               to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
               if to_test:
                   test_id = (os.getenv("CHANNEL_ID_TEST") or "").strip()
                   if test_id:
                       os.environ["CHANNEL_ID"] = test_id
+                      src = "test"
+                  else:
+                      src = "prod (no CHANNEL_ID_TEST)"
 
-          # Если post.py поддерживает --fx-only — передадим; иначе просто запуск
+          print("Resolved CHANNEL_ID:", os.environ.get("CHANNEL_ID"), "| source:", src, "| TO_TEST:", os.getenv("TO_TEST"))
+
+          # Если post.py поддерживает --fx-only — передадим; иначе fallback без флага
           args = ["post.py", "--fx-only"]
           sys.argv = args
           try:
@@ -157,7 +172,6 @@ jobs:
           except SystemExit:
               raise
           except Exception:
-              # fallback: без флага
               sys.argv = ["post.py"]
               runpy.run_path("post.py", run_name="__main__")
           PY
