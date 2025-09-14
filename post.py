@@ -80,9 +80,9 @@ def _nearest_index(times: List[pendulum.DateTime], date_obj: pendulum.Date, pref
     if not times:
         return None
     target = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, prefer_hour, 0, tz=TZ)
-    best_i, best_diff = None, None
-    for i, dt in enumerate(times:
-    ):
+    best_i: Optional[int] = None
+    best_diff: Optional[float] = None
+    for i, dt in enumerate(times):
         try:
             dt_local = dt.in_tz(TZ)
         except Exception:
