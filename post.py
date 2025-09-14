@@ -323,8 +323,11 @@ def build_msg() -> str:
              else "🌊 Ср. темп. моря: н/д")
     P.append("———")
 
-    # Limassol прогноз (как «город по умолчанию»)
-    lat, lon = CITIES["Limassol"]
+    # Город по умолчанию (можно переопределить через PRIMARY_CITY)
+    primary = os.getenv("PRIMARY_CITY", "Limassol")
+    lat, lon = CITIES.get(primary, CITIES["Limassol"])
+
+    # Прогноз, температуры
     w   = get_weather(lat, lon) or {}
     day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=TZ.name)
 
@@ -332,7 +335,7 @@ def build_msg() -> str:
 
     avg_t  = ((day_max + night_min)/2) if (day_max is not None and night_min is not None) else None
     parts = [
-        (f"🌡️ Ср. темп: {avg_t:.0f} °C" if isinstance(avg_t, (int, float, float)) else None),
+        (f"🌡️ Ср. темп: {avg_t:.0f} °C" if isinstance(avg_t, (int, float)) else None),
         clouds_word((w.get("current") or {}).get("clouds", 0)),
         (f"💨 {wind_ms:.1f} м/с ({compass(wind_dir)})" if isinstance(wind_ms, (int, float)) and wind_dir is not None
             else (f"💨 {wind_ms:.1f} м/с" if isinstance(wind_ms, (int, float)) else "💨 н/д")),
@@ -362,8 +365,8 @@ def build_msg() -> str:
             P.append(line)
         P.append("———")
 
-    # Air + pollen
-    air = get_air() or {}
+    # Air + pollen (нужны координаты)
+    air = get_air(lat, lon) or {}
     lvl = air.get("lvl","н/д")
     P.append("🏭 <b>Качество воздуха</b>")
     P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
