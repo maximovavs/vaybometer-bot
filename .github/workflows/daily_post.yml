@@ -2,7 +2,7 @@ name: Daily VayboMeter (CY)
 
 on:
   schedule:
-    # Вечерний пост: 15:00 UTC (оставляю как в примере)
+    # Вечерний пост: 15:00 UTC
     - cron: '0 15 * * *'
     # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
     - cron: '0 9 * * *'
@@ -32,26 +32,25 @@ permissions:
   contents: read
 
 concurrency:
-  group: daily-post-klg
+  group: daily-post-cy
   cancel-in-progress: false
 
-# общие переменные окружения для всех джоб
 env:
-  TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
-  CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
-  CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
+  # КИПРСКИЕ секреты
+  TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
+  CHANNEL_ID:       ${{ secrets.CHANNEL_ID }}
+  CHANNEL_ID_TEST:  ${{ secrets.CHANNEL_ID_TEST }}
   # опц. явная переадресация канала из inputs
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
-  # вкл/выкл микро-LLM, таймзона, дата для ручного запуска
-  OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
-  GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
-  GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
+  # LLM/флаги/таймзона
+  OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
+  GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
+  GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
   GEN_SKIP_SHORT: "1"
   DISABLE_LLM_DAILY: "0"
-  TZ: Europe/Kaliningrad
+  TZ: Asia/Nicosia
   WORK_DATE: ${{ github.event.inputs.work_date }}
-  # прокинем флаг в скрипт
-  TO_TEST: ${{ github.event.inputs.to_test }}
+  TO_TEST:   ${{ github.event.inputs.to_test }}
 
 jobs:
   evening:
@@ -79,25 +78,31 @@ jobs:
         run: |
           python <<'PY'
           import os, runpy, sys, pendulum
-          wd = os.getenv("WORK_DATE")
+
+          # Патч today()/now() при ручной дате
+          wd = (os.getenv("WORK_DATE") or "").strip()
           if wd:
               def _fake_today(tz=None):
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
+              pendulum.now   = _fake_today
 
-          args = ["post.py"]
-          # явный override из input — передадим как --chat-id
-          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
-          if chat_override.strip():
-              args += ["--chat-id", chat_override.strip()]
+          # Определяем канал доставки:
+          # 1) channel_override → прямой chat_id
+          # 2) to_test=true     → подставляем CHANNEL_ID_TEST в CHANNEL_ID (post.py читает CHANNEL_ID)
+          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
+          if chat_override:
+              os.environ["CHANNEL_ID"] = chat_override
           else:
-              # иначе чекбокс to_test
-              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
+              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
               if to_test:
-                  args.append("--to-test")
+                  test_id = (os.getenv("CHANNEL_ID_TEST") or "").strip()
+                  if test_id:
+                      os.environ["CHANNEL_ID"] = test_id
 
-          sys.argv = args
+          # Запуск
+          sys.argv = ["post.py"]
           runpy.run_path("post.py", run_name="__main__")
           PY
 
@@ -125,21 +130,34 @@ jobs:
         run: |
           python <<'PY'
           import os, runpy, sys, pendulum
-          wd = os.getenv("WORK_DATE")
+
+          wd = (os.getenv("WORK_DATE") or "").strip()
           if wd:
               def _fake_today(tz=None):
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
+              pendulum.now   = _fake_today
 
-          args = ["post.py", "--fx-only"]
-          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
-          if chat_override.strip():
-              args += ["--chat-id", chat_override.strip()]
+          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
+          if chat_override:
+              os.environ["CHANNEL_ID"] = chat_override
           else:
-              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
+              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
               if to_test:
-                  args.append("--to-test")
+                  test_id = (os.getenv("CHANNEL_ID_TEST") or "").strip()
+                  if test_id:
+                      os.environ["CHANNEL_ID"] = test_id
+
+          # Если post.py поддерживает --fx-only — передадим; иначе просто запуск
+          args = ["post.py", "--fx-only"]
           sys.argv = args
-          runpy.run_path("post.py", run_name="__main__")
+          try:
+              runpy.run_path("post.py", run_name="__main__")
+          except SystemExit:
+              raise
+          except Exception:
+              # fallback: без флага
+              sys.argv = ["post.py"]
+              runpy.run_path("post.py", run_name="__main__")
           PY
