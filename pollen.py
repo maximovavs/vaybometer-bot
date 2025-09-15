@@ -33,14 +33,21 @@ DEFAULT_LAT = 34.707
 DEFAULT_LON = 33.022
 
 # ───────────────────────── Безопасная HTTP-обёртка ──────────────────────────
+# Заменить _safe_http_get на универсальный (понимает и dict, и Response)
 def _safe_http_get(url: str, **params) -> Optional[Dict[str, Any]]:
-    """Пробует вызвать utils._get с таймаутом (если поддерживается). При ошибке → None."""
     try:
         try:
-            return _get(url, timeout=REQUEST_TIMEOUT, **params)
+            resp = _get(url, timeout=REQUEST_TIMEOUT, **params)
         except TypeError:
-            # если ваша _get не принимает timeout
-            return _get(url, **params)
+            resp = _get(url, **params)
+        # Если utils._get вернул requests.Response — возьмём JSON
+        if hasattr(resp, "json"):
+            try:
+                return resp.json()
+            except Exception:
+                return None
+        # Иначе предполагаем, что это уже dict
+        return resp if isinstance(resp, dict) else None
     except Exception as e:
         logging.warning("pollen: HTTP error: %s", e)
         return None
