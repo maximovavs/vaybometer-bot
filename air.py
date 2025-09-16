@@ -121,6 +121,7 @@ def _pick_nearest_hour(arr_time: List[str], arr_val: List[Any]) -> Optional[floa
 
 def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     if not AIR_KEY:
+        logging.warning("IQAir: не задан AIRVISUAL_KEY — переключаюсь на Open-Meteo AQ.")
         return None
     j = _safe_http_get(
         "https://api.airvisual.com/v2/nearest_city",
@@ -348,7 +349,7 @@ def _load_sw_cache() -> Optional[Dict[str, Any]]:
 
 def _save_sw_cache(obj: Dict[str, Any]) -> None:
     try:
-        SW_CACHE.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        SW_CACHE.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8"))
     except Exception as e:
         logging.warning("SW cache write error: %s", e)
 
@@ -373,7 +374,7 @@ def _parse_table_latest(rowset: Any, want: List[str]) -> tuple[Optional[Dict[str
             values: Dict[str, float] = {}
             ok = False
             for col in want:
-                if col == "time_tag": 
+                if col == "time_tag":
                     continue
                 j = idx.get(col)
                 if j is None or j >= len(row):
