@@ -150,7 +150,7 @@ def pick_header_metrics(wm: Dict[str, Any]) -> Tuple[Optional[float], Optional[i
         if vals:
             gust_max_ms = kmh_to_ms(max(vals))
 
-    return wind_ms, wind_dir, press_val, trend, gust_max_ms)
+    return wind_ms, wind_dir, press_val, trend, gust_max_ms
 
 def pressure_arrow(trend: str) -> str:
     return {"↑":"↑","↓":"↓","→":"→"}.get(trend, "→")
