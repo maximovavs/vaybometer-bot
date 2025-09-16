@@ -349,7 +349,7 @@ def _load_sw_cache() -> Optional[Dict[str, Any]]:
 
 def _save_sw_cache(obj: Dict[str, Any]) -> None:
     try:
-        SW_CACHE.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8"))
+        SW_CACHE.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         logging.warning("SW cache write error: %s", e)
 
