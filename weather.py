@@ -11,11 +11,11 @@ weather.py — единый слой для погоды (Кипр), совме�
 
 Нормализация hourly-полей (синонимы):
   time / time_local / timestamp (гарантируем наличие 'time')
-  wind_speed_10m | windspeed_10m | windspeed         (км/ч)
+  wind_speed_10m | windspeed_10m | windspeed             (км/ч)
   wind_direction_10m | winddirection_10m | winddirection (градусы)
-  wind_gusts_10m | wind_gusts | windgusts_10m        (км/ч)
-  surface_pressure | pressure                         (гПа)
-  relative_humidity_2m | humidity                     (%)
+  wind_gusts_10m | wind_gusts | windgusts_10m            (км/ч)
+  surface_pressure | pressure                             (гПа)
+  relative_humidity_2m | relativehumidity_2m | humidity   (%)
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _ensure_aliases_om_payload(w: Dict[str, Any]) -> Dict[str, Any]:
     )
     if not isinstance(time_arr, list):
         time_arr = []
-    out["hourly"]["time"] = time_arr
+    out["hourly"]["time"] = [str(t) for t in time_arr]
 
     # wind speed (км/ч)
     spd = hourly.get("wind_speed_10m") or hourly.get("windspeed_10m") or hourly.get("windspeed")
@@ -86,10 +86,11 @@ def _ensure_aliases_om_payload(w: Dict[str, Any]) -> Dict[str, Any]:
         out["hourly"]["surface_pressure"] = pres
         out["hourly"]["pressure"]         = pres
 
-    # RH (%)
-    rh = hourly.get("relative_humidity_2m") or hourly.get("humidity")
+    # RH (%) — добавлен алиас relativehumidity_2m
+    rh = hourly.get("relative_humidity_2m") or hourly.get("relativehumidity_2m") or hourly.get("humidity")
     if isinstance(rh, list):
         out["hourly"]["relative_humidity_2m"] = rh
+        out["hourly"]["relativehumidity_2m"]  = rh
         out["hourly"]["humidity"]             = rh
 
     # Температура — пригодится для расчётов, если нет daily
@@ -97,7 +98,7 @@ def _ensure_aliases_om_payload(w: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(temp, list):
         out["hourly"]["temperature_2m"] = temp
 
-    # daily.weathercode (обязательно для «иконки» завтра)
+    # daily.weathercode (иконка завтра)
     wc = daily.get("weathercode")
     if isinstance(wc, list):
         out["daily"]["weathercode"] = wc
@@ -109,6 +110,14 @@ def _ensure_aliases_om_payload(w: Dict[str, Any]) -> Dict[str, Any]:
         out["daily"]["temperature_2m_max"] = tmax
     if isinstance(tmin, list):
         out["daily"]["temperature_2m_min"] = tmin
+
+    # daily RH (для фоллбэка)
+    rh_min = daily.get("relative_humidity_2m_min") or daily.get("relativehumidity_2m_min")
+    rh_max = daily.get("relative_humidity_2m_max") or daily.get("relativehumidity_2m_max")
+    if isinstance(rh_min, list):
+        out["daily"]["relative_humidity_2m_min"] = rh_min
+    if isinstance(rh_max, list):
+        out["daily"]["relative_humidity_2m_max"] = rh_max
 
     return out
 
@@ -128,7 +137,7 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             "surface_pressure",
             "relative_humidity_2m",
         ]),
-        "daily": "weathercode,temperature_2m_max,temperature_2m_min",
+        "daily": "weathercode,temperature_2m_max,temperature_2m_min,relative_humidity_2m_min,relative_humidity_2m_max",
         "forecast_days": 3,
         "timezone": "UTC",
     }
@@ -136,15 +145,10 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     if not isinstance(j, dict):
         return None
 
-    # нормализуем
     h = j.get("hourly") or {}
     d = j.get("daily")  or {}
 
-    # Убедимся, что есть hourly.time в виде ISO-строк
-    if isinstance(h.get("time"), list):
-        time_iso = [str(t) for t in h["time"]]
-    else:
-        time_iso = []
+    time_iso = [str(t) for t in (h.get("time") or [])]
 
     out = {
         "hourly": {
@@ -160,6 +164,8 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             "weathercode": d.get("weathercode"),
             "temperature_2m_max": d.get("temperature_2m_max"),
             "temperature_2m_min": d.get("temperature_2m_min"),
+            "relative_humidity_2m_min": d.get("relative_humidity_2m_min"),
+            "relative_humidity_2m_max": d.get("relative_humidity_2m_max"),
         },
     }
     return _ensure_aliases_om_payload(out)
@@ -170,22 +176,14 @@ def _owm_map_to_wmo(code: int) -> int:
         c = int(code)
     except Exception:
         return 0
-    if c == 800:     # clear
-        return 0
-    if 801 <= c <= 803:
-        return 1  # partly cloudy
-    if c == 804:
-        return 3  # overcast
-    if 200 <= c <= 232:
-        return 95  # thunder
-    if 300 <= c <= 321:
-        return 51  # drizzle
-    if 500 <= c <= 531:
-        return 61  # rain
-    if 600 <= c <= 622:
-        return 71  # snow
-    if 700 <= c <= 781:
-        return 45  # fog/mist etc
+    if c == 800: return 0
+    if 801 <= c <= 803: return 1
+    if c == 804: return 3
+    if 200 <= c <= 232: return 95
+    if 300 <= c <= 321: return 51
+    if 500 <= c <= 531: return 61
+    if 600 <= c <= 622: return 71
+    if 700 <= c <= 781: return 45
     return 2
 
 def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
@@ -195,11 +193,8 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         return None
     url = "https://api.openweathermap.org/data/3.0/onecall"
     params = {
-        "lat": lat,
-        "lon": lon,
-        "appid": key,
-        "units": "metric",
-        "exclude": "minutely,alerts",
+        "lat": lat, "lon": lon, "appid": key,
+        "units": "metric", "exclude": "minutely,alerts",
     }
     j = _safe_http_get(url, params=params, timeout=15)
     if not isinstance(j, dict):
@@ -208,14 +203,13 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     hourly = j.get("hourly") or []
     daily  = j.get("daily")  or []
 
-    # Соберём часовки
     times_iso: List[str] = []
-    spd_kmh:  List[float] = []
-    dir_deg:  List[float] = []
-    gust_kmh: List[float] = []
-    pres_hpa: List[float] = []
-    rh_perc:  List[float] = []
-    temp:     List[float] = []
+    spd_kmh:  List[Optional[float]] = []
+    dir_deg:  List[Optional[float]] = []
+    gust_kmh: List[Optional[float]] = []
+    pres_hpa: List[Optional[float]] = []
+    rh_perc:  List[Optional[float]] = []
+    temp:     List[Optional[float]] = []
 
     for it in hourly:
         try:
@@ -224,27 +218,25 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             times_iso.append(t)
         except Exception:
             continue
-        # OWM speed/gust в м/с → в км/ч
         try: spd_kmh.append(float(it.get("wind_speed", 0.0)) * 3.6)
-        except Exception: spd_kmh.append(None)  # type: ignore
+        except Exception: spd_kmh.append(None)
         try: dir_deg.append(float(it.get("wind_deg")))
-        except Exception: dir_deg.append(None)  # type: ignore
+        except Exception: dir_deg.append(None)
         try:
             g = it.get("wind_gust")
-            gust_kmh.append(float(g) * 3.6 if g is not None else None)  # type: ignore
+            gust_kmh.append(float(g) * 3.6 if g is not None else None)
         except Exception:
-            gust_kmh.append(None)  # type: ignore
+            gust_kmh.append(None)
         try: pres_hpa.append(float(it.get("pressure")))
-        except Exception: pres_hpa.append(None)  # type: ignore
+        except Exception: pres_hpa.append(None)
         try: rh_perc.append(float(it.get("humidity")))
-        except Exception: rh_perc.append(None)  # type: ignore
+        except Exception: rh_perc.append(None)
         try: temp.append(float(it.get("temp")))
-        except Exception: temp.append(None)  # type: ignore
+        except Exception: temp.append(None)
 
-    # daily
     d_wmo: List[int] = []
-    d_tmax: List[float] = []
-    d_tmin: List[float] = []
+    d_tmax: List[Optional[float]] = []
+    d_tmin: List[Optional[float]] = []
     for d in daily:
         w = (d.get("weather") or [{}])[0] or {}
         d_wmo.append(_owm_map_to_wmo(w.get("id", 800)))
@@ -271,12 +263,12 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     return _ensure_aliases_om_payload(out)
 
 def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
-    """Минимальный фоллбэк: current → склеиваем в 'hourly' из одного значения и добавляем time."""
+    """Минимальный фоллбэк: current → склеиваем в 'hourly' из одного значения и добавляем time (включая RH)."""
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
         "longitude": lon,
-        "current": "wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure",
+        "current": "wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure,relative_humidity_2m",
         "timezone": "UTC",
     }
     j = _safe_http_get(url, params=params, timeout=10)
@@ -296,6 +288,7 @@ def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             "wind_direction_10m": _f("wind_direction_10m"),
             "wind_gusts_10m": _f("wind_gusts_10m"),
             "surface_pressure": _f("surface_pressure"),
+            "relative_humidity_2m": _f("relative_humidity_2m"),
         },
         "daily": {"weathercode": [0, 0, 0]},
     }
@@ -343,21 +336,20 @@ def fetch_tomorrow_temps(lat: float, lon: float, tz: str = "UTC") -> Tuple[Optio
             continue
     if not vals:
         return None, None
-    # грубо: день = максимум, ночь = минимум
     return max(vals), min(vals)
 
 def day_night_stats(lat: float, lon: float, tz: str = "UTC") -> Dict[str, Optional[float]]:
     """
     Возвращает:
-      { t_day_max, t_night_min, rh_min, rh_max }
-    по часовкам «завтра» в заданной таймзоне.
+      { t_day_max, t_night_min, rh_min, rh_max, rh_avg }
+    по часовкам «завтра» в заданной таймзоне. RH имеет фоллбэк из daily.
     """
     tzobj = pendulum.timezone(tz)
     w = _openmeteo(lat, lon) or _openweather(lat, lon) or _openmeteo_current_only(lat, lon) or {}
     h = w.get("hourly") or {}
     times = h.get("time") or []
     temps = h.get("temperature_2m") or []
-    rh    = h.get("relative_humidity_2m") or []
+    rh    = h.get("relative_humidity_2m") or h.get("relativehumidity_2m") or h.get("humidity") or []
 
     tomorrow = pendulum.today(tzobj).add(days=1).date()
 
@@ -371,15 +363,15 @@ def day_night_stats(lat: float, lon: float, tz: str = "UTC") -> Dict[str, Option
         if dt.date() != tomorrow:
             continue
         # Температура
-        if isinstance(temps, list) and i < len(temps):
+        if isinstance(temps, list) and i < len(temps) and temps[i] is not None:
             try: t_vals.append(float(temps[i]))
             except Exception: ...
         # Влажность
-        if isinstance(rh, list) and i < len(rh):
+        if isinstance(rh, list) and i < len(rh) and rh[i] is not None:
             try: rh_vals.append(float(rh[i]))
             except Exception: ...
 
-    out = {
+    out: Dict[str, Optional[float]] = {
         "t_day_max": max(t_vals) if t_vals else None,
         "t_night_min": min(t_vals) if t_vals else None,
         "rh_min": (min(rh_vals) if rh_vals else None),
@@ -387,13 +379,22 @@ def day_night_stats(lat: float, lon: float, tz: str = "UTC") -> Dict[str, Option
         "rh_avg": (sum(rh_vals)/len(rh_vals) if rh_vals else None),
     }
 
-    # Если есть daily — приоритезируем температуру оттуда
+    # Приоритезируем суточные t_max/t_min, если есть
     d = w.get("daily") or {}
     tmax = d.get("temperature_2m_max")
     tmin = d.get("temperature_2m_min")
-    if isinstance(tmax, list) and len(tmax) > 1:
+    if isinstance(tmax, list) and len(tmax) > 1 and tmax[1] is not None:
         out["t_day_max"] = tmax[1]
-    if isinstance(tmin, list) and len(tmin) > 1:
+    if isinstance(tmin, list) and len(tmin) > 1 and tmin[1] is not None:
         out["t_night_min"] = tmin[1]
+
+    # Фоллбэк RH из daily, если по часовкам пусто
+    if out["rh_min"] is None or out["rh_max"] is None:
+        rh_min = d.get("relative_humidity_2m_min") or d.get("relativehumidity_2m_min")
+        rh_max = d.get("relative_humidity_2m_max") or d.get("relativehumidity_2m_max")
+        if isinstance(rh_min, list) and len(rh_min) > 1 and rh_min[1] is not None:
+            out["rh_min"] = float(rh_min[1])
+        if isinstance(rh_max, list) and len(rh_max) > 1 and rh_max[1] is not None:
+            out["rh_max"] = float(rh_max[1])
 
     return out
