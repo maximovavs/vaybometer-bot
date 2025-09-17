@@ -423,6 +423,9 @@ def build_conclusion(kp: Optional[float], kp_status: str,
     return lines
 
 # ────────── формат строки города ──────────
+def _fmt_t(v: Optional[float]) -> str:
+    return f"{v:.0f}" if isinstance(v, (int, float)) else "н/д"
+
 def _city_line(city: str, la: float, lo: float) -> str:
     wm  = get_weather(la, lo) or {}
     st  = day_night_stats(la, lo, tz=TZ.name) or {}
@@ -434,7 +437,7 @@ def _city_line(city: str, la: float, lo: float) -> str:
     sst = get_sst(la, lo) if city in COASTAL_CITIES else None
 
     parts = [
-        f"{city}: {(t_day if t_day is not None else 'н/д')}/{(t_night if t_night is not None else 'н/д')} °C",
+        f"{city}: {_fmt_t(t_day)}/{_fmt_t(t_night)} °C",
         (code_desc(wc) or "—"),
         (f"💨 {wind_ms:.1f} м/с ({compass(wind_dir)})" if isinstance(wind_ms,(int,float)) and wind_dir is not None
             else (f"💨 {wind_ms:.1f} м/с" if isinstance(wind_ms,(int,float)) else "💨 н/д")),
@@ -484,7 +487,6 @@ def build_msg() -> str:
     val = rad.get("value") or rad.get("dose")
     cpm = rad.get("cpm")
     if isinstance(val,(int,float)) or isinstance(cpm,(int,float)):
-        # простая оценка уровня
         lvl_txt, dot = "в норме", "🟢"
         if isinstance(val,(int,float)) and val >= 0.4: lvl_txt, dot = "выше нормы", "🔵"
         elif isinstance(val,(int,float)) and val >= 0.2: lvl_txt, dot = "повышено", "🟡"
@@ -532,7 +534,6 @@ def build_msg() -> str:
     P.append("———")
 
     # «Вывод»
-    # используем максимальные порывы из города-лидера (первой строки рейтинга)
     lead_city = RATING_ORDER[0]
     gust_for_concl = None
     try:
