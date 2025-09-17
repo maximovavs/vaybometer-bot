@@ -70,6 +70,61 @@ def code_desc(c: Any) -> Optional[str]:
     except Exception:
         return None
 
+# ────────── небольшой Open-Meteo fallback ──────────
+_OM_CACHE: Dict[str, Dict[str, Any]] = {}
+def openmeteo_fallback(lat: float, lon: float, tz: str) -> Dict[str, Any]:
+    """Мини-клиент Open-Meteo на случай, если weather.py вернул пусто."""
+    key = f"{lat:.3f},{lon:.3f}"
+    if key in _OM_CACHE:
+        return _OM_CACHE[key]
+
+    base = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "timezone": tz,
+        "daily": ",".join([
+            "temperature_2m_max",
+            "temperature_2m_min",
+            "weathercode"
+        ]),
+        "hourly": ",".join([
+            "wind_speed_10m",
+            "wind_direction_10m",
+            "wind_gusts_10m",
+            "surface_pressure",
+            "relative_humidity_2m"
+        ]),
+    }
+    try:
+        r = _get(base, params=params, timeout=20)
+        j = r.json() if hasattr(r, "json") else {}
+        if not isinstance(j, dict):
+            return {}
+        daily = j.get("daily") or {}
+        hourly = j.get("hourly") or {}
+        # нормализуем имена (совместимы с тем, что ждём в рендере)
+        ret = {
+            "daily": {
+                "temperature_2m_max": daily.get("temperature_2m_max") or [],
+                "temperature_2m_min": daily.get("temperature_2m_min") or [],
+                "weathercode": daily.get("weathercode") or [],
+            },
+            "hourly": {
+                "time": hourly.get("time") or [],
+                "wind_speed_10m": hourly.get("wind_speed_10m") or [],
+                "wind_direction_10m": hourly.get("wind_direction_10m") or [],
+                "wind_gusts_10m": hourly.get("wind_gusts_10m") or [],
+                "surface_pressure": hourly.get("surface_pressure") or [],
+                "relative_humidity_2m": hourly.get("relative_humidity_2m") or [],
+            }
+        }
+        _OM_CACHE[key] = ret
+        return ret
+    except Exception as e:
+        logging.warning("openmeteo_fallback failed for %s: %s", key, e)
+        return {}
+
 # ────────── helpers: время/часовки для завтра ──────────
 def _hourly_times(wm: Dict[str, Any]) -> List[pendulum.DateTime]:
     hourly = wm.get("hourly") or {}
@@ -502,7 +557,7 @@ def build_conclusion(kp: Optional[float], kp_status: str,
 
 # ────────── Температуры города с каскадом фоллбэков ──────────
 def _temps_for_city(lat: float, lon: float, tz: str) -> Tuple[Optional[float], Optional[float]]:
-    """Дн/ночь с фоллбэками: day_night_stats → fetch_tomorrow_temps → daily get_weather."""
+    """Дн/ночь с фоллбэками: day_night_stats → fetch_tomorrow_temps → daily get_weather → openmeteo_fallback."""
     td: Optional[float] = None
     tn: Optional[float] = None
 
@@ -535,19 +590,46 @@ def _temps_for_city(lat: float, lon: float, tz: str) -> Tuple[Optional[float], O
         except Exception:
             pass
 
+    if td is None or tn is None:
+        try:
+            wm = openmeteo_fallback(lat, lon, tz)
+            daily = wm.get("daily") or {}
+            mx = daily.get("temperature_2m_max") or []
+            mn = daily.get("temperature_2m_min") or []
+            if td is None and isinstance(mx, list) and len(mx) > 1:
+                td = float(mx[1])
+            if tn is None and isinstance(mn, list) and len(mn) > 1:
+                tn = float(mn[1])
+        except Exception:
+            pass
+
     return td, tn
 
 # ────────── Формат строки города ──────────
 def _city_line(city: str, la: float, lo: float) -> str:
-    wm  = get_weather(la, lo) or {}
+    wm = get_weather(la, lo) or {}
+    if not wm:
+        wm = openmeteo_fallback(la, lo, TZ.name)
+
     t_day, t_night = _temps_for_city(la, lo, TZ.name)
 
-    # RH — пробуем из day_night_stats
+    # RH — сначала day_night_stats, затем fallback из почасовой влажности
+    rh_min = rh_max = None
     try:
         st  = day_night_stats(la, lo, tz=TZ.name) or {}
         rh_min, rh_max = st.get("rh_min"), st.get("rh_max")
     except Exception:
-        rh_min = rh_max = None
+        pass
+    if rh_min is None or rh_max is None:
+        try:
+            hourly = wm.get("hourly") or {}
+            rh = hourly.get("relative_humidity_2m") or hourly.get("relativehumidity_2m") or []
+            idxs = _tomorrow_indices(wm)
+            vals = [float(rh[i]) for i in idxs if i < len(rh)]
+            if vals:
+                rh_min = min(vals); rh_max = max(vals)
+        except Exception:
+            pass
 
     wcarr = (wm.get("daily", {}) or {}).get("weathercode", [])
     wc = wcarr[1] if isinstance(wcarr, list) and len(wcarr) > 1 else None
@@ -681,7 +763,7 @@ def build_msg() -> str:
     lead_city = max(RATING_ORDER, key=lambda c: (_temps_for_city(*CITIES[c], TZ.name)[0] or -999))
     gust_for_concl: Optional[float] = None
     try:
-        wm_lead = get_weather(*CITIES[lead_city]) or {}
+        wm_lead = get_weather(*CITIES[lead_city]) or openmeteo_fallback(*CITIES[lead_city], TZ.name)
         _, _, _, _, gust_for_concl = pick_header_metrics(wm_lead)
     except Exception:
         pass
