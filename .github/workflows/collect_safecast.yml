@@ -1,186 +1,206 @@
-name: Collect SafeCast (Cyprus)
+name: Collect SafeCast (CY)
 
 on:
-  schedule:
-    # каждые 6 часов (UTC)
-    - cron: "0 */6 * * *"
   workflow_dispatch:
-    inputs:
-      lat:
-        description: "Широта (по умолчанию Лимассол)"
-        type: string
-        required: false
-        default: "34.707"
-      lon:
-        description: "Долгота (по умолчанию Лимассол)"
-        type: string
-        required: false
-        default: "33.022"
-      distance_km:
-        description: "Радиус выборки, км"
-        type: string
-        required: false
-        default: "50"
-      since_hours:
-        description: "Глубина истории, часов"
-        type: string
-        required: false
-        default: "48"
-      region:
-        description: "Метка региона в выходном JSON"
-        type: string
-        required: false
-        default: "Cyprus"
-      file:
-        description: "Путь к выходному файлу"
-        type: string
-        required: false
-        default: "data/safecast_cy.json"
-      dry_run:
-        description: "Только собрать, без коммита"
-        type: boolean
-        required: false
-        default: false
+  schedule:
+    # каждые 6 часов
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: write
 
 concurrency:
-  group: safecast-cyprus
+  group: safecast-CY
   cancel-in-progress: false
 
 jobs:
   collect:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install requests
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
-
-      - name: Fetch SafeCast
+      - name: Fetch SafeCast (CY)
         env:
-          SC_LAT:         ${{ inputs.lat || '34.707' }}
-          SC_LON:         ${{ inputs.lon || '33.022' }}
-          SC_DISTANCE_KM: ${{ inputs.distance_km || '50' }}
-          SC_SINCE_HOURS: ${{ inputs.since_hours || '48' }}
-          SC_REGION:      ${{ inputs.region || 'Cyprus' }}
-          SC_FILE:        ${{ inputs.file || 'data/safecast_cy.json' }}
+          SAFE_UA: "vaybometer-CY/1.0 (+github actions)"
+          SAFE_RETRIES: "4"
+          SAFE_TIMEOUT: "45"
+          SAFE_BACKOFF: "1.8"
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$(dirname "$SC_FILE")"
+          mkdir -p data
 
           python - <<'PY'
-          import os, sys, time, json, urllib.request, urllib.parse
+          import os, json, urllib.parse, urllib.request, urllib.error, time, sys
           from datetime import datetime, timedelta, timezone
+          from statistics import median
 
-          LAT  = float(os.getenv("SC_LAT", "34.707"))
-          LON  = float(os.getenv("SC_LON", "33.022"))
-          DIST = float(os.getenv("SC_DISTANCE_KM", "50"))
-          HRS  = int(float(os.getenv("SC_SINCE_HOURS","48")))
-          OUT  = os.getenv("SC_FILE","data/safecast_cy.json")
-          REG  = os.getenv("SC_REGION") or None
+          # Параметры Лимассола
+          LAT, LON = 34.68, 33.04
+          DIST_M   = 300_000    # 300 км
+          HOURS    = 48         # окно по времени
+          OUT_FILE = "data/safecast_CY.json"
 
-          def fetch_json_with_retry(url, tries=4, backoff=3, timeout=30):
+          # Сетевые настройки (ENV с дефолтами)
+          UA      = os.getenv("SAFE_UA", "vaybometer-CY/1.0 (+github actions)")
+          RETRIES = int(os.getenv("SAFE_RETRIES", "3"))
+          TIMEOUT = float(os.getenv("SAFE_TIMEOUT", "30"))
+          BACKOFF = float(os.getenv("SAFE_BACKOFF", "1.7"))
+
+          def iso_to_dt(s: str):
+              # Safecast возвращает ISO8601, иногда с 'Z'
+              s = (s or "").replace("Z", "+00:00")
+              return datetime.fromisoformat(s)
+
+          def fetch_json_with_retry(url: str):
+              """
+              GET с ретраями. Для 429/5xx (в т.ч. 503) — повторяем.
+              Для остальных 4xx — не ретраим.
+              По исчерпании попыток возвращаем None (чтобы job не падал).
+              """
               last = None
-              for i in range(tries):
+              for i in range(RETRIES):
                   try:
-                      with urllib.request.urlopen(url, timeout=timeout) as r:
+                      req = urllib.request.Request(
+                          url,
+                          headers={"Accept":"application/json","User-Agent":UA}
+                      )
+                      with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                           return json.loads(r.read().decode("utf-8"))
+                  except urllib.error.HTTPError as e:
+                      last = e
+                      code = getattr(e, "code", 0)
+                      if code in (429, 500, 502, 503, 504):
+                          if i < RETRIES - 1:
+                              time.sleep(BACKOFF ** i)
+                              continue
+                          else:
+                              break
+                      else:
+                          # «нормальные» 4xx — не ретраим
+                          print(f"WARN: HTTP {code} {e.reason}", file=sys.stderr)
+                          return None
                   except Exception as e:
                       last = e
-                      time.sleep(backoff * (i+1))
-              raise last
-
-          qs = {
-            "latitude": LAT,
-            "longitude": LON,
-            "distance": DIST * 1000.0,  # метры
-            "order": "captured_at",
-            "direction": "desc",
-            "captured_after": (datetime.now(timezone.utc) - timedelta(hours=HRS)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-          }
-          url = "https://api.safecast.org/measurements.json?" + urllib.parse.urlencode(qs)
-          try:
-              raw = fetch_json_with_retry(url)
-          except Exception as e:
-              print("ERROR: fetch:", e, file=sys.stderr)
-              raw = []
-
-          def norm_unit(v, u):
-              try:
-                  val = float(v)
-              except Exception:
-                  return None
-              u = (u or "").replace("μ","µ").strip().lower()
-              if u in ("µsv/h","usv/h"):
-                  return val
-              if u == "nsv/h":
-                  return val/1000.0
+                      if i < RETRIES - 1:
+                          time.sleep(BACKOFF ** i)
+                          continue
+                      else:
+                          break
+              print(f"WARN: fetch failed after retries: {last}", file=sys.stderr)
               return None
 
-          latest = None
-          for m in (raw if isinstance(raw,list) else []):
-              usvh = norm_unit(m.get("value"), m.get("unit"))
-              if usvh is None:
+          qs = {
+              "latitude": LAT,
+              "longitude": LON,
+              "distance": float(DIST_M),          # метры
+              "order": "captured_at",
+              "direction": "desc",
+              "format": "json",
+              "per_page": 1000,
+              "captured_after": (datetime.now(timezone.utc) - timedelta(hours=HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+          url = "https://api.safecast.org/measurements.json?" + urllib.parse.urlencode(qs)
+
+          raw = fetch_json_with_retry(url)
+          if raw is None:
+              # не рушим пайплайн — просто выходим без изменений
+              print("WARN: Safecast unavailable; skip update.")
+              sys.exit(0)
+
+          # Распакуем, если API завернуло в {"measurements":[...]}
+          if isinstance(raw, dict) and "measurements" in raw:
+              raw = raw["measurements"]
+
+          # Готовим выборки по типам величин
+          pm25_vals = []
+          pm10_vals = []
+          cpm_vals  = []
+          usvh_vals = []
+
+          now = datetime.now(timezone.utc)
+
+          for m in raw if isinstance(raw, list) else []:
+              # ожидаем структуру { "value": ..., "unit": ..., "captured_at": ... }
+              try:
+                  val  = float(m.get("value"))
+                  unit = (m.get("unit") or "").lower()
+                  t    = iso_to_dt(m.get("captured_at"))
+              except Exception:
                   continue
-              ts_s = m.get("captured_at")
+
+              # последние 6 часов для радиации (медиана)
+              if (now - t) <= timedelta(hours=6):
+                  if "cpm" in unit:
+                      cpm_vals.append(val)
+                  # µSv/h в разных написаниях
+                  if "usv" in unit or "µsv" in unit or "μsv" in unit:
+                      usvh_vals.append(val)
+
+              # PM берём за всё окно HOURS
+              if "pm2.5" in unit or "pm2_5" in unit or unit == "pm25":
+                  pm25_vals.append(val)
+              if "pm10" in unit or unit == "pm_10":
+                  pm10_vals.append(val)
+
+          def med_or_none(a):
               try:
-                  ts = int(datetime.fromisoformat(ts_s.replace("Z","+00:00")).timestamp()) if ts_s else int(time.time())
+                  return float(median(a)) if a else None
               except Exception:
-                  ts = int(time.time())
-              rec = {
-                  "ts": ts,
-                  "uSv_h": round(usvh, 6),
-                  "cpm": m.get("cpm"),
-                  "id":  m.get("id"),
-                  "src": "safecast",
-                  "region": REG
-              }
-              if latest is None or rec["ts"] > latest["ts"]:
-                  latest = rec
+                  return None
 
-          items = []
-          if os.path.exists(OUT):
-              try:
-                  items = json.load(open(OUT, "r", encoding="utf-8"))
-              except Exception:
-                  items = []
+          summary = {
+              "ts": int(now.timestamp()),
+              "pm25": med_or_none(pm25_vals),            # µg/m³
+              "pm10": med_or_none(pm10_vals),            # µg/m³
+              "cpm": med_or_none(cpm_vals),              # counts per minute
+              "radiation_usvh": med_or_none(usvh_vals),  # µSv/h
+          }
 
-          if latest:
-              if not items or items[-1].get("ts") != latest["ts"] or items[-1].get("uSv_h") != latest["uSv_h"]:
-                  items.append(latest)
-                  items = items[-5000:]
-                  json.dump(items, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ": "))
-                  print("collect: ok →", OUT, "last:", latest)
-              else:
-                  print("collect: no change, keep last:", items[-1])
-          else:
-              print("collect: no valid µSv/h in time window")
+          with open(OUT_FILE, "w", encoding="utf-8") as f:
+              json.dump(summary, f, ensure_ascii=False)
 
+          print(f"safecast ({OUT_FILE}): "
+                f"pm25={summary.get('pm25')} pm10={summary.get('pm10')} "
+                f"rad_usvh={summary.get('radiation_usvh')} cpm={summary.get('cpm')}")
           PY
 
-      - name: Commit & push (if changed)
-        if: ${{ inputs.dry_run != true }}
+      - name: Commit & push if changed
+        shell: bash
         run: |
           set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -N ${{ inputs.file || 'data/safecast_cy.json' }} >/dev/null 2>&1 || true
-          if ! git diff --quiet -- ${{ inputs.file || 'data/safecast_cy.json' }}; then
-            git add ${{ inputs.file || 'data/safecast_cy.json' }}
-            git commit -m "safecast(CY): update ${{ inputs.file || 'data/safecast_cy.json' }}"
-            git pull --rebase --autostash || true
+
+          # показать индекс, но без добавления — чтобы diff отработал и при новом файле
+          git add -N data/safecast_CY.json >/dev/null 2>&1 || true
+
+          if ! git diff --quiet -- data/safecast_CY.json; then
+            git add data/safecast_CY.json
+            # аккуратный rebase с stash, если параллельно были коммиты
+            git stash push -u -m "pre-rebase" || true
+            git pull --rebase || true
+            git stash pop || true
+            git add data/safecast_CY.json
+            git commit -m "safecast(CY): update data/safecast_CY.json"
             git push
           else
-            echo "No changes."
+            echo "No changes in data/safecast_CY.json"
           fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: safecast_CY.json
+          path: data/safecast_CY.json
+          if-no-files-found: warn
+          retention-days: 3
