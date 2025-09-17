@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: collect-radiation-kld
+  group: collect-radiation-cy
   cancel-in-progress: false
 
 jobs:
