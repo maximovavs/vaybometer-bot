@@ -4,34 +4,49 @@
 air.py
 ~~~~~~
 
-KLD-подобный интерфейс:
+• Источники качества воздуха:
+  1) IQAir / nearest_city  (API key: AIRVISUAL_KEY)
+  2) Open-Meteo Air-Quality (без ключа)
 
-- get_air(lat=None, lon=None) -> {"lvl","aqi","pm25","pm10"} (+ служебные: "src","src_emoji","src_icon")
-- get_sst(lat, lon) -> float|None
+• merge_air_sources() — объединяет словари с приоритетом IQAir → Open-Meteo
+• get_air(lat, lon)      — {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}
+• get_sst(lat, lon)      — Sea Surface Temperature (по ближайшему часу)
+• get_kp()               — (kp, state, ts_unix, src) — индекс Kp с «свежестью»
+• get_solar_wind()       — {'bz','bt','speed_kms','density','ts','status','src'}
 
-Дополнительно (как у тебя):
-- get_kp() -> (kp, state, ts_unix, src)
-- get_solar_wind() -> {'bz','bt','speed_kms','density','ts','status','src'}
-
-Все сетевые функции безопасны: на ошибки/таймауты возвращают None/пустые значения без исключений.
+Особенности:
+- Open-Meteo: берём значения по ближайшему прошедшему часу (UTC).
+- SST: то же правило ближайшего часа.
+- Kp: парсим ПОСЛЕДНЕЕ значение из SWPC; кэш 120 мин, жёсткий максимум 4 ч.
+- Солнечный ветер: SWPC 5-минутные продукты (mag/plasma); кэш 10 мин.
+- Источник AQI возвращаем как:
+    'src' ∈ {'iqair','openmeteo','n/d'},
+    'src_emoji' ∈ {'📡','🛰','⚪'},
+    'src_icon'  ∈ {'📡 IQAir','🛰 OM','⚪ н/д'}.
 """
 
 from __future__ import annotations
-import os, time, json, math, logging
+import os
+import time
+import json
+import math
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union, List
 
 import pendulum
 
-from utils import _get  # лёгкая HTTP-обёртка (requests.get)
+from utils import _get  # HTTP-обёртка (_get_retry внутри)
 
 __all__ = ("get_air", "get_sst", "get_kp", "get_solar_wind")
 
-# ───────────────────────── Константы / лог / кэш ─────────────────────────
+# ───────────────────────── Константы / лог / кеш ─────────────────────────
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 AIR_KEY = os.getenv("AIRVISUAL_KEY")
+
+# Единый сетевой таймаут (сек) — можно переопределить переменной окружения HTTP_TIMEOUT
 REQUEST_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "10"))
 
 CACHE_DIR = Path.home() / ".cache" / "vaybometer"
@@ -47,8 +62,10 @@ SW_CACHE = CACHE_DIR / "solar_wind.json"
 SW_TTL_SEC = 10 * 60
 
 KP_URLS = [
-    "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",   # табличный 3-часовой
-    "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json",         # резервный 1m
+    # Табличный эндпоинт (3-часовой Kp)
+    "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
+    # Резервный (минутные/почасовые оценки)
+    "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json",
 ]
 
 # 5-минутные продукты DSCOVR/ACE
@@ -58,38 +75,24 @@ SWP_PLA_5M = "https://services.swpc.noaa.gov/products/solar-wind/plasma-5-minute
 SRC_EMOJI = {"iqair": "📡", "openmeteo": "🛰", "n/d": "⚪"}
 SRC_ICON  = {"iqair": "📡 IQAir", "openmeteo": "🛰 OM", "n/d": "⚪ н/д"}
 
-# ───────────────────── Безопасная HTTP-обёртка (JSON) ─────────────────────
+# ───────────────────────── Безопасная HTTP-обёртка ─────────────────────────
 
-def _safe_http_get(url: str, **kwargs) -> Optional[Any]:
+def _safe_http_get(url: str, **kwargs) -> Optional[Dict[str, Any]]:
     """
-    Всегда возвращает распарсенный JSON (dict/list) или None.
-
-    Поддерживает как вызов с params=..., так и свободные именованные аргументы
-    (latitude=..., longitude=..., ...) — они будут свёрнуты в params.
+    Пытается вызвать utils._get с таймаутом. Если у _get нет аргумента timeout,
+    повторно вызывает без него. Любые исключения логируются и возвращается None.
     """
-    params = kwargs.pop("params", None)
-    if params is None:
-        # сворачиваем прочие именованные аргументы в query params
-        params = dict(kwargs)
-        kwargs = {}
     try:
         try:
-            resp = _get(url, params=params, timeout=REQUEST_TIMEOUT, **kwargs)
+            return _get(url, timeout=REQUEST_TIMEOUT, **kwargs)
         except TypeError:
-            # если utils._get не принимает timeout/**kwargs
-            resp = _get(url, params=params)
-        if hasattr(resp, "json"):
-            try:
-                return resp.json()
-            except Exception:
-                return None
-        # на случай, если utils._get уже возвращает JSON
-        return resp if isinstance(resp, (dict, list)) else None
+            # если твой _get не поддерживает timeout
+            return _get(url, **kwargs)
     except Exception as e:
         logging.warning("_safe_http_get — HTTP error: %s", e)
         return None
 
-# ───────────────────────── Утилиты AQI ──────────────────────────
+# ───────────────────────── Утилиты AQI/Kp ──────────────────────────
 
 def _aqi_level(aqi: Union[int, float, str, None]) -> str:
     if aqi in (None, "н/д"):
@@ -98,7 +101,7 @@ def _aqi_level(aqi: Union[int, float, str, None]) -> str:
         v = float(aqi)
     except (TypeError, ValueError):
         return "н/д"
-    if v <=  50: return "хороший"
+    if v <= 50: return "хороший"
     if v <= 100: return "умеренный"
     if v <= 150: return "вредный"
     if v <= 200: return "оч. вредный"
@@ -112,28 +115,29 @@ def _pick_nearest_hour(arr_time: List[str], arr_val: List[Any]) -> Optional[floa
         idxs = [i for i, t in enumerate(arr_time) if isinstance(t, str) and t <= now_iso]
         idx = max(idxs) if idxs else 0
         v = arr_val[idx]
+        if not isinstance(v, (int, float)):
+            return None
         v = float(v)
         return v if (math.isfinite(v) and v >= 0) else None
     except Exception:
         return None
 
-# ───────────────────── Источники качества воздуха ─────────────────────
+# ───────────────────────── Источники AQI ───────────────────────────
 
 def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     if not AIR_KEY:
-        logging.warning("IQAir: не задан AIRVISUAL_KEY — переключаюсь на Open-Meteo AQ.")
         return None
-    j = _safe_http_get(
+    resp = _safe_http_get(
         "https://api.airvisual.com/v2/nearest_city",
         lat=lat, lon=lon, key=AIR_KEY,
     )
-    if not isinstance(j, dict) or "data" not in j:
+    if not resp or "data" not in resp:
         return None
     try:
-        pol = (j.get("data", {}) or {}).get("current", {}).get("pollution", {}) or {}
+        pol = (resp.get("data", {}) or {}).get("current", {}).get("pollution", {}) or {}
         aqi_val  = pol.get("aqius")
-        # В публичном API PM чаще недоступны — вернутся None (это ок).
-        pm25_val = pol.get("p2")
+        # В публичном API обычно нет микрограммов PM, оставляем None если нет
+        pm25_val = pol.get("p2")   # если ключа нет — будет None (ок)
         pm10_val = pol.get("p1")
         return {
             "aqi":  float(aqi_val)  if isinstance(aqi_val,  (int, float)) else None,
@@ -146,34 +150,38 @@ def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         return None
 
 def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
-    j = _safe_http_get(
+    resp = _safe_http_get(
         "https://air-quality-api.open-meteo.com/v1/air-quality",
         latitude=lat, longitude=lon,
         hourly="pm10,pm2_5,us_aqi", timezone="UTC",
     )
-    if not isinstance(j, dict) or "hourly" not in j:
+    if not resp or "hourly" not in resp:
         return None
     try:
-        h = j["hourly"]
-        times   = h.get("time", []) or []
-        aqi_val = _pick_nearest_hour(times, h.get("us_aqi", []) or [])
-        pm25    = _pick_nearest_hour(times, h.get("pm2_5", [])  or [])
-        pm10    = _pick_nearest_hour(times, h.get("pm10", [])   or [])
-        aqi_norm: Union[float, str] = float(aqi_val) if isinstance(aqi_val, (int, float)) and math.isfinite(aqi_val) and aqi_val >= 0 else "н/д"
-        pm25_norm = float(pm25) if isinstance(pm25, (int, float)) and math.isfinite(pm25) and pm25 >= 0 else None
-        pm10_norm = float(pm10) if isinstance(pm10, (int, float)) and math.isfinite(pm10) and pm10 >= 0 else None
+        h = resp["hourly"]
+        times = h.get("time", []) or []
+        aqi_val  = _pick_nearest_hour(times, h.get("us_aqi", []) or [])
+        pm25_val = _pick_nearest_hour(times, h.get("pm2_5", []) or [])
+        pm10_val = _pick_nearest_hour(times, h.get("pm10", [])  or [])
+        aqi_norm: Union[float, str] = float(aqi_val)  if isinstance(aqi_val,  (int, float)) and math.isfinite(aqi_val)  and aqi_val  >= 0 else "н/д"
+        pm25_norm = float(pm25_val) if isinstance(pm25_val, (int, float)) and math.isfinite(pm25_val) and pm25_val >= 0 else None
+        pm10_norm = float(pm10_val) if isinstance(pm10_val, (int, float)) and math.isfinite(pm10_val) and pm10_val >= 0 else None
         return {"aqi": aqi_norm, "pm25": pm25_norm, "pm10": pm10_norm, "src": "openmeteo"}
     except Exception as e:
         logging.warning("Open-Meteo AQ parse error: %s", e)
         return None
 
+# ───────────────────────── Merge AQI ───────────────────────────────
+
 def merge_air_sources(src1: Optional[Dict[str, Any]], src2: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Приоритет src1 → src2. Возвращает KLD-подобный словарь.
+    Соединяет данные двух источников AQI (приоритет src1 → src2).
+    Возвращает {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}.
     """
     aqi_val: Union[float, str, None] = "н/д"
     src_tag: str = "n/d"
 
+    # AQI источник
     for s in (src1, src2):
         if not s:
             continue
@@ -183,6 +191,7 @@ def merge_air_sources(src1: Optional[Dict[str, Any]], src2: Optional[Dict[str, A
             src_tag = s.get("src") or src_tag
             break
 
+    # PM first-non-null
     pm25 = None
     pm10 = None
     for s in (src1, src2):
@@ -194,45 +203,42 @@ def merge_air_sources(src1: Optional[Dict[str, Any]], src2: Optional[Dict[str, A
             pm10 = float(s["pm10"])
 
     lvl = _aqi_level(aqi_val)
+    src_emoji = SRC_EMOJI.get(src_tag, SRC_EMOJI["n/d"])
+    src_icon  = SRC_ICON.get(src_tag,  SRC_ICON["n/d"])
+
     return {
         "lvl": lvl,
         "aqi": aqi_val,
         "pm25": pm25,
         "pm10": pm10,
         "src": src_tag,
-        "src_emoji": SRC_EMOJI.get(src_tag, "⚪"),
-        "src_icon":  SRC_ICON.get(src_tag,  "⚪ н/д"),
+        "src_emoji": src_emoji,
+        "src_icon": src_icon,
     }
 
-def get_air(lat: Optional[float] = None, lon: Optional[float] = None) -> Dict[str, Any]:
-    """
-    KLD-контракт: lat/lon необязательны. Если не заданы — используем Лимассол.
-    """
-    if lat is None or lon is None:
-        # дефолт — Лимассол
-        lat, lon = 34.707, 33.022
+def get_air(lat: float, lon: float) -> Dict[str, Any]:
     try:
-        s1 = _src_iqair(lat, lon)
+        src1 = _src_iqair(lat, lon)
     except Exception:
-        s1 = None
+        src1 = None
     try:
-        s2 = _src_openmeteo(lat, lon)
+        src2 = _src_openmeteo(lat, lon)
     except Exception:
-        s2 = None
-    return merge_air_sources(s1, s2)
+        src2 = None
+    return merge_air_sources(src1, src2)
 
 # ───────────────────────── SST (по ближайшему часу) ─────────────────
 
 def get_sst(lat: float, lon: float) -> Optional[float]:
-    j = _safe_http_get(
+    resp = _safe_http_get(
         "https://marine-api.open-meteo.com/v1/marine",
         latitude=lat, longitude=lon,
         hourly="sea_surface_temperature", timezone="UTC",
     )
-    if not isinstance(j, dict) or "hourly" not in j:
+    if not resp or "hourly" not in resp:
         return None
     try:
-        h = j["hourly"]
+        h = resp["hourly"]
         times = h.get("time", []) or []
         vals  = h.get("sea_surface_temperature", []) or []
         v = _pick_nearest_hour(times, vals)
@@ -241,7 +247,7 @@ def get_sst(lat: float, lon: float) -> Optional[float]:
         logging.warning("Marine SST parse error: %s", e)
         return None
 
-# ───────────────────────── Kp + кэш (TTL 120 мин) ───────────────────
+# ───────────────────────── Kp + кеш (TTL 120 мин) ───────────────────
 
 def _load_kp_cache() -> tuple[Optional[float], Optional[int], Optional[str]]:
     try:
@@ -252,7 +258,10 @@ def _load_kp_cache() -> tuple[Optional[float], Optional[int], Optional[str]]:
 
 def _save_kp_cache(kp: float, ts: int, src: str) -> None:
     try:
-        KP_CACHE.write_text(json.dumps({"kp": kp, "ts": int(ts), "src": src}, ensure_ascii=False), encoding="utf-8")
+        KP_CACHE.write_text(
+            json.dumps({"kp": kp, "ts": int(ts), "src": src}, ensure_ascii=False),
+            encoding="utf-8"
+        )
     except Exception as e:
         logging.warning("Kp cache write error: %s", e)
 
@@ -262,12 +271,18 @@ def _fetch_kp_data(url: str, attempts: int = 3, backoff: float = 2.0) -> Optiona
         data = _safe_http_get(url)
         if data:
             break
-        try: time.sleep(backoff ** i)
-        except Exception: pass
+        try:
+            time.sleep(backoff ** i)
+        except Exception:
+            pass
     return data
 
 def _parse_kp_from_table(data: Any) -> tuple[Optional[float], Optional[int]]:
-    # products/noaa-planetary-k-index.json
+    """
+    products/noaa-planetary-k-index.json
+    Формат: [ ["time_tag","kp_index"], ["2025-08-30 09:00:00","2.67"], ... ]
+    Берём последнюю строку и преобразуем время в ts (UTC).
+    """
     try:
         if not isinstance(data, list) or len(data) < 2 or not isinstance(data[0], list):
             return None, None
@@ -287,7 +302,10 @@ def _parse_kp_from_table(data: Any) -> tuple[Optional[float], Optional[int]]:
     return None, None
 
 def _parse_kp_from_dicts(data: Any) -> tuple[Optional[float], Optional[int]]:
-    # json/planetary_k_index_1m.json
+    """
+    json/planetary_k_index_1m.json
+    Формат: [{time_tag:"2025-08-30T10:27:00Z", kp_index:3.0}, ...]
+    """
     try:
         if not isinstance(data, list) or not data or not isinstance(data[0], dict):
             return None, None
@@ -315,6 +333,7 @@ def get_kp() -> tuple[Optional[float], str, Optional[int], str]:
     """
     now_ts = int(time.time())
 
+    # 1) Табличный 3-часовой Kp
     data = _fetch_kp_data(KP_URLS[0])
     if data:
         kp, ts = _parse_kp_from_table(data)
@@ -322,6 +341,7 @@ def get_kp() -> tuple[Optional[float], str, Optional[int], str]:
             _save_kp_cache(kp, ts, "swpc_table")
             return kp, _kp_state(kp), ts, "swpc_table"
 
+    # 2) Резерв — 1m JSON
     data = _fetch_kp_data(KP_URLS[1])
     if data:
         kp, ts = _parse_kp_from_dicts(data)
@@ -329,6 +349,7 @@ def get_kp() -> tuple[Optional[float], str, Optional[int], str]:
             _save_kp_cache(kp, ts, "swpc_1m")
             return kp, _kp_state(kp), ts, "swpc_1m"
 
+    # 3) Кэш, если он не старый
     c_kp, c_ts, c_src = _load_kp_cache()
     if isinstance(c_kp, (int, float)) and isinstance(c_ts, int):
         age = now_ts - c_ts
@@ -339,11 +360,12 @@ def get_kp() -> tuple[Optional[float], str, Optional[int], str]:
 
     return None, "н/д", None, "n/d"
 
-# ─────────────────────── Солнечный ветер (5-мин) ───────────────────────
+# ───────────────────────── Солнечный ветер (5-мин) ─────────────────
 
 def _load_sw_cache() -> Optional[Dict[str, Any]]:
     try:
-        return json.loads(SW_CACHE.read_text(encoding="utf-8"))
+        data = json.loads(SW_CACHE.read_text(encoding="utf-8"))
+        return data
     except Exception:
         return None
 
@@ -355,7 +377,9 @@ def _save_sw_cache(obj: Dict[str, Any]) -> None:
 
 def _parse_table_latest(rowset: Any, want: List[str]) -> tuple[Optional[Dict[str, float]], Optional[int]]:
     """
-    Табличные продукты SWPC: первая строка — заголовок. Возвращает {col:value}, ts.
+    Универсальный парсер табличных продуктов SWPC:
+    Первый элемент — список названий колонок; далее — строки.
+    Возвращает словарь {col:value} и ts (UTC) по последней валидной строке.
     """
     try:
         if not isinstance(rowset, list) or len(rowset) < 2 or not isinstance(rowset[0], list):
@@ -393,6 +417,12 @@ def _parse_table_latest(rowset: Any, want: List[str]) -> tuple[Optional[Dict[str
     return None, None
 
 def _solar_wind_status(bz: Optional[float], v: Optional[float], n: Optional[float]) -> str:
+    """
+    Примитивная эвристика:
+      - опаснее всего Bz < -6 nT
+      - скорость > 600 км/с повышенная
+      - плотность > 15 см^-3 добавляет «напряжённости»
+    """
     flags = 0
     if isinstance(bz, (int, float)):
         if bz < -6: flags += 2
@@ -403,13 +433,19 @@ def _solar_wind_status(bz: Optional[float], v: Optional[float], n: Optional[floa
     if isinstance(n, (int, float)):
         if n > 20: flags += 2
         elif n > 15: flags += 1
+
     if flags >= 4: return "напряжённо"
     if flags >= 2: return "умеренно"
     return "спокойно"
 
 def get_solar_wind() -> Dict[str, Any]:
+    """
+    Возвращает: {'bz','bt','speed_kms','density','ts','status','src'}
+    Источник — SWPC 5-minute (mag/plasma). Кэш 10 мин.
+    """
     now_ts = int(time.time())
 
+    # 1) читаем оба продукта
     mag = _safe_http_get(SWP_MAG_5M)
     pla = _safe_http_get(SWP_PLA_5M)
 
@@ -417,6 +453,7 @@ def get_solar_wind() -> Dict[str, Any]:
     ts_list: List[int] = []
     src = "swpc_5m"
 
+    # магнетометр: интересны time_tag, bz_gsm, bt
     if mag:
         vals, ts = _parse_table_latest(mag, ["time_tag", "bz_gsm", "bt"])
         if vals:
@@ -424,6 +461,7 @@ def get_solar_wind() -> Dict[str, Any]:
             bt = vals.get("bt", bt)
         if ts: ts_list.append(ts)
 
+    # плазма: speed, density
     if pla:
         vals, ts = _parse_table_latest(pla, ["time_tag", "speed", "density"])
         if vals:
@@ -433,13 +471,28 @@ def get_solar_wind() -> Dict[str, Any]:
 
     if ts_list:
         ts = max(ts_list)
-        obj = {"bz": bz, "bt": bt, "speed_kms": v, "density": n, "ts": ts, "status": _solar_wind_status(bz, v, n), "src": src}
+        status = _solar_wind_status(bz, v, n)
+        obj = {"bz": bz, "bt": bt, "speed_kms": v, "density": n, "ts": ts, "status": status, "src": src}
         _save_sw_cache(obj)
         return obj
 
+    # 2) кэш (10 мин)
     cached = _load_sw_cache()
     if cached and isinstance(cached.get("ts"), int) and (now_ts - int(cached["ts"]) <= SW_TTL_SEC):
         cached["src"] = "cache"
         return cached
 
     return {}
+
+# ───────────────────────── CLI ─────────────────────────────────────
+
+if __name__ == "__main__":
+    from pprint import pprint
+    print("=== Пример get_air (Лимассол) ===")
+    pprint(get_air(34.68, 33.04))
+    print("\n=== Пример get_sst (Лимассол) ===")
+    print(get_sst(34.68, 33.04))
+    print("\n=== Пример get_kp ===")
+    print(get_kp())
+    print("\n=== Пример get_solar_wind ===")
+    pprint(get_solar_wind())
