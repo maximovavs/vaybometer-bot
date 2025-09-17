@@ -560,92 +560,34 @@ def _trend_arrow(vals: List[float], delta: float = TREND_DELTA) -> str:
 
 # ─────── Публичное API ───────
 
-# ─────── Публичное API ───────
-def get_schumann() -> Optional[Dict[str, Any]]:
-    """
-    CY-контракт: вернуть {"freq": float, "amp": float|None, "trend": "↑|↓|→"}
-    только при УСПЕШНОМ онлайн-доступе. Иначе вернуть None.
-    Здесь НЕ читаем локальную историю и НЕ делаем интерпретаций — фоллбэк
-    и человекочитаемые тексты формирует post.py из schumann_hourly.json.
-    """
-    import os, json
-    try:
-        import requests  # локальный импорт, чтобы не ломать окружение без requests
-    except Exception:
-        requests = None  # graceful degradation
+def get_schumann() -> Dict[str, Any]:
+    hist = _load_history(DEF_FILE)
+    if not hist:
+        return {
+            "freq": None, "amp": None, "trend": "→", "trend_text": "стабильно",
+            "status": "🟡 колебания", "status_code": "yellow",
+            "h7_text": format_h7(None, None), "h7_amp": None, "h7_spike": None,
+            "interpretation": gentle_interpretation("yellow"), "cached": True
+        }
 
-    # 1) Пользовательский JSON-эндпоинт (если задан в окружении)
-    custom_url = (
-        os.getenv("SCHU_CUSTOM_URL")
-        or os.getenv("CUSTOM_SCHUMANN_URL")
-        or os.getenv("CUSTOM_URL")
-    )
-    if requests and custom_url:
-        try:
-            r = requests.get(custom_url, timeout=float(os.getenv("SCHU_TIMEOUT", "15")))
-            r.raise_for_status()
-            j = r.json()
+    # тренд по частоте (как раньше; частота может быть константой 7.83 — тогда «стабильно»)
+    freq_series = [r.get("freq") for r in hist if isinstance(r.get("freq"), (int, float))]
+    freq_series = freq_series[-max(TREND_WINDOW, 2):] if freq_series else []
+    trend = _trend_arrow(freq_series) if freq_series else "→"
 
-            def _pick_num(obj, keys_like: List[str]) -> Optional[float]:
-                # прямое совпадение ключа
-                if isinstance(obj, dict):
-                    for k in keys_like:
-                        if k in obj:
-                            try:
-                                return float(obj[k])
-                            except Exception:
-                                pass
-                    # поиск по подстроке
-                    for k, v in obj.items():
-                        lk = str(k).lower()
-                        if any(kfrag in lk for kfrag in keys_like):
-                            try:
-                                return float(v)
-                            except Exception:
-                                continue
-                return None
+    last = hist[-1]
+    freq, amp = last.get("freq"), last.get("amp")
+    status, status_code = classify_freq_status(freq)
 
-            freq = _pick_num(j, ["freq", "frequency", "f", "h7_freq", "schumann_freq"])
-            amp  = _pick_num(j, ["amp", "amplitude", "a", "power", "h7_amp"])
-            if (freq is not None) or (amp is not None):
-                if freq is None:
-                    freq = 7.83  # номинал H7, если источник отдаёт только амплитуду/мощность
-                return {"freq": float(freq), "amp": (float(amp) if amp is not None else None), "trend": "→"}
-        except Exception:
-            pass  # онлайн-источник не доступен — попробуем GCI
-
-    # 2) GCI latest (включаем по умолчанию; можно отключить SCHU_GCI_ENABLE=0)
-    gci_enable = os.getenv("SCHU_GCI_ENABLE", "1").strip().lower() in ("1", "true", "yes", "on")
-    if requests and gci_enable:
-        try:
-            r = requests.get("https://gci-api.ucsd.edu/data/latest", timeout=15)
-            r.raise_for_status()
-            j = r.json()
-
-            power = None
-            if isinstance(j, dict):
-                power = j.get("power") or j.get("Power") or j.get("amp")
-            elif isinstance(j, list) and j:
-                item = j[-1] if isinstance(j[-1], dict) else {}
-                if isinstance(item, dict):
-                    power = item.get("power") or item.get("amp")
-
-            if power is not None:
-                try:
-                    amp = float(power)
-                except Exception:
-                    amp = None
-                # масштаб можно настроить: SCHU_AMP_SCALE=…
-                scale = float(os.getenv("SCHU_AMP_SCALE", "1.0") or "1.0")
-                if amp is not None:
-                    amp *= scale
-                # частоту GCI напрямую не даёт — используем номинал
-                return {"freq": 7.83, "amp": amp, "trend": "→"}
-        except Exception:
-            pass  # онлайн не доступен
-
-    # 3) Онлайн-данных нет — отдаём None; post.py сам применит локальный фоллбэк
-    return None
+    return {
+        "freq": freq, "amp": amp,
+        "trend": trend, "trend_text": trend_human(trend),
+        "status": status, "status_code": status_code,
+        "h7_text": format_h7(last.get("h7_amp"), last.get("h7_spike")),
+        "interpretation": gentle_interpretation(status_code),
+        "cached": (last.get("src") == "cache"),
+        "h7_amp": last.get("h7_amp"), "h7_spike": last.get("h7_spike")
+    }
 
 # ─────── История ───────
 
