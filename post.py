@@ -72,7 +72,7 @@ def openmeteo_fallback(lat: float, lon: float, tz: str) -> Dict[str, Any]:
     params = {
         "latitude": lat, "longitude": lon, "timezone": tz,
         "forecast_days": 2, "past_days": 0,
-        "daily": "temperature_2m_max,temperature_2m_min,weathercode",
+        "daily": "temperature_2m_max,temperature_2m_min,weathercode,relative_humidity_2m_min,relative_humidity_2m_max",
         "hourly": "wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure,relative_humidity_2m",
     }
     try:
@@ -83,6 +83,8 @@ def openmeteo_fallback(lat: float, lon: float, tz: str) -> Dict[str, Any]:
                 "temperature_2m_max": j.get("daily",{}).get("temperature_2m_max") or [],
                 "temperature_2m_min": j.get("daily",{}).get("temperature_2m_min") or [],
                 "weathercode":         j.get("daily",{}).get("weathercode") or [],
+                "relative_humidity_2m_min": j.get("daily",{}).get("relative_humidity_2m_min") or [],
+                "relative_humidity_2m_max": j.get("daily",{}).get("relative_humidity_2m_max") or [],
             },
             "hourly": {
                 "time":                  j.get("hourly",{}).get("time") or [],
@@ -101,36 +103,44 @@ def openmeteo_fallback(lat: float, lon: float, tz: str) -> Dict[str, Any]:
 
 _SST_CACHE: Dict[str, Optional[float]] = {}
 def sst_fallback(lat: float, lon: float, tz: str) -> Optional[float]:
-    """Marine API: средняя температура поверхности моря за завтрашние часы."""
-    key = f"sst:{lat:.3f},{lon:.3f}"
-    if key in _SST_CACHE: return _SST_CACHE[key]
-    params = {
-        "latitude": lat, "longitude": lon, "timezone": tz,
-        "hourly": "sea_surface_temperature", "forecast_days": 2, "past_days": 0,
-    }
-    try:
-        j = _get("https://marine-api.open-meteo.com/v1/marine", params=params, timeout=20).json()
-        h = j.get("hourly") or {}
-        times = h.get("time") or []
-        vals  = h.get("sea_surface_temperature") or []
-        if not times or not vals: 
-            _SST_CACHE[key] = None; return None
-        # соберём только «завтра»
-        arr = []
-        for t, v in zip(times, vals):
-            try:
-                dt = pendulum.parse(str(t)).in_tz(TZ)
-                if dt.date() == TOMORROW and isinstance(v,(int,float)):
-                    arr.append(float(v))
-            except Exception:
-                pass
-        sst = (sum(arr)/len(arr)) if arr else None
-        _SST_CACHE[key] = sst
-        return sst
-    except Exception as e:
-        logging.warning("sst_fallback failed (%.3f,%.3f): %s", lat, lon, e)
-        _SST_CACHE[key] = None
-        return None
+    """Marine API: средняя температура поверхности моря за завтрашние часы. Пробуем несколько «морских» точек вокруг города."""
+    def _probe(lat: float, lon: float) -> Optional[float]:
+        key = f"sst:{lat:.3f},{lon:.3f}"
+        if key in _SST_CACHE: return _SST_CACHE[key]
+        params = {
+            "latitude": lat, "longitude": lon, "timezone": tz,
+            "hourly": "sea_surface_temperature", "forecast_days": 2, "past_days": 0,
+        }
+        try:
+            j = _get("https://marine-api.open-meteo.com/v1/marine", params=params, timeout=20).json()
+            h = j.get("hourly") or {}
+            times = h.get("time") or []
+            vals  = h.get("sea_surface_temperature") or []
+            if not times or not vals:
+                _SST_CACHE[key] = None; return None
+            arr = []
+            for t, v in zip(times, vals):
+                try:
+                    dt = pendulum.parse(str(t)).in_tz(TZ)
+                    if dt.date() == TOMORROW and isinstance(v,(int,float)):
+                        arr.append(float(v))
+                except Exception:
+                    pass
+            s = (sum(arr)/len(arr)) if arr else None
+            _SST_CACHE[key] = s
+            return s
+        except Exception as e:
+            logging.warning("sst probe failed (%.3f,%.3f): %s", lat, lon, e)
+            _SST_CACHE[key] = None
+            return None
+
+    # пробуем точку города и несколько смещений в сторону моря
+    offsets = [(0.0,0.0), (-0.18,0.00), (-0.10,0.12), (-0.10,-0.12), (-0.25,0.00)]
+    for dlat, dlon in offsets:
+        s = _probe(lat + dlat, lon + dlon)
+        if isinstance(s,(int,float)):
+            return s
+    return None
 
 _AQ_CACHE: Dict[str, Dict[str, Any]] = {}
 def _aq_level_from_aqi(v: Optional[float]) -> str:
@@ -151,7 +161,6 @@ def openmeteo_aq_fallback(lat: float, lon: float, tz: str) -> Dict[str, Any]:
     try:
         j = _get("https://air-quality-api.open-meteo.com/v1/air-quality", params=params, timeout=18).json()
         h = j.get("hourly") or {}
-        # берём самый последний валидный срез
         for field, keyname in (("pm10","pm10"),("pm2_5","pm25"),("us_aqi","aqi")):
             arr = h.get(field) or []
             for val in reversed(arr):
@@ -536,7 +545,7 @@ def _city_line(city: str, la: float, lo: float) -> str:
     if not wm: wm = openmeteo_fallback(la, lo, TZ.name)
     t_day, t_night = _temps_for_city(la, lo, TZ.name)
 
-    # RH: сначала из day_night_stats, затем — из почасовой «завтра»
+    # RH: сначала из day_night_stats, затем — из почасовой «завтра», затем daily min/max
     rh_min = rh_max = None
     try:
         st = day_night_stats(la, lo, tz=TZ.name) or {}
@@ -549,6 +558,14 @@ def _city_line(city: str, la: float, lo: float) -> str:
             idxs = _tomorrow_indices(wm)
             vals = [float(rh[i]) for i in idxs if i < len(rh)]
             if vals: rh_min, rh_max = min(vals), max(vals)
+        except Exception: pass
+    if rh_min is None or rh_max is None:
+        try:
+            daily = (wm.get("daily") or {})
+            mn = daily.get("relative_humidity_2m_min") or []
+            mx = daily.get("relative_humidity_2m_max") or []
+            if isinstance(mn,list) and len(mn)>1: rh_min = float(mn[1])
+            if isinstance(mx,list) and len(mx)>1: rh_max = float(mx[1])
         except Exception: pass
 
     wcarr = (wm.get("daily", {}) or {}).get("weathercode", [])
@@ -586,14 +603,12 @@ def _first_working_air(names: List[str]) -> Dict[str, Any]:
             a = get_air(la, lo) or {}
             if any(a.get(k) is not None for k in ("aqi","pm25","pm10")):
                 return a
-            # явный AQ-fallback
             aq = openmeteo_aq_fallback(la, lo, TZ.name)
             if any(aq.get(k) is not None for k in ("aqi","pm25","pm10")):
                 return aq
         except Exception:
             pass
-    # без координат — как уж получится
-    return get_air() or {}
+    return openmeteo_aq_fallback(*CITIES[names[0]], TZ.name)
 
 # ───────────────────────── build_msg ─────────────────────────
 def build_msg() -> str:
@@ -722,7 +737,7 @@ async def main() -> None:
     try: chat_id = int(chat_env) if chat_env else 0
     except Exception: chat_id = 0
 
-    dry_run = "--dry-run" in sys.argv
+    dry_run = "--dry_run" in sys.argv or "--dry-run" in sys.argv
     if "--chat-id" in sys.argv:
         try: chat_id = int(sys.argv[sys.argv.index("--chat-id")+1])
         except Exception: pass
