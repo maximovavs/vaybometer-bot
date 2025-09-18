@@ -542,6 +542,41 @@ def _city_info(city: str, la: float, lo: float) -> Tuple[Optional[float], str]:
     ]
     return (t_day if isinstance(t_day,(int,float)) else None), (" • ".join([p for p in parts if p]))
 
+# ────────── «Умный вывод» ──────────
+def build_conclusion(kp: Optional[float], kp_status: str,
+                     air: Dict[str, Any],
+                     gust_ms: Optional[float],
+                     schu: Dict[str, Any]) -> List[str]:
+    lines: List[str] = []
+    air_bad, air_label, air_reason = _is_air_bad(air)
+    storm_main = isinstance(gust_ms, (int, float)) and gust_ms >= 17
+    kp_main = isinstance(kp, (int, float)) and kp >= 5
+    schu_main = (schu or {}).get("status","").startswith("🔴")
+
+    storm_text = f"штормовая погода: порывы до {gust_ms:.0f} м/с" if storm_main else None
+    air_text   = f"качество воздуха: {air_label} ({air_reason})" if air_bad else None
+    kp_text    = f"магнитная активность: Kp≈{kp:.1f} ({kp_status})" if kp_main else None
+    schu_text  = "сильные колебания Шумана" if schu_main else None
+
+    if storm_main:
+        lines.append(f"Основной фактор — {storm_text}. Планируйте дела с учётом погоды.")
+    elif air_bad:
+        lines.append(f"Основной фактор — {air_text}. Сократите время на улице и проветривание по ситуации.")
+    elif kp_main:
+        lines.append(f"Основной фактор — {kp_text}. Возможна чувствительность у метеозависимых.")
+    elif schu_main:
+        lines.append("Основной фактор — волны Шумана: отмечаются сильные отклонения.")
+    else:
+        lines.append("Серьёзных факторов риска не видно — ориентируйтесь на текущую погоду и планы.")
+
+    secondary = [t for t in (storm_text, air_text, kp_text, schu_text) if t]
+    if secondary:
+        primary = lines[0]
+        rest = [t for t in secondary if t not in primary]
+        if rest:
+            lines.append("Также обратите внимание: " + "; ".join(rest[:2]) + ".")
+    return lines
+
 # ───────────────────────── build_msg ─────────────────────────
 def build_msg() -> str:
     P: List[str] = []
@@ -573,14 +608,21 @@ def build_msg() -> str:
     if (p25 is not None) or (p10 is not None):
         sm_emo, sm_txt = smoke_index(p25, p10)
         P.append(f"{sm_emo} дымовой индекс: {sm_txt}")
-    P.append("———")
 
-    # Пыльца
-    pol = get_pollen()
-    if pol:
-        P.append("🌿 <b>Пыльца</b>")
-        P.append(f"Деревья: {pol['tree']} | Травы: {pol['grass']} | Сорняки: {pol['weed']} — риск {pol['risk']}")
-        P.append("———")
+    # ☢️ Радиация (Safecast/офиц. — что вернётся из radiation.py)
+    rad = radiation.get_radiation(la0, lo0) or {}
+    val = rad.get("value") or rad.get("dose")
+    cpm = rad.get("cpm")
+    if isinstance(val,(int,float)) or isinstance(cpm,(int,float)):
+        lvl_txt, dot = "в норме", "🟢"
+        if isinstance(val,(int,float)) and val >= 0.4: lvl_txt, dot = "выше нормы", "🔵"
+        elif isinstance(val,(int,float)) and val >= 0.2: lvl_txt, dot = "повышено", "🟡"
+        extra = " (медиана 6 ч)" if rad.get("median6h") else ""
+        if isinstance(cpm,(int,float)):
+            P.append(f"📟 Радиация (Safecast): {int(round(cpm))} CPM ≈ {float(val):.3f} μSv/h — {dot} {lvl_txt}{extra}")
+        else:
+            P.append(f"📟 Радиация: {float(val):.3f} μSv/h — {dot} {lvl_txt}{extra}")
+    P.append("———")
 
     # Геомагнитка + ветер
     kp, ks, age_h = fetch_kp_recent()
@@ -594,6 +636,13 @@ def build_msg() -> str:
         mood = sw.get("mood","спокойно")
         P.append(f"ℹ️ По ветру сейчас {mood}; Kp — глобальный индекс за 3 ч.")
     P.append("———")
+
+    # Пыльца
+    pol = get_pollen()
+    if pol:
+        P.append("🌿 <b>Пыльца</b>")
+        P.append(f"Деревья: {pol['tree']} | Травы: {pol['grass']} | Сорняки: {pol['weed']} — риск {pol['risk']}")
+        P.append("———")
 
     # Шуман
     schu_state = get_schumann_with_fallback()
