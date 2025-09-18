@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-post.py — вечерний пост VayboMeter-бота (Кипр), рендер «как в KLD».
+post.py — вечерний пост VayboMeter-бота (Кипр), рендер «как в KLD» + усиленные фоллбэки.
 """
 
 from __future__ import annotations
-import os, json, logging, asyncio, re, math, sys
+import os, json, logging, asyncio, re, math, sys, time
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
 
@@ -30,7 +30,6 @@ TZ        = pendulum.timezone("Asia/Nicosia")
 TODAY     = pendulum.today(TZ)
 TOMORROW  = TODAY.add(days=1).date()
 
-# Координаты (Кипр)
 CITIES: Dict[str, Tuple[float, float]] = {
     "Limassol":  (34.707, 33.022),
     "Nicosia":   (35.170, 33.360),
@@ -48,12 +47,22 @@ WMO_DESC = {
     61: "🌧 дождь", 71: "❄️ снег", 95: "⛈ гроза",
 }
 def code_desc(c: Any) -> Optional[str]:
-    try:
-        return WMO_DESC.get(int(c))
-    except Exception:
-        return None
+    try: return WMO_DESC.get(int(c))
+    except Exception: return None
 
-# ────────── helpers: время/часовки для завтра ──────────
+# ────────── небольшие утилиты ──────────
+def _json_retry(url: str, *, params: dict | None = None, timeout: int = 18, attempts: int = 3, pause: float = 0.8):
+    err = None
+    for k in range(attempts):
+        try:
+            return _get(url, params=params, timeout=timeout).json()
+        except Exception as e:
+            err = e
+            time.sleep(pause * (2**k))
+    logging.warning("HTTP fail after %s tries: %s %s", attempts, url, err)
+    return None
+
+# ────────── часы на завтра ──────────
 def _hourly_times(wm: Dict[str, Any]) -> List[pendulum.DateTime]:
     hourly = wm.get("hourly") or {}
     times = hourly.get("time") or hourly.get("time_local") or hourly.get("timestamp") or []
@@ -95,9 +104,8 @@ def _circular_mean_deg(deg_list: List[float]) -> Optional[float]:
     ang = math.degrees(math.atan2(y, x))
     return (ang + 360.0) % 360.0
 
-# ────────── ветер/давление в шапку + порывы ──────────
+# ────────── ветер/давление/порывы ──────────
 def pick_header_metrics(wm: Dict[str, Any]) -> Tuple[Optional[float], Optional[int], Optional[int], str, Optional[float]]:
-    """Возвращает: wind_ms, wind_dir_deg, pressure_hpa, pressure_trend(↑/↓/→), gust_max_ms"""
     hourly = wm.get("hourly") or {}
     times = _hourly_times(wm)
     idx_noon = _nearest_index(times, TOMORROW, 12)
@@ -125,6 +133,7 @@ def pick_header_metrics(wm: Dict[str, Any]) -> Tuple[Optional[float], Optional[i
             diff = p_noon - p_morn
             trend = "↑" if diff >= 0.3 else "↓" if diff <= -0.3 else "→"
 
+    # среднее по дню, если не нашли «вблизи 12:00»
     if wind_ms is None or wind_dir is None or press_val is None:
         idxs = _tomorrow_indices(wm)
         if idxs:
@@ -139,6 +148,7 @@ def pick_header_metrics(wm: Dict[str, Any]) -> Tuple[Optional[float], Optional[i
             wind_dir = int(round(md)) if md is not None else wind_dir
             if prs: press_val = int(round(sum(prs)/len(prs)))
 
+    # порывы: максимум за день
     gust_max_ms = None
     idxs = _tomorrow_indices(wm)
     if gs and idxs:
@@ -200,10 +210,10 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any]) -> Dict[str, Any]:
         "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else "",
     }
 
-# ────────── NOAA: Kp + свежесть ──────────
+# ────────── NOAA: Kp с запасным источником ──────────
 def fetch_kp_recent() -> Tuple[Optional[float], Optional[str], Optional[int]]:
     try:
-        j = _get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json", timeout=20).json()
+        j = _json_retry("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json", timeout=20)
         if isinstance(j, list) and len(j) >= 2:
             last = j[-1]
             t = pendulum.parse(str(last[0])).in_tz("UTC")
@@ -213,9 +223,8 @@ def fetch_kp_recent() -> Tuple[Optional[float], Optional[str], Optional[int]]:
             return kp, status, age_h
     except Exception:
         pass
-    # запасной источник
     try:
-        alt = _get("https://services.swpc.noaa.gov/json/planetary_k_index_1m.json", timeout=20).json()
+        alt = _json_retry("https://services.swpc.noaa.gov/json/planetary_k_index_1m.json", timeout=20)
         if isinstance(alt, list) and alt:
             last = alt[-1]
             t = pendulum.parse(str(last.get("time_tag"))).in_tz("UTC")
@@ -230,7 +239,7 @@ def fetch_kp_recent() -> Tuple[Optional[float], Optional[str], Optional[int]]:
 # ────────── NOAA: Солнечный ветер ──────────
 def fetch_solar_wind() -> Optional[Dict[str, float|str]]:
     try:
-        j = _get("https://services.swpc.noaa.gov/products/summary/solar-wind.json", timeout=20).json()
+        j = _json_retry("https://services.swpc.noaa.gov/products/summary/solar-wind.json", timeout=20)
         def pick(obj, key):
             x = obj.get(key)
             if isinstance(x, dict):
@@ -252,7 +261,7 @@ def fetch_solar_wind() -> Optional[Dict[str, float|str]]:
         pass
     return None
 
-# ────────── Шуман (с фоллбэком) ──────────
+# ────────── Шуман (как раньше) ──────────
 def _trend_text(sym: str) -> str:
     return {"↑": "растёт", "↓": "снижается", "→": "стабильно"}.get(sym, "стабильно")
 
@@ -398,63 +407,22 @@ def build_astro_section_for_tomorrow() -> List[str]:
             pass
     return lines
 
-# ────────── «Умный вывод» ──────────
-def build_conclusion(kp: Optional[float], kp_status: str,
-                     air: Dict[str, Any],
-                     gust_ms: Optional[float],
-                     schu: Dict[str, Any]) -> List[str]:
-    lines: List[str] = []
-    air_bad, air_label, air_reason = _is_air_bad(air)
-    storm_main = isinstance(gust_ms, (int, float)) and gust_ms >= 17
-    kp_main = isinstance(kp, (int, float)) and kp >= 5
-    schu_main = (schu or {}).get("status","").startswith("🔴")
-
-    storm_text = f"штормовая погода: порывы до {gust_ms:.0f} м/с" if storm_main else None
-    air_text   = f"качество воздуха: {air_label} ({air_reason})" if air_bad else None
-    kp_text    = f"магнитная активность: Kp≈{kp:.1f} ({kp_status})" if kp_main else None
-    schu_text  = "сильные колебания Шумана" if schu_main else None
-
-    if storm_main:
-        lines.append(f"Основной фактор — {storm_text}. Планируйте дела с учётом погоды.")
-    elif air_bad:
-        lines.append(f"Основной фактор — {air_text}. Сократите время на улице и проветривание по ситуации.")
-    elif kp_main:
-        lines.append(f"Основной фактор — {kp_text}. Возможна чувствительность у метеозависимых.")
-    elif schu_main:
-        lines.append("Основной фактор — волны Шумана: отмечаются сильные отклонения.")
-    else:
-        lines.append("Серьёзных факторов риска не видно — ориентируйтесь на текущую погоду и планы.")
-
-    secondary = [t for t in (storm_text, air_text, kp_text, schu_text) if t]
-    if secondary:
-        primary = lines[0]
-        rest = [t for t in secondary if t not in primary]
-        if rest:
-            lines.append("Также обратите внимание: " + "; ".join(rest[:2]) + ".")
-    return lines
-
-# ────────── «быстрый» погодный фоллбэк Open-Meteo ──────────
+# ────────── «быстрый» OM-фоллбэк ──────────
 def _om_quick(lat: float, lon: float) -> Optional[dict]:
-    try:
-        params = {
-            "latitude": lat, "longitude": lon, "timezone": TZ.name,
-            "forecast_days": 2,
-            "hourly": "time,wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure,relative_humidity_2m",
-            "daily": "temperature_2m_max,temperature_2m_min,weathercode,relative_humidity_2m_min,relative_humidity_2m_max",
-        }
-        j = _get("https://api.open-meteo.com/v1/forecast", params=params, timeout=18).json()
-        return j if isinstance(j, dict) else None
-    except Exception as e:
-        logging.warning("OM quick fallback failed: %s", e)
-        return None
+    params = {
+        "latitude": lat, "longitude": lon, "timezone": TZ.name,
+        "forecast_days": 2,
+        "hourly": "time,wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure,relative_humidity_2m",
+        "daily": "temperature_2m_max,temperature_2m_min,weathercode,relative_humidity_2m_min,relative_humidity_2m_max",
+    }
+    j = _json_retry("https://api.open-meteo.com/v1/forecast", params=params, timeout=18)
+    return j if isinstance(j, dict) else None
 
-# ────────── AQI фоллбэк (если основной источник молчит) ──────────
+# ────────── AQI фоллбэк (OM AQ) ──────────
 def _aqi_to_lvl(aqi: Optional[float]) -> str:
     if aqi is None: return "н/д"
-    try:
-        a = float(aqi)
-    except Exception:
-        return "н/д"
+    try: a = float(aqi)
+    except Exception: return "н/д"
     if a <= 50: return "хороший"
     if a <= 100: return "умеренный"
     if a <= 150: return "нездоровый для чувствительных"
@@ -463,38 +431,32 @@ def _aqi_to_lvl(aqi: Optional[float]) -> str:
     return "опасный"
 
 def _air_fallback_openmeteo(lat: float, lon: float) -> Optional[dict]:
-    try:
-        params = {
-            "latitude": lat, "longitude": lon, "timezone": TZ.name,
-            "hourly": "time,us_aqi,european_aqi,pm2_5,pm10"
-        }
-        j = _get("https://air-quality-api.open-meteo.com/v1/air-quality", params=params, timeout=15).json()
-        hr = j.get("hourly") or {}
-        times = hr.get("time") or []
-        def pick_last(name):
-            arr = hr.get(name) or []
-            for i in range(min(len(times), len(arr))-1, -1, -1):
-                v = arr[i]
-                if v is None: continue
-                try:
-                    _ = float(v)
-                    return float(v)
-                except Exception:
-                    continue
-            return None
-        aqi = pick_last("us_aqi")
-        if aqi is None:
-            aqi = pick_last("european_aqi")
-        pm25 = pick_last("pm2_5")
-        pm10 = pick_last("pm10")
-        if aqi is None and pm25 is None and pm10 is None:
-            return None
-        return {"lvl": _aqi_to_lvl(aqi), "aqi": aqi, "pm25": pm25, "pm10": pm10}
-    except Exception as e:
-        logging.warning("Open-Meteo AQ fallback failed: %s", e)
+    params = {
+        "latitude": lat, "longitude": lon, "timezone": TZ.name,
+        "hourly": "time,us_aqi,european_aqi,pm2_5,pm10"
+    }
+    j = _json_retry("https://air-quality-api.open-meteo.com/v1/air-quality", params=params, timeout=15)
+    if not isinstance(j, dict): return None
+    hr = j.get("hourly") or {}
+    times = hr.get("time") or []
+
+    def pick_last(name):
+        arr = hr.get(name) or []
+        for i in range(min(len(times), len(arr))-1, -1, -1):
+            v = arr[i]
+            if v is None: continue
+            try: return float(v)
+            except Exception: continue
         return None
 
-# ────────── формат строки города (+возврат t_day) ──────────
+    aqi  = pick_last("us_aqi") or pick_last("european_aqi")
+    pm25 = pick_last("pm2_5")
+    pm10 = pick_last("pm10")
+    if aqi is None and pm25 is None and pm10 is None:
+        return None
+    return {"lvl": _aqi_to_lvl(aqi), "aqi": aqi, "pm25": pm25, "pm10": pm10}
+
+# ────────── формат строки города (+ вернуть t_day для сортировки) ──────────
 def _city_info(city: str, la: float, lo: float) -> Tuple[Optional[float], str]:
     wm  = get_weather(la, lo) or {}
     st  = day_night_stats(la, lo, tz=TZ.name) or {}
@@ -505,12 +467,12 @@ def _city_info(city: str, la: float, lo: float) -> Tuple[Optional[float], str]:
     wind_ms, wind_dir, press_hpa, p_trend, gust_max = pick_header_metrics(wm)
     sst = get_sst(la, lo) if city in COASTAL_CITIES else None
 
-    # если «тонко», дергаем быстрый фоллбэк
+    # если пусто — OM-quick
     need_fallback = (
         (t_day is None or t_night is None) or
+        (rh_min is None or rh_max is None) or
         (not isinstance(wind_ms,(int,float))) or
-        (not isinstance(press_hpa,int)) or
-        (rh_min is None or rh_max is None)
+        (not isinstance(press_hpa,int))
     )
     if need_fallback:
         q = _om_quick(la, lo)
@@ -521,9 +483,9 @@ def _city_info(city: str, la: float, lo: float) -> Tuple[Optional[float], str]:
                 return arr[1] if len(arr) > 1 else (arr[0] if arr else None)
             if t_day   is None: t_day   = pick_d("temperature_2m_max")
             if t_night is None: t_night = pick_d("temperature_2m_min")
-            if wc is None: wc = pick_d("weathercode")
-            if rh_min is None: rh_min = pick_d("relative_humidity_2m_min")
-            if rh_max is None: rh_max = pick_d("relative_humidity_2m_max")
+            if wc      is None: wc      = pick_d("weathercode")
+            if rh_min  is None: rh_min  = pick_d("relative_humidity_2m_min")
+            if rh_max  is None: rh_max  = pick_d("relative_humidity_2m_max")
 
             hr = q.get("hourly") or {}
             times = hr.get("time") or []
@@ -567,6 +529,7 @@ def _city_info(city: str, la: float, lo: float) -> Tuple[Optional[float], str]:
                         p_trend = "↑" if (p12 - p6) >= 0.3 else "↓" if (p12 - p6) <= -0.3 else "→"
                 except Exception: ...
 
+    # финальное форматирование
     parts = [
         f"{city}: {(t_day if t_day is not None else 'н/д')}/{(t_night if t_night is not None else 'н/д')} °C",
         (code_desc(wc) or "—"),
@@ -581,37 +544,30 @@ def _city_info(city: str, la: float, lo: float) -> Tuple[Optional[float], str]:
 
 # ───────────────────────── build_msg ─────────────────────────
 def build_msg() -> str:
-    # гарантируем корректную дату с учётом WORK_DATE
-    today_local = pendulum.today(TZ)
-    tomorrow_local = today_local.add(days=1).date()
-
     P: List[str] = []
-    P.append(f"<b>🌅 Кипр: погода на завтра ({tomorrow_local.strftime('%d.%m.%Y')})</b>")
+    P.append(f"<b>🌅 Кипр: погода на завтра ({TOMORROW.strftime('%d.%m.%Y')})</b>")
     P.append("———")
 
-    # Рейтинг/перечень городов — подробно
+    # Города — подробно и всегда отсортированы по дню
     P.append("🎖️ <b>Города (д./н. °C, погода, ветер, RH, давление, 🌊)</b>")
     medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣"]
-    collected: List[Tuple[float,str]] = []
+    rows: List[Tuple[float,str]] = []
     for city in RATING_ORDER:
         la, lo = CITIES[city]
         t, line = _city_info(city, la, lo)
-        collected.append((t if isinstance(t,(int,float)) else -9999.0, line))
-    order = sorted(collected, key=lambda x: x[0], reverse=True)
-    for i,(t,line) in enumerate(order[:len(medals)]):
+        rows.append((t if isinstance(t,(int,float)) else -9999.0, line))
+    for i, (_, line) in enumerate(sorted(rows, key=lambda x: x[0], reverse=True)[:len(medals)]):
         P.append(f"{medals[i]} {line}")
     P.append("———")
 
-    # Качество воздуха + дым (по Лимассолу)
+    # Качество воздуха: основной → OM-AQ фоллбэк
     la0, lo0 = CITIES["Limassol"]
     air = (get_air(la0, lo0) or {})
-    if not any(air.get(k) for k in ("aqi","pm25","pm10")):
+    if not any(air.get(k) for k in ("aqi","pm25","pm10")) or air.get("lvl") in (None, "", "н/д"):
         fb = _air_fallback_openmeteo(la0, lo0)
         if fb: air = fb
-    lvl = air.get("lvl","н/д")
-    aqi = air.get("aqi","н/д")
-    p25 = air.get("pm25")
-    p10 = air.get("pm10")
+    lvl = air.get("lvl","н/д"); aqi = air.get("aqi","н/д")
+    p25 = air.get("pm25"); p10 = air.get("pm10")
     P.append("🏭 <b>Качество воздуха</b>")
     P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {aqi}) | PM₂.₅: {pm_color(p25)} | PM₁₀: {pm_color(p10)}")
     if (p25 is not None) or (p10 is not None):
@@ -626,24 +582,17 @@ def build_msg() -> str:
         P.append(f"Деревья: {pol['tree']} | Травы: {pol['grass']} | Сорняки: {pol['weed']} — риск {pol['risk']}")
         P.append("———")
 
-    # Геомагнитка + солнечный ветер
+    # Геомагнитка + ветер
     kp, ks, age_h = fetch_kp_recent()
     if isinstance(kp, (int, float)):
         freshness = f", 🕓 {age_h}ч назад" if isinstance(age_h,int) else ""
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks}{freshness})")
     else:
         P.append("🧲 Геомагнитка: н/д")
-
     sw = fetch_solar_wind()
     if sw:
-        bz = sw.get("bz"); bt = sw.get("bt"); v = sw.get("v_kms"); n = sw.get("n")
-        mood = sw.get("mood","")
-        parts = []
-        if isinstance(bz,(int,float)): parts.append(f"Bz {bz:.1f} nT")
-        if isinstance(bt,(int,float)): parts.append(f"Bt {bt:.1f} nT")
-        if isinstance(v,(int,float)):  parts.append(f"v {v:.0f} км/с")
-        if isinstance(n,(int,float)):  parts.append(f"n {n:.1f} см⁻³")
-        P.append("ℹ️ По ветру сейчас " + (mood if mood else "нет данных") + "; Kp — глобальный индекс за 3 ч.")
+        mood = sw.get("mood","спокойно")
+        P.append(f"ℹ️ По ветру сейчас {mood}; Kp — глобальный индекс за 3 ч.")
     P.append("———")
 
     # Шуман
@@ -656,14 +605,12 @@ def build_msg() -> str:
     P.append("———")
 
     # «Вывод»
-    # используем порывы из Лимассола (как наиболее «населённого»), при желании можно взять max по всем
     gust_for_concl = None
     try:
         wm_lead = get_weather(*CITIES["Limassol"]) or {}
         _,_,_,_,gust_for_concl = pick_header_metrics(wm_lead)
     except Exception:
         pass
-
     P.append("📜 <b>Вывод</b>")
     P.extend(build_conclusion(kp, ks or "н/д", air, gust_for_concl, schu_state))
     P.append("———")
@@ -686,7 +633,7 @@ def build_msg() -> str:
     P.append("———")
 
     # Факт дня
-    P.append(f"📚 {get_fact(tomorrow_local)}")
+    P.append(f"📚 {get_fact(TOMORROW)}")
     return "\n".join(P)
 
 # ─────────────── отправка ───────────────
