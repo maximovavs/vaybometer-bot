@@ -281,7 +281,7 @@ async def main_cy() -> None:
         base_date = base_date.add(days=1)
 
     chat_id = resolve_chat_id(args.chat_id, args.to_test)
-    bot = Bot(token=TOKEN_KLG)
+    bot = Bot(token=TOKEN)
 
     # Подменяем pendulum.today, чтобы весь импортируемый код видел нужную дату
     with _TodayPatch(base_date):
