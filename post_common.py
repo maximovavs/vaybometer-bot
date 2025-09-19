@@ -767,17 +767,22 @@ def build_conclusion(kp: Any,
 def _city_detail_line(city: str, la: float, lo: float, tz_obj: pendulum.Timezone, include_sst: bool) -> tuple[Optional[float], Optional[str]]:
     """
     Возвращает (tmax, line) для сортировки и печати.
-    Линия формата:
+    Формат:
     <City>: дн/ночь D/N °C • <погода> • 💨 v м/с (dir) [порывы до G] • 💧 RH A–B% • 🔹 P гПа trend [• 🌊 SST]
     """
     tz_name = tz_obj.name
-    # t day/night
+
+    # 1) Температуры — основа: fetch_tomorrow_temps; фоллбэк: day_night_stats
     tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
     if tmax is None:
+        st_fb = day_night_stats(la, lo, tz=tz_name) or {}
+        tmax = st_fb.get("t_day_max")
+        tmin = st_fb.get("t_night_min")
+    if tmax is None:   # совсем нет данных — не печатаем город
         return None, None
     tmin = tmin if tmin is not None else tmax
 
-    # weather + hourly stuff
+    # 2) Погода и почасовые метрики
     wm  = get_weather(la, lo) or {}
     wcx = (wm.get("daily", {}) or {}).get("weathercode", [])
     wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else None
@@ -787,6 +792,7 @@ def _city_detail_line(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     storm = storm_flags_for_tomorrow(wm, tz_obj)
     gust = storm.get("max_gust_ms")
 
+    # RH: если есть day_night_stats — возьмём min/max, иначе не показываем
     stats = day_night_stats(la, lo, tz=tz_name) or {}
     rh_min = stats.get("rh_min")
     rh_max = stats.get("rh_max")
@@ -812,7 +818,7 @@ def _city_detail_line(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         if isinstance(sst, (int, float)):
             parts.append(f"🌊 {sst:.1f}")
 
-    return tmax, " • ".join(parts)
+    return float(tmax), " • ".join(parts)
 
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
