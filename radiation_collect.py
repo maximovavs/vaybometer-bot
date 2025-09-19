@@ -1,44 +1,95 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Запускать кроном/Workflow раз в час.
-Добавляет свежий замер γ-фона в radiation_hourly.json
-Формат одной записи:
-{
-  "ts": 1717935600,        # Unix-время замера
-  "lat": 34.68,
-  "lon": 33.04,
-  "val": 0.11              # μSv/h  (None, если н/д)
-}
-"""
-import json, time, logging, pathlib, sys
-from typing import Optional
-from radiation import try_radmon, try_eurdep
+name: collect-radiation
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+on:
+  schedule:
+    # каждые 30 минут (со сдвигом, чтобы не пересекаться с другими задачами)
+    - cron: '4/30 * * * *'
+  workflow_dispatch:
 
-CACHE = pathlib.Path(__file__).parent / "radiation_hourly.json"
-CACHE.touch(exist_ok=True)
+permissions:
+  contents: write   # нужно для коммита JSON
 
-def get_gamma(lat: float, lon: float) -> Optional[float]:
-    """два источника подряд, None если оба молчат"""
-    return try_radmon(lat, lon) or try_eurdep(lat, lon)
+concurrency:
+  group: collect-radiation-cy
+  cancel-in-progress: false
 
-def append_point(lat: float, lon: float) -> None:
-    arr = []
-    try:
-        txt = CACHE.read_text() or "[]"
-        arr = json.loads(txt)
-    except Exception:
-        logging.warning("cant parse cache – overwrite")
-    
-    val = get_gamma(lat, lon)
-    arr.append({"ts": int(time.time()), "lat": lat, "lon": lon, "val": val})
-    
-    # храним максимум 1000 последних точек
-    CACHE.write_text(json.dumps(arr[-1000:], ensure_ascii=False, indent=2))
-    logging.info("new point: %s μSv/h", val)
+jobs:
+  collect:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
 
-if __name__ == "__main__":
-    # Лимассол
-    append_point(34.68, 33.04)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install requests
+          fi
+
+      - name: Run collector (robust search with retry; CRLF-safe)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE:?}"
+          echo "PWD=$(pwd)"
+          ls -la
+
+          # возможные пути скрипта
+          scripts=(
+            "radiation_collect.py"
+            "collectors/radiation_collect.py"
+            "scripts/collect_radiation.py"
+          )
+
+          # до 3 попыток запуска
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt"
+            for s in "${scripts[@]}"; do
+              # срежем '\r' на случай CRLF
+              p="${s%$'\r'}"
+              if [[ -f "$p" ]]; then
+                echo "Running: $p"
+                if python "$p"; then
+                  echo "Collector finished OK."
+                  exit 0
+                else
+                  echo "Collector failed on attempt $attempt."
+                fi
+              fi
+            done
+            echo "Sleeping 10s before next attempt…"
+            sleep 10
+          done
+
+          echo "No collector script found in known locations."
+          exit 1
+
+      - name: Commit data
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE:?}"
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name  "rad-bot"
+          git config user.email "bot@users.noreply.github.com"
+
+          # добавляем артефакты сборки (если есть)
+          git add radiation_hourly.json           2>/dev/null || true
+          git add data/safecast_cy.json           2>/dev/null || true
+          git add data/radiation_official.json    2>/dev/null || true
+
+          git commit -m "radiation: hourly update [cy]" || echo "no changes"
+          git push
