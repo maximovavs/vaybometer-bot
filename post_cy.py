@@ -40,9 +40,9 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ────────────────────────────── Secrets / Env ────────────────────────────────
 
-TOKEN_KLG = os.getenv("TELEGRAM_TOKEN_KLG", "")
-if not TOKEN_KLG:
-    logging.error("Не задан TELEGRAM_TOKEN_KLG")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+if not TOKEN:
+    logging.error("Не задан TELEGRAM_TOKEN")
     sys.exit(1)
 
 # ───────────────────────────── Параметры региона ────────────────────────────
