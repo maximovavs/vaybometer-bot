@@ -3,7 +3,7 @@ name: collect-radiation
 on:
   schedule:
     # каждые 30 минут, но со сдвигом на 2 минуты
-    - cron: '2/30 * * * *'
+    - cron: '4/30 * * * *'
   workflow_dispatch:
 
 permissions:
