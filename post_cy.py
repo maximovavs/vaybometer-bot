@@ -13,12 +13,14 @@ post_cy.py  •  Запуск «Cyprus daily post» для Telegram-канала
   7) --chat-id ID        — явный chat_id канала (перебивает всё остальное).
 
 Переменные окружения:
-  TELEGRAM_TOKEN_KLG — обязательно.
-  CHANNEL_ID_KLG     — ID основного канала (если не задан --chat-id/--to-test).
-  CHANNEL_ID_TEST    — ID тестового канала (для --to-test).
+  TELEGRAM_TOKEN   — обязательно.
+  CHANNEL_ID       — ID основного канала (если не задан --chat-id/--to-test).
+  CHANNEL_ID_TEST  — ID тестового канала (для --to-test).
   CHANNEL_ID_OVERRIDE — явный chat_id (перебивает всё; удобно в Actions inputs).
   DISABLE_LLM_DAILY  — если "1"/"true" → ежедневный LLM отключён (читает post_common).
   TZ (опц.)          — таймзона, по умолчанию Asia/Nicosia.
+
+(Совм.: если CHANNEL_ID не задан, будет попытка взять CHANNEL_ID_KLG.)
 """
 
 from __future__ import annotations
@@ -50,17 +52,19 @@ if not TOKEN:
 SEA_LABEL   = "Морские города (топ-5)"
 OTHER_LABEL = "Список не-морских городов (тёплые/холодные)"
 
-# Часовой пояс — Калининград (можно переопределить переменной TZ)
+# Часовой пояс — Кипр (можно переопределить переменной TZ)
 TZ_STR = os.getenv("TZ", "Asia/Nicosia")
 
-SEA_CITIES = {
+SEA_CITIES: Dict[str, Tuple[float, float]] = {
     "Limassol": (34.707, 33.022),
     "Pafos": (34.776, 32.424),
     "Ayia Napa": (34.988, 34.012),
     "Larnaca": (34.916, 33.624),
 }
+# Упорядоченный список (имя, (lat, lon)) — то, чего не хватало
+SEA_CITIES_ORDERED = list(SEA_CITIES.items())
 
-OTHER_CITIES_ALL = {
+OTHER_CITIES_ALL: Dict[str, Tuple[float, float]] = {
     "Nicosia": (35.170, 33.360),
     "Troodos": (34.916, 32.823),
 }
@@ -76,7 +80,6 @@ def _fmt_delta(x: float | int | None) -> str:
         x = float(x)
     except Exception:
         return "0.00"
-    # знак минуса — узкий (–)
     sign = "−" if x < 0 else ""
     return f"{sign}{abs(x):.2f}"
 
@@ -95,8 +98,7 @@ def _load_fx_rates(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Dict
         logging.warning("FX: модуль fx.py не найден/ошибка получения данных: %s", e)
         return {}
 
-def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Tuple[str, Dict[str, Any]]:
-    """Возвращает (текст_поста, словарь_rates) для блока «Курсы валют»."""
+def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone):
     rates = _load_fx_rates(date_local, tz)
 
     def token(code: str, name: str) -> str:
@@ -116,30 +118,22 @@ def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> T
     return f"{title}\n{line}", rates
 
 def _normalize_cbr_date(raw) -> str | None:
-    """
-    Приводим дату ЦБ к строке 'YYYY-MM-DD' в TZ Москвы.
-    Поддерживаем варианты: pendulum Date/DateTime, unix timestamp, ISO-строка и т.п.
-    """
     if raw is None:
         return None
-    # pendulum Date/DateTime
     if hasattr(raw, "to_date_string"):
         try:
             return raw.to_date_string()
         except Exception:
             pass
-    # unix timestamp
     if isinstance(raw, (int, float)):
         try:
             return pendulum.from_timestamp(int(raw), tz="Europe/Moscow").to_date_string()
         except Exception:
             return None
-    # строка
     try:
         s = str(raw).strip()
         if "T" in s or " " in s:
             return pendulum.parse(s, tz="Europe/Moscow").to_date_string()
-        # возможно уже YYYY-MM-DD
         pendulum.parse(s, tz="Europe/Moscow")
         return s
     except Exception:
@@ -152,14 +146,10 @@ async def _send_fx_only(
     tz: pendulum.Timezone,
     dry_run: bool
 ) -> None:
-    # формируем текст и получаем полные rates
     text, rates = _build_fx_message(date_local, tz)
-
-    # достаём дату ЦБ (учитываем разные ключи)
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
 
-    # если есть should_publish_again — проверим кэш и, при необходимости, пропустим публикацию
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -169,7 +159,6 @@ async def _send_fx_only(
                 logging.info("Курсы ЦБ не обновились — пост пропущен.")
                 return
     except Exception as e:
-        # не считаем ошибкой — просто публикуем
         logging.warning("FX: skip-check failed (продолжаем отправку): %s", e)
 
     if dry_run:
@@ -178,7 +167,6 @@ async def _send_fx_only(
 
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
 
-    # после успешной отправки обновим кэш
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -191,12 +179,12 @@ async def _send_fx_only(
 
 def resolve_chat_id(args_chat: str, to_test: bool) -> int:
     """
-    Выбирает chat_id по приоритетам:
+    Приоритеты:
       1) --chat-id / CHANNEL_ID_OVERRIDE
       2) --to-test  → CHANNEL_ID_TEST
-      3) CHANNEL_ID_KLG
+      3) CHANNEL_ID (основной)
+      4) (совм.) CHANNEL_ID_KLG
     """
-    # 1) явный аргумент или ENV override
     chat_override = (args_chat or "").strip() or os.getenv("CHANNEL_ID_OVERRIDE", "").strip()
     if chat_override:
         try:
@@ -205,7 +193,6 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
             logging.error("Неверный chat_id (override): %r", chat_override)
             sys.exit(1)
 
-    # 2) тестовый канал
     if to_test:
         ch_test = os.getenv("CHANNEL_ID_TEST", "").strip()
         if not ch_test:
@@ -217,22 +204,20 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
             logging.error("CHANNEL_ID_TEST должен быть числом, получено: %r", ch_test)
             sys.exit(1)
 
-    # 3) основной канал
-    ch_main = os.getenv("CHANNEL_ID_KLG", "").strip()
+    ch_main = os.getenv("CHANNEL_ID", "").strip() or os.getenv("CHANNEL_ID_KLG", "").strip()
     if not ch_main:
-        logging.error("CHANNEL_ID_KLG не задан и не указан --chat-id/override")
+        logging.error("CHANNEL_ID не задан и не указан --chat-id/override")
         sys.exit(1)
     try:
         return int(ch_main)
     except Exception:
-        logging.error("CHANNEL_ID_KLG должен быть числом, получено: %r", ch_main)
+        logging.error("CHANNEL_ID должен быть числом, получено: %r", ch_main)
         sys.exit(1)
 
 # ─────────────────────────── Патч даты для всего поста ──────────────────────
 
 class _TodayPatch:
     """Контекстный менеджер для временной подмены `pendulum.today()` и `pendulum.now()`."""
-
     def __init__(self, base_date: pendulum.DateTime):
         self.base_date = base_date
         self._orig_today = None
@@ -260,7 +245,6 @@ class _TodayPatch:
             pendulum.today = self._orig_today  # type: ignore[assignment]
         if self._orig_now:
             pendulum.now = self._orig_now  # type: ignore[assignment]
-        # не подавляем исключения
         return False
 
 # ───────────────────────────────── Main ─────────────────────────────────────
@@ -283,7 +267,6 @@ async def main_cy() -> None:
     chat_id = resolve_chat_id(args.chat_id, args.to_test)
     bot = Bot(token=TOKEN)
 
-    # Подменяем pendulum.today, чтобы весь импортируемый код видел нужную дату
     with _TodayPatch(base_date):
         if args.fx_only:
             await _send_fx_only(bot, chat_id, base_date, tz, dry_run=args.dry_run)
@@ -293,7 +276,6 @@ async def main_cy() -> None:
             logging.info("DRY-RUN: пропускаем отправку основного ежедневного поста")
             return
 
-        # Обычный ежедневный пост
         await main_common(
             bot=bot,
             chat_id=chat_id,
