@@ -854,7 +854,7 @@ def build_message(region_name: str,
     if sea_rows:
         P.append(f"🌊 <b>{sea_label}</b>")
         sea_rows.sort(key=lambda x: x[0], reverse=True)
-        medals = ["🥵", "☀️", "💧", "🥶"]
+        medals = ["🥵", "😎", "😌", "🥶"]
         for i, (_, text) in enumerate(sea_rows[:5]):
             med = medals[i] if i < len(medals) else f"{i+1}."
             P.append(f"{med} {text}")
