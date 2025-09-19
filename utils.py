@@ -319,15 +319,175 @@ DEFAULT_FACTS: List[str] = [
     "В Ларнаке находится старейшая соборная мечеть XIII века, работающая по сей день 🕌"
 ]
 
-def get_fact(date_obj, region: str = "") -> str:
-    """Факт дня для Кипра: FACTS[MM-DD] → fallback из DEFAULT_FACTS."""
-    mm = f"{getattr(date_obj,'month',None) or getattr(date_obj,'month',0):02d}"
-    dd = f"{getattr(date_obj,'day',None) or getattr(date_obj,'day',0):02d}"
-    key = f"{mm}-{dd}"
-    if key in FACTS:
-        return FACTS[key]
-    try:
-        idx = (int(dd) - 1) % len(DEFAULT_FACTS)
-    except Exception:
-        idx = 0
-    return DEFAULT_FACTS[idx]
+DEFAULT_FACTS_UNI: List[str] = [
+    "Луна удаляется от Земли на 3.8 см каждый год.",
+    "Человеческий мозг генерирует достаточно энергии, чтобы осветить лампочку.",
+    "В космосе звуки не распространяются, потому что там нет атмосферы.",
+    "Солнце составляет 99.86 % массы Солнечной системы.",
+    "Молния может быть горячее поверхности Солнца (до 30 000 °C).",
+    "Планета Венера вращается в обратном направлении (ретроградно).",
+]
+
+def get_fact(date: pendulum.Date, region: str = "") -> str:
+    """
+    Возвращает «факт дня» для date и region.
+
+    Логика:
+      1) Если region содержит «калининград» → факт из FACTS_KLGD по дате (MM-DD),
+         иначе случайный из FACTS_KLGD_RANDOM.
+      2) Если region содержит «кипр»      → факт из FACTS_CY по дате (MM-DD),
+         иначе случайный из DEFAULT_FACTS_CY.
+      3) В остальных случаях (универсальный) —
+         факт из DEFAULT_FACTS_UNI по индексу (date.day % len(DEFAULT_FACTS_UNI)).
+    """
+    r = region.lower()
+
+    # 1) Калининград
+    if "калининград" in r:
+        key = date.format("MM-DD")
+        return FACTS_KLGD.get(key, random.choice(FACTS_KLGD_RANDOM))
+
+    # 2) Кипр
+    if "кипр" in r:
+        key = date.format("MM-DD")
+        return FACTS_CY.get(key, random.choice(DEFAULT_FACTS_CY))
+
+    # 3) Универсальный
+    idx = date.day % len(DEFAULT_FACTS_UNI)
+    return DEFAULT_FACTS_UNI[idx]
+
+# ─────────────────────── Интеграции и иконки ────────────────────────────────
+
+WEATHER_ICONS: Dict[str, str] = {
+    "ясно":      "☀️",
+    "переменная": "🌧️",
+    "пасмурно":  "☁️",
+    "дождь":     "🌧️",
+    "туман":     "🌫️",
+}
+
+AIR_EMOJI: Dict[str, str] = {
+    "хороший":    "🟢",
+    "умеренный":  "🟡",
+    "вредный":    "🟠",
+    "оч. вредный": "🔴",
+    "опасный":    "🟣",
+    "н/д":        "⚪",
+}
+
+# ──────────────────────── Функция kp_emoji ───────────────────────────────────
+
+def kp_emoji(kp: Optional[float]) -> str:
+    """
+    Эмодзи по индексу Kp:
+      k < 3  → ⚪
+      3 ≤ k < 5  → 🟢
+      k ≥ 5     → 🔴
+      None   → ⚪
+    """
+    if kp is None:
+        return "⚪"
+    k = int(round(kp))
+    if k < 3:
+        return "⚪"
+    if k < 5:
+        return "🟢"
+    return "🔴"
+
+# ──────────────────────── Тренд давления ─────────────────────────────────
+
+def pressure_trend(w: Dict[str, Any]) -> str:
+    """
+    ↑ если ближайший час > +2 гПа, ↓ если < −2, иначе →.
+    w — объект с hourly.surface_pressure (список чисел).
+    """
+    hp = w.get("hourly", {}).get("surface_pressure", [])
+    if len(hp) < 2:
+        return "→"
+    diff = hp[1] - hp[0]
+    if diff >= 2:
+        return "↑"
+    if diff <= -2:
+        return "↓"
+    return "→"
+
+def _freq_status(freq: Optional[float]) -> tuple[str, str]:
+    """
+    Возвращает (label, code):
+      🟢 в норме — 7.7..8.1
+      🟡 колебания — внутри 7.4..8.4, но вне зелёного коридора
+      🔴 сильное отклонение — <7.4 или >8.4
+    """
+    if not isinstance(freq, (int, float)):
+        return "🟡 колебания", "yellow"
+    f = float(freq)
+    if 7.4 <= f <= 8.4:
+        return ("🟢 в норме", "green") if (7.7 <= f <= 8.1) else ("🟡 колебания", "yellow")
+    return "🔴 сильное отклонение", "red"
+
+def _trend_text(sym: str) -> str:
+    return {"↑": "растёт", "↓": "снижается", "→": "стабильно"}.get(sym, "стабильно")
+
+def _h7_text(h7_amp: Optional[float], h7_spike: Optional[bool]) -> str:
+    if isinstance(h7_amp, (int, float)):
+        return f"· H7: {h7_amp:.1f} (⚡ всплеск)" if h7_spike else f"· H7: {h7_amp:.1f} — спокойно"
+    return "· H7: — нет данных"
+
+def _gentle_interpretation(code: str) -> str:
+    if code == "green":
+        return "Волны Шумана близки к норме — организм реагирует как на обычный день."
+    if code == "yellow":
+        return "Заметны колебания — возможна лёгкая чувствительность к погоде и настроению."
+    return "Сильные отклонения — прислушивайтесь к самочувствию и снижайте перегрузки."
+
+# ──────────────────────── HTTP-обёртки ───────────────────────────────────
+_HEADERS = {
+    "User-Agent": "VayboMeter/1.0 (+https://github.com/)",
+    "Accept":     "application/json",
+}
+
+def _get_retry(url: str, retries: int = 2, **params) -> Optional[dict]:
+    """
+    Повторяет запрос до retries раз (экспоненциальный бэкоф: 0.5, 1, 2 сек).
+    Возвращает JSON-словарь или None.
+    """
+    attempt = 0
+    while attempt <= retries:
+        try:
+            r = requests.get(url, params=params, timeout=15, headers=_HEADERS)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            attempt += 1
+            if attempt > retries:
+                # логируем только после последней неудачной попытки
+                return None
+            time.sleep(0.5 * attempt)
+
+def _get(url: str, **params) -> Optional[dict]:
+    """
+    Простая обёртка поверх _get_retry с двумя попытками.
+    """
+    return _get_retry(url, retries=2, **params)
+
+# ─────────────────────── Module self-test ─────────────────────────────────
+
+if __name__ == "__main__":
+    import sys
+    print("compass demo:", compass(0), compass(45), compass(180))
+    print("clouds demo:", clouds_word(10), clouds_word(50), clouds_word(90))
+    print("wind_phrase demo:", wind_phrase(1), wind_phrase(5), wind_phrase(12), wind_phrase(20))
+    print("kmh_to_ms demo:", kmh_to_ms(36), kmh_to_ms(18), kmh_to_ms(None))
+    print("ms_to_kmh demo:", ms_to_kmh(10), ms_to_kmh(5), ms_to_kmh(None))
+    print("safe demo:", safe(None, "°C"), safe(5.237, "°C"), safe("10", "мм"))
+    print("AQI demo:", aqi_color(42), aqi_color(160), aqi_color("—"))
+    print("PM demo:", pm_color(8), pm_color(27), pm_color(78, True), pm_color(None))
+    print("smoke_index demo:", smoke_index(15, 30), smoke_index(45, 60), smoke_index(80, 100), smoke_index(None, None))
+    today = pendulum.today()
+    print("Fact Kaliningrad:", get_fact(today, "Калининград"))
+    print("Fact Cyprus:", get_fact(today, "Кипр"))
+    print("Fact Universal:", get_fact(today, ""))
+    print("kp_emoji demo:", kp_emoji(1.5), kp_emoji(4.2), kp_emoji(6.7), kp_emoji(None))
+    # Демонстрация HTTP-запроса (замените URL на какой-нибудь доступный API)
+    # print("HTTP demo:", _get("https://api.github.com", per_page=1))
+    sys.exit(0)
