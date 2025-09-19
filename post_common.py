@@ -40,6 +40,8 @@ CY_LAT, CY_LON = 34.707, 33.022
 
 # коэффициент перевода CPM -> μSv/h (можно переопределить ENV CPM_TO_USVH)
 CPM_TO_USVH = float(os.getenv("CPM_TO_USVH", "0.000571"))
+PRIMARY_CITY_NAME = os.getenv("PRIMARY_CITY", "Limassol")
+
 
 # Кэш для микро-LLM «Астрособытий»
 CACHE_DIR = Path(".cache")
@@ -64,6 +66,16 @@ def code_desc(c: Any) -> Optional[str]:
     except Exception:
         return None
     return WMO_DESC.get(i)
+    
+def _iter_city_pairs(cities) -> list[tuple[str, tuple[float, float]]]:
+    """Принимает dict {'Name': (lat,lon)} или iterable из пар и возвращает список пар."""
+    if isinstance(cities, dict):
+        return list(cities.items())
+    try:
+        return list(cities)
+    except Exception:
+        return []
+
 
 # ───────────── Шуман: чтение JSON-истории ─────────────
 def _read_schumann_history() -> List[Dict[str, Any]]:
@@ -817,6 +829,8 @@ def build_message(region_name: str,
 
     tz_obj = _as_tz(tz)
     tz_name = tz_obj.name
+    sea_pairs   = _iter_city_pairs(sea_cities)
+    other_pairs = _iter_city_pairs(other_cities)
 
     P: List[str] = []
     today = pendulum.today(tz_obj)
@@ -855,8 +869,8 @@ def build_message(region_name: str,
 
     desc = code_desc(wc)
     kal_parts = [
-        f"🏙️ Калининград: дн/ночь {t_day_max:.0f}/{t_night_min:.0f} °C" if (t_day_max is not None and t_night_min is not None)
-        else "🏙️ Калининград: дн/ночь н/д",
+        f"🏙️ {PRIMARY_CITY_NAME}: дн/ночь {t_day_max:.0f}/{t_night_min:.0f} °C" if (t_day_max is not None and t_night_min is not None)
+        else "🏙️ {PRIMARY_CITY_NAME}: дн/ночь н/д",
         desc or None,
         wind_part,
         (f"💧 RH {rh_min:.0f}–{rh_max:.0f}%" if rh_min is not None and rh_max is not None else None),
@@ -872,7 +886,7 @@ def build_message(region_name: str,
 
     # Морские города (топ-5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
-    for city, (la, lo) in sea_cities:
+    for city, (la, lo) in sea_pairs:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
         if tmax is None:
             continue
@@ -881,7 +895,7 @@ def build_message(region_name: str,
         temps_sea[city] = (tmax, tmin or tmax, wcx, get_sst(la, lo))
     if temps_sea:
         P.append(f"🎖️ <b>{sea_label}</b>")
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        medals = ["🥇", "🥈", "🥉", "4️⃣"]
         for i, (city, (d, n, wcx, sst_c)) in enumerate(sorted(temps_sea.items(),
                                                               key=lambda kv: kv[1][0], reverse=True)[:5]):
             line = f"{medals[i]} {city}: {d:.1f}/{n:.1f}"
@@ -895,7 +909,7 @@ def build_message(region_name: str,
 
     # Тёплые/холодные
     temps_oth: Dict[str, Tuple[float, float, int]] = {}
-    for city, (la, lo) in other_cities:
+    for city, (la, lo) in other_pairs:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
         if tmax is None:
             continue
@@ -903,15 +917,10 @@ def build_message(region_name: str,
         wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else 0
         temps_oth[city] = (tmax, tmin or tmax, wcx)
     if temps_oth:
-        P.append("🔥 <b>Тёплые города, °C</b>")
+        P.append("🔥 <b>Континентальные города, °C</b>")
         for city, (d, n, wcx) in sorted(temps_oth.items(), key=lambda kv: kv[1][0], reverse=True)[:3]:
             descx = code_desc(wcx)
             P.append(f"   • {city}: {d:.1f}/{n:.1f}" + (f" {descx}" if descx else ""))
-        P.append("❄️ <b>Холодные города, °C</b>")
-        for city, (d, n, wcx) in sorted(temps_oth.items(), key=lambda kv: kv[1][0])[:3]:
-            descx = code_desc(wcx)
-            P.append(f"   • {city}: {d:.1f}/{n:.1f}" + (f" {descx}" if descx else ""))
-        P.append("———")
 
     # Air + Safecast + пыльца + радиация (офиц.)
     P.append("🏭 <b>Качество воздуха</b>")
