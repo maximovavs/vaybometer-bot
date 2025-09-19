@@ -852,9 +852,9 @@ def build_message(region_name: str,
         if tmax is not None and line:
             sea_rows.append((float(tmax), line))
     if sea_rows:
-        P.append(f"🎖️ <b>{sea_label}</b>")
+        P.append(f"🌊 <b>{sea_label}</b>")
         sea_rows.sort(key=lambda x: x[0], reverse=True)
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        medals = ["🔥", "☀️", "💧", "🥶"]
         for i, (_, text) in enumerate(sea_rows[:5]):
             med = medals[i] if i < len(medals) else f"{i+1}."
             P.append(f"{med} {text}")
@@ -867,7 +867,7 @@ def build_message(region_name: str,
         if tmax is not None and line:
             oth_rows.append((float(tmax), line))
     if oth_rows:
-        P.append("🔥 <b>Континентальные города</b>")
+        P.append("⛰️ <b>Континентальные города</b>")
         oth_rows.sort(key=lambda x: x[0], reverse=True)
         for _, text in oth_rows:
             P.append(text)
