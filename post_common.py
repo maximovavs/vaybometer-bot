@@ -867,7 +867,7 @@ def build_message(region_name: str,
         if tmax is not None and line:
             oth_rows.append((float(tmax), line))
     if oth_rows:
-        P.append("⛰️ <b>Континентальные города</b>")
+        P.append("🏢 <b>Континентальные города</b>")
         oth_rows.sort(key=lambda x: x[0], reverse=True)
         for _, text in oth_rows:
             P.append(text)
@@ -885,7 +885,7 @@ def build_message(region_name: str,
     # дымовой индекс — показываем ТОЛЬКО если не низкое/н/д
     em_sm, lbl_sm = smoke_index(air.get("pm25"), air.get("pm10"))
     if lbl_sm and str(lbl_sm).lower() not in ("низкое", "низкий", "нет", "н/д"):
-        P.append(f"🔥 Задымление: {em_sm} {lbl_sm}")
+        P.append(f"😮‍💨 Задымление: {em_sm} {lbl_sm}")
 
     if (p := get_pollen()):
         P.append("🌿 <b>Пыльца</b>")
