@@ -1,93 +1,110 @@
-name: collect-radiation
+name: Collect radiation (Safecast)
 
 on:
+  workflow_dispatch: {}
   schedule:
-    # каждые 30 минут со сдвигом, чтобы не совпадать с другими задачами
-    - cron: '4/30 * * * *'
-  workflow_dispatch:
+    # каждые 30 минут (UTC). При необходимости поменяйте частоту
+    - cron: "*/30 * * * *"
 
 permissions:
-  # нужно для коммита/пуша JSON-файлов с замерами
-  contents: write
+  contents: write  # нужен авто-коммиту
 
 concurrency:
-  group: collect-radiation-cy
-  cancel-in-progress: false
+  group: collect-radiation
+  cancel-in-progress: true
 
 jobs:
   collect:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install deps
-        shell: bash
         run: |
           set -e
-          python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            pip install requests
+            pip install pendulum requests
           fi
 
+      # Главный шаг: до 3 попыток, поиск разных путей, срезаем возможный CR (\r)
       - name: Run collector with retry
-        shell: bash
-        run: |
-          set -e
-          cd "${GITHUB_WORKSPACE:?}"
-          echo "PWD=$(pwd)"
-          ls -la
+        uses: nick-fields/retry@v3
+        with:
+          max_attempts: 3
+          timeout_minutes: 10
+          warning_on_retry: true
+          continue_on_error: false
+          command: |
+            set -e
+            cd "${GITHUB_WORKSPACE:?}"
+            echo "***"
+            ls -la
 
-          # до 3 попыток найти и запустить любой из известных скриптов-сборщиков
-          for attempt in 1 2 3; do
-            echo "::group::Attempt ${attempt}"
-            for s in \
-              collectors/radiation_collect.py \
-              radiation_collect.py \
-              scripts/collect_radiation.py
-            do
-              if [ -f "$s" ]; then
-                echo "Running: $s"
-                if python "$s"; then
-                  echo "::endgroup::"
-                  # Успех — выходим из обоих циклов
-                  exit 0
-                else
-                  echo "Collector failed (attempt ${attempt})."
+            # до 3 попыток найти и запустить любой из известных скриптов-сборщиков
+            for attempt in 1 2 3; do
+              echo "::group::Attempt ${attempt}"
+              for raw in \
+                "collectors/radiation_collect.py" \
+                "radiation_collect.py" \
+                "scripts/collect_radiation.py"
+              do
+                # срезаем неожиданный CR из CRLF
+                s="${raw%$'\r'}"
+                if [ -f "$s" ]; then
+                  echo "Running: $s"
+                  # На всякий случай уберём CR в самом файле (без зависимости от dos2unix)
+                  perl -i -pe 's/\r$//' "$s"
+                  if python "$s"; then
+                    echo "::endgroup::"
+                    exit 0   # успех — выходим
+                  else
+                    echo "Collector failed (attempt ${attempt})."
+                  fi
                 fi
-              fi
+              done
+              echo "::endgroup::"
+              echo "Sleeping 10s before next attempt…"
+              sleep 10
             done
-            echo "::endgroup::"
-            echo "Sleeping 10s before next attempt…"
-            sleep 10
-          done
 
-          echo "No collector script found in known locations."
-          exit 1
+            echo "No collector script found in known locations."
+            exit 1
 
-      - name: Commit data
-        shell: bash
+      - name: Show produced data files
         run: |
           set -e
-          cd "${GITHUB_WORKSPACE:?}"
+          if [ -d data ]; then
+            echo "data/ contents:"
+            ls -la data
+            # для удобства логов — покажем начало и конец файла, если он есть
+            if [ -f data/safecast_cy.json ]; then
+              echo "Head of data/safecast_cy.json:"
+              head -n 5 data/safecast_cy.json || true
+              echo "Tail of data/safecast_cy.json:"
+              tail -n 5 data/safecast_cy.json || true
+            fi
+          else
+            echo "No data/ directory created."
+          fi
 
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config user.name  "rad-bot"
-          git config user.email "bot@users.noreply.github.com"
-
-          # Добавляем файлы, которые может писать коллектор
-          git add radiation_hourly.json 2>/dev/null || true
-          git add data/safecast_cy.json 2>/dev/null || true
-          git add data/radiation_official.json 2>/dev/null || true
-
-          git commit -m "radiation: hourly update [cy]" || echo "no changes"
-          git push
+      - name: Auto-commit updated JSON
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(data): update Safecast radiation"
+          file_pattern: |
+            data/*.json
+            radiation_hourly.json
+          commit_user_name: github-actions
+          commit_user_email: actions@github.com
+          commit_author: github-actions <actions@github.com>
