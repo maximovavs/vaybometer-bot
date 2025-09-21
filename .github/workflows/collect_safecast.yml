@@ -1,16 +1,16 @@
-name: Collect SafeCast (CY)
+name: Collect SafeCast (cy)
 
 on:
   workflow_dispatch:
   schedule:
     # каждые 6 часов
-    - cron: "10 */6 * * *"
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: write
 
 concurrency:
-  group: safecast-CY
+  group: safecast-cy
   cancel-in-progress: false
 
 jobs:
@@ -28,9 +28,9 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Fetch SafeCast (CY)
+      - name: Fetch SafeCast (cy)
         env:
-          SAFE_UA: "vaybometer-CY/1.0 (+github actions)"
+          SAFE_UA: "vaybometer-cy/1.0 (+github actions)"
           SAFE_RETRIES: "4"
           SAFE_TIMEOUT: "45"
           SAFE_BACKOFF: "1.8"
@@ -44,14 +44,14 @@ jobs:
           from datetime import datetime, timedelta, timezone
           from statistics import median
 
-          # Параметры Лимассола
-          LAT, LON = 34.68, 33.04
+          # Параметры CY
+          LAT, LON = 34.707, 33.022
           DIST_M   = 300_000    # 300 км
           HOURS    = 48         # окно по времени
-          OUT_FILE = "data/safecast_CY.json"
+          OUT_FILE = "data/safecast_cy.json"
 
           # Сетевые настройки (ENV с дефолтами)
-          UA      = os.getenv("SAFE_UA", "vaybometer-CY/1.0 (+github actions)")
+          UA      = os.getenv("SAFE_UA", "vaybometer-cy/1.0 (+github actions)")
           RETRIES = int(os.getenv("SAFE_RETRIES", "3"))
           TIMEOUT = float(os.getenv("SAFE_TIMEOUT", "30"))
           BACKOFF = float(os.getenv("SAFE_BACKOFF", "1.7"))
@@ -182,25 +182,25 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # показать индекс, но без добавления — чтобы diff отработал и при новом файле
-          git add -N data/safecast_CY.json >/dev/null 2>&1 || true
+          git add -N data/safecast_cy.json >/dev/null 2>&1 || true
 
-          if ! git diff --quiet -- data/safecast_CY.json; then
-            git add data/safecast_CY.json
+          if ! git diff --quiet -- data/safecast_cy.json; then
+            git add data/safecast_cy.json || git add data/safecast_cy.json
             # аккуратный rebase с stash, если параллельно были коммиты
             git stash push -u -m "pre-rebase" || true
             git pull --rebase || true
             git stash pop || true
-            git add data/safecast_CY.json
-            git commit -m "safecast(CY): update data/safecast_CY.json"
+            git add data/safecast_cy.json || git add data/safecast_cy.json
+            git commit -m "safecast(cy): update data/safecast_cy.json"
             git push
           else
-            echo "No changes in data/safecast_CY.json"
+            echo "No changes in data/safecast_cy.json"
           fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: safecast_CY.json
-          path: data/safecast_CY.json
+          name: safecast_cy.json
+          path: data/safecast_cy.json
           if-no-files-found: warn
           retention-days: 3
