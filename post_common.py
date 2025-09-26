@@ -769,7 +769,7 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
     env_mark  = " (ENV)" if shore_src and shore_src.startswith("ENV:") else ""
 
-    return "💦 Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part
+    return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part
 
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
