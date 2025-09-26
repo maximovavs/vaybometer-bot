@@ -717,7 +717,7 @@ def _fetch_wave(lat: float, lon: float) -> Tuple[Optional[float], Optional[float
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
     """
     Возвращает ОДНУ короткую строку вида:
-      💦 Отлично: Кайт/Винг/Винд; SUP; Сёрф @Lady's Mile (SE/cross)
+      🧜‍♂️ Отлично: Кайт/Винг/Винд; SUP; Сёрф @Lady's Mile (SE/cross)
     Только то, что оценено как "good". Если good нет — None.
     """
     wm = get_weather(la, lo) or {}
