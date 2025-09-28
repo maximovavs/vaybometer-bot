@@ -1,37 +1,26 @@
-name: world_weekly_en
-
+name: world-weekly-en
 on:
   schedule:
-    - cron: "0 16 * * 0"   # каждое воскресенье 16:00 UTC
+    - cron: "0 16 * * 0"   # Sun 16:00 UTC
   workflow_dispatch:
 
 jobs:
   weekly:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Render & post weekly digest (EN)
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install requests jinja2 pytz astral
+      - name: Collect weekly
+        run: python world_en/world_weekly_collect.py
+      - name: Render
+        run: python world_en/render.py world_en/templates/weekly_en.j2 world_en/weekly.json > world_en/weekly_msg.txt
+      - name: Send
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID_EN }}
-          YT_API_KEY:         ${{ secrets.YT_API_KEY }}
-          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
-          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
-          python world_en/render.py \
-            --template world_en/templates/weekly_en.j2 \
-            --lang en \
-            --channel world \
-            --send
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT}" -d parse_mode="Markdown" \
+            --data-urlencode text@"world_en/weekly_msg.txt"
