@@ -175,7 +175,7 @@ def main():
     }
 
     # --- плоские поля под шаблон daily_en.j2 ---
-    trend_emoji = {"up":"↗︎","down":"↘︎","stable":"→"}.get(trend, "→")
+    trend_emoji = {"up":"↑","down":"↓","stable":"→"}.get(trend, "→")
     flat = {
         "WEEKDAY": out["weekday_en"],
         "DATE": out["date_utc"],
