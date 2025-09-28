@@ -173,6 +173,18 @@ def main():
         "tips": [tip],
         "nature_break": nature
     }
+       # append to log for weekly
+    log_dir = Path(__file__).parent / "logs"; log_dir.mkdir(exist_ok=True)
+    log = {
+      "date": out["date_utc"],
+      "hottest_place": (hottest or {}).get("place"),
+      "hottest_temp": (hottest or {}).get("temp_c"),
+      "coldest_place": (coldest or {}).get("place"),
+      "coldest_temp": (coldest or {}).get("temp_c"),
+    }
+    with (log_dir / "extremes.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(log, ensure_ascii=False) + "\n")
+     
 
     # --- плоские поля под шаблон daily_en.j2 ---
     trend_emoji = {"up":"↑","down":"↓","stable":"→"}.get(trend, "→")
