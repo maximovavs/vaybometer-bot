@@ -1,4 +1,4 @@
-🌍 World Vibe Snapshot • {{WEEKDAY}}, {{DATE}} (UTC)
+WorldVibeMeter : 🌍 World Vibe Snapshot • {{WEEKDAY}}, {{DATE}} (UTC)
 
 Cosmic Weather
 - Geomagnetic (Kp): {{KP}} {{KP_TREND_EMOJI}} — {{KP_NOTE}}
@@ -11,7 +11,7 @@ Earth Live
 - Sunlight tidbit: {{SUN_TIDBIT_LABEL}} — {{SUN_TIDBIT_PLACE}}, {{SUN_TIDBIT_TIME}} UTC
 
 Money, quick glance
-USD ${{USD}} ({{USD_DELTA}}) • EUR €{{EUR}} ({{EUR_DELTA}}) • CNY ¥{{CNY}} ({{CNY_DELTA}})
+{{ fx_line or ("USD $" ~ USD ~ " (" ~ USD_DELTA ~ ") • EUR €" ~ EUR ~ " (" ~ EUR_DELTA ~ ") • CNY ¥" ~ CNY ~ " (" ~ CNY_DELTA ~ ")") }}
 
 Vibe Tip (60 sec)
 {{TIP_TEXT}}
