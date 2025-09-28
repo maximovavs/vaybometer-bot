@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
-import json, random, datetime as dt
 from pathlib import Path
+import sys
+sys.path.append(str(Path(__file__).resolve().parents[1]))  # чтобы import world_en.* точно работал
+import json, random, datetime as dt
 import requests
 from pytz import UTC
 from astral import LocationInfo
