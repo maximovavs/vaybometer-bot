@@ -1,0 +1,37 @@
+name: world_weekly_en
+
+on:
+  schedule:
+    - cron: "0 16 * * 0"   # каждое воскресенье 16:00 UTC
+  workflow_dispatch:
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Render & post weekly digest (EN)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+          YT_API_KEY:         ${{ secrets.YT_API_KEY }}
+          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
+        run: |
+          python world_en/render.py \
+            --template world_en/templates/weekly_en.j2 \
+            --lang en \
+            --channel world \
+            --send
