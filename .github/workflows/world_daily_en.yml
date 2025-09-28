@@ -1,7 +1,7 @@
 name: world-daily-en
 on:
   schedule:
-    - cron: "55 8 * * *"   # 08:55 UTC
+    - cron: "15 7 * * *"   # 08:55 UTC
   workflow_dispatch:
 jobs:
   run:
