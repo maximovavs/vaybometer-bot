@@ -1,9 +1,18 @@
-✨ Weekly Vibe Recap • Top 5 Earth Moments
+WorldVibeMeter : ✨ Weekly Vibe Recap • Top 5 Earth Moments ({{ WEEK_START or DATE }}–{{ WEEK_END or DATE }} UTC)
 
-1) Strongest quake: M{{TOP_QUAKE_MAG}} — {{TOP_QUAKE_REGION}} ({{TOP_QUAKE_NOTE}})
+1) Strongest quake: M{{TOP_QUAKE_MAG}} — {{TOP_QUAKE_REGION}}{% if TOP_QUAKE_NOTE %} ({{TOP_QUAKE_NOTE}}){% endif %}
 2) Wildest temp spread: {{HOTTEST_WEEK_PLACE}} {{HOTTEST_WEEK}}°C vs {{COLDEST_WEEK_PLACE}} {{COLDEST_WEEK}}°C
 3) Calm focus window (Kp): {{CALM_WINDOW_UTC}}
-4) Prettiest sunrise/late sunset: {{SUN_HIGHLIGHT_PLACE}} — {{SUN_HIGHLIGHT_TIME}} UTC
+4) Sun highlight: {{SUN_HIGHLIGHT_PLACE}} — {{SUN_HIGHLIGHT_TIME}} UTC
 5) Community favorite Nature Break: “{{TOP_NATURE_TITLE}}”
 
-Next week glance: Moon — {{NEXT_MOON_PHASE}}; Kp outlook — {{NEXT_KP_NOTE}}.
+{% if fx_line_week or fx_line -%}
+Money, quick glance
+{{ fx_line_week or fx_line }}
+{%- endif %}
+
+Next week glance
+- Moon: {{NEXT_MOON_PHASE}}
+- Kp outlook: {{NEXT_KP_NOTE}}
+
+PS: If this recap brought you calm, share it with one mindful friend 🌿
