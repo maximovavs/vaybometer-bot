@@ -1,4 +1,7 @@
-import json, random, datetime as dt, os
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import json, random, datetime as dt
 from pathlib import Path
 import requests
 from pytz import UTC
@@ -9,41 +12,34 @@ from world_en.settings_world_en import (
     HOT_CITIES, COLD_SPOTS, SUN_CITIES, VIBE_TIPS,
     YT_API_KEY, YT_CHANNEL_ID, YOUTUBE_PLAYLIST_IDS, FALLBACK_NATURE_LIST
 )
+from world_en.fx_intl import fetch_rates, format_line  # <— добавлено
 
 ROOT = Path(__file__).resolve().parents[1]
 
 def get_kp_and_solar():
-    # Kp
     kp_url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
     r = requests.get(kp_url, timeout=20); r.raise_for_status()
     rows = r.json()
-    last = rows[-1]  # ["time_tag","kp_index","a_running","station_count"]
+    last = rows[-1]
     kp = float(last[1])
-
-    # trend: сравним со значением ~3 часа назад
     ref = rows[-4] if len(rows) >= 4 else last
     trend = "stable"
     if float(last[1]) > float(ref[1]): trend = "up"
     if float(last[1]) < float(ref[1]): trend = "down"
 
-    # Solar wind (speed km/s, density cm^-3)
     sw = requests.get(
         "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json",
         timeout=20
     ); sw.raise_for_status()
     sw_rows = sw.json()
-    # header: time, density, speed, temperature
     den = float(sw_rows[-1][1]) if sw_rows[-1][1] not in ("", None) else None
     spd = float(sw_rows[-1][2]) if sw_rows[-1][2] not in ("", None) else None
-
     return kp, trend, spd, den
 
 def get_schumann_amp():
-    # читаем твой JSON, который уже обновляют твои джобы
     p = ROOT / "schumann_hourly.json"
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        # ожидаем поле amp на последней записи
         last = data[-1] if isinstance(data, list) else data
         amp = last.get("amp") or last.get("h7_amp") or None
         status = "baseline" if not amp or amp < 1.5 else ("elevated" if amp < 3 else "spike")
@@ -65,7 +61,6 @@ def get_extremes():
                 hottest = {"place": name, "temp_c": round(t)}
         except Exception:
             continue
-
     coldest = None
     for name, la, lo in COLD_SPOTS:
         try:
@@ -77,7 +72,6 @@ def get_extremes():
     return hottest, coldest
 
 def get_strongest_quake():
-    # За сутки, порог ~4.5
     url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson"
     r = requests.get(url, timeout=20); r.raise_for_status()
     feats = r.json()["features"]
@@ -102,39 +96,9 @@ def get_sunlight_tidbit():
             earliest = {"label":"Earliest sunrise", "place": name, "time_utc": sr}
         if not latest or ss > latest["time_utc"]:
             latest = {"label":"Latest sunset", "place": name, "time_utc": ss}
-    # Возвращаем одну фичу на пост
     return random.choice([earliest, latest])
 
-def get_fx():
-    # международный источник без ключа
-    base = "USD"
-    symbols = "EUR,CNY"
-    url = f"https://api.exchangerate.host/latest?base={base}&symbols={symbols}"
-    r = requests.get(url, timeout=20); r.raise_for_status()
-    rates = r.json()["rates"]
-    # дельты (вчера)
-    y = (dt.date.today() - dt.timedelta(days=1)).isoformat()
-    yurl = f"https://api.exchangerate.host/{y}?base={base}&symbols={symbols}"
-    try:
-        yr = requests.get(yurl, timeout=20); yr.raise_for_status()
-        yrates = yr.json()["rates"]
-        def fmt(val, prev):
-            delta = val - prev
-            sign = "+" if delta >= 0 else "-"
-            return f"{val:.2f}", f"{sign}{abs(delta):.2f}"
-    except Exception:
-        def fmt(val, prev): return f"{val:.2f}", "—"
-
-    eur, eur_d = fmt(rates["EUR"], rates.get("EUR", rates["EUR"]))
-    cny, cny_d = fmt(rates["CNY"], rates.get("CNY", rates["CNY"]))
-    return {
-        "usd": {"value": 1.00, "delta": "—"},
-        "eur": {"value": float(eur), "delta": eur_d},
-        "cny": {"value": float(cny), "delta": cny_d},
-    }
-
 def pick_nature_break():
-    # 1) если есть YT API — берём самый популярный шорт из последних 25
     if YT_API_KEY and YT_CHANNEL_ID:
         try:
             search = requests.get(
@@ -151,12 +115,11 @@ def pick_nature_break():
                     params={"key":YT_API_KEY, "id":",".join(ids), "part":"snippet,statistics,contentDetails"},
                     timeout=20
                 ).json()["items"]
-                # простая эвристика «шорт»: длительность <= 60s
                 def is_short(item):
-                    dur = item["contentDetails"]["duration"]  # ISO 8601
-                    return any(x in dur for x in ("PT0M", "PT1M"))  # дешево, но работает
-                shorts = [v for v in stats if is_short(v)]
-                top = max(shorts, key=lambda v:int(v["statistics"].get("viewCount","0"))) if shorts else max(stats, key=lambda v:int(v["statistics"].get("viewCount","0")))
+                    dur = item["contentDetails"]["duration"]
+                    return any(x in dur for x in ("PT0M", "PT1M"))
+                shorts = [v for v in stats if is_short(v)] or stats
+                top = max(shorts, key=lambda v:int(v["statistics"].get("viewCount","0")))
                 return {
                     "title": top["snippet"]["title"],
                     "snippet": "60 seconds of calm",
@@ -164,23 +127,28 @@ def pick_nature_break():
                 }
         except Exception:
             pass
-    # 2) playlist ids (без API ключа не вытащить элементы надёжно) — поэтому фолбэк ниже
-    # 3) жёсткий фолбэк: случайный из списка
     if FALLBACK_NATURE_LIST:
+        import random
         url = random.choice(FALLBACK_NATURE_LIST)
         return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": url}
     return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": "https://youtube.com/@misserrelax"}
 
 def main():
+    # --- сбор ---
     kp, trend, sw_speed, sw_den = get_kp_and_solar()
     amp, sch_status = get_schumann_amp()
     hottest, coldest = get_extremes()
     quake = get_strongest_quake()
     sun_tidbit = get_sunlight_tidbit()
-    fx = get_fx()
+
+    # FX через fx_intl
+    fx_data = fetch_rates("USD", ["EUR","CNY","JPY"])
+    fx_line = format_line(fx_data, order=["USD","EUR","CNY","JPY"])
+
     tip = random.choice(VIBE_TIPS)
     nature = pick_nature_break()
 
+    # --- вложенная структура (как раньше) ---
     out = {
         "date_utc": dt.date.today().isoformat(),
         "weekday_en": dt.datetime.utcnow().strftime("%a"),
@@ -199,11 +167,53 @@ def main():
             "strongest_quake": quake,
             "sun_tidbit": sun_tidbit
         },
-        "fx": fx,
+        "fx": fx_data,                 # <-- кладём полный объект
+        "fx_line": fx_line,            # <-- и готовую строку
         "tips": [tip],
         "nature_break": nature
     }
-    (Path(__file__).parent / "daily.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # --- плоские поля под шаблон daily_en.j2 ---
+    trend_emoji = {"up":"↗︎","down":"↘︎","stable":"→"}.get(trend, "→")
+    flat = {
+        "WEEKDAY": out["weekday_en"],
+        "DATE": out["date_utc"],
+        "KP": kp,
+        "KP_TREND_EMOJI": trend_emoji,
+        "KP_NOTE": out["cosmic"]["notes"]["kp_note"],
+        "SCHUMANN_STATUS": sch_status,
+        "SCHUMANN_AMP": (None if amp is None else amp),
+        "SOLAR_WIND_SPEED": sw_speed or "—",
+        "SOLAR_WIND_DENSITY": sw_den or "—",
+        "SOLAR_NOTE": out["cosmic"]["notes"]["solar_note"],
+        "HOTTEST_PLACE": (hottest or {}).get("place","—"),
+        "HOTTEST_TEMP": (hottest or {}).get("temp_c","—"),
+        "COLDEST_PLACE": (coldest or {}).get("place","—"),
+        "COLDEST_TEMP": (coldest or {}).get("temp_c","—"),
+        "QUAKE_MAG": (quake or {}).get("mag","—"),
+        "QUAKE_REGION": (quake or {}).get("region","—"),
+        "QUAKE_DEPTH": (quake or {}).get("depth_km","—"),
+        "SUN_TIDBIT_LABEL": (sun_tidbit or {}).get("label","Sun highlight"),
+        "SUN_TIDBIT_PLACE": (sun_tidbit or {}).get("place","—"),
+        "SUN_TIDBIT_TIME": (sun_tidbit or {}).get("time_utc","—"),
+        "TIP_TEXT": tip,
+        "NATURE_TITLE": nature["title"],
+        "NATURE_SNIPPET": nature["snippet"],
+        "NATURE_URL": nature["youtube_url"],
+        # На случай, если где-то ещё используешь старые USD/EUR/CNY:
+        "USD": "1.00", "USD_DELTA": "—",
+        "EUR": f"{out['fx']['items']['EUR']['rate']:.2f}" if out['fx']['items']['EUR']['rate'] is not None else "—",
+        "EUR_DELTA": (lambda x: f"{x:+.2f}%" if x is not None else "—")(out['fx']['items']['EUR']['chg_pct']),
+        "CNY": f"{out['fx']['items']['CNY']['rate']:.2f}" if out['fx']['items']['CNY']['rate'] is not None else "—",
+        "CNY_DELTA": (lambda x: f"{x:+.2f}%" if x is not None else "—")(out['fx']['items']['CNY']['chg_pct']),
+        "fx_line": fx_line  # на всякий случай дублируем в плоском виде
+    }
+
+    out.update(flat)
+    (Path(__file__).parent / "daily.json").write_text(
+        json.dumps(out, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
 
 if __name__ == "__main__":
     main()
