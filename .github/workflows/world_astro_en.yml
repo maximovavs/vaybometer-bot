@@ -10,6 +10,7 @@ jobs:
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
+      ASTRO_LOCAL_TZ: Europe/Kaliningrad
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
