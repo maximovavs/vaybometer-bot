@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # чтобы import world_en.* точно работал
+
 import json, random, datetime as dt
 import requests
 from pytz import UTC
@@ -13,16 +15,23 @@ from world_en.settings_world_en import (
     HOT_CITIES, COLD_SPOTS, SUN_CITIES, VIBE_TIPS,
     YT_API_KEY, YT_CHANNEL_ID, YOUTUBE_PLAYLIST_IDS, FALLBACK_NATURE_LIST
 )
-from world_en.fx_intl import fetch_rates, format_line  # <— добавлено
+from world_en.fx_intl import fetch_rates, format_line
 
 ROOT = Path(__file__).resolve().parents[1]
+HEADERS = {
+    "User-Agent": "WorldVibeMeterBot/1.0 (+https://github.com/)",
+    "Accept": "application/json,text/plain",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
 
 def get_kp_and_solar():
     kp_url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
-    r = requests.get(kp_url, timeout=20); r.raise_for_status()
+    r = requests.get(kp_url, timeout=20, headers=HEADERS); r.raise_for_status()
     rows = r.json()
     last = rows[-1]
     kp = float(last[1])
+
     ref = rows[-4] if len(rows) >= 4 else last
     trend = "stable"
     if float(last[1]) > float(ref[1]): trend = "up"
@@ -30,19 +39,26 @@ def get_kp_and_solar():
 
     sw = requests.get(
         "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json",
-        timeout=20
+        timeout=20, headers=HEADERS
     ); sw.raise_for_status()
     sw_rows = sw.json()
-    den = float(sw_rows[-1][1]) if sw_rows[-1][1] not in ("", None) else None
-    spd = float(sw_rows[-1][2]) if sw_rows[-1][2] not in ("", None) else None
+    # header: time, density, speed, temperature
+    den = sw_rows[-1][1]
+    spd = sw_rows[-1][2]
+    den = None if den in ("", None) else round(float(den), 2)
+    spd = None if spd in ("", None) else round(float(spd), 1)
     return kp, trend, spd, den
 
 def get_schumann_amp():
+    # читаем из корня или из data/
     p = ROOT / "schumann_hourly.json"
+    if not p.exists():
+        p = ROOT / "data" / "schumann_hourly.json"
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         last = data[-1] if isinstance(data, list) else data
-        amp = last.get("amp") or last.get("h7_amp") or None
+        raw_amp = last.get("amp") or last.get("h7_amp") or None
+        amp = abs(raw_amp) if isinstance(raw_amp, (int, float)) else raw_amp
         status = "baseline" if not amp or amp < 1.5 else ("elevated" if amp < 3 else "spike")
         return amp, status
     except Exception:
@@ -50,7 +66,7 @@ def get_schumann_amp():
 
 def meteo_current_temp(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
-    r = requests.get(url, timeout=20); r.raise_for_status()
+    r = requests.get(url, timeout=20, headers=HEADERS); r.raise_for_status()
     return float(r.json()["current"]["temperature_2m"])
 
 def get_extremes():
@@ -74,7 +90,7 @@ def get_extremes():
 
 def get_strongest_quake():
     url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson"
-    r = requests.get(url, timeout=20); r.raise_for_status()
+    r = requests.get(url, timeout=20, headers=HEADERS); r.raise_for_status()
     feats = r.json()["features"]
     if not feats: return None
     top = max(feats, key=lambda f: f["properties"]["mag"] or 0)
@@ -118,19 +134,17 @@ def pick_nature_break():
                 ).json()["items"]
                 def is_short(item):
                     dur = item["contentDetails"]["duration"]
-                    return any(x in dur for x in ("PT0M", "PT1M"))
+                    return any(x in dur for x in ("PT0M", "PT1M"))  # <= 60s грубо
                 shorts = [v for v in stats if is_short(v)] or stats
                 top = max(shorts, key=lambda v:int(v["statistics"].get("viewCount","0")))
-                return {
-                    "title": top["snippet"]["title"],
-                    "snippet": "60 seconds of calm",
-                    "youtube_url": f"https://youtu.be/{top['id']}"
-                }
+                url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
+                return {"title": top["snippet"]["title"], "snippet": "60 seconds of calm", "youtube_url": url}
         except Exception:
             pass
     if FALLBACK_NATURE_LIST:
-        import random
         url = random.choice(FALLBACK_NATURE_LIST)
+        if "utm_" not in url:
+            url += ("&" if "?" in url else "?") + "utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
         return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": url}
     return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": "https://youtube.com/@misserrelax"}
 
@@ -149,7 +163,7 @@ def main():
     tip = random.choice(VIBE_TIPS)
     nature = pick_nature_break()
 
-    # --- вложенная структура (как раньше) ---
+    # --- вложенная структура ---
     out = {
         "date_utc": dt.date.today().isoformat(),
         "weekday_en": dt.datetime.utcnow().strftime("%a"),
@@ -168,23 +182,24 @@ def main():
             "strongest_quake": quake,
             "sun_tidbit": sun_tidbit
         },
-        "fx": fx_data,                 # <-- кладём полный объект
-        "fx_line": fx_line,            # <-- и готовую строку
+        "fx": fx_data,
+        "fx_line": fx_line,
         "tips": [tip],
         "nature_break": nature
     }
-       # append to log for weekly
-    log_dir = Path(__file__).parent / "logs"; log_dir.mkdir(exist_ok=True)
+
+    # --- лог для weekly ---
+    log_dir = Path(__file__).parent / "logs"
+    log_dir.mkdir(exist_ok=True)
     log = {
-      "date": out["date_utc"],
-      "hottest_place": (hottest or {}).get("place"),
-      "hottest_temp": (hottest or {}).get("temp_c"),
-      "coldest_place": (coldest or {}).get("place"),
-      "coldest_temp": (coldest or {}).get("temp_c"),
+        "date": out["date_utc"],
+        "hottest_place": (hottest or {}).get("place"),
+        "hottest_temp": (hottest or {}).get("temp_c"),
+        "coldest_place": (coldest or {}).get("place"),
+        "coldest_temp": (coldest or {}).get("temp_c"),
     }
     with (log_dir / "extremes.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(log, ensure_ascii=False) + "\n")
-     
 
     # --- плоские поля под шаблон daily_en.j2 ---
     trend_emoji = {"up":"↑","down":"↓","stable":"→"}.get(trend, "→")
@@ -219,7 +234,7 @@ def main():
         "EUR_DELTA": (lambda x: f"{x:+.2f}%" if x is not None else "—")(out['fx']['items']['EUR']['chg_pct']),
         "CNY": f"{out['fx']['items']['CNY']['rate']:.2f}" if out['fx']['items']['CNY']['rate'] is not None else "—",
         "CNY_DELTA": (lambda x: f"{x:+.2f}%" if x is not None else "—")(out['fx']['items']['CNY']['chg_pct']),
-        "fx_line": fx_line  # на всякий случай дублируем в плоском виде
+        "fx_line": fx_line
     }
 
     out.update(flat)
