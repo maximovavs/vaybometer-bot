@@ -2,7 +2,7 @@ name: Monthly VayboMeter Calendar (KLD)
 
 on:
   schedule:
-    - cron: '0 10 * * *'          # каждый день 10:00 UTC
+    - cron: '0 09 * * *'          # каждый день 10:00 UTC
   workflow_dispatch:
     inputs:
       force_run:
