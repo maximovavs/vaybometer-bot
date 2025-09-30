@@ -1,3 +1,8 @@
+name: world-daily-en
+on:
+  schedule:
+    - cron: "15 7 * * *"   # 08:55 UTC
+  workflow_dispatch:
 # .github/workflows/world_daily_en.yml
 jobs:
   run:
