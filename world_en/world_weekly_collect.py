@@ -13,9 +13,9 @@ from astral import LocationInfo
 from pytz import UTC
 
 from world_en.fx_intl import fetch_rates, format_line
+from world_en.settings_world_en import HOT_CITIES, COLD_SPOTS
 
 OUT = Path(__file__).parent / "weekly.json"
-LOG_DIR = Path(__file__).parent / "logs"
 HEADERS = {
     "User-Agent": "WorldVibeMeterBot/1.0 (+https://github.com/)",
     "Accept": "application/json,text/plain",
@@ -23,120 +23,113 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
-# ---------- helpers ----------
+# --------- helpers ---------
 
-def _get(url: str, timeout: int = 20, headers: dict | None = None, as_text: bool = False):
-    r = requests.get(url, timeout=timeout, headers=headers or HEADERS)
+def _get_json(url, params=None, timeout=25):
+    r = requests.get(url, params=params or {}, timeout=timeout, headers=HEADERS)
     r.raise_for_status()
-    return r.text if as_text else r.json()
+    return r.json()
 
 def strongest_quake_week():
-    """Возвращает максимальный магнитудой толчок за 7 дней."""
     urls = [
         "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/6.0_week.geojson",
         "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_week.geojson",
     ]
     for url in urls:
         try:
-            feats = _get(url).get("features", [])
-            if not feats:
+            feats = _get_json(url).get("features", [])
+            if not feats: 
                 continue
             top = max(feats, key=lambda f: f["properties"]["mag"] or 0)
             mag = round(top["properties"]["mag"], 1)
             region = top["properties"]["place"]
-            note = top["properties"].get("type", "")
+            note = top["properties"].get("type","")
             return mag, region, note
         except Exception:
             continue
     return None, None, None
 
-def weekly_extremes():
+def openmeteo_week_extremes():
     """
-    Читает world_en/logs/extremes.jsonl (пишется daily-сборщиком)
-    и возвращает: hottest_place, hottest_temp, coldest_place, coldest_temp за последние 7 дней.
+    Безлоговый расчёт экстремумов за последние 7 суток.
+    По каждому месту берём daily temperature_2m_max/min и собираем глобальные max/min.
     """
-    path = LOG_DIR / "extremes.jsonl"
-    if not path.exists():
-        return None, None, None, None
-
-    week_ago = dt.date.today() - dt.timedelta(days=7)
-    hot = cold = None
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            try:
-                it = json.loads(line)
-                d = dt.date.fromisoformat(it["date"])
-                if d < week_ago:
-                    continue
-                ht = it.get("hottest_temp")
-                ct = it.get("coldest_temp")
-                if ht is not None:
-                    if not hot or ht > hot["temp"]:
-                        hot = {"place": it.get("hottest_place"), "temp": ht}
-                if ct is not None:
-                    if not cold or ct < cold["temp"]:
-                        cold = {"place": it.get("coldest_place"), "temp": ct}
-            except Exception:
+    hottest = None   # {"place":..., "temp":...}
+    coldest = None
+    def fetch_daily(lat, lon):
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": lat, "longitude": lon,
+            "daily": "temperature_2m_max,temperature_2m_min",
+            "past_days": 7, "forecast_days": 1,
+            "timezone": "UTC"
+        }
+        return _get_json(url, params=params).get("daily", {})
+    # горячие
+    for name, la, lo in HOT_CITIES:
+        try:
+            d = fetch_daily(la, lo)
+            if not d: 
                 continue
-    return (hot or {}).get("place"), (hot or {}).get("temp"), (cold or {}).get("place"), (cold or {}).get("temp")
+            mx = d.get("temperature_2m_max", [])
+            if mx:
+                loc_max = max(mx)
+                if (hottest is None) or (loc_max > hottest["temp"]):
+                    hottest = {"place": name, "temp": round(loc_max)}
+        except Exception:
+            continue
+    # холодные
+    for name, la, lo in COLD_SPOTS:
+        try:
+            d = fetch_daily(la, lo)
+            if not d:
+                continue
+            mn = d.get("temperature_2m_min", [])
+            if mn:
+                loc_min = min(mn)
+                if (coldest is None) or (loc_min < coldest["temp"]):
+                    coldest = {"place": name, "temp": round(loc_min)}
+        except Exception:
+            continue
+    return hottest, coldest
 
 def kp_outlook_3d():
-    """
-    Грубый парсинг SWPC текста на 3 дня. Возвращает:
-    - список из трёх чисел (оценка Kp по дням),
-    - строку-описание для Weekly.
-    """
+    """Грубый парсинг SWPC текста на 3 дня. Возвращает строку вида '3 / 2 / 4'."""
     try:
-        txt = _get("https://services.swpc.noaa.gov/text/3-day-geomag-forecast.txt", as_text=True)
-        # Ищем три первых одиночных числа 0..9 после слов Kp или Kp-index
+        txt = requests.get("https://services.swpc.noaa.gov/text/3-day-geomag-forecast.txt",
+                           timeout=25, headers=HEADERS).text
         lines = [ln for ln in txt.splitlines() if "kp" in ln.lower()]
-        digits = []
+        nums = []
         for ln in lines:
-            digits += [int(m.group(0)) for m in re.finditer(r"(?<!\d)[0-9](?!\d)", ln)]
-            if len(digits) >= 3:
+            nums += [int(m.group(0)) for m in re.finditer(r"(?<!\d)[0-9](?!\d)", ln)]
+            if len(nums) >= 3:
                 break
-        vals = digits[:3]
-        if len(vals) == 3:
-            return vals, " / ".join(map(str, vals))
+        if len(nums) >= 3:
+            return " / ".join(map(str, nums[:3])), nums[:3]
     except Exception:
         pass
-    return [], "stable ~3"
+    return "stable ~3", []
 
 def calm_window_from_kp(vals):
-    """
-    Выбирает день с минимальным прогнозным Kp.
-    Возвращает строку вида 'Tue 09–12 (low Kp ~3)'.
-    """
-    if not vals or len(vals) < 1:
+    if not vals:
         return "Wed 09–12 (low Kp)"
     idx = min(range(len(vals)), key=lambda i: vals[i])
-    # День idx: 0 — завтра, 1 — послезавтра, 2 — +2
     day = (dt.datetime.utcnow().date() + dt.timedelta(days=idx+1)).strftime("%a")
     return f"{day} 09–12 (low Kp ~{vals[idx]})"
 
 def moon_phase_name(d: dt.date):
-    """Имя фазы на английском по дате."""
-    p = moon.phase(d)  # 0..29
-    if p == 0:
-        return "New Moon"
-    if 0 < p < 7:
-        return "Waxing Crescent"
-    if p == 7:
-        return "First Quarter"
-    if 7 < p < 15:
-        return "Waxing Gibbous"
-    if p == 15:
-        return "Full Moon"
-    if 15 < p < 22:
-        return "Waning Gibbous"
-    if p == 22:
-        return "Last Quarter"
-    if 22 < p < 29:
-        return "Waning Crescent"
+    p = moon.phase(d)
+    if p == 0: return "New Moon"
+    if 0 < p < 7: return "Waxing Crescent"
+    if p == 7: return "First Quarter"
+    if 7 < p < 15: return "Waxing Gibbous"
+    if p == 15: return "Full Moon"
+    if 15 < p < 22: return "Waning Gibbous"
+    if p == 22: return "Last Quarter"
+    if 22 < p < 29: return "Waning Crescent"
     return "New Moon"
 
 def reykjavik_sunset_today():
-    """Для милого факта: закат в Рейкьявике сегодня (UTC)."""
     try:
         loc = LocationInfo("Reykjavik", "", "UTC", 64.1466, -21.9426)
         s = sun(loc.observer, date=dt.date.today(), tzinfo=UTC)
@@ -144,7 +137,7 @@ def reykjavik_sunset_today():
     except Exception:
         return dt.datetime.utcnow().strftime("%H:%M")
 
-# ---------- main ----------
+# --------- main ---------
 
 def main():
     today = dt.date.today()
@@ -154,20 +147,20 @@ def main():
     # 1) Землетрясение недели
     mag, region, note = strongest_quake_week()
 
-    # 2) Экстремумы недели из дневного лога
-    hp, ht, cp, ct = weekly_extremes()
+    # 2) Экстремумы недели — считаем на лету
+    hot, cold = openmeteo_week_extremes()
 
-    # 3) Kp-прогноз и «calm window»
-    kp_vals, kp_note = kp_outlook_3d()
+    # 3) Kp outlook + calm window
+    kp_note, kp_vals = kp_outlook_3d()
     calm_win = calm_window_from_kp(kp_vals)
 
-    # 4) Следующая недельная луна (фаза на конец следующей недели)
+    # 4) Луна на конец следующей недели
     next_week_end = today + dt.timedelta(days=7)
     next_moon_phase = moon_phase_name(next_week_end)
 
-    # 5) Валюты
+    # 5) Валюты (6 штук)
     fx = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
-    fx_line_week = format_line(fx, order=["EUR","CNY","JPY","INR","IDR"])
+    fx_line_week = format_line(fx, order=["USD","EUR","CNY","JPY","INR","IDR"])
 
     out = {
         "WEEK_START": week_start,
@@ -175,10 +168,10 @@ def main():
         "TOP_QUAKE_MAG": mag or "—",
         "TOP_QUAKE_REGION": region or "—",
         "TOP_QUAKE_NOTE": note or "",
-        "HOTTEST_WEEK_PLACE": hp or "—",
-        "HOTTEST_WEEK": ht or "—",
-        "COLDEST_WEEK_PLACE": cp or "—",
-        "COLDEST_WEEK": ct or "—",
+        "HOTTEST_WEEK_PLACE": (hot or {}).get("place","—"),
+        "HOTTEST_WEEK": (hot or {}).get("temp","—"),
+        "COLDEST_WEEK_PLACE": (cold or {}).get("place","—"),
+        "COLDEST_WEEK": (cold or {}).get("temp","—"),
         "CALM_WINDOW_UTC": calm_win,
         "SUN_HIGHLIGHT_PLACE": "Reykjavik, IS",
         "SUN_HIGHLIGHT_TIME": reykjavik_sunset_today(),
