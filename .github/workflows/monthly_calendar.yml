@@ -105,11 +105,31 @@ jobs:
           fi
 
       # 7. Telegram summary (с выбором тестового канала)
-      - name: Send monthly summary
+      - name: Send monthly summary (CY)
         if: ${{ env.RUN_CALENDAR == 'yes' }}
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
+          CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
+        shell: bash
+        run: |
+          CHAT="${{ github.event.inputs.channel_override }}"
+          if [[ -z "$CHAT" ]]; then
+            if [[ "${{ github.event.inputs.to_test }}" == 'true' ]]; then
+              CHAT="$CHANNEL_ID_TEST"
+            else
+              CHAT="$CHANNEL_ID"
+            fi
+          fi
+          echo "→ Sending to chat: $CHAT"
+          CHANNEL_ID_KLG="$CHAT" python send_monthly_calendar.py
+
+           # 8. Telegram summary (с выбором тестового канала)
+      - name: Send monthly summary (KLD)
+        if: ${{ env.RUN_CALENDAR == 'yes' }}
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN_KLG }}
+          CHANNEL_ID:     ${{ secrets.CHANNEL_ID_KLG }}
           CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
         shell: bash
         run: |
