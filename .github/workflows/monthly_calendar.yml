@@ -104,42 +104,50 @@ jobs:
             git push
           fi
 
-      # 7. Telegram summary (с выбором тестового канала)
+     # 7a. Telegram: CY
       - name: Send monthly summary (CY)
         if: ${{ env.RUN_CALENDAR == 'yes' }}
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
-          CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
+          TELEGRAM_TOKEN:        ${{ secrets.TELEGRAM_TOKEN }}       # бот Кипра
+          CHANNEL_ID_CY:         ${{ secrets.CHANNEL_ID }}           # прод-канал Кипра
+          CHANNEL_ID_TEST_CY:    ${{ secrets.CHANNEL_ID_TEST }}      # ТЕСТ-канал Кипра
         shell: bash
         run: |
+          set -euo pipefail
           CHAT="${{ github.event.inputs.channel_override }}"
           if [[ -z "$CHAT" ]]; then
             if [[ "${{ github.event.inputs.to_test }}" == 'true' ]]; then
-              CHAT="$CHANNEL_ID_TEST"
+              CHAT="$CHANNEL_ID_TEST_CY"
             else
-              CHAT="$CHANNEL_ID"
+              CHAT="$CHANNEL_ID_CY"
             fi
           fi
-          echo "→ Sending to chat: $CHAT"
+          echo "→ CY chat: $CHAT"
           CHANNEL_ID_KLG="$CHAT" python send_monthly_calendar.py
-
-           # 8. Telegram summary (с выбором тестового канала)
+      
+      # (опционально) хотим, чтобы KLD вышел на час позже
+      # - name: Wait 1h before KLD
+      #   if: ${{ env.RUN_CALENDAR == 'yes' && github.event.inputs.to_test != 'true' }}
+      #   run: sleep 3600
+      
+      # 7b. Telegram: KLD
       - name: Send monthly summary (KLD)
         if: ${{ env.RUN_CALENDAR == 'yes' }}
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN_KLG }}
-          CHANNEL_ID:     ${{ secrets.CHANNEL_ID_KLG }}
-          CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
+          TELEGRAM_TOKEN:           ${{ secrets.TELEGRAM_TOKEN_KLG }}      # бот Калининграда
+          CHANNEL_ID_KLD:           ${{ secrets.CHANNEL_ID_KLG }}          # прод-канал KLD
+          CHANNEL_ID_TEST_KLD:      ${{ secrets.CHANNEL_ID_TEST_KLG }}     # ТЕСТ-канал KLD (создайте секрет)
         shell: bash
         run: |
+          set -euo pipefail
           CHAT="${{ github.event.inputs.channel_override }}"
           if [[ -z "$CHAT" ]]; then
             if [[ "${{ github.event.inputs.to_test }}" == 'true' ]]; then
-              CHAT="$CHANNEL_ID_TEST"
+              CHAT="$CHANNEL_ID_TEST_KLD"
             else
-              CHAT="$CHANNEL_ID"
+              CHAT="$CHANNEL_ID_KLD"
             fi
           fi
-          echo "→ Sending to chat: $CHAT"
+          echo "→ KLD chat: $CHAT"
           CHANNEL_ID_KLG="$CHAT" python send_monthly_calendar.py
+
