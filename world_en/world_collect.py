@@ -157,8 +157,8 @@ def main():
     sun_tidbit = get_sunlight_tidbit()
 
     # FX через fx_intl
-    fx_data = fetch_rates("USD", ["EUR","CNY","JPY"])
-    fx_line = format_line(fx_data, order=["USD","EUR","CNY","JPY"])
+    fx_data = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
+    fx_line = format_line(fx_data, order=["USD","EUR","CNY","JPY","INR","IDR"])
 
     tip = random.choice(VIBE_TIPS)
     nature = pick_nature_break()
