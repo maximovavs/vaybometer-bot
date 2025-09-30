@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import html
 import asyncio
 import logging
 import math
@@ -49,6 +50,72 @@ PRIMARY_CITY_NAME = os.getenv("PRIMARY_CITY", "Limassol")
 CACHE_DIR = Path(".cache"); CACHE_DIR.mkdir(exist_ok=True, parents=True)
 USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
 
+# ────────────────────────── ENV TUNABLES (LLM safety) ──────────────────────────
+DISABLE_LLM_TIPS = os.getenv("DISABLE_LLM_TIPS", "").strip().lower() in ("1", "true", "yes", "on")
+ASTRO_LLM_TEMP = float(os.getenv("ASTRO_LLM_TEMP", "0.2"))  # более «холодный» вывод
+
+SAFE_TIPS_FALLBACKS = {
+    "здоровый день": [
+        "🚶 30–40 мин лёгкой активности.",
+        "🥤 Пейте воду и делайте короткие паузы.",
+        "😴 Спланируйте 7–9 часов сна."
+    ],
+    "плохая погода": [
+        "🧥 Тёплые слои и непромокаемая куртка.",
+        "🌧 Перенесите дела под крышу; больше пауз.",
+        "🚗 Заложите время на дорогу."
+    ],
+    "магнитные бури": [
+        "🧘 Уменьшите перегрузки, больше отдыха.",
+        "💧 Больше воды и магний/калий в рационе.",
+        "😴 Режим сна, меньше экранов вечером."
+    ],
+    "плохой воздух": [
+        "😮‍💨 Сократите время на улице и проветривания.",
+        "🪟 Чаще проветривайте, используйте фильтры.",
+        "🏃 Тренировки — в помещении."
+    ],
+    "волны Шумана": [
+        "🧘 Спокойный темп дня, без авралов.",
+        "🍵 Лёгкая еда, тёплые напитки.",
+        "😴 Лёгкая прогулка и ранний сон."
+    ],
+}
+
+def _escape_html(s: str) -> str:
+    return html.escape(str(s), quote=False)
+
+def _sanitize_line(s: str, max_len: int = 140) -> str:
+    s = " ".join(str(s).split())                       # схлопнуть пробелы
+    s = re.sub(r"(.)\1{3,}", r"\1\1\1", s)            # урезать серии повторов
+    s = s[:max_len-1] + "…" if len(s) > max_len else s
+    return _escape_html(s).strip()
+
+def _looks_gibberish(s: str) -> bool:
+    if re.search(r"(.)\1{5,}", s):   # «щщщщщ…»
+        return True
+    letters = re.findall(r"[A-Za-zА-Яа-яЁё]", s)
+    return (len(set(letters)) <= 2 and len("".join(letters)) >= 10)
+
+def safe_tips(theme: str) -> list[str]:
+    """LLM-советы с жёсткой фильтрацией и фолбэком."""
+    theme_key = (theme or "здоровый день").strip().lower()
+    if DISABLE_LLM_TIPS:
+        return SAFE_TIPS_FALLBACKS.get(theme_key, SAFE_TIPS_FALLBACKS["здоровый день"])
+    try:
+        _, tips = gpt_blurb(theme_key)
+        out: list[str] = []
+        for t in (tips or [])[:3]:
+            t = _sanitize_line(t, max_len=140)
+            if not t or _looks_gibberish(t):
+                continue
+            out.append(t)
+        if out:
+            return out
+    except Exception as e:
+        logging.warning("LLM tips failed: %s", e)
+    return SAFE_TIPS_FALLBACKS.get(theme_key, SAFE_TIPS_FALLBACKS["здоровый день"])
+
 # ────────────────────────── ENV TUNABLES (водные активности) ──────────────────────────
 # KITE — м/с
 KITE_WIND_MIN        = float(os.getenv("KITE_WIND_MIN",        "6"))
@@ -67,7 +134,7 @@ SUP_WAVE_OK_MAX      = float(os.getenv("SUP_WAVE_OK_MAX",      "0.8"))
 SUP_WAVE_BAD_MIN     = float(os.getenv("SUP_WAVE_BAD_MIN",     "1.5"))
 OFFSHORE_SUP_WIND_MIN= float(os.getenv("OFFSHORE_SUP_WIND_MIN","5"))
 
-# SURF (доб. чтобы показывать «сёрф» как “отлично”, если волна подходящая)
+# SURF (для «Сёрф — отлично»)
 SURF_WAVE_GOOD_MIN   = float(os.getenv("SURF_WAVE_GOOD_MIN",   "0.9"))
 SURF_WAVE_GOOD_MAX   = float(os.getenv("SURF_WAVE_GOOD_MAX",   "2.5"))
 SURF_WIND_MAX        = float(os.getenv("SURF_WIND_MAX",        "10"))
@@ -356,7 +423,7 @@ def radiation_line(lat: float, lon: float) -> Optional[str]:
         return f"{em} Радиация: {dose:.3f} μSv/h ({lbl})"
     return None
 
-# ───────────── Астроблок (как было) ─────────────
+# ───────────── Астроблок ─────────────
 ZODIAC = {"Овен":"♈","Телец":"♉","Близнецы":"♊","Рак":"♋","Лев":"♌","Дева":"♍","Весы":"♎","Скорпион":"♏","Стрелец":"♐","Козерог":"♑","Водолей":"♒","Рыбы":"♓"}
 def zsym(s: str) -> str:
     for name,sym in ZODIAC.items(): s = s.replace(name, sym)
@@ -401,26 +468,40 @@ def lunar_advice_for_date(cal: dict, date_obj) -> list[str]:
     return [str(x).strip() for x in adv][:3] if isinstance(adv, list) and adv else []
 
 def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> List[str]:
+    """Возвращает 2–3 короткие строки для «Астрособытия». Санитизируем и кэшируем."""
     cache_file = CACHE_DIR / f"astro_{date_str}.txt"
     if cache_file.exists():
         lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
         if lines: return lines[:3]
-    if not USE_DAILY_LLM: return []
-    system = ("Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
-              "Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
-              "Пиши по-русски, без клише. Используй ТОЛЬКО данную информацию: "
-              "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
-              "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи.")
-    prompt = (f"Дата: {date_str}. Фаза Луны: {phase} ({percent}% освещённости), знак: {sign or 'н/д'}. "
-              f"Void-of-Course: {voc_text or 'нет'}.")
+    if not USE_DAILY_LLM:
+        return []
+
+    system = (
+        "Ты даёшь очень короткую сводку астрособытий на указанную дату: ровно 2–3 строки."
+        "Пиши по-русски, без клише. Используй ТОЛЬКО эти данные: фаза Луны, освещённость,"
+        "знак Луны и интервал Void-of-Course. Не выдумывай прочих аспектов/планет."
+        "Каждая строка начинается с эмодзи и содержит одну мысль."
+    )
+    prompt = (f"Дата: {date_str}. Фаза Луны: {phase or 'н/д'} ({percent}% освещённости). "
+              f"Знак: {sign or 'н/д'}. VoC: {voc_text or 'нет'}.")
+
     try:
-        txt = gpt_complete(prompt=prompt, system=system, temperature=0.5, max_tokens=180)
-        lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
-        if lines:
-            cache_file.write_text("\n".join(lines[:3]), "utf-8")
-            return lines[:3]
-    except Exception:
-        pass
+        txt = gpt_complete(prompt=prompt, system=system, temperature=ASTRO_LLM_TEMP, max_tokens=160)
+        raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
+        safe: List[str] = []
+        for l in raw_lines:
+            l = _sanitize_line(l, max_len=120)
+            if not l or _looks_gibberish(l):
+                continue
+            if not re.match(r"^\W", l):  # если не начинается с эмодзи — добавим маркер
+                l = "• " + l
+            safe.append(l)
+        if safe:
+            cache_file.write_text("\n".join(safe[:3]), "utf-8")
+            return safe[:3]
+    except Exception as e:
+        logging.warning("Astro LLM failed: %s", e)
+
     return []
 
 def build_astro_section(date_local: Optional[pendulum.Date] = None, tz_local: str = "Asia/Nicosia") -> str:
@@ -892,20 +973,17 @@ def build_message(region_name: str,
     P.extend(build_conclusion(kp, ks, air, storm_region, schu_state))
     P.append("———")
 
-    # Рекомендации
+    # Рекомендации (безопасные)
     P.append("✅ <b>Рекомендации</b>")
-    try:
-        theme = ("плохая погода" if storm_region.get("warning") else
-                 ("магнитные бури" if isinstance(kp,(int,float)) and kp >= 5 else
-                  ("плохой воздух" if _is_air_bad(air)[0] else
-                   ("волны Шумана" if (schu_state or {}).get("status_code") == "red" else
-                    "здоровый день"))))
-        _, tips = gpt_blurb(theme)
-        for t in tips[:3]:
-            t = t.strip()
-            if t: P.append(t)
-    except Exception:
-        P.append("— больше воды, меньше стресса, нормальный сон")
+    theme = (
+        "плохая погода" if storm_region.get("warning") else
+        ("магнитные бури" if isinstance(kp,(int,float)) and kp >= 5 else
+         ("плохой воздух" if _is_air_bad(air)[0] else
+          ("волны Шумана" if (schu_state or {}).get("status_code") == "red" else
+           "здоровый день")))
+    )
+    for t in safe_tips(theme):
+        P.append(t)
 
     P.append("———")
     P.append(f"📚 {get_fact(tom, region_name)}")
@@ -941,7 +1019,7 @@ async def main_common(
         region_name=region_name,
         sea_label=sea_label,
         sea_cities=sea_cities,
-        other_label=other_cities,  # как было в твоём файле
+        other_label=other_label,     # ✅ фикс
         other_cities=other_cities,
         tz=tz,
     )
