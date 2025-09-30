@@ -123,7 +123,7 @@ jobs:
             fi
           fi
           echo "→ CY chat: $CHAT"
-          CHANNEL_ID_KLG="$CHAT" python send_monthly_calendar.py
+          CHANNEL_ID="$CHAT" CHANNEL_ID_KLG="$CHAT" python send_monthly_calendar.py
       
       # (опционально) хотим, чтобы KLD вышел на час позже
       # - name: Wait 1h before KLD
@@ -149,5 +149,5 @@ jobs:
             fi
           fi
           echo "→ KLD chat: $CHAT"
-          CHANNEL_ID_KLG="$CHAT" python send_monthly_calendar.py
+          CHANNEL_ID="$CHAT" CHANNEL_ID_KLG="$CHAT" python send_monthly_calendar.py
 
