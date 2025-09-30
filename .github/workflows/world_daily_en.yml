@@ -1,8 +1,4 @@
-name: world-daily-en
-on:
-  schedule:
-    - cron: "15 7 * * *"   # 08:55 UTC
-  workflow_dispatch:
+# .github/workflows/world_daily_en.yml
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -15,6 +11,10 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install jinja2 requests astral pytz
       - name: Collect
+        env:
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
         run: python world_en/world_collect.py
       - name: Render
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
