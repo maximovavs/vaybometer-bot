@@ -166,8 +166,8 @@ def main():
     next_moon_phase = moon_phase_name(next_week_end)
 
     # 5) Валюты
-    fx = fetch_rates("USD", ["EUR","CNY","JPY"])
-    fx_line_week = format_line(fx, order=["USD","EUR","CNY","JPY"])
+    fx = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
+    fx_line_week = format_line(fx, order=["EUR","CNY","JPY","INR","IDR"])
 
     out = {
         "WEEK_START": week_start,
