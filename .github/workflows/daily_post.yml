@@ -2,7 +2,7 @@ name: Daily VayboMeter (Cyprus)
 
 on:
   schedule:
-    # Вечерний пост: 15:00 UTC (оставляю как в примере)
+    # Вечерний пост: 14:00 UTC (≈17:00 на Кипре летом / 16:00 зимой)
     - cron: '0 14 * * *'
     # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
     - cron: '0 9 * * *'
@@ -10,11 +10,13 @@ on:
     inputs:
       run_evening:
         description: "Запустить вечерний пост"
-        default: "true"
+        type: boolean
+        default: true
         required: false
       run_noon_fx:
         description: "Запустить пост только с курсами"
-        default: "false"
+        type: boolean
+        default: false
         required: false
       work_date:
         description: "Переопределить дату (YYYY-MM-DD)"
@@ -35,34 +37,37 @@ concurrency:
   group: daily-post-cy
   cancel-in-progress: false
 
-# общие переменные окружения для всех джоб
+# общие переменные окружения
 env:
   TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-  CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
+  CHANNEL_ID:         ${{ secrets.CHANNEL_ID }}
   CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
-  # опц. явная переадресация канала из inputs
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
-  # вкл/выкл микро-LLM, таймзона, дата для ручного запуска
-  OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
-  GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
-  GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
   GEN_SKIP_SHORT: "1"
   DISABLE_LLM_DAILY: "0"
   TZ: Asia/Nicosia
   WORK_DATE: ${{ github.event.inputs.work_date }}
-  # прокинем флаг в скрипт
-  TO_TEST: ${{ github.event.inputs.to_test }}
+  TO_TEST:   ${{ github.event.inputs.to_test }}
 
 jobs:
   evening:
     name: Evening post (for tomorrow)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 15 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 14 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
-       (!github.event.inputs.run_evening || github.event.inputs.run_evening == 'true'))
+       (github.event.inputs.run_evening == true || github.event.inputs.run_evening == 'true' || !github.event.inputs.run_evening))
     steps:
       - uses: actions/checkout@v4
+
+      - name: Time debug
+        run: |
+          echo "UTC:   $(date -u)"
+          echo "Local: $(date)"
+          echo "MSK:   $(TZ=Europe/Moscow date)"
 
       - uses: actions/setup-python@v5
         with:
@@ -87,13 +92,11 @@ jobs:
               pendulum.today = _fake_today
 
           args = ["post_cy.py"]
-          # явный override из input — передадим как --chat-id
-          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
-          if chat_override.strip():
-              args += ["--chat-id", chat_override.strip()]
+          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
+          if chat_override:
+              args += ["--chat-id", chat_override]
           else:
-              # иначе чекбокс to_test
-              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
+              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
               if to_test:
                   args.append("--to-test")
 
@@ -106,12 +109,18 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_noon_fx == 'true')
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.run_noon_fx == true || github.event.inputs.run_noon_fx == 'true'))
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Time debug
+        run: |
+          echo "UTC:   $(date -u)"
+          echo "Local: $(date)"
+          echo "MSK:   $(TZ=Europe/Moscow date)"
 
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -134,13 +143,14 @@ jobs:
               pendulum.today = _fake_today
 
           args = ["post_cy.py", "--fx-only"]
-          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
-          if chat_override.strip():
-              args += ["--chat-id", chat_override.strip()]
+          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
+          if chat_override:
+              args += ["--chat-id", chat_override]
           else:
-              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
+              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
               if to_test:
                   args.append("--to-test")
+
           sys.argv = args
           runpy.run_path("post_cy.py", run_name="__main__")
           PY
