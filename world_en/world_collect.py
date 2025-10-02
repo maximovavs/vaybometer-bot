@@ -50,17 +50,28 @@ def get_kp_and_solar():
     return kp, trend, spd, den
 
 def get_schumann_amp():
-    # читаем из корня или из data/
     p = ROOT / "schumann_hourly.json"
     if not p.exists():
         p = ROOT / "data" / "schumann_hourly.json"
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        last = data[-1] if isinstance(data, list) else data
-        raw_amp = last.get("amp") or last.get("h7_amp") or None
-        amp = abs(raw_amp) if isinstance(raw_amp, (int, float)) else raw_amp
-        status = "baseline" if not amp or amp < 1.5 else ("elevated" if amp < 3 else "spike")
-        return amp, status
+        arr = data if isinstance(data, list) else [data]
+        # берём последние 24 значения
+        amps = [x.get("amp") or x.get("h7_amp") for x in arr[-24:] if isinstance(x, dict)]
+        amps = [abs(a) for a in amps if isinstance(a, (int, float))]
+        last = amps[-1] if amps else None
+        if not amps or last is None:
+            return None, "blackout"
+        median = sorted(amps)[len(amps)//2]
+        if last < 0.3 or len(amps) < 3:
+            status = "blackout" if last < 0.3 else "baseline"
+        elif last > max(3.0, median * 2.0):
+            status = "spike"
+        elif last > max(1.5, median * 1.2):
+            status = "elevated"
+        else:
+            status = "baseline"
+        return round(last, 2), status
     except Exception:
         return None, "n/a"
 
