@@ -1,4 +1,5 @@
 name: world-weekly-en
+
 on:
   schedule:
     - cron: "0 16 * * 0"   # Sun 16:00 UTC
@@ -13,12 +14,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with:
+          python-version: "3.11"
       - run: pip install requests jinja2 pytz astral
+
+      # ⬇️ ПЕРЕДАЁМ ключи в шаг Collect
       - name: Collect weekly
+        env:
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}           # добавь этот secret
+          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}  # опционально
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}  # опционально
         run: python world_en/world_weekly_collect.py
+
       - name: Render
         run: python world_en/render.py world_en/templates/weekly_en.j2 world_en/weekly.json > world_en/weekly_msg.txt
+
       - name: Send
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
