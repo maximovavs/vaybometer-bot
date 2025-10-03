@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import json, re, datetime as dt
+import os, re, json, datetime as dt
 from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -13,9 +13,14 @@ from astral import LocationInfo
 from pytz import UTC
 
 from world_en.fx_intl import fetch_rates, format_line
-from world_en.settings_world_en import HOT_CITIES, COLD_SPOTS
+from world_en.settings_world_en import (
+    HOT_CITIES, COLD_SPOTS,
+    YT_API_KEY, YT_CHANNEL_ID, FALLBACK_NATURE_LIST
+)
 
 OUT = Path(__file__).parent / "weekly.json"
+LOG_EXTREMES = Path(__file__).parent / "logs" / "extremes.jsonl"
+
 HEADERS = {
     "User-Agent": "WorldVibeMeterBot/1.0 (+https://github.com/)",
     "Accept": "application/json,text/plain",
@@ -38,7 +43,7 @@ def strongest_quake_week():
     for url in urls:
         try:
             feats = _get_json(url).get("features", [])
-            if not feats: 
+            if not feats:
                 continue
             top = max(feats, key=lambda f: f["properties"]["mag"] or 0)
             mag = round(top["properties"]["mag"], 1)
@@ -49,9 +54,47 @@ def strongest_quake_week():
             continue
     return None, None, None
 
+def _read_extremes_from_log(days_back=7):
+    """Читает world_en/logs/extremes.jsonl (накопительный лог из daily) за N суток."""
+    if not LOG_EXTREMES.exists():
+        return None, None
+    try:
+        cutoff = dt.date.today() - dt.timedelta(days=days_back-1)
+        hottest = None   # {"place":..., "temp":...}
+        coldest = None
+        with LOG_EXTREMES.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                d = rec.get("date")
+                if not d:
+                    continue
+                try:
+                    d_date = dt.date.fromisoformat(d)
+                except Exception:
+                    continue
+                if d_date < cutoff:
+                    continue
+                h_t = rec.get("hottest_temp")
+                c_t = rec.get("coldest_temp")
+                if isinstance(h_t, (int, float)):
+                    if (hottest is None) or (h_t > hottest["temp"]):
+                        hottest = {"place": rec.get("hottest_place","—"), "temp": round(h_t)}
+                if isinstance(c_t, (int, float)):
+                    if (coldest is None) or (c_t < coldest["temp"]):
+                        coldest = {"place": rec.get("coldest_place","—"), "temp": round(c_t)}
+        return hottest, coldest
+    except Exception:
+        return None, None
+
 def openmeteo_week_extremes():
     """
-    Безлоговый расчёт экстремумов за последние 7 суток.
+    Фолбэк-расчёт экстремумов за последние 7 суток.
     По каждому месту берём daily temperature_2m_max/min и собираем глобальные max/min.
     """
     hottest = None   # {"place":..., "temp":...}
@@ -69,7 +112,7 @@ def openmeteo_week_extremes():
     for name, la, lo in HOT_CITIES:
         try:
             d = fetch_daily(la, lo)
-            if not d: 
+            if not d:
                 continue
             mx = d.get("temperature_2m_max", [])
             if mx:
@@ -94,7 +137,7 @@ def openmeteo_week_extremes():
     return hottest, coldest
 
 def kp_outlook_3d():
-    """Грубый парсинг SWPC текста на 3 дня. Возвращает строку вида '3 / 2 / 4'."""
+    """Грубый парсинг SWPC текста на 3 дня. Возвращает ('3 / 2 / 4', [3,2,4])."""
     try:
         txt = requests.get("https://services.swpc.noaa.gov/text/3-day-geomag-forecast.txt",
                            timeout=25, headers=HEADERS).text
@@ -137,6 +180,46 @@ def reykjavik_sunset_today():
     except Exception:
         return dt.datetime.utcnow().strftime("%H:%M")
 
+# --------- YouTube weekly favorite ---------
+
+def _yt_is_short_duration(iso_dur: str) -> bool:
+    if not iso_dur: return False
+    m = re.fullmatch(r"PT(?:(\d+)M)?(?:(\d+)S)?", iso_dur)
+    if not m: return False
+    minutes = int(m.group(1) or 0); seconds = int(m.group(2) or 0)
+    return minutes*60 + seconds <= 60
+
+def _md_escape(s: str) -> str:
+    return s.replace("[","\\[").replace("]","\\]").replace("(","\\(").replace(")","\\)").replace("_","\\_").replace("*","\\*")
+
+def _weekly_top_short(days_window: int = 7):
+    api = os.getenv("YT_API_KEY", YT_API_KEY)
+    ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
+    if not (api and ch): return None, None
+    try:
+        published_after = (dt.datetime.utcnow() - dt.timedelta(days=days_window)).isoformat("T") + "Z"
+        search = requests.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={"key": api, "channelId": ch, "part":"id", "maxResults": 50,
+                    "order":"date", "type":"video", "publishedAfter": published_after},
+            timeout=20
+        ).json()
+        ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id",{}).get("videoId")]
+        if not ids: return None, None
+        stats = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"key": api, "id": ",".join(ids), "part":"snippet,statistics,contentDetails"},
+            timeout=20
+        ).json().get("items", [])
+        shorts = [v for v in stats if _yt_is_short_duration(v["contentDetails"]["duration"])] or stats
+        if not shorts: return None, None
+        top = max(shorts, key=lambda v: int(v["statistics"].get("viewCount","0")))
+        title = _md_escape(top["snippet"]["title"])
+        url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=weekly_favorite"
+        return title, url
+    except Exception:
+        return None, None
+
 # --------- main ---------
 
 def main():
@@ -147,8 +230,10 @@ def main():
     # 1) Землетрясение недели
     mag, region, note = strongest_quake_week()
 
-    # 2) Экстремумы недели — считаем на лету
-    hot, cold = openmeteo_week_extremes()
+    # 2) Экстремумы недели: сначала из логов daily, потом фолбэк на open-meteo
+    hot, cold = _read_extremes_from_log(days_back=7)
+    if hot is None and cold is None:
+        hot, cold = openmeteo_week_extremes()
 
     # 3) Kp outlook + calm window
     kp_note, kp_vals = kp_outlook_3d()
@@ -161,6 +246,9 @@ def main():
     # 5) Валюты (6 штук)
     fx = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
     fx_line_week = format_line(fx, order=["USD","EUR","CNY","JPY","INR","IDR"])
+
+    # 6) Community favorite (топ-шорт за 7 дней)
+    top_title, top_url = _weekly_top_short(7)
 
     out = {
         "WEEK_START": week_start,
@@ -175,7 +263,8 @@ def main():
         "CALM_WINDOW_UTC": calm_win,
         "SUN_HIGHLIGHT_PLACE": "Reykjavik, IS",
         "SUN_HIGHLIGHT_TIME": reykjavik_sunset_today(),
-        "TOP_NATURE_TITLE": "Nature Break",
+        "TOP_NATURE_TITLE": top_title or "Nature Break",
+        "TOP_NATURE_URL": top_url or (FALLBACK_NATURE_LIST[0] if FALLBACK_NATURE_LIST else "https://youtube.com/@misserrelax"),
         "fx_line_week": fx_line_week,
         "NEXT_MOON_PHASE": next_moon_phase,
         "NEXT_KP_NOTE": kp_note
