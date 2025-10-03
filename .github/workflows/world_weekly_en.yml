@@ -30,6 +30,10 @@ jobs:
       - name: Render
         run: python world_en/render.py world_en/templates/weekly_en.j2 world_en/weekly.json > world_en/weekly_msg.txt
 
+      - name: Debug weekly JSON
+        run: cat world_en/weekly.json
+
+
       - name: Send
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
