@@ -28,7 +28,7 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
-# --------- helpers ---------
+# ---------------- helpers ----------------
 
 def _get_json(url, params=None, timeout=25):
     r = requests.get(url, params=params or {}, timeout=timeout, headers=HEADERS)
@@ -93,7 +93,7 @@ def _read_extremes_from_log(days_back=7):
         return None, None
 
 def openmeteo_week_extremes():
-    """Фолбэк: собираем экстремумы за 7 суток из Open-Meteo по спискам городов."""
+    """Фолбэк: считаем экстремумы за 7 суток из Open-Meteо по спискам городов."""
     hottest = None
     coldest = None
 
@@ -132,7 +132,7 @@ def openmeteo_week_extremes():
     return hottest, coldest
 
 def kp_outlook_3d():
-    """Парсинг SWPC '3-day-geomag-forecast.txt'. Возвращает ('3 / 2 / 4', [3,2,4])."""
+    """Парсинг SWPC 3-day geomag forecast. Возвращает ('3 / 2 / 4', [3,2,4])."""
     try:
         txt = requests.get("https://services.swpc.noaa.gov/text/3-day-geomag-forecast.txt",
                            timeout=25, headers=HEADERS).text
@@ -175,7 +175,7 @@ def reykjavik_sunset_today():
     except Exception:
         return dt.datetime.utcnow().strftime("%H:%M")
 
-# --------- YouTube weekly favorite ---------
+# --------------- YouTube weekly favorite ---------------
 
 def _yt_is_short_duration(iso_dur: str) -> bool:
     if not iso_dur:
@@ -196,7 +196,7 @@ def _md_escape(s: str) -> str:
 def _weekly_top_short(days_window: int = 7):
     """
     Самый просматриваемый шорт за N дней:
-    - читаем последние 50 видео канала (без publishedAfter),
+    - берём последние 50 видео канала (без publishedAfter),
     - локально фильтруем по publishedAt >= cutoff,
     - среди коротких (≤60с) выбираем максимум по viewCount.
     """
@@ -252,7 +252,7 @@ def _weekly_top_short(days_window: int = 7):
     except Exception:
         return None, None, "fallback"
 
-# --------- main ---------
+# ---------------- main ----------------
 
 def main():
     today = dt.date.today()
@@ -262,7 +262,7 @@ def main():
     # 1) Землетрясение недели
     mag, region, note = strongest_quake_week()
 
-    # 2) Экстремумы недели: сначала из логов daily, потом фолбэк на open-meteo
+    # 2) Экстремумы недели: сначала из логов daily, затем фолбэк на open-meteo
     hot, cold = _read_extremes_from_log(days_back=7)
     if hot is None and cold is None:
         hot, cold = openmeteo_week_extremes()
