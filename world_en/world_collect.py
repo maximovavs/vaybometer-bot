@@ -28,7 +28,6 @@ HEADERS = {
 # ------------------------- Space weather -------------------------
 
 def get_kp_and_solar():
-    """Последний Kp + тренд и параметры солнечного ветра."""
     kp_url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
     r = requests.get(kp_url, timeout=20, headers=HEADERS); r.raise_for_status()
     rows = r.json()
@@ -52,16 +51,7 @@ def get_kp_and_solar():
     spd = None if spd in ("", None) else round(float(spd), 1)
     return kp, trend, spd, den
 
-
 def get_schumann_amp():
-    """
-    Читаем последние 24 значения амплитуды (amp/h7_amp).
-    Статус:
-      - 'blackout' если почти нули или нет данных
-      - 'spike'     если последний > max(3.0, median*2)
-      - 'elevated'  если последний > max(1.5, median*1.2)
-      - 'baseline'  иначе
-    """
     p = ROOT / "schumann_hourly.json"
     if not p.exists():
         p = ROOT / "data" / "schumann_hourly.json"
@@ -87,14 +77,12 @@ def get_schumann_amp():
     except Exception:
         return None, "n/a"
 
-
 # ------------------------- Earth live -------------------------
 
 def meteo_current_temp(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
     r = requests.get(url, timeout=20, headers=HEADERS); r.raise_for_status()
     return float(r.json()["current"]["temperature_2m"])
-
 
 def get_extremes():
     hottest = None
@@ -115,7 +103,6 @@ def get_extremes():
             continue
     return hottest, coldest
 
-
 def get_strongest_quake():
     url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson"
     r = requests.get(url, timeout=20, headers=HEADERS); r.raise_for_status()
@@ -127,7 +114,6 @@ def get_strongest_quake():
     depth = round(top["geometry"]["coordinates"][2])
     t = dt.datetime.fromtimestamp(top["properties"]["time"]/1000, tz=UTC).strftime("%H:%M")
     return {"mag": mag, "region": region, "depth_km": depth, "time_utc": t}
-
 
 def get_sunlight_tidbit():
     today = dt.date.today()
@@ -144,7 +130,6 @@ def get_sunlight_tidbit():
             latest = {"label":"Latest sunset", "place": name, "time_utc": ss}
     return random.choice([earliest, latest])
 
-
 # ------------------------- YouTube picker -------------------------
 
 def _yt_is_short_duration(iso_dur: str) -> bool:
@@ -158,33 +143,50 @@ def _yt_is_short_duration(iso_dur: str) -> bool:
     seconds = int(m.group(2) or 0)
     return minutes*60 + seconds <= 60
 
-
 def pick_nature_break(days_window: int = 7):
     """
     Самый просматриваемый шорт за N дней.
-    Если API недоступен — случайный url из FALLBACK_NATURE_LIST.
+    Берём последние 50 видео канала, фильтруем по publishedAt локально,
+    затем берём ≤60s и выбираем максимум по viewCount.
     """
     api = os.getenv("YT_API_KEY", YT_API_KEY)
     ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
 
     if api and ch:
         try:
-            published_after = (dt.datetime.utcnow() - dt.timedelta(days=days_window)).isoformat("T") + "Z"
-            # 1) список свежих видео
+            # 1) последние видео (без publishedAfter)
             search = requests.get(
                 "https://www.googleapis.com/youtube/v3/search",
                 params={
-                    "key": api, "channelId": ch, "part": "id",
-                    "maxResults": 50, "order": "date", "type": "video",
-                    "publishedAfter": published_after
+                    "key": api, "channelId": ch, "part": "id,snippet",
+                    "maxResults": 50, "order": "date", "type": "video"
                 }, timeout=20
             ).json()
-            ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id", {}).get("videoId")]
-            if ids:
-                # 2) детали + статистика
+            items = search.get("items", [])
+            cutoff = dt.datetime.utcnow() - dt.timedelta(days=days_window)
+
+            recent_ids = []
+            for it in items:
+                vid = it.get("id", {}).get("videoId")
+                published_at = it.get("snippet", {}).get("publishedAt")
+                if not vid or not published_at:
+                    continue
+                try:
+                    pub = dt.datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                except Exception:
+                    continue
+                if pub >= cutoff:
+                    recent_ids.append(vid)
+
+            # если в окне пусто — возьмём просто последние
+            if not recent_ids:
+                recent_ids = [it.get("id", {}).get("videoId") for it in items if it.get("id", {}).get("videoId")]
+                recent_ids = recent_ids[:20]
+
+            if recent_ids:
                 stats = requests.get(
                     "https://www.googleapis.com/youtube/v3/videos",
-                    params={"key": api, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
+                    params={"key": api, "id": ",".join(recent_ids), "part": "snippet,statistics,contentDetails"},
                     timeout=20
                 ).json().get("items", [])
                 shorts = [v for v in stats if _yt_is_short_duration(v["contentDetails"]["duration"])] or stats
@@ -192,18 +194,19 @@ def pick_nature_break(days_window: int = 7):
                     top = max(shorts, key=lambda v: int(v["statistics"].get("viewCount", "0")))
                     title = top["snippet"]["title"]
                     url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
-                    return {"title": title, "snippet": "60 seconds of calm", "youtube_url": url}
+                    return {"title": title, "snippet": "60 seconds of calm", "youtube_url": url, "source": "api"}
         except Exception:
             pass
 
-    # Fallback-ветка
+    # Fallback из секрета
     if FALLBACK_NATURE_LIST:
         url = random.choice(FALLBACK_NATURE_LIST)
         if "utm_" not in url:
             url += ("&" if "?" in url else "?") + "utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
-        return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": url}
-    return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": "https://youtube.com/@misserrelax"}
+        return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": url, "source": "fallback"}
 
+    return {"title": "Nature Break", "snippet": "Short calm from Miss Relax",
+            "youtube_url": "https://youtube.com/@misserrelax", "source": "fallback"}
 
 # ------------------------- Main collect -------------------------
 
@@ -215,7 +218,7 @@ def main():
     quake = get_strongest_quake()
     sun_tidbit = get_sunlight_tidbit()
 
-    # FX через fx_intl
+    # FX через fx_intl (6 валют)
     fx_data = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
     fx_line = format_line(fx_data, order=["USD","EUR","CNY","JPY","INR","IDR"])
 
@@ -244,7 +247,8 @@ def main():
         "fx": fx_data,
         "fx_line": fx_line,
         "tips": [tip],
-        "nature_break": nature
+        "nature_break": nature,
+        "nature_source": nature.get("source", "unknown")  # для отладки
     }
 
     # --- лог для weekly ---
@@ -287,7 +291,7 @@ def main():
         "NATURE_TITLE": nature["title"],
         "NATURE_SNIPPET": nature["snippet"],
         "NATURE_URL": nature["youtube_url"],
-        # Локальные поля на всякий случай (старые шаблоны):
+        # На случай, если где-то ещё используешь старые USD/EUR/CNY:
         "USD": "1.00", "USD_DELTA": "—",
         "EUR": f"{out['fx']['items']['EUR']['rate']:.2f}" if out['fx']['items']['EUR']['rate'] is not None else "—",
         "EUR_DELTA": (lambda x: f"{x:+.2f}%" if x is not None else "—")(out['fx']['items']['EUR']['chg_pct']),
@@ -301,7 +305,6 @@ def main():
         json.dumps(out, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
-
 
 if __name__ == "__main__":
     main()
