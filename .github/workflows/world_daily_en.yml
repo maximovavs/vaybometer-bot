@@ -15,11 +15,12 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: pip install jinja2 requests astral pytz
-      - name: Collect
+      - name: Collect daily
         env:
           YT_API_KEY: ${{ secrets.YT_API_KEY }}
-          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
-          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
+          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}   # опционально
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}   # как запасной вариант
         run: python world_en/world_collect.py
       - name: Render
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
