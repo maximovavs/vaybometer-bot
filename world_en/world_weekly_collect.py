@@ -48,14 +48,14 @@ def strongest_quake_week():
             top = max(feats, key=lambda f: f["properties"]["mag"] or 0)
             mag = round(top["properties"]["mag"], 1)
             region = top["properties"]["place"]
-            note = top["properties"].get("type","")
+            note = top["properties"].get("type", "")
             return mag, region, note
         except Exception:
             continue
     return None, None, None
 
 def _read_extremes_from_log(days_back=7):
-    """Читает world_en/logs/extremes.jsonl (накопительный лог из daily) за N суток."""
+    """Читает world_en/logs/extremes.jsonl за N суток и отдаёт глобальные hot/cold."""
     if not LOG_EXTREMES.exists():
         return None, None
     try:
@@ -84,21 +84,19 @@ def _read_extremes_from_log(days_back=7):
                 c_t = rec.get("coldest_temp")
                 if isinstance(h_t, (int, float)):
                     if (hottest is None) or (h_t > hottest["temp"]):
-                        hottest = {"place": rec.get("hottest_place","—"), "temp": round(h_t)}
+                        hottest = {"place": rec.get("hottest_place", "—"), "temp": round(h_t)}
                 if isinstance(c_t, (int, float)):
                     if (coldest is None) or (c_t < coldest["temp"]):
-                        coldest = {"place": rec.get("coldest_place","—"), "temp": round(c_t)}
+                        coldest = {"place": rec.get("coldest_place", "—"), "temp": round(c_t)}
         return hottest, coldest
     except Exception:
         return None, None
 
 def openmeteo_week_extremes():
-    """
-    Фолбэк-расчёт экстремумов за последние 7 суток.
-    По каждому месту берём daily temperature_2m_max/min и собираем глобальные max/min.
-    """
-    hottest = None   # {"place":..., "temp":...}
+    """Фолбэк: собираем экстремумы за 7 суток из Open-Meteo по спискам городов."""
+    hottest = None
     coldest = None
+
     def fetch_daily(lat, lon):
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
@@ -108,12 +106,10 @@ def openmeteo_week_extremes():
             "timezone": "UTC"
         }
         return _get_json(url, params=params).get("daily", {})
-    # горячие
+
     for name, la, lo in HOT_CITIES:
         try:
             d = fetch_daily(la, lo)
-            if not d:
-                continue
             mx = d.get("temperature_2m_max", [])
             if mx:
                 loc_max = max(mx)
@@ -121,12 +117,10 @@ def openmeteo_week_extremes():
                     hottest = {"place": name, "temp": round(loc_max)}
         except Exception:
             continue
-    # холодные
+
     for name, la, lo in COLD_SPOTS:
         try:
             d = fetch_daily(la, lo)
-            if not d:
-                continue
             mn = d.get("temperature_2m_min", [])
             if mn:
                 loc_min = min(mn)
@@ -134,10 +128,11 @@ def openmeteo_week_extremes():
                     coldest = {"place": name, "temp": round(loc_min)}
         except Exception:
             continue
+
     return hottest, coldest
 
 def kp_outlook_3d():
-    """Грубый парсинг SWPC текста на 3 дня. Возвращает ('3 / 2 / 4', [3,2,4])."""
+    """Парсинг SWPC '3-day-geomag-forecast.txt'. Возвращает ('3 / 2 / 4', [3,2,4])."""
     try:
         txt = requests.get("https://services.swpc.noaa.gov/text/3-day-geomag-forecast.txt",
                            timeout=25, headers=HEADERS).text
@@ -183,42 +178,79 @@ def reykjavik_sunset_today():
 # --------- YouTube weekly favorite ---------
 
 def _yt_is_short_duration(iso_dur: str) -> bool:
-    if not iso_dur: return False
+    if not iso_dur:
+        return False
     m = re.fullmatch(r"PT(?:(\d+)M)?(?:(\d+)S)?", iso_dur)
-    if not m: return False
-    minutes = int(m.group(1) or 0); seconds = int(m.group(2) or 0)
+    if not m:
+        return False
+    minutes = int(m.group(1) or 0)
+    seconds = int(m.group(2) or 0)
     return minutes*60 + seconds <= 60
 
 def _md_escape(s: str) -> str:
-    return s.replace("[","\\[").replace("]","\\]").replace("(","\\(").replace(")","\\)").replace("_","\\_").replace("*","\\*")
+    return (s.replace("\\", "\\\\")
+             .replace("[","\\[").replace("]","\\]")
+             .replace("(","\\(").replace(")","\\)")
+             .replace("_","\\_").replace("*","\\*"))
 
 def _weekly_top_short(days_window: int = 7):
+    """
+    Самый просматриваемый шорт за N дней:
+    - читаем последние 50 видео канала (без publishedAfter),
+    - локально фильтруем по publishedAt >= cutoff,
+    - среди коротких (≤60с) выбираем максимум по viewCount.
+    """
     api = os.getenv("YT_API_KEY", YT_API_KEY)
     ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
-    if not (api and ch): return None, None
+    if not (api and ch):
+        return None, None, "fallback"
+
     try:
-        published_after = (dt.datetime.utcnow() - dt.timedelta(days=days_window)).isoformat("T") + "Z"
         search = requests.get(
             "https://www.googleapis.com/youtube/v3/search",
-            params={"key": api, "channelId": ch, "part":"id", "maxResults": 50,
-                    "order":"date", "type":"video", "publishedAfter": published_after},
-            timeout=20
+            params={
+                "key": api, "channelId": ch, "part": "id,snippet",
+                "maxResults": 50, "order": "date", "type": "video"
+            }, timeout=20
         ).json()
-        ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id",{}).get("videoId")]
-        if not ids: return None, None
+        items = search.get("items", [])
+        cutoff = dt.datetime.utcnow() - dt.timedelta(days=days_window)
+
+        ids = []
+        for it in items:
+            vid = it.get("id", {}).get("videoId")
+            published_at = it.get("snippet", {}).get("publishedAt")
+            if not vid or not published_at:
+                continue
+            try:
+                pub = dt.datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if pub >= cutoff:
+                ids.append(vid)
+
+        if not ids:
+            ids = [it.get("id", {}).get("videoId") for it in items if it.get("id", {}).get("videoId")]
+            ids = ids[:20]
+
+        if not ids:
+            return None, None, "fallback"
+
         stats = requests.get(
             "https://www.googleapis.com/youtube/v3/videos",
-            params={"key": api, "id": ",".join(ids), "part":"snippet,statistics,contentDetails"},
+            params={"key": api, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
             timeout=20
         ).json().get("items", [])
         shorts = [v for v in stats if _yt_is_short_duration(v["contentDetails"]["duration"])] or stats
-        if not shorts: return None, None
-        top = max(shorts, key=lambda v: int(v["statistics"].get("viewCount","0")))
+        if not shorts:
+            return None, None, "fallback"
+
+        top = max(shorts, key=lambda v: int(v["statistics"].get("viewCount", "0")))
         title = _md_escape(top["snippet"]["title"])
         url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=weekly_favorite"
-        return title, url
+        return title, url, "api"
     except Exception:
-        return None, None
+        return None, None, "fallback"
 
 # --------- main ---------
 
@@ -248,7 +280,7 @@ def main():
     fx_line_week = format_line(fx, order=["USD","EUR","CNY","JPY","INR","IDR"])
 
     # 6) Community favorite (топ-шорт за 7 дней)
-    top_title, top_url = _weekly_top_short(7)
+    top_title, top_url, top_src = _weekly_top_short(7)
 
     out = {
         "WEEK_START": week_start,
@@ -256,15 +288,16 @@ def main():
         "TOP_QUAKE_MAG": mag or "—",
         "TOP_QUAKE_REGION": region or "—",
         "TOP_QUAKE_NOTE": note or "",
-        "HOTTEST_WEEK_PLACE": (hot or {}).get("place","—"),
-        "HOTTEST_WEEK": (hot or {}).get("temp","—"),
-        "COLDEST_WEEK_PLACE": (cold or {}).get("place","—"),
-        "COLDEST_WEEK": (cold or {}).get("temp","—"),
+        "HOTTEST_WEEK_PLACE": (hot or {}).get("place", "—"),
+        "HOTTEST_WEEK": (hot or {}).get("temp", "—"),
+        "COLDEST_WEEK_PLACE": (cold or {}).get("place", "—"),
+        "COLDEST_WEEK": (cold or {}).get("temp", "—"),
         "CALM_WINDOW_UTC": calm_win,
         "SUN_HIGHLIGHT_PLACE": "Reykjavik, IS",
         "SUN_HIGHLIGHT_TIME": reykjavik_sunset_today(),
         "TOP_NATURE_TITLE": top_title or "Nature Break",
         "TOP_NATURE_URL": top_url or (FALLBACK_NATURE_LIST[0] if FALLBACK_NATURE_LIST else "https://youtube.com/@misserrelax"),
+        "TOP_NATURE_SOURCE": top_src,
         "fx_line_week": fx_line_week,
         "NEXT_MOON_PHASE": next_moon_phase,
         "NEXT_KP_NOTE": kp_note
