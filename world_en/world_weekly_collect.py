@@ -196,45 +196,72 @@ def _md_escape(s: str) -> str:
 def _weekly_top_short(days_window: int = 7):
     """
     Самый просматриваемый шорт за N дней:
-    - берём последние 50 видео канала (без publishedAfter),
-    - локально фильтруем по publishedAt >= cutoff,
-    - среди коротких (≤60с) выбираем максимум по viewCount.
+    - search с publishedAfter за последние N суток,
+    - берём id, тянем statistics+contentDetails,
+    - из коротких (≤60s) выбираем максимум по viewCount.
     """
     api = os.getenv("YT_API_KEY", YT_API_KEY)
     ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
     if not (api and ch):
         return None, None, "fallback"
 
+    # RFC3339 на 7 дней назад
+    cutoff = (dt.datetime.utcnow() - dt.timedelta(days=days_window)).replace(microsecond=0).isoformat() + "Z"
+
     try:
+        # 1) только свежие ролики канала
         search = requests.get(
             "https://www.googleapis.com/youtube/v3/search",
             params={
-                "key": api, "channelId": ch, "part": "id,snippet",
-                "maxResults": 50, "order": "date", "type": "video"
-            }, timeout=20
+                "key": api,
+                "channelId": ch,
+                "part": "id",
+                "type": "video",
+                "order": "date",
+                "maxResults": 50,
+                "publishedAfter": cutoff
+            },
+            timeout=20
         ).json()
-        items = search.get("items", [])
-        cutoff = dt.datetime.utcnow() - dt.timedelta(days=days_window)
 
-        ids = []
-        for it in items:
-            vid = it.get("id", {}).get("videoId")
-            published_at = it.get("snippet", {}).get("publishedAt")
-            if not vid or not published_at:
-                continue
-            try:
-                pub = dt.datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-            except Exception:
-                continue
-            if pub >= cutoff:
-                ids.append(vid)
+        ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id", {}).get("videoId")]
 
+        # Если вдруг пусто — возьмём просто последние (фолбэк внутри API)
         if not ids:
-            ids = [it.get("id", {}).get("videoId") for it in items if it.get("id", {}).get("videoId")]
-            ids = ids[:20]
+            alt = requests.get(
+                "https://www.googleapis.com/youtube/v3/search",
+                params={"key": api, "channelId": ch, "part": "id", "type": "video", "order": "date", "maxResults": 20},
+                timeout=20
+            ).json()
+            ids = [it["id"]["videoId"] for it in alt.get("items", []) if it.get("id", {}).get("videoId")]
+            if not ids:
+                return None, None, "fallback"
 
-        if not ids:
+        # 2) стата по этим id
+        stats = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"key": api, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
+            timeout=20
+        ).json().get("items", [])
+
+        def is_short(iso):
+            m = re.fullmatch(r"^PT(?:(\d+)M)?(?:(\d+)S)?$", iso or "")
+            if not m: return False
+            return (int(m.group(1) or 0)*60 + int(m.group(2) or 0)) <= 60
+
+        pool = [v for v in stats if is_short(v["contentDetails"]["duration"])]
+        pool = pool or stats
+        if not pool:
             return None, None, "fallback"
+
+        top = max(pool, key=lambda v: int(v["statistics"].get("viewCount", "0")))
+        title = top["snippet"]["title"]
+        url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=weekly_favorite"
+        return title, url, "api"
+
+    except Exception:
+        return None, None, "fallback"
+
 
         stats = requests.get(
             "https://www.googleapis.com/youtube/v3/videos",
