@@ -27,6 +27,19 @@ HEADERS = {
 
 # ------------------------- Space weather -------------------------
 
+def _yt_iso_to_seconds(iso: str) -> int:
+    if not iso: return 0
+    m = re.fullmatch(r"^PT(?:(\d+)M)?(?:(\d+)S)?$", iso)
+    if not m: return 0
+    return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
+
+def _clean_title(t: str, limit: int = 60) -> str:
+    if not t: return "Nature Break"
+    # убираем хэштеги и приводим пробелы
+    t = re.sub(r"#\w+", "", t).strip()
+    t = re.sub(r"\s{2,}", " ", t)
+    return (t if len(t) <= limit else t[:limit-1] + "…")
+
 def get_kp_and_solar():
     kp_url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
     r = requests.get(kp_url, timeout=20, headers=HEADERS); r.raise_for_status()
