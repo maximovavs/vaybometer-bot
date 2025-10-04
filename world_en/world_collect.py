@@ -5,7 +5,8 @@ from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # чтобы import world_en.* точно работал
 
-import os, re, json, random, datetime as dt
+import os, re
+import json, random, datetime as dt
 import requests
 from pytz import UTC
 from astral import LocationInfo
@@ -18,6 +19,7 @@ from world_en.settings_world_en import (
 from world_en.fx_intl import fetch_rates, format_line
 
 ROOT = Path(__file__).resolve().parents[1]
+
 HEADERS = {
     "User-Agent": "WorldVibeMeterBot/1.0 (+https://github.com/)",
     "Accept": "application/json,text/plain",
@@ -25,22 +27,10 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
-# ------------------------- Space weather -------------------------
-
-def _yt_iso_to_seconds(iso: str) -> int:
-    if not iso: return 0
-    m = re.fullmatch(r"^PT(?:(\d+)M)?(?:(\d+)S)?$", iso)
-    if not m: return 0
-    return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
-
-def _clean_title(t: str, limit: int = 60) -> str:
-    if not t: return "Nature Break"
-    # убираем хэштеги и приводим пробелы
-    t = re.sub(r"#\w+", "", t).strip()
-    t = re.sub(r"\s{2,}", " ", t)
-    return (t if len(t) <= limit else t[:limit-1] + "…")
+# -------------------- NOAA / SWPC --------------------
 
 def get_kp_and_solar():
+    # Kp-индекс
     kp_url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
     r = requests.get(kp_url, timeout=20, headers=HEADERS); r.raise_for_status()
     rows = r.json()
@@ -52,6 +42,7 @@ def get_kp_and_solar():
     if float(last[1]) > float(ref[1]): trend = "up"
     if float(last[1]) < float(ref[1]): trend = "down"
 
+    # Скорость/плотность солнечного ветра
     sw = requests.get(
         "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json",
         timeout=20, headers=HEADERS
@@ -64,7 +55,10 @@ def get_kp_and_solar():
     spd = None if spd in ("", None) else round(float(spd), 1)
     return kp, trend, spd, den
 
+# -------------------- Schumann --------------------
+
 def get_schumann_amp():
+    """Читает последние ~24 значения амплитуды из schumann_hourly.json и классифицирует статус."""
     p = ROOT / "schumann_hourly.json"
     if not p.exists():
         p = ROOT / "data" / "schumann_hourly.json"
@@ -90,7 +84,7 @@ def get_schumann_amp():
     except Exception:
         return None, "n/a"
 
-# ------------------------- Earth live -------------------------
+# -------------------- Температурные экстремумы --------------------
 
 def meteo_current_temp(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
@@ -116,6 +110,8 @@ def get_extremes():
             continue
     return hottest, coldest
 
+# -------------------- Землетрясения --------------------
+
 def get_strongest_quake():
     url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson"
     r = requests.get(url, timeout=20, headers=HEADERS); r.raise_for_status()
@@ -128,6 +124,8 @@ def get_strongest_quake():
     t = dt.datetime.fromtimestamp(top["properties"]["time"]/1000, tz=UTC).strftime("%H:%M")
     return {"mag": mag, "region": region, "depth_km": depth, "time_utc": t}
 
+# -------------------- Солнце: ранний восход / поздний закат --------------------
+
 def get_sunlight_tidbit():
     today = dt.date.today()
     earliest = None
@@ -137,91 +135,123 @@ def get_sunlight_tidbit():
         s = sun(loc.observer, date=today, tzinfo=UTC)
         sr = s["sunrise"].strftime("%H:%M")
         ss = s["sunset"].strftime("%H:%M")
-        if not earliest or sr < earliest["time_utc"] if earliest else True:
+        if not earliest or sr < earliest["time_utc"]:
             earliest = {"label":"Earliest sunrise", "place": name, "time_utc": sr}
-        if not latest or ss > latest["time_utc"] if latest else True:
+        if not latest or ss > latest["time_utc"]:
             latest = {"label":"Latest sunset", "place": name, "time_utc": ss}
     return random.choice([earliest, latest])
 
-# ------------------------- YouTube picker -------------------------
+# -------------------- YouTube helpers --------------------
 
-def _yt_is_short_duration(iso_dur: str) -> bool:
-    """ISO8601 'PT45S', 'PT1M0S' → True если ≤ 60 секунд."""
-    if not iso_dur:
-        return False
-    m = re.fullmatch(r"PT(?:(\d+)M)?(?:(\d+)S)?", iso_dur)
-    if not m:
-        return False
-    minutes = int(m.group(1) or 0)
-    seconds = int(m.group(2) or 0)
-    return minutes*60 + seconds <= 60
+def _yt_iso_to_seconds(iso: str) -> int:
+    if not iso: return 0
+    m = re.fullmatch(r"^PT(?:(\d+)M)?(?:(\d+)S)?$", iso)
+    if not m: return 0
+    return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
 
-def pick_nature_break(days_window: int = 7):
-    """
-    Самый просматриваемый шорт за N дней.
-    Берём последние 50 видео канала, фильтруем по publishedAt локально,
-    затем берём ≤60s и выбираем максимум по viewCount.
-    """
+def _clean_title(t: str, limit: int = 60) -> str:
+    if not t: return "Nature Break"
+    # убираем хэштеги и приводим пробелы
+    t = re.sub(r"#\w+", "", t).strip()
+    t = re.sub(r"\s{2,}", " ", t)
+    return (t if len(t) <= limit else t[:limit-1] + "…")
+
+def _daily_top_short(hours_window: int = 48):
+    """Самый просматриваемый шорт за последние hours_window часов; фолбэк на последние загрузки."""
     api = os.getenv("YT_API_KEY", YT_API_KEY)
     ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
+    if not (api and ch):
+        return None  # пусть сработает общий фолбэк ниже
 
-    if api and ch:
+    cutoff = (dt.datetime.utcnow() - dt.timedelta(hours=hours_window)) \
+                .replace(microsecond=0).isoformat() + "Z"
+
+    try:
+        # свежие видео за окно
+        search = requests.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={
+                "key": api, "channelId": ch, "part": "id",
+                "type": "video", "order": "date", "maxResults": 50,
+                "publishedAfter": cutoff
+            }, timeout=20
+        ).json()
+        ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id", {}).get("videoId")]
+
+        # фолбэк: просто последние 20
+        if not ids:
+            alt = requests.get(
+                "https://www.googleapis.com/youtube/v3/search",
+                params={"key": api, "channelId": ch, "part": "id", "type": "video", "order": "date", "maxResults": 20},
+                timeout=20
+            ).json()
+            ids = [it["id"]["videoId"] for it in alt.get("items", []) if it.get("id", {}).get("videoId")]
+            if not ids:
+                return None
+
+        stats = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"key": api, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
+            timeout=20
+        ).json().get("items", [])
+
+        pool = [v for v in stats if _yt_iso_to_seconds(v["contentDetails"]["duration"]) <= 60] or stats
+        if not pool:
+            return None
+
+        top = max(pool, key=lambda v: int(v["statistics"].get("viewCount", "0")))
+        title = _clean_title(top["snippet"]["title"])
+        url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_favorite"
+        return {"title": title, "snippet": "60 seconds of calm", "youtube_url": url, "source": "api-48h"}
+    except Exception:
+        return None
+
+def pick_nature_break():
+    # 1) Пытаемся взять топ-шорт за 48 часов
+    top = _daily_top_short(48)
+    if top:
+        return top
+
+    # 2) Старый механизм: последние загрузки → топ по просмотрам
+    if YT_API_KEY and YT_CHANNEL_ID:
         try:
-            # 1) последние видео (без publishedAfter)
             search = requests.get(
                 "https://www.googleapis.com/youtube/v3/search",
                 params={
-                    "key": api, "channelId": ch, "part": "id,snippet",
-                    "maxResults": 50, "order": "date", "type": "video"
+                    "key": YT_API_KEY, "channelId": YT_CHANNEL_ID,
+                    "part":"id", "maxResults": 25, "order":"date", "type":"video"
                 }, timeout=20
             ).json()
-            items = search.get("items", [])
-            cutoff = dt.datetime.utcnow() - dt.timedelta(days=days_window)
-
-            recent_ids = []
-            for it in items:
-                vid = it.get("id", {}).get("videoId")
-                published_at = it.get("snippet", {}).get("publishedAt")
-                if not vid or not published_at:
-                    continue
-                try:
-                    pub = dt.datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-                except Exception:
-                    continue
-                if pub >= cutoff:
-                    recent_ids.append(vid)
-
-            # если в окне пусто — возьмём просто последние
-            if not recent_ids:
-                recent_ids = [it.get("id", {}).get("videoId") for it in items if it.get("id", {}).get("videoId")]
-                recent_ids = recent_ids[:20]
-
-            if recent_ids:
+            ids = [it["id"]["videoId"] for it in search.get("items", [])]
+            if ids:
                 stats = requests.get(
                     "https://www.googleapis.com/youtube/v3/videos",
-                    params={"key": api, "id": ",".join(recent_ids), "part": "snippet,statistics,contentDetails"},
+                    params={"key":YT_API_KEY, "id":",".join(ids), "part":"snippet,statistics,contentDetails"},
                     timeout=20
-                ).json().get("items", [])
-                shorts = [v for v in stats if _yt_is_short_duration(v["contentDetails"]["duration"])] or stats
-                if shorts:
-                    top = max(shorts, key=lambda v: int(v["statistics"].get("viewCount", "0")))
-                    title = top["snippet"]["title"]
-                    url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
-                    return {"title": title, "snippet": "60 seconds of calm", "youtube_url": url, "source": "api"}
+                ).json()["items"]
+                def is_short(item):
+                    return _yt_iso_to_seconds(item["contentDetails"]["duration"]) <= 60
+                shorts = [v for v in stats if is_short(v)] or stats
+                topv = max(shorts, key=lambda v:int(v["statistics"].get("viewCount","0")))
+                url = f"https://youtu.be/{topv['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
+                return {
+                    "title": _clean_title(topv["snippet"]["title"]),
+                    "snippet": "60 seconds of calm",
+                    "youtube_url": url,
+                    "source": "api-recent"
+                }
         except Exception:
             pass
 
-    # Fallback из секрета
+    # 3) Фолбэк из списка
     if FALLBACK_NATURE_LIST:
         url = random.choice(FALLBACK_NATURE_LIST)
         if "utm_" not in url:
             url += ("&" if "?" in url else "?") + "utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
         return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": url, "source": "fallback"}
+    return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": "https://youtube.com/@misserrelax", "source": "none"}
 
-    return {"title": "Nature Break", "snippet": "Short calm from Miss Relax",
-            "youtube_url": "https://youtube.com/@misserrelax", "source": "fallback"}
-
-# ------------------------- Main collect -------------------------
+# -------------------- Main --------------------
 
 def main():
     # --- сбор ---
@@ -231,12 +261,12 @@ def main():
     quake = get_strongest_quake()
     sun_tidbit = get_sunlight_tidbit()
 
-    # FX через fx_intl (6 валют)
+    # FX: 6 валют
     fx_data = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
     fx_line = format_line(fx_data, order=["USD","EUR","CNY","JPY","INR","IDR"])
 
     tip = random.choice(VIBE_TIPS)
-    nature = pick_nature_break(7)
+    nature = pick_nature_break()
 
     # --- вложенная структура ---
     out = {
@@ -260,11 +290,10 @@ def main():
         "fx": fx_data,
         "fx_line": fx_line,
         "tips": [tip],
-        "nature_break": nature,
-        "nature_source": nature.get("source", "unknown")  # для отладки
+        "nature_break": nature
     }
 
-    # --- лог для weekly ---
+    # --- лог для weekly (экстремумы) ---
     log_dir = Path(__file__).parent / "logs"
     log_dir.mkdir(exist_ok=True)
     log = {
@@ -306,9 +335,9 @@ def main():
         "NATURE_URL": nature["youtube_url"],
         # На случай, если где-то ещё используешь старые USD/EUR/CNY:
         "USD": "1.00", "USD_DELTA": "—",
-        "EUR": f"{out['fx']['items']['EUR']['rate']:.2f}" if out['fx']['items']['EUR']['rate'] is not None else "—",
+        "EUR": f"{out['fx']['items']['EUR']['rate']:.4f}" if out['fx']['items']['EUR']['rate'] is not None else "—",
         "EUR_DELTA": (lambda x: f"{x:+.2f}%" if x is not None else "—")(out['fx']['items']['EUR']['chg_pct']),
-        "CNY": f"{out['fx']['items']['CNY']['rate']:.2f}" if out['fx']['items']['CNY']['rate'] is not None else "—",
+        "CNY": f"{out['fx']['items']['CNY']['rate']:.4f}" if out['fx']['items']['CNY']['rate'] is not None else "—",
         "CNY_DELTA": (lambda x: f"{x:+.2f}%" if x is not None else "—")(out['fx']['items']['CNY']['chg_pct']),
         "fx_line": fx_line
     }
