@@ -243,17 +243,32 @@ def fetch_rates(base: str, symbols: list[str]) -> dict:
     return {"base": base, "asof": "n/a", "prev": None, "items": items}
 
 
-def format_line(data: dict, order: list[str]) -> str:
-    """
-    Форматирует строку для шаблона:
-        "USD 1.0000 (+0.00%) • EUR 0.8529 (+0.12%) • CNY 7.1250 (—) ..."
-    Если chg_pct отсутствует — выводит (—).
-    """
+def format_line(fx, order=None):
+    if not fx or "items" not in fx:
+        return "—"
+
+    order = order or list(fx["items"].keys())
+    items = fx["items"]
+
+    # сколько знаков для каждой валюты
+    dec = {"EUR": 4, "CNY": 4, "JPY": 2, "INR": 2, "IDR": 0, "USD": 4}
+
     parts = []
-    for sym in order:
-        it = data["items"].get(sym, {})
-        r, d = it.get("rate"), it.get("chg_pct")
-        r_txt = f"{sym} {r:.4f}" if isinstance(r, (int, float)) else f"{sym} —"
-        d_txt = f"({d:+.2f}%)" if isinstance(d, (int, float)) else "(—)"
-        parts.append(f"{r_txt} {d_txt}")
+    for cur in order:
+        it = items.get(cur, {})
+        r = it.get("rate")
+        chg = it.get("chg_pct")
+        if r is None:
+            parts.append(f"{cur} — (—)")
+            continue
+
+        # IDR с разделителями тысяч
+        if cur == "IDR":
+            rate_str = f"{r:,.0f}"
+        else:
+            rate_str = f"{r:.{dec.get(cur,4)}f}"
+
+        delta = "—" if chg is None else f"{chg:+.2f}%"
+        parts.append(f"{cur} {rate_str} ({delta})")
+
     return " • ".join(parts)
