@@ -393,7 +393,7 @@ def main():
         "KP": kp,
         "KP_TREND_EMOJI": trend_emoji,
         "KP_NOTE": out["cosmic"]["notes"]["kp_note"],
-        "KP_SHORT": f"{float(KP):.1f}" if KP is not None else "—",
+        "KP_SHORT": f"{float(kp):.1f}" if kp is not None else "—",
         "SCHUMANN_STATUS": sch_status,
         "SCHUMANN_AMP": (None if amp is None else amp),
         "SOLAR_WIND_SPEED": sw_speed or "—",
