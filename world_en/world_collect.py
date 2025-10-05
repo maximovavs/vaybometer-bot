@@ -45,6 +45,21 @@ CITY_TO_CC = {
     "Tomioka": "JP",
     # при желании пополним списком позже
 }
+COUNTRY_TO_CC = {
+    "Japan":"JP","Russia":"RU","Chile":"CL","Mexico":"MX","Indonesia":"ID",
+    "Fiji":"FJ","Philippines":"PH","Turkey":"TR","Greece":"GR","United States":"US",
+    "Argentina":"AR","China":"CN","Papua New Guinea":"PG","New Zealand":"NZ",
+    "Vanuatu":"VU","Peru":"PE","Tonga":"TO","Italy":"IT","Iceland":"IS"
+}
+
+def _append_country_flag_from_name(region: str) -> str:
+    if not region: return "—"
+    m = re.search(r",\s*([A-Za-z ]+)$", region)
+    if not m: return region
+    name = m.group(1).strip()
+    cc = COUNTRY_TO_CC.get(name)
+    fl = _country_flag(cc) if cc else ""
+    return f"{region} {fl}".strip()
 
 # -------------------- утилиты --------------------
 
@@ -405,7 +420,7 @@ def main():
         "COLDEST_PLACE": _with_flag(coldest_place),
         "COLDEST_TEMP": (coldest or {}).get("temp_c","—"),
         "QUAKE_MAG": (quake or {}).get("mag","—"),
-        "QUAKE_REGION": (quake or {}).get("region","—"),
+        "QUAKE_REGION": _append_country_flag_from_name((quake or {}).get("region","—")),
         "QUAKE_DEPTH": (quake or {}).get("depth_km","—"),
         "SUN_TIDBIT_LABEL": (sun_tidbit or {}).get("label","Sun highlight"),
         "SUN_TIDBIT_PLACE": (sun_tidbit or {}).get("place","—"),
