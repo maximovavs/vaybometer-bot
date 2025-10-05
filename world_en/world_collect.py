@@ -27,6 +27,27 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
+# -------------------- утилиты --------------------
+
+def _country_flag(cc: str) -> str:
+    """Преобразует ISO-2 код в флаг-эмодзи (включая AQ и др.)."""
+    if not cc or len(cc) != 2: return ""
+    base = 0x1F1E6
+    a = ord(cc[0].upper()) - ord('A')
+    b = ord(cc[1].upper()) - ord('A')
+    if a < 0 or b < 0 or a > 25 or b > 25: return ""
+    return chr(base + a) + chr(base + b)
+
+def _with_flag(place: str) -> str:
+    """Добавляет флаг к названию места, если в конце есть ', CC'."""
+    if not place: return "—"
+    m = re.search(r",\s*([A-Z]{2})$", place.strip())
+    if not m: 
+        return place
+    cc = m.group(1)
+    fl = _country_flag(cc)
+    return f"{place} {fl}" if fl else place
+
 # -------------------- NOAA / SWPC --------------------
 
 def get_kp_and_solar():
@@ -151,7 +172,6 @@ def _yt_iso_to_seconds(iso: str) -> int:
 
 def _clean_title(t: str, limit: int = 60) -> str:
     if not t: return "Nature Break"
-    # убираем хэштеги и приводим пробелы
     t = re.sub(r"#\w+", "", t).strip()
     t = re.sub(r"\s{2,}", " ", t)
     return (t if len(t) <= limit else t[:limit-1] + "…")
@@ -161,13 +181,12 @@ def _daily_top_short(hours_window: int = 48):
     api = os.getenv("YT_API_KEY", YT_API_KEY)
     ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
     if not (api and ch):
-        return None  # пусть сработает общий фолбэк ниже
+        return None
 
     cutoff = (dt.datetime.utcnow() - dt.timedelta(hours=hours_window)) \
                 .replace(microsecond=0).isoformat() + "Z"
 
     try:
-        # свежие видео за окно
         search = requests.get(
             "https://www.googleapis.com/youtube/v3/search",
             params={
@@ -178,7 +197,6 @@ def _daily_top_short(hours_window: int = 48):
         ).json()
         ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id", {}).get("videoId")]
 
-        # фолбэк: просто последние 20
         if not ids:
             alt = requests.get(
                 "https://www.googleapis.com/youtube/v3/search",
@@ -207,12 +225,12 @@ def _daily_top_short(hours_window: int = 48):
         return None
 
 def pick_nature_break():
-    # 1) Пытаемся взять топ-шорт за 48 часов
+    # 1) Топ-шорт за 48 часов
     top = _daily_top_short(48)
     if top:
         return top
 
-    # 2) Старый механизм: последние загрузки → топ по просмотрам
+    # 2) Последние загрузки → топ по просмотрам (фолбэк)
     if YT_API_KEY and YT_CHANNEL_ID:
         try:
             search = requests.get(
@@ -243,13 +261,29 @@ def pick_nature_break():
         except Exception:
             pass
 
-    # 3) Фолбэк из списка
+    # 3) Фолбэк-список
     if FALLBACK_NATURE_LIST:
         url = random.choice(FALLBACK_NATURE_LIST)
         if "utm_" not in url:
             url += ("&" if "?" in url else "?") + "utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
         return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": url, "source": "fallback"}
     return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": "https://youtube.com/@misserrelax", "source": "none"}
+
+# -------------------- Vibe Tip (адаптивный) --------------------
+
+def smart_tip(kp: float, sch_status: str) -> str:
+    try:
+        k = float(kp or 0)
+    except Exception:
+        k = 0.0
+    s = (sch_status or "").lower()
+    if k >= 6:
+        return "Grounding: 2-minute box-breathing + warm tea."
+    if k >= 5:
+        return "Go gentle: slower pace, extra water, one thing at a time."
+    if s in ("spike", "elevated"):
+        return "Short walk + deep nasal breathing for 60 sec."
+    return random.choice(VIBE_TIPS)
 
 # -------------------- Main --------------------
 
@@ -265,7 +299,10 @@ def main():
     fx_data = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
     fx_line = format_line(fx_data, order=["USD","EUR","CNY","JPY","INR","IDR"])
 
-    tip = random.choice(VIBE_TIPS)
+    # Адаптивный совет
+    tip = smart_tip(kp, sch_status)
+
+    # YouTube
     nature = pick_nature_break()
 
     # --- вложенная структура ---
@@ -308,6 +345,10 @@ def main():
 
     # --- плоские поля под шаблон daily_en.j2 ---
     trend_emoji = {"up":"↑","down":"↓","stable":"→"}.get(trend, "→")
+
+    hottest_place = (hottest or {}).get("place","—")
+    coldest_place = (coldest or {}).get("place","—")
+
     flat = {
         "WEEKDAY": out["weekday_en"],
         "DATE": out["date_utc"],
@@ -319,9 +360,10 @@ def main():
         "SOLAR_WIND_SPEED": sw_speed or "—",
         "SOLAR_WIND_DENSITY": sw_den or "—",
         "SOLAR_NOTE": out["cosmic"]["notes"]["solar_note"],
-        "HOTTEST_PLACE": (hottest or {}).get("place","—"),
+        # -> с флагами:
+        "HOTTEST_PLACE": _with_flag(hottest_place),
         "HOTTEST_TEMP": (hottest or {}).get("temp_c","—"),
-        "COLDEST_PLACE": (coldest or {}).get("place","—"),
+        "COLDEST_PLACE": _with_flag(coldest_place),
         "COLDEST_TEMP": (coldest or {}).get("temp_c","—"),
         "QUAKE_MAG": (quake or {}).get("mag","—"),
         "QUAKE_REGION": (quake or {}).get("region","—"),
