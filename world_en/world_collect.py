@@ -388,6 +388,7 @@ def main():
     flat = {
         "WEEKDAY": out["weekday_en"],
         "DATE": out["date_utc"],
+        "QUAKE_TIME": (quake or {}).get("time_utc","—"),
         "VIBE_EMOJI": kp_level_emoji(kp),
         "KP": kp,
         "KP_TREND_EMOJI": trend_emoji,
