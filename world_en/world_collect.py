@@ -27,10 +27,28 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
+# --- простая база: город/топоним → ISO2 (добавляй по мере встреч)
+CITY_TO_CC = {
+    "Doha": "QA",
+    "Kuwait City": "KW",
+    "Phoenix": "US",
+    "Jazan": "SA",
+    "Dubai": "AE",
+    "Ushuaia": "AR",
+    "Reykjavik": "IS",
+    "Vostok": "AQ",
+    "Dome A": "AQ",
+    "Yakutsk": "RU",
+    "Oymyakon": "RU",
+    "Verkhoyansk": "RU",
+    "Death Valley": "US",
+    "Tomioka": "JP",
+    # при желании пополним списком позже
+}
+
 # -------------------- утилиты --------------------
 
 def _country_flag(cc: str) -> str:
-    """Преобразует ISO-2 код в флаг-эмодзи (включая AQ и др.)."""
     if not cc or len(cc) != 2: return ""
     base = 0x1F1E6
     a = ord(cc[0].upper()) - ord('A')
@@ -39,14 +57,32 @@ def _country_flag(cc: str) -> str:
     return chr(base + a) + chr(base + b)
 
 def _with_flag(place: str) -> str:
-    """Добавляет флаг к названию места, если в конце есть ', CC'."""
-    if not place: return "—"
-    m = re.search(r",\s*([A-Z]{2})$", place.strip())
-    if not m: 
-        return place
-    cc = m.group(1)
-    fl = _country_flag(cc)
-    return f"{place} {fl}" if fl else place
+    """Добавляет флаг. Сначала ищем ', CC' в конце; если нет — пробуем CITY_TO_CC по основному топониму."""
+    if not place:
+        return "—"
+    place = place.strip()
+
+    # 1) явный ISO2 в конце
+    m = re.search(r",\s*([A-Z]{2})$", place)
+    cc = m.group(1) if m else None
+
+    # 2) попытка по базе: берём первую часть до запятой (или всё слово)
+    if not cc:
+        base_name = place.split(",")[0].strip()
+        cc = CITY_TO_CC.get(base_name)
+
+    fl = _country_flag(cc) if cc else ""
+    return f"{place} {fl}".strip()
+
+def kp_level_emoji(kp) -> str:
+    try:
+        k = float(kp or 0)
+    except Exception:
+        k = 0.0
+    if k >= 7: return "🔴"   # strong storm
+    if k >= 5: return "🟠"   # stormy window
+    if k >= 3: return "🟡"   # active
+    return "🟢"              # calm
 
 # -------------------- NOAA / SWPC --------------------
 
