@@ -1,7 +1,8 @@
 WorldVibeMeter : ✨ Astro Note • {{ DATE }} (UTC)
 
-Moon: {% if PHASE_EMOJI %}{{ PHASE_EMOJI }} {% endif %}{{ PHASE_EN }}{% if MOON_PERCENT is not none %} ({{ MOON_PERCENT }}%){% endif %}, in {{ MOON_SIGN }}{% if MOON_SIGN_EMOJI %} {{ MOON_SIGN_EMOJI }}{% endif %}
+Moon: {% if PHASE_EMOJI %}{{ PHASE_EMOJI }} {% endif %}{{ PHASE_EN }}{% if MOON_PERCENT is not none %} ({{ MOON_PERCENT }}%){% endif %}, in {{ MOON_SIGN }}{% if MOON_SIGN_EMOJI %} {{ MOON_SIGN_EMOJI }}{% endif %} •
 Void of Course: {{ VOC_TEXT }}{% if VOC_BADGE %} {{ VOC_BADGE }}{% endif %}
+
 {{ ENERGY_ICON }} Energy: {{ ENERGY_LINE }}
 Gentle advice: {{ ADVICE_LINE }}
 
