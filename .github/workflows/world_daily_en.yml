@@ -48,20 +48,28 @@ jobs:
 
       - name: Send Nature card (photo + clean caption + button)
         env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+            TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+            TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
-          THUMB=$(jq -r '.NATURE_THUMB // empty' world_en/daily.json)
-          URL=$(jq -r '.NATURE_URL // empty' world_en/daily.json)
-          TITLE=$(jq -r '.NATURE_TITLE // "Nature Break"' world_en/daily.json)
-          SNIPPET=$(jq -r '.NATURE_SNIPPET // "60 seconds of calm"' world_en/daily.json)
-
-          if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-            CAPTION="🌊 *${TITLE}*\n_${SNIPPET}_"
-            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-              -F chat_id="${TG_CHAT}" \
-              -F photo="$THUMB" \
-              -F parse_mode="Markdown" \
-              -F caption="$CAPTION" \
-              -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-          fi
+            python - <<'PY' | tee /tmp/nb.txt >/dev/null
+            import json, html
+            d = json.load(open('world_en/daily.json', encoding='utf-8'))
+            thumb   = d.get('NATURE_THUMB','')
+            url     = d.get('NATURE_URL','')
+            title   = html.escape(d.get('NATURE_TITLE','Nature Break'))
+            snippet = html.escape(d.get('NATURE_SNIPPET','60 seconds of calm'))
+            caption = f"🌊 <b>{title}</b>\n<i>{snippet}</i>"
+            print(thumb); print(url); print(caption)
+            PY
+            THUMB=$(sed -n '1p' /tmp/nb.txt)
+            URL=$(sed -n '2p' /tmp/nb.txt)
+            CAPTION=$(sed -n '3,$p' /tmp/nb.txt)
+        
+            if [ -n "$THUMB" ] && [ -n "$URL" ]; then
+              curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
+                -F chat_id="${TG_CHAT}" \
+                -F photo="${THUMB}" \
+                -F parse_mode="HTML" \
+                -F caption="$CAPTION" \
+                -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
+            fi
