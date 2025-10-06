@@ -32,6 +32,19 @@ _EN_SIGNS = {
     "aquarius": ("Aquarius", "♒"), "pisces": ("Pisces", "♓"),
 }
 
+# в world_en/world_astro_collect.py (вверху файла)
+import os
+
+def energy_icon_pick(mode: str, phase_en: str, voc_len_min):
+    mode = (mode or "phase").lower()          # phase | voc | static
+    if mode == "voc":
+        if voc_len_min is None: return "💡"
+        return "🟢" if voc_len_min < 60 else ("🟡" if voc_len_min < 120 else "🟠")
+    if mode == "static":
+        return "💡"
+    # phase (по умолчанию)
+    return energy_icon_for_phase(phase_en)
+
 def _sign_en_emoji(sign_raw: Optional[str]) -> Tuple[str, str]:
     s = (sign_raw or "").strip()
     if not s:
@@ -216,6 +229,7 @@ def main():
 
     sign_en, sign_emoji   = _sign_en_emoji(sign_raw)
     phase_en, phase_emoji = _phase_en_emoji(phase_name)
+    energy_icon = energy_icon_pick(os.getenv("ENERGY_ICON_MODE","phase"), phase_en, VOC_LEN_MIN)
 
     energy_icon = energy_icon_for_phase(phase_en or phase_name)
     energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), VOC_LEN_MIN)
