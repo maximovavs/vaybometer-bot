@@ -1,6 +1,6 @@
 WorldVibeMeter : ✨ Astro Note • {{DATE}} (UTC)
 
-Moon: {{PHASE_EN}} ({{MOON_PERCENT}}%), in {{MOON_SIGN}} {{MOON_SIGN_EMOJI}}{{PHASE_EMOJI and " " ~ PHASE_EMOJI or ""}}.
+Moon: {{ MOON_PHASE_EN }}{% if MOON_PERCENT and 0 < MOON_PERCENT < 100 %} ({{ MOON_PERCENT }}%){% endif %}, in {{ MOON_SIGN_EN }} {{ SIGN_EMOJI }} {{ FULL_BADGE }}
 Void of Course: {% if VOC != "—" %}{{VOC}} UTC{{ VOC_LEN and " (" ~ VOC_LEN ~ ")" or "" }} {{VOC_BADGE}}{% else %}—{% endif %}
 Energy: {{ENERGY_LINE}}
 Gentle advice: {{ADVICE_LINE}}
