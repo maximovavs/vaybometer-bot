@@ -8,37 +8,88 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import datetime as dt
 import json
-from typing import Optional
+from typing import Optional, Tuple
+from pytz import UTC
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT  = Path(__file__).parent / "astro.json"
 
 # ---- sign mapping (RU/EN → EN + emoji)
-SIGN_MAP = {
-    # RU
-    "Овен": ("Aries", "♈"), "Телец": ("Taurus", "♉"), "Близнецы": ("Gemini", "♊"),
-    "Рак": ("Cancer", "♋"), "Лев": ("Leo", "♌"), "Дева": ("Virgo", "♍"),
-    "Весы": ("Libra", "♎"), "Скорпион": ("Scorpio", "♏"), "Стрелец": ("Sagittarius", "♐"),
-    "Козерог": ("Capricorn", "♑"), "Водолей": ("Aquarius", "♒"), "Рыбы": ("Pisces", "♓"),
-    # EN (fallbacks)
-    "Aries": ("Aries", "♈"), "Taurus": ("Taurus", "♉"), "Gemini": ("Gemini", "♊"),
-    "Cancer": ("Cancer", "♋"), "Leo": ("Leo", "♌"), "Virgo": ("Virgo", "♍"),
-    "Libra": ("Libra", "♎"), "Scorpio": ("Scorpio", "♏"), "Sagittarius": ("Sagittarius", "♐"),
-    "Capricorn": ("Capricorn", "♑"), "Aquarius": ("Aquarius", "♒"), "Pisces": ("Pisces", "♓"),
+_RU2EN_SIGNS = {
+    "овен": "Aries", "телец": "Taurus", "близнецы": "Gemini",
+    "рак": "Cancer", "лев": "Leo", "дева": "Virgo",
+    "весы": "Libra", "скорпион": "Scorpio", "стрелец": "Sagittarius",
+    "козерог": "Capricorn", "водолей": "Aquarius", "рыбы": "Pisces",
+}
+_EN_SIGNS = {
+    "aries": ("Aries", "♈"), "taurus": ("Taurus", "♉"),
+    "gemini": ("Gemini", "♊"), "cancer": ("Cancer", "♋"),
+    "leo": ("Leo", "♌"), "virgo": ("Virgo", "♍"),
+    "libra": ("Libra", "♎"), "scorpio": ("Scorpio", "♏"),
+    "sagittarius": ("Sagittarius", "♐"), "capricorn": ("Capricorn", "♑"),
+    "aquarius": ("Aquarius", "♒"), "pisces": ("Pisces", "♓"),
 }
 
-# RU/EN phase → EN + optional emoji
-PHASE_MAP = {
-    "Новолуние": ("New Moon", "🌑"), "Полнолуние": ("Full Moon", "🌕"),
-    "Первая четверть": ("First Quarter", "🌓"), "Последняя четверть": ("Last Quarter", "🌗"),
-    "Растущая Луна": ("Waxing Moon", "🌔"), "Убывающая Луна": ("Waning Moon", "🌖"),
-    # EN fallbacks
-    "New Moon": ("New Moon", "🌑"), "Full Moon": ("Full Moon", "🌕"),
-    "First Quarter": ("First Quarter", "🌓"), "Last Quarter": ("Last Quarter", "🌗"),
-    "Waxing": ("Waxing Moon", "🌔"), "Waning": ("Waning Moon", "🌖"),
+def _sign_en_emoji(sign_raw: Optional[str]) -> Tuple[str, str]:
+    """Принимает рус/англ название знака и возвращает (EN, emoji)."""
+    s = (sign_raw or "").strip()
+    if not s:
+        return "—", ""
+    low = s.lower()
+    # RU → EN
+    if low in _RU2EN_SIGNS:
+        en = _RU2EN_SIGNS[low]
+        return en, _EN_SIGNS[en.lower()][1]
+    # EN как есть
+    if low in _EN_SIGNS:
+        return _EN_SIGNS[low]
+    # фолбэк
+    return s, ""
+
+# ---- phase mapping (RU/EN → EN + emoji для всех стадий)
+# Поддержаны все основные стадии: 🌑/🌒/🌓/🌔/🌕/🌖/🌗/🌘
+_PHASE_LC_MAP = {
+    # RU точные/ключевые
+    "новолуние":            ("New Moon", "🌑"),
+    "растущий серп":        ("Waxing Crescent", "🌒"),
+    "первая четверть":      ("First Quarter", "🌓"),
+    "растущая луна":        ("Waxing Moon", "🌔"),      # обобщённо
+    "растущая":             ("Waxing Moon", "🌔"),
+    "полнолуние":           ("Full Moon", "🌕"),
+    "убывающая луна":       ("Waning Moon", "🌖"),      # обобщённо
+    "убывающая":            ("Waning Moon", "🌖"),
+    "последняя четверть":   ("Last Quarter", "🌗"),
+    "убывающий серп":       ("Waning Crescent", "🌘"),
+
+    # EN точные/ключевые
+    "new moon":             ("New Moon", "🌑"),
+    "waxing crescent":      ("Waxing Crescent", "🌒"),
+    "first quarter":        ("First Quarter", "🌓"),
+    "waxing gibbous":       ("Waxing Gibbous", "🌔"),
+    "waxing":               ("Waxing Moon", "🌔"),
+    "full moon":            ("Full Moon", "🌕"),
+    "waning gibbous":       ("Waning Gibbous", "🌖"),
+    "last quarter":         ("Last Quarter", "🌗"),
+    "waning crescent":      ("Waning Crescent", "🌘"),
+    "waning":               ("Waning Moon", "🌖"),
 }
 
-from typing import Optional
+def _phase_en_emoji(phase_name: Optional[str]) -> Tuple[str, str]:
+    """Вернёт (EN-название, emoji). Ищет по точному совпадению и по ключевому слову (case-insensitive)."""
+    if not phase_name:
+        return "—", ""
+    low = phase_name.strip().lower()
+    # точное совпадение
+    if low in _PHASE_LC_MAP:
+        return _PHASE_LC_MAP[low]
+    # поиск по ключевым словам
+    for key, val in _PHASE_LC_MAP.items():
+        if key in low:
+            return val
+    # фолбэк — оригинал без эмодзи
+    return phase_name, ""
+
+# ---------- helpers ----------
 
 def fmt_percent_or_none(x) -> Optional[int]:
     """Вернёт целое 1..99, иначе None (для скрытия скобок в шаблоне)."""
@@ -48,9 +99,9 @@ def fmt_percent_or_none(x) -> Optional[int]:
         return None
     return p if 0 < p < 100 else None
 
-def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> tuple[Optional[dt.datetime], Optional[dt.datetime]]:
+def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> Tuple[Optional[dt.datetime], Optional[dt.datetime]]:
     """
-    Принимает строки 'HH:MM' или 'DD.MM HH:MM' (UTC) и возвращает aware-datetime в UTC.
+    Принимает строки 'HH:MM' или 'DD.MM HH:MM' (UTC) и возвращает aware datetime в UTC.
     Если нет данных — (None, None).
     """
     if not start_s or not end_s:
@@ -64,7 +115,7 @@ def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> tuple[Optiona
             d, m = map(int, dpart.split("."))
             hh, mm = map(int, tpart.split(":"))
             return dt.datetime(today.year, m, d, hh, mm, tzinfo=UTC)
-        else:         # 'HH:MM'
+        else:         # 'HH:MM' -> сегодня
             hh, mm = map(int, s.split(":"))
             return dt.datetime(today.year, today.month, today.day, hh, mm, tzinfo=UTC)
 
@@ -73,26 +124,32 @@ def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> tuple[Optiona
     except Exception:
         return None, None
 
+def pretty_duration(mins: int) -> str:
+    h, m = mins // 60, mins % 60
+    if h and m: return f"≈{h}h {m:02d}m"
+    if h:       return f"≈{h}h"
+    return f"≈{m}m"
+
 def voc_badge_by_len(minutes: int) -> str:
     if minutes >= 120: return "🟠"
     if minutes >= 60:  return "🟡"
     return "🟢"
 
-def voc_text_status(start_utc: Optional[dt.datetime], end_utc: Optional[dt.datetime]) -> tuple[str, str, Optional[int]]:
+def voc_text_status(start_utc: Optional[dt.datetime], end_utc: Optional[dt.datetime]) -> Tuple[str, str, Optional[int]]:
     """
     Возвращает (VOC_TEXT, VOC_BADGE, VOC_LEN_MIN).
-    Варианты текста:
-     - 'No VoC today'
-     - 'VoC passed earlier today (HH:MM–HH:MM UTC)'
-     - 'VoC now HH:MM–HH:MM UTC (≈1h 45m)'
-     - 'HH:MM–HH:MM UTC (≈1h 45m)' — если ещё не началось
+    Варианты:
+      - 'No VoC today'
+      - 'VoC passed earlier today (HH:MM–HH:MM UTC)'
+      - 'VoC now HH:MM–HH:MM UTC (≈1h 45m)'
+      - 'HH:MM–HH:MM UTC (≈1h 45m)' — если ещё не началось
     """
     if not start_utc or not end_utc:
         return "No VoC today", "", None
 
     total_min = max(0, int((end_utc - start_utc).total_seconds() // 60))
     badge = voc_badge_by_len(total_min)
-    pretty = pretty_duration(total_min)  # у тебя уже есть pretty_duration(minutes) → '≈1h 45m'
+    pretty = pretty_duration(total_min)
     rng = f"{start_utc.strftime('%H:%M')}–{end_utc.strftime('%H:%M')} UTC"
 
     now = dt.datetime.utcnow().replace(tzinfo=UTC)
@@ -101,24 +158,6 @@ def voc_text_status(start_utc: Optional[dt.datetime], end_utc: Optional[dt.datet
     if start_utc <= now <= end_utc:
         return f"VoC now {rng} ({pretty})", badge, total_min
     return f"VoC passed earlier today ({rng})", "⚪️", total_min
-
-def _sign_en_emoji(sign: Optional[str]):
-    if not sign:
-        return "—", ""
-    en, emoji = SIGN_MAP.get(sign, (sign, ""))
-    return en, emoji
-
-def _phase_en_emoji(phase_name: Optional[str]):
-    if not phase_name:
-        return "—", ""
-    # точное совпадение или по ключевому слову
-    if phase_name in PHASE_MAP:
-        return PHASE_MAP[phase_name]
-    low = phase_name.lower()
-    for k, v in PHASE_MAP.items():
-        if k.lower() in low:
-            return v
-    return phase_name, ""
 
 # ---------- lunar calendar reading ----------
 
@@ -131,8 +170,8 @@ def read_calendar_today():
     today = dt.date.today().isoformat()
     return days.get(today)
 
+# (совместимость со старыми помощниками: локальный парсер VoC в календаре)
 def _parse_voc_datetime(s: Optional[str], base_date: dt.date) -> Optional[dt.datetime]:
-    # input "04.10 04:32"
     if not s:
         return None
     try:
@@ -154,12 +193,6 @@ def voc_duration_minutes(voc: dict | None, base_date: dt.date) -> Optional[int]:
     if end <= start:
         end += dt.timedelta(days=1)
     return int((end - start).total_seconds() // 60)
-
-def pretty_duration(mins: int) -> str:
-    h, m = mins // 60, mins % 60
-    if h and m: return f"≈{h}h {m:02d}m"
-    if h:       return f"≈{h}h"
-    return f"≈{m}m"
 
 def format_voc(voc: dict | None) -> str:
     if not voc:
@@ -228,33 +261,33 @@ def main():
     voc_start_str = (voc_block or {}).get("start")
     voc_end_str   = (voc_block or {}).get("end")
     start_utc, end_utc = parse_voc_utc(voc_start_str, voc_end_str)
-    VOC_TEXT, VOC_BADGE, VOC_LEN_MIN = voc_text_status(start_utc, end_utc)
+    VOC_TEXT, VOC_BADGE_SMART, VOC_LEN_MIN = voc_text_status(start_utc, end_utc)
     VOC_LEN_PRETTY = pretty_duration(VOC_LEN_MIN) if isinstance(VOC_LEN_MIN, int) else ""
 
-    # --- Луна: EN-названия и эмодзи (твои уже существующие маппинги) ---
-    sign_en, sign_emoji       = _sign_en_emoji(sign_raw)
-    phase_en, phase_emoji     = _phase_en_emoji(phase_name)
+    # --- Луна: EN-названия и эмодзи ---
+    sign_en, sign_emoji   = _sign_en_emoji(sign_raw)
+    phase_en, phase_emoji = _phase_en_emoji(phase_name)
 
     # Энергия/совет без дублирования длительности (внутри не вставляем время VoC)
-    energy_line, advice_line  = energy_and_tip(phase_name, int(phase_pct or 0), VOC_LEN_MIN)
+    energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), VOC_LEN_MIN)
 
     out = {
         "DATE": today.isoformat(),
         "WEEKDAY": weekday,
 
         # Луна
-        "MOON_PHASE": phase_name or "—",            # оригинал (может быть RU)
-        "PHASE_EN": phase_en,                       # EN-название фазы
-        "PHASE_EMOJI": phase_emoji,                 # эмодзи фазы (если есть)
-        "MOON_PERCENT": fmt_percent_or_none(phase_pct),  # скрываем 0%/100% (None => без скобок в шаблоне)
+        "MOON_PHASE": phase_name or "—",                 # оригинал (может быть RU)
+        "PHASE_EN": phase_en,                            # EN-название фазы
+        "PHASE_EMOJI": phase_emoji,                      # эмодзи фазы (все стадии поддержаны)
+        "MOON_PERCENT": fmt_percent_or_none(phase_pct),  # скрываем 0%/100%
         "MOON_SIGN": sign_en,
         "MOON_SIGN_EMOJI": sign_emoji,
 
-        # VoC (и для обратной совместимости оставляем ключ "VOC")
-        "VOC": VOC_TEXT,            # ← прежнее поле, теперь содержит умный текст
-        "VOC_TEXT": VOC_TEXT,       # ← новое поле (если используешь в шаблоне)
-        "VOC_LEN": VOC_LEN_PRETTY,  # "≈1h 45m" или "", если нет окна
-        "VOC_BADGE": VOC_BADGE,     # 🟢/🟡/🟠/⚪️
+        # VoC
+        "VOC": VOC_TEXT,                 # для обратной совместимости
+        "VOC_TEXT": VOC_TEXT,            # умный текст
+        "VOC_LEN": VOC_LEN_PRETTY,       # "≈1h 45m" или ""
+        "VOC_BADGE": VOC_BADGE_SMART,    # 🟢/🟡/🟠/⚪️
 
         # Энергия/совет
         "ENERGY_LINE": energy_line,
