@@ -32,4 +32,47 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
+        # ... твои шаги выше без изменений
+
+      - name: Send text
+        env:
+              TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+              TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+        run: |
+              curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+                -d chat_id="${TG_CHAT}" -d parse_mode="Markdown" \
+                --data-urlencode text@"world_en/message.txt"
+          
+      - name: Send Nature card (photo + clean caption + button)
+        env:
+              TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+              TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+        run: |
+              python - <<'PY'
+              import json,urllib.parse,os
+              d=json.load(open('world_en/daily.json',encoding='utf-8'))
+              thumb=d.get('NATURE_THUMB')
+              url=d.get('NATURE_URL')
+              title=d.get('NATURE_TITLE','Nature Break')
+              snippet=d.get('NATURE_SNIPPET','60 seconds of calm')
+              caption=f"🌊 *{title}*\n_{snippet}_"
+              # печатаем три строки для shell:
+              print(thumb or "")
+              print(url or "")
+              print(caption)
+              PY > /tmp/nb.txt
+          
+              THUMB=$(sed -n '1p' /tmp/nb.txt)
+              URL=$(sed -n '2p' /tmp/nb.txt)
+              CAPTION=$(sed -n '3,$p' /tmp/nb.txt)
+          
+              if [ -n "$THUMB" ] && [ -n "$URL" ]; then
+                curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
+                  -F chat_id="${TG_CHAT}" \
+                  -F photo="${THUMB}" \
+                  -F parse_mode="Markdown" \
+                  -F caption="$CAPTION" \
+                  -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
+              fi
+
 
