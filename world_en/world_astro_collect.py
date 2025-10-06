@@ -45,6 +45,16 @@ def _sign_en_emoji(sign_raw: Optional[str]) -> Tuple[str, str]:
         return _EN_SIGNS[low]
     # фолбэк
     return s, ""
+def energy_icon_for_phase(phase_label: str) -> str:
+    s = (phase_label or "").lower()
+    # EN
+    if "new moon" in s or "новолуние" in s:        return "🌑"
+    if "full moon" in s or "полнолуние" in s:      return "🌕"
+    if "first quarter" in s or "первая четверть" in s:  return "🌓"
+    if "last quarter" in s or "последняя четверть" in s: return "🌗"
+    if "waxing" in s or "растущ" in s:             return "🌔"
+    if "waning" in s or "убыва" in s:              return "🌘"
+    return "🔆"  # запасной вариант
 
 # ---- phase mapping (RU/EN → EN + emoji для всех стадий)
 # Поддержаны все основные стадии: 🌑/🌒/🌓/🌔/🌕/🌖/🌗/🌘
@@ -261,6 +271,8 @@ def main():
     phase_pct   = item.get("percent")                   # число 0..100 (может быть None/"")
     sign_raw    = item.get("sign") or ""                # RU- или EN-название знака
     voc_block   = item.get("void_of_course") or {}      # {"start": "...", "end": "..."}
+    energy_icon = energy_icon_for_phase(phase_en or phase_name)
+
 
     # --- VoC: умные статусы (no / passed / now / upcoming) ---
     voc_start_str = (voc_block or {}).get("start")
@@ -296,6 +308,7 @@ def main():
 
         # Энергия/совет
         "ENERGY_LINE": energy_line,
+        "ENERGY_ICON": energy_icon,
         "ADVICE_LINE": advice_line,
     }
 
