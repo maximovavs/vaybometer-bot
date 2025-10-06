@@ -1,558 +1,303 @@
+# world_en/world_astro_collect.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
 import sys
-sys.path.append(str(Path(__file__).resolve().parents[1]))  # чтобы import world_en.* точно работал
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import os, re
-import json, random, datetime as dt
-import requests
+import datetime as dt
+import json
+from typing import Optional, Tuple
 from pytz import UTC
-from astral import LocationInfo
-from astral.sun import sun
-
-from world_en.settings_world_en import (
-    HOT_CITIES, COLD_SPOTS, SUN_CITIES, VIBE_TIPS,
-    YT_API_KEY, YT_CHANNEL_ID, YOUTUBE_PLAYLIST_IDS, FALLBACK_NATURE_LIST
-)
-from world_en.fx_intl import fetch_rates, format_line
 
 ROOT = Path(__file__).resolve().parents[1]
+OUT  = Path(__file__).parent / "astro.json"
 
-HEADERS = {
-    "User-Agent": "WorldVibeMeterBot/1.0 (+https://github.com/)",
-    "Accept": "application/json,text/plain",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
+# ---- sign mapping (RU/EN → EN + emoji)
+SIGN_MAP = {
+    # RU
+    "Овен": ("Aries", "♈"), "Телец": ("Taurus", "♉"), "Близнецы": ("Gemini", "♊"),
+    "Рак": ("Cancer", "♋"), "Лев": ("Leo", "♌"), "Дева": ("Virgo", "♍"),
+    "Весы": ("Libra", "♎"), "Скорпион": ("Scorpio", "♏"), "Стрелец": ("Sagittarius", "♐"),
+    "Козерог": ("Capricorn", "♑"), "Водолей": ("Aquarius", "♒"), "Рыбы": ("Pisces", "♓"),
+    # EN (fallbacks)
+    "Aries": ("Aries", "♈"), "Taurus": ("Taurus", "♉"), "Gemini": ("Gemini", "♊"),
+    "Cancer": ("Cancer", "♋"), "Leo": ("Leo", "♌"), "Virgo": ("Virgo", "♍"),
+    "Libra": ("Libra", "♎"), "Scorpio": ("Scorpio", "♏"), "Sagittarius": ("Sagittarius", "♐"),
+    "Capricorn": ("Capricorn", "♑"), "Aquarius": ("Aquarius", "♒"), "Pisces": ("Pisces", "♓"),
 }
 
-# --- простая база: город/топоним → ISO2 (добавляй по мере встреч)
-CITY_TO_CC = {
-    "Doha": "QA",
-    "Kuwait City": "KW",
-    "Phoenix": "US",
-    "Jazan": "SA",
-    "Dubai": "AE",
-    "Ushuaia": "AR",
-    "Reykjavik": "IS",
-    "Vostok": "AQ",
-    "Dome A": "AQ",
-    "Yakutsk": "RU",
-    "Oymyakon": "RU",
-    "Verkhoyansk": "RU",
-    "Death Valley": "US",
-    "Tomioka": "JP",
-    # при желании пополним списком позже
+# ---- phase mapping
+# Точное соответствие фраз → (EN-название, emoji).
+# Для "Растущая/Убывающая" дополнительно ниже учитываем процент, чтобы выбрать Crescent/Gibbous.
+PHASE_EXACT = {
+    "Новолуние": ("New Moon", "🌑"),
+    "Полнолуние": ("Full Moon", "🌕"),
+    "Первая четверть": ("First Quarter", "🌓"),
+    "Последняя четверть": ("Last Quarter", "🌗"),
+    # EN fallbacks
+    "New Moon": ("New Moon", "🌑"),
+    "Full Moon": ("Full Moon", "🌕"),
+    "First Quarter": ("First Quarter", "🌓"),
+    "Last Quarter": ("Last Quarter", "🌗"),
 }
-COUNTRY_TO_CC = {
-    "Japan":"JP","Russia":"RU","Chile":"CL","Mexico":"MX","Indonesia":"ID",
-    "Fiji":"FJ","Philippines":"PH","Turkey":"TR","Greece":"GR","United States":"US",
-    "Argentina":"AR","China":"CN","Papua New Guinea":"PG","New Zealand":"NZ",
-    "Vanuatu":"VU","Peru":"PE","Tonga":"TO","Italy":"IT","Iceland":"IS"
-}
+# ключевые слова для распознавания растущей/убывающей
+KW_WAXING = ("Растущ", "Waxing")
+KW_WANING = ("Убыва", "Waning")
 
-def _append_country_flag_from_name(region: str) -> str:
-    if not region: return "—"
-    m = re.search(r",\s*([A-Za-z ]+)$", region)
-    if not m: return region
-    name = m.group(1).strip()
-    cc = COUNTRY_TO_CC.get(name)
-    fl = _country_flag(cc) if cc else ""
-    return f"{region} {fl}".strip()
-
-# -------------------- утилиты --------------------
-
-def _country_flag(cc: str) -> str:
-    if not cc or len(cc) != 2: return ""
-    base = 0x1F1E6
-    a = ord(cc[0].upper()) - ord('A')
-    b = ord(cc[1].upper()) - ord('A')
-    if a < 0 or b < 0 or a > 25 or b > 25: return ""
-    return chr(base + a) + chr(base + b)
-
-def _with_flag(place: str) -> str:
-    """Добавляет флаг. Сначала ищем ', CC' в конце; если нет — пробуем CITY_TO_CC по основному топониму."""
-    if not place:
-        return "—"
-    place = place.strip()
-
-    # 1) явный ISO2 в конце
-    m = re.search(r",\s*([A-Z]{2})$", place)
-    cc = m.group(1) if m else None
-
-    # 2) попытка по базе: берём первую часть до запятой (или всё слово)
-    if not cc:
-        base_name = place.split(",")[0].strip()
-        cc = CITY_TO_CC.get(base_name)
-
-    fl = _country_flag(cc) if cc else ""
-    return f"{place} {fl}".strip()
-
-def kp_level_emoji(kp) -> str:
+def fmt_percent_or_none(x) -> Optional[int]:
+    """Вернёт целое 1..99, иначе None (скроет скобки в шаблоне)."""
     try:
-        k = float(kp or 0)
-    except Exception:
-        k = 0.0
-    if k >= 7: return "🔴"   # strong storm
-    if k >= 5: return "🟠"   # stormy window
-    if k >= 3: return "🟡"   # active
-    return "🟢"              # calm
-
-# -------------------- NOAA / SWPC (устойчивый парсер) --------------------
-
-def _safe_json_array(txt: str):
-    """Пытается вытащить последний корректный JSON-массив из грязного ответа SWPC."""
-    s = (txt or "").strip()
-    depth = 0
-    start = None
-    candidate = None
-    for i, ch in enumerate(s):
-        if ch == "[":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "]":
-            if depth > 0:
-                depth -= 1
-                if depth == 0 and start is not None:
-                    candidate = s[start:i+1]  # последний завершённый массив
-    if candidate:
-        return json.loads(candidate)
-    li, ri = s.rfind("["), s.rfind("]")
-    if li != -1 and ri != -1 and ri > li:
-        return json.loads(s[li:ri+1])
-    raise ValueError("SWPC: cannot extract JSON array")
-
-def _fetch_solar_wind_rows(headers):
-    """Тянет ряды плазмы с фолбэком и грязным JSON."""
-    urls = [
-        "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json",
-        "https://services.swpc.noaa.gov/products/solar-wind/plasma-5-minute.json",
-    ]
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=20, headers=headers)
-            r.raise_for_status()
-            try:
-                return r.json()
-            except Exception:
-                return _safe_json_array(r.text)
-        except Exception:
-            continue
-    return []
-
-def _to_float(x, ndigits=None):
-    try:
-        v = float(x)
-        return round(v, ndigits) if ndigits is not None else v
+        p = int(round(float(x)))
     except Exception:
         return None
+    return p if 0 < p < 100 else None
 
-def get_kp_and_solar():
-    # --- Kp ---
-    kp_url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
-    r = requests.get(kp_url, timeout=20, headers=HEADERS); r.raise_for_status()
-    rows = r.json()
-    last = rows[-1]
-    kp = float(last[1])
+# ---------- VoC parsing / status ----------
 
-    ref = rows[-4] if len(rows) >= 4 else last
-    trend = "stable"
-    if float(last[1]) > float(ref[1]): trend = "up"
-    if float(last[1]) < float(ref[1]): trend = "down"
+def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> Tuple[Optional[dt.datetime], Optional[dt.datetime]]:
+    """
+    Принимает строки 'HH:MM' или 'DD.MM HH:MM' (UTC) и возвращает aware-datetime в UTC.
+    Если нет данных — (None, None).
+    """
+    if not start_s or not end_s:
+        return None, None
 
-    # --- Solar wind (robust) ---
-    sw_rows = _fetch_solar_wind_rows(HEADERS)
-    den = spd = None
-    for row in reversed(sw_rows):
-        if isinstance(row, list) and len(row) >= 3 and row[0] != "time_tag":
-            den = _to_float(row[1], 2)   # cm^-3
-            spd = _to_float(row[2], 1)   # km/s
-            break
+    def _parse_one(s: str) -> dt.datetime:
+        s = s.strip()
+        today = dt.datetime.utcnow().date()
+        if " " in s:  # 'DD.MM HH:MM'
+            dpart, tpart = s.split()
+            d, m = map(int, dpart.split("."))
+            hh, mm = map(int, tpart.split(":"))
+            return dt.datetime(today.year, m, d, hh, mm, tzinfo=UTC)
+        else:         # 'HH:MM'
+            hh, mm = map(int, s.split(":"))
+            return dt.datetime(today.year, today.month, today.day, hh, mm, tzinfo=UTC)
 
-    return kp, trend, spd, den
-
-# -------------------- Schumann --------------------
-
-def get_schumann_amp():
-    """Читает последние ~24 значения амплитуды из schumann_hourly.json и классифицирует статус."""
-    p = ROOT / "schumann_hourly.json"
-    if not p.exists():
-        p = ROOT / "data" / "schumann_hourly.json"
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        arr = data if isinstance(data, list) else [data]
-        # берём последние 24 значения
-        amps = [x.get("amp") or x.get("h7_amp") for x in arr[-24:] if isinstance(x, dict)]
-        amps = [abs(a) for a in amps if isinstance(a, (int, float))]
-        last = amps[-1] if amps else None
-        if not amps or last is None:
-            return None, "blackout"
-        median = sorted(amps)[len(amps)//2]
-        if last < 0.3 or len(amps) < 3:
-            status = "blackout" if last < 0.3 else "baseline"
-        elif last > max(3.0, median * 2.0):
-            status = "spike"
-        elif last > max(1.5, median * 1.2):
-            status = "elevated"
+        return _parse_one(start_s), _parse_one(end_s)
+    except Exception:
+        return None, None
+
+def pretty_duration(mins: int) -> str:
+    h, m = mins // 60, mins % 60
+    if h and m: return f"≈{h}h {m:02d}m"
+    if h:       return f"≈{h}h"
+    return f"≈{m}m"
+
+def voc_badge_by_len(minutes: int) -> str:
+    if minutes >= 120: return "🟠"
+    if minutes >= 60:  return "🟡"
+    return "🟢"
+
+def voc_text_status(start_utc: Optional[dt.datetime], end_utc: Optional[dt.datetime]) -> Tuple[str, str, Optional[int]]:
+    """
+    Возвращает (VOC_TEXT, VOC_BADGE, VOC_LEN_MIN).
+    Варианты текста:
+     - 'No VoC today'
+     - 'VoC passed earlier today (HH:MM–HH:MM UTC)'
+     - 'VoC now HH:MM–HH:MM UTC (≈1h 45m)'
+     - 'HH:MM–HH:MM UTC (≈1h 45m)' — если ещё не началось
+    """
+    if not start_utc or not end_utc:
+        return "No VoC today", "", None
+
+    total_min = max(0, int((end_utc - start_utc).total_seconds() // 60))
+    badge_len = voc_badge_by_len(total_min)
+    rng = f"{start_utc.strftime('%H:%M')}–{end_utc.strftime('%H:%M')} UTC"
+    pretty = pretty_duration(total_min)
+
+    now = dt.datetime.utcnow().replace(tzinfo=UTC)
+    if now < start_utc:
+        return f"{rng} ({pretty})", badge_len, total_min
+    if start_utc <= now <= end_utc:
+        return f"VoC now {rng} ({pretty})", badge_len, total_min
+    return f"VoC passed earlier today ({rng})", "⚪️", total_min
+
+def voc_minutes_if_active(start_utc: Optional[dt.datetime],
+                          end_utc: Optional[dt.datetime]) -> Optional[int]:
+    """Вернёт длительность окна в минутах, но только если VoC идёт прямо сейчас."""
+    if not start_utc or not end_utc:
+        return None
+    now = dt.datetime.utcnow().replace(tzinfo=UTC)
+    if start_utc <= now <= end_utc:
+        return int((end_utc - start_utc).total_seconds() // 60)
+    return None
+
+# ---------- lunar calendar reading ----------
+
+def read_calendar_today():
+    cal_path = ROOT / "lunar_calendar.json"
+    if not cal_path.exists():
+        return None
+    data = json.loads(cal_path.read_text(encoding="utf-8"))
+    days = data.get("days") or {}
+    today = dt.date.today().isoformat()
+    return days.get(today)
+
+# ---------- sign / phase helpers ----------
+
+def _sign_en_emoji(sign: Optional[str]):
+    if not sign:
+        return "—", ""
+    en, emoji = SIGN_MAP.get(sign, (sign, ""))
+    return en, emoji
+
+def _phase_from_name_and_percent(name: Optional[str], percent: Optional[int]):
+    """
+    Возвращает (EN, emoji) для фазы.
+    Для 'Растущая/Убывающая' учитывает процент, чтобы выбрать Crescent/Gibbous.
+    """
+    if not name:
+        return "—", ""
+
+    # точное совпадение (четверти/новолуние/полнолуние)
+    if name in PHASE_EXACT:
+        return PHASE_EXACT[name]
+
+    # EN точные
+    if name in PHASE_EXACT:
+        return PHASE_EXACT[name]
+
+    low = name.lower()
+
+    # растущая
+    if any(k.lower() in low for k in KW_WAXING):
+        p = None
+        try:
+            p = int(percent) if percent is not None else None
+        except Exception:
+            p = None
+        if p is not None and p < 50:
+            return "Waxing Crescent", "🌒"
         else:
-            status = "baseline"
-        return round(last, 2), status
-    except Exception:
-        return None, "n/a"
+            return "Waxing Gibbous", "🌔"
 
-# -------------------- Температурные экстремумы --------------------
-
-def meteo_current_temp(lat, lon):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
-    r = requests.get(url, timeout=20, headers=HEADERS); r.raise_for_status()
-    return float(r.json()["current"]["temperature_2m"])
-
-def get_extremes():
-    hottest = None
-    for name, la, lo in HOT_CITIES:
+    # убывающая
+    if any(k.lower() in low for k in KW_WANING):
+        p = None
         try:
-            t = meteo_current_temp(la, lo)
-            if not hottest or t > hottest["temp_c"]:
-                hottest = {"place": name, "temp_c": round(t)}
+            p = int(percent) if percent is not None else None
         except Exception:
-            continue
-    coldest = None
-    for name, la, lo in COLD_SPOTS:
-        try:
-            t = meteo_current_temp(la, lo)
-            if not coldest or t < coldest["temp_c"]:
-                coldest = {"place": name, "temp_c": round(t)}
-        except Exception:
-            continue
-    return hottest, coldest
+            p = None
+        if p is not None and p > 50:
+            return "Waning Gibbous", "🌖"
+        else:
+            return "Waning Crescent", "🌘"
 
-# -------------------- Землетрясения --------------------
+    # fallback — вернём исходник без эмодзи
+    return name, ""
 
-def get_strongest_quake():
-    url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson"
-    r = requests.get(url, timeout=20, headers=HEADERS); r.raise_for_status()
-    feats = r.json()["features"]
-    if not feats: return None
-    top = max(feats, key=lambda f: f["properties"]["mag"] or 0)
-    mag = round(top["properties"]["mag"], 1)
-    region = top["properties"]["place"]
-    depth = round(top["geometry"]["coordinates"][2])
-    t = dt.datetime.fromtimestamp(top["properties"]["time"]/1000, tz=UTC).strftime("%H:%M")
-    return {"mag": mag, "region": region, "depth_km": depth, "time_utc": t}
+# ---------- energy / tip logic ----------
 
-# -------------------- Солнце: ранний восход / поздний закат --------------------
+def base_energy_tip(phase_name_ru: str, percent: Optional[int]) -> tuple[str, str]:
+    pn = (phase_name_ru or "").lower()
+    if "новолуние" in pn or "new moon" in pn:
+        return ("Set intentions; keep schedule light.", "Rest, plan, one gentle start.")
+    if "первая четверть" in pn or "first quarter" in pn:
+        return ("Take a clear step forward.", "One priority; short focused block.")
+    if "растущ" in pn or "waxing" in pn:
+        # разделять на crescent/gibbous не критично для текста
+        return ("Build momentum; refine work.", "Polish & iterate for 20–40 min.")
+    if "полнолуние" in pn or "full moon" in pn:
+        return ("Emotions peak; seek balance.", "Grounding + gratitude; avoid big decisions.")
+    if "последняя четверть" in pn or "last quarter" in pn:
+        return ("Wrap up & declutter.", "Finish, review, release extras.")
+    if "убыва" in pn or "waning" in pn:
+        return ("Slow down; restore energy.", "Light tasks, gentle body care.")
+    return ("Keep plans light; tune into your body.", "Focus on what matters.")
 
-def get_sunlight_tidbit():
-    today = dt.date.today()
-    earliest = None
-    latest = None
-    for name, la, lo in SUN_CITIES:
-        loc = LocationInfo(name, "", "UTC", la, lo)
-        s = sun(loc.observer, date=today, tzinfo=UTC)
-        sr = s["sunrise"].strftime("%H:%M")
-        ss = s["sunset"].strftime("%H:%M")
-        if not earliest or sr < earliest["time_utc"]:
-            earliest = {"label":"Earliest sunrise", "place": name, "time_utc": sr}
-        if not latest or ss > latest["time_utc"]:
-            latest = {"label":"Latest sunset", "place": name, "time_utc": ss}
-    return random.choice([earliest, latest])
+def energy_icon_for_phase(phase_en: str) -> str:
+    """Лёгкая иконка энергии по фазам — используется рядом со словом Energy."""
+    pe = (phase_en or "").lower()
+    if "new moon" in pe: return "🌑"
+    if "first quarter" in pe: return "🌓"
+    if "waxing crescent" in pe: return "🌒"
+    if "waxing gibbous" in pe: return "🌔"
+    if "full moon" in pe: return "🌕"
+    if "last quarter" in pe: return "🌗"
+    if "waning gibbous" in pe: return "🌖"
+    if "waning crescent" in pe: return "🌘"
+    return ""
 
-# -------------------- YouTube helpers --------------------
-
-def _yt_iso_to_seconds(iso: str) -> int:
-    if not iso: return 0
-    m = re.fullmatch(r"^PT(?:(\d+)M)?(?:(\d+)S)?$", iso)
-    if not m: return 0
-    return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
-
-def _clean_title(t: str, limit: int = 60) -> str:
-    if not t: return "Nature Break"
-    t = re.sub(r"#\w+", "", t).strip()
-    t = re.sub(r"\s{2,}", " ", t)
-    return (t if len(t) <= limit else t[:limit-1] + "…")
-
-def _daily_top_short(hours_window: int = 48):
+def energy_and_tip(phase_name_ru: str, percent: Optional[int], voc_minutes_active: Optional[int]) -> tuple[str, str]:
     """
-    Самый просматриваемый шорт за последние `hours_window` часов.
-    Возвращает dict с title/snippet/youtube_url + video_id/thumb_url.
-    Если свежих нет, падаем на последние загрузки.
+    Возвращает (energy_line, tip_line).
+    Если VoC активен сейчас — учитываем его длительность,
+    иначе даём базовые рекомендации по фазе.
     """
-    api = os.getenv("YT_API_KEY", YT_API_KEY)
-    ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
-    if not (api and ch):
-        return None
+    if voc_minutes_active is not None:
+        if voc_minutes_active >= 180:
+            return ("Long VoC — keep schedule very light; avoid launches.",
+                    "Routine, journaling, cleanup; move decisions after VoC.")
+        if voc_minutes_active >= 120:
+            return ("VoC — avoid launches; favor routine.",
+                    "Safe tasks: maintenance, drafts, reading, rest.")
+        if voc_minutes_active >= 60:
+            return ("Short VoC — keep tasks flexible.",
+                    "Gentle pace; soft focus & breaks.")
+    # базовые по фазе
+    return base_energy_tip(phase_name_ru, percent)
 
-    cutoff = (dt.datetime.utcnow() - dt.timedelta(hours=hours_window)) \
-                .replace(microsecond=0).isoformat() + "Z"
-
-    try:
-        # 1) свежие видео за окно
-        r = requests.get(
-            "https://www.googleapis.com/youtube/v3/search",
-            params={
-                "key": api,
-                "channelId": ch,
-                "part": "id",
-                "type": "video",
-                "order": "date",
-                "maxResults": 50,
-                "publishedAfter": cutoff
-            },
-            timeout=20
-        ).json()
-        ids = [it.get("id", {}).get("videoId") for it in r.get("items", []) if it.get("id", {}).get("videoId")]
-
-        # 2) если в окне ничего — берём просто последние загрузки
-        if not ids:
-            r2 = requests.get(
-                "https://www.googleapis.com/youtube/v3/search",
-                params={
-                    "key": api,
-                    "channelId": ch,
-                    "part": "id",
-                    "type": "video",
-                    "order": "date",
-                    "maxResults": 25
-                },
-                timeout=20
-            ).json()
-            ids = [it.get("id", {}).get("videoId") for it in r2.get("items", []) if it.get("id", {}).get("videoId")]
-            if not ids:
-                return None
-
-        # дедуп
-        ids = list(dict.fromkeys(ids))
-
-        stats = requests.get(
-            "https://www.googleapis.com/youtube/v3/videos",
-            params={"key": api, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
-            timeout=20
-        ).json().get("items", [])
-
-        # предпочтение — шорты <= 60 c
-        pool = [v for v in stats if _yt_iso_to_seconds(v.get("contentDetails", {}).get("duration", "")) <= 60] or stats
-        if not pool:
-            return None
-
-        top = max(pool, key=lambda v: int(v.get("statistics", {}).get("viewCount", "0")))
-        vid = top.get("id")
-        title = _clean_title(top.get("snippet", {}).get("title"))
-        url = f"https://youtu.be/{vid}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_favorite"
-        thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
-
-        return {
-            "title": title,
-            "snippet": "60 seconds of calm",
-            "youtube_url": url,
-            "video_id": vid,
-            "thumb_url": thumb,
-            "source": "api-48h" if r.get("items") else "api-recent"
-        }
-    except Exception:
-        return None
-
-
-def pick_nature_break():
-    # 1) Топ-шорт за 48 часов
-    top = _daily_top_short(48)
-    if top:
-        return top
-
-    # 2) Последние загрузки → топ по просмотрам (фолбэк)
-    if YT_API_KEY and YT_CHANNEL_ID:
-        try:
-            search = requests.get(
-                "https://www.googleapis.com/youtube/v3/search",
-                params={
-                    "key": YT_API_KEY,
-                    "channelId": YT_CHANNEL_ID,
-                    "part": "id",
-                    "maxResults": 25,
-                    "order": "date",
-                    "type": "video"
-                },
-                timeout=20
-            ).json()
-            ids = [it.get("id", {}).get("videoId") for it in search.get("items", []) if it.get("id", {}).get("videoId")]
-            if ids:
-                ids = list(dict.fromkeys(ids))
-                stats = requests.get(
-                    "https://www.googleapis.com/youtube/v3/videos",
-                    params={"key": YT_API_KEY, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
-                    timeout=20
-                ).json().get("items", [])
-
-                def is_short(item):
-                    return _yt_iso_to_seconds(item.get("contentDetails", {}).get("duration", "")) <= 60
-
-                pool = [v for v in stats if is_short(v)] or stats
-                if pool:
-                    topv = max(pool, key=lambda v: int(v.get("statistics", {}).get("viewCount", "0")))
-                    vid = topv.get("id")
-                    url = f"https://youtu.be/{vid}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
-                    thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
-                    return {
-                        "title": _clean_title(topv.get("snippet", {}).get("title")),
-                        "snippet": "60 seconds of calm",
-                        "youtube_url": url,
-                        "video_id": vid,
-                        "thumb_url": thumb,
-                        "source": "api-recent"
-                    }
-        except Exception:
-            pass
-
-    # 3) Фолбэк-список
-    if FALLBACK_NATURE_LIST:
-        url = random.choice(FALLBACK_NATURE_LIST)
-        if "utm_" not in url:
-            url += ("&" if "?" in url else "?") + "utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
-        return {
-            "title": "Nature Break",
-            "snippet": "Short calm from Miss Relax",
-            "youtube_url": url,
-            "video_id": None,
-            "thumb_url": None,
-            "source": "fallback"
-        }
-
-    return {
-        "title": "Nature Break",
-        "snippet": "Short calm from Miss Relax",
-        "youtube_url": "https://youtube.com/@misserrelax",
-        "video_id": None,
-        "thumb_url": None,
-        "source": "none"
-    }
-
-
-# -------------------- Vibe Tip (адаптивный) --------------------
-
-def smart_tip(kp: float, sch_status: str) -> str:
-    try:
-        k = float(kp or 0)
-    except Exception:
-        k = 0.0
-    s = (sch_status or "").lower()
-    if k >= 6:
-        return "Grounding: 2-minute box-breathing + warm tea."
-    if k >= 5:
-        return "Go gentle: slower pace, extra water, one thing at a time."
-    if s in ("spike", "elevated"):
-        return "Short walk + deep nasal breathing for 60 sec."
-    return random.choice(VIBE_TIPS)
-
-# -------------------- Main --------------------
+# ---------- main ----------
 
 def main():
-    # --- сбор ---
-    kp, trend, sw_speed, sw_den = get_kp_and_solar()
-    amp, sch_status = get_schumann_amp()
-    hottest, coldest = get_extremes()
-    quake = get_strongest_quake()
-    sun_tidbit = get_sunlight_tidbit()
+    today = dt.date.today()
+    weekday = dt.datetime.utcnow().strftime("%a")
 
-    # FX: 6 валют
-    fx_data = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
-    fx_line = format_line(fx_data, order=["USD","EUR","CNY","JPY","INR","IDR"])
+    item = read_calendar_today() or {}
 
-    # Адаптивный совет
-    tip = smart_tip(kp, sch_status)
+    # исходники из календаря
+    phase_name  = item.get("phase_name") or ""     # RU фаза
+    phase_pct   = item.get("percent")              # 0..100 (может быть None/"")
+    sign_raw    = item.get("sign") or ""           # RU/EN знак
+    voc_block   = item.get("void_of_course") or {} # {"start":"...", "end":"..."}
 
-    # YouTube
-    nature = pick_nature_break()
+    # --- VoC: умные статусы (no / passed / now / upcoming) ---
+    voc_start_str = (voc_block or {}).get("start")
+    voc_end_str   = (voc_block or {}).get("end")
+    start_utc, end_utc = parse_voc_utc(voc_start_str, voc_end_str)
+    VOC_TEXT, VOC_BADGE, VOC_LEN_MIN = voc_text_status(start_utc, end_utc)
+    VOC_LEN_PRETTY = pretty_duration(VOC_LEN_MIN) if isinstance(VOC_LEN_MIN, int) else ""
 
-    # --- вложенная структура ---
+    # --- Луна: EN-названия и эмодзи (с учётом процента для crescent/gibbous) ---
+    sign_en, sign_emoji           = _sign_en_emoji(sign_raw)
+    phase_en, phase_emoji         = _phase_from_name_and_percent(phase_name, phase_pct)
+    energy_icon                   = energy_icon_for_phase(phase_en)
+
+    # Энергия/совет: учитываем VoC ТОЛЬКО если оно активно сейчас
+    voc_active_mins = voc_minutes_if_active(start_utc, end_utc)
+    energy_line, advice_line  = energy_and_tip(phase_name, fmt_percent_or_none(phase_pct), voc_active_mins)
+
     out = {
-        "date_utc": dt.date.today().isoformat(),
-        "weekday_en": dt.datetime.utcnow().strftime("%a"),
-        "cosmic": {
-            "kp": kp, "kp_trend": trend,
-            "schumann_amp": amp, "schumann_status": sch_status,
-            "solar_wind_speed_kms": sw_speed, "solar_wind_density_cmc": sw_den,
-            "notes": {
-                "kp_note": "calm to moderate" if kp < 5 else "stormy window",
-                "solar_note": "gentle stream" if (sw_speed or 0) < 550 else "fast stream",
-            }
-        },
-        "earth": {
-            "hottest": hottest,
-            "coldest": coldest,
-            "strongest_quake": quake,
-            "sun_tidbit": sun_tidbit
-        },
-        "fx": fx_data,
-        "fx_line": fx_line,
-        "tips": [tip],
-        "nature_break": nature
+        "DATE": today.isoformat(),
+        "WEEKDAY": weekday,
+
+        # Луна
+        "MOON_PHASE": phase_name or "—",                 # оригинал (может быть RU)
+        "PHASE_EN": phase_en,                            # EN-название фазы
+        "PHASE_EMOJI": phase_emoji,                      # эмодзи фазы
+        "MOON_PERCENT": fmt_percent_or_none(phase_pct),  # скрываем 0%/100%
+        "MOON_SIGN": sign_en,
+        "MOON_SIGN_EMOJI": sign_emoji,
+
+        # VoC
+        "VOC": VOC_TEXT,            # обратная совместимость
+        "VOC_TEXT": VOC_TEXT,
+        "VOC_LEN": VOC_LEN_PRETTY,  # "≈1h 45m" или ""
+        "VOC_BADGE": VOC_BADGE,     # 🟢/🟡/🟠/⚪️
+        "VOC_IS_ACTIVE": voc_active_mins is not None,
+
+        # Энергия/совет
+        "ENERGY_ICON": energy_icon,   # лёгкая иконка энергии по фазе
+        "ENERGY_LINE": energy_line,
+        "ADVICE_LINE": advice_line,
     }
 
-    # --- лог для weekly (экстремумы) ---
-    log_dir = Path(__file__).parent / "logs"
-    log_dir.mkdir(exist_ok=True)
-    log = {
-        "date": out["date_utc"],
-        "hottest_place": (hottest or {}).get("place"),
-        "hottest_temp": (hottest or {}).get("temp_c"),
-        "coldest_place": (coldest or {}).get("place"),
-        "coldest_temp": (coldest or {}).get("temp_c"),
-    }
-    with (log_dir / "extremes.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(log, ensure_ascii=False) + "\n")
+    OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # --- плоские поля под шаблон daily_en.j2 ---
-    trend_emoji = {"up":"↑","down":"↓","stable":"→"}.get(trend, "→")
-
-    hottest_place = (hottest or {}).get("place","—")
-    coldest_place = (coldest or {}).get("place","—")
-
-    flat = {
-        "WEEKDAY": out["weekday_en"],
-        "DATE": out["date_utc"],
-        "QUAKE_TIME": (quake or {}).get("time_utc","—"),
-        "VIBE_EMOJI": kp_level_emoji(kp),
-        "KP": kp,
-        "KP_TREND_EMOJI": trend_emoji,
-        "KP_NOTE": out["cosmic"]["notes"]["kp_note"],
-        "KP_SHORT": f"{float(kp):.1f}" if kp is not None else "—",
-        "SCHUMANN_STATUS": sch_status,
-        "SCHUMANN_AMP": (None if amp is None else amp),
-        "SOLAR_WIND_SPEED": sw_speed or "—",
-        "SOLAR_WIND_DENSITY": sw_den or "—",
-        "SOLAR_NOTE": out["cosmic"]["notes"]["solar_note"],
-        # -> с флагами:
-        "HOTTEST_PLACE": _with_flag(hottest_place),
-        "HOTTEST_TEMP": (hottest or {}).get("temp_c","—"),
-        "COLDEST_PLACE": _with_flag(coldest_place),
-        "COLDEST_TEMP": (coldest or {}).get("temp_c","—"),
-        "QUAKE_MAG": (quake or {}).get("mag","—"),
-        "QUAKE_REGION": _append_country_flag_from_name((quake or {}).get("region","—")),
-        "QUAKE_DEPTH": (quake or {}).get("depth_km","—"),
-        "SUN_TIDBIT_LABEL": (sun_tidbit or {}).get("label","Sun highlight"),
-        "SUN_TIDBIT_PLACE": (sun_tidbit or {}).get("place","—"),
-        "SUN_TIDBIT_TIME": (sun_tidbit or {}).get("time_utc","—"),
-        "TIP_TEXT": tip,
-        "NATURE_TITLE": nature["title"],
-        "NATURE_SNIPPET": nature["snippet"],
-        "NATURE_URL": nature["youtube_url"],
-        "NATURE_THUMB": nature.get("thumb_url"),
-        "NATURE_ID": nature.get("video_id"),
-        # На случай, если где-то ещё используешь старые USD/EUR/CNY:
-        "USD": "1.00", "USD_DELTA": "—",
-        "EUR": f"{out['fx']['items']['EUR']['rate']:.4f}" if out['fx']['items']['EUR']['rate'] is not None else "—",
-        "EUR_DELTA": (lambda x: f"{x:+.2f}%" if x is not None else "—")(out['fx']['items']['EUR']['chg_pct']),
-        "CNY": f"{out['fx']['items']['CNY']['rate']:.4f}" if out['fx']['items']['CNY']['rate'] is not None else "—",
-        "CNY_DELTA": (lambda x: f"{x:+.2f}%" if x is not None else "—")(out['fx']['items']['CNY']['chg_pct']),
-        "fx_line": fx_line
-    }
-
-    out.update(flat)
-    (Path(__file__).parent / "daily.json").write_text(
-        json.dumps(out, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
 
 if __name__ == "__main__":
     main()
