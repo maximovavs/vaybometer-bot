@@ -274,7 +274,11 @@ def _clean_title(t: str, limit: int = 60) -> str:
     return (t if len(t) <= limit else t[:limit-1] + "…")
 
 def _daily_top_short(hours_window: int = 48):
-    """Самый просматриваемый шорт за последние hours_window часов; фолбэк на последние загрузки."""
+    """
+    Самый просматриваемый шорт за последние `hours_window` часов.
+    Возвращает dict с title/snippet/youtube_url + video_id/thumb_url.
+    Если свежих нет, падаем на последние загрузки.
+    """
     api = os.getenv("YT_API_KEY", YT_API_KEY)
     ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
     if not (api and ch):
@@ -284,25 +288,42 @@ def _daily_top_short(hours_window: int = 48):
                 .replace(microsecond=0).isoformat() + "Z"
 
     try:
-        search = requests.get(
+        # 1) свежие видео за окно
+        r = requests.get(
             "https://www.googleapis.com/youtube/v3/search",
             params={
-                "key": api, "channelId": ch, "part": "id",
-                "type": "video", "order": "date", "maxResults": 50,
+                "key": api,
+                "channelId": ch,
+                "part": "id",
+                "type": "video",
+                "order": "date",
+                "maxResults": 50,
                 "publishedAfter": cutoff
-            }, timeout=20
+            },
+            timeout=20
         ).json()
-        ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id", {}).get("videoId")]
+        ids = [it.get("id", {}).get("videoId") for it in r.get("items", []) if it.get("id", {}).get("videoId")]
 
+        # 2) если в окне ничего — берём просто последние загрузки
         if not ids:
-            alt = requests.get(
+            r2 = requests.get(
                 "https://www.googleapis.com/youtube/v3/search",
-                params={"key": api, "channelId": ch, "part": "id", "type": "video", "order": "date", "maxResults": 20},
+                params={
+                    "key": api,
+                    "channelId": ch,
+                    "part": "id",
+                    "type": "video",
+                    "order": "date",
+                    "maxResults": 25
+                },
                 timeout=20
             ).json()
-            ids = [it["id"]["videoId"] for it in alt.get("items", []) if it.get("id", {}).get("videoId")]
+            ids = [it.get("id", {}).get("videoId") for it in r2.get("items", []) if it.get("id", {}).get("videoId")]
             if not ids:
                 return None
+
+        # дедуп
+        ids = list(dict.fromkeys(ids))
 
         stats = requests.get(
             "https://www.googleapis.com/youtube/v3/videos",
@@ -310,16 +331,28 @@ def _daily_top_short(hours_window: int = 48):
             timeout=20
         ).json().get("items", [])
 
-        pool = [v for v in stats if _yt_iso_to_seconds(v["contentDetails"]["duration"]) <= 60] or stats
+        # предпочтение — шорты <= 60 c
+        pool = [v for v in stats if _yt_iso_to_seconds(v.get("contentDetails", {}).get("duration", "")) <= 60] or stats
         if not pool:
             return None
 
-        top = max(pool, key=lambda v: int(v["statistics"].get("viewCount", "0")))
-        title = _clean_title(top["snippet"]["title"])
-        url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_favorite"
-        return {"title": title, "snippet": "60 seconds of calm", "youtube_url": url, "source": "api-48h"}
+        top = max(pool, key=lambda v: int(v.get("statistics", {}).get("viewCount", "0")))
+        vid = top.get("id")
+        title = _clean_title(top.get("snippet", {}).get("title"))
+        url = f"https://youtu.be/{vid}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_favorite"
+        thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+
+        return {
+            "title": title,
+            "snippet": "60 seconds of calm",
+            "youtube_url": url,
+            "video_id": vid,
+            "thumb_url": thumb,
+            "source": "api-48h" if r.get("items") else "api-recent"
+        }
     except Exception:
         return None
+
 
 def pick_nature_break():
     # 1) Топ-шорт за 48 часов
@@ -333,28 +366,41 @@ def pick_nature_break():
             search = requests.get(
                 "https://www.googleapis.com/youtube/v3/search",
                 params={
-                    "key": YT_API_KEY, "channelId": YT_CHANNEL_ID,
-                    "part":"id", "maxResults": 25, "order":"date", "type":"video"
-                }, timeout=20
+                    "key": YT_API_KEY,
+                    "channelId": YT_CHANNEL_ID,
+                    "part": "id",
+                    "maxResults": 25,
+                    "order": "date",
+                    "type": "video"
+                },
+                timeout=20
             ).json()
-            ids = [it["id"]["videoId"] for it in search.get("items", [])]
+            ids = [it.get("id", {}).get("videoId") for it in search.get("items", []) if it.get("id", {}).get("videoId")]
             if ids:
+                ids = list(dict.fromkeys(ids))
                 stats = requests.get(
                     "https://www.googleapis.com/youtube/v3/videos",
-                    params={"key":YT_API_KEY, "id":",".join(ids), "part":"snippet,statistics,contentDetails"},
+                    params={"key": YT_API_KEY, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
                     timeout=20
-                ).json()["items"]
+                ).json().get("items", [])
+
                 def is_short(item):
-                    return _yt_iso_to_seconds(item["contentDetails"]["duration"]) <= 60
-                shorts = [v for v in stats if is_short(v)] or stats
-                topv = max(shorts, key=lambda v:int(v["statistics"].get("viewCount","0")))
-                url = f"https://youtu.be/{topv['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
-                return {
-                    "title": _clean_title(topv["snippet"]["title"]),
-                    "snippet": "60 seconds of calm",
-                    "youtube_url": url,
-                    "source": "api-recent"
-                }
+                    return _yt_iso_to_seconds(item.get("contentDetails", {}).get("duration", "")) <= 60
+
+                pool = [v for v in stats if is_short(v)] or stats
+                if pool:
+                    topv = max(pool, key=lambda v: int(v.get("statistics", {}).get("viewCount", "0")))
+                    vid = topv.get("id")
+                    url = f"https://youtu.be/{vid}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
+                    thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+                    return {
+                        "title": _clean_title(topv.get("snippet", {}).get("title")),
+                        "snippet": "60 seconds of calm",
+                        "youtube_url": url,
+                        "video_id": vid,
+                        "thumb_url": thumb,
+                        "source": "api-recent"
+                    }
         except Exception:
             pass
 
@@ -363,8 +409,24 @@ def pick_nature_break():
         url = random.choice(FALLBACK_NATURE_LIST)
         if "utm_" not in url:
             url += ("&" if "?" in url else "?") + "utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=nature_break"
-        return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": url, "source": "fallback"}
-    return {"title": "Nature Break", "snippet": "Short calm from Miss Relax", "youtube_url": "https://youtube.com/@misserrelax", "source": "none"}
+        return {
+            "title": "Nature Break",
+            "snippet": "Short calm from Miss Relax",
+            "youtube_url": url,
+            "video_id": None,
+            "thumb_url": None,
+            "source": "fallback"
+        }
+
+    return {
+        "title": "Nature Break",
+        "snippet": "Short calm from Miss Relax",
+        "youtube_url": "https://youtube.com/@misserrelax",
+        "video_id": None,
+        "thumb_url": None,
+        "source": "none"
+    }
+
 
 # -------------------- Vibe Tip (адаптивный) --------------------
 
@@ -475,6 +537,8 @@ def main():
         "NATURE_TITLE": nature["title"],
         "NATURE_SNIPPET": nature["snippet"],
         "NATURE_URL": nature["youtube_url"],
+        "NATURE_THUMB": nature.get("thumb_url"),
+        "NATURE_ID": nature.get("video_id"),
         # На случай, если где-то ещё используешь старые USD/EUR/CNY:
         "USD": "1.00", "USD_DELTA": "—",
         "EUR": f"{out['fx']['items']['EUR']['rate']:.4f}" if out['fx']['items']['EUR']['rate'] is not None else "—",
