@@ -1,7 +1,7 @@
-WorldVibeMeter : ✨ Astro Note • {{WEEKDAY}}, {{DATE}} (UTC)
+WorldVibeMeter : ✨ Astro Note • {{DATE}} (UTC)
 
-Moon: {{MOON_PHASE}} ({{MOON_PERCENT}}%), in {{MOON_SIGN}} {{MOON_SIGN_EMOJI}}.
-Void of Course: {{VOC}} UTC
+Moon: {{PHASE_EN}} ({{MOON_PERCENT}}%), in {{MOON_SIGN}} {{MOON_SIGN_EMOJI}}{{PHASE_EMOJI and " " ~ PHASE_EMOJI or ""}}.
+Void of Course: {% if VOC != "—" %}{{VOC}} UTC{{ VOC_LEN and " (" ~ VOC_LEN ~ ")" or "" }} {{VOC_BADGE}}{% else %}—{% endif %}
 Energy: {{ENERGY_LINE}}
 Gentle advice: {{ADVICE_LINE}}
 
