@@ -27,16 +27,38 @@ SIGN_MAP = {
     "Capricorn": ("Capricorn", "♑"), "Aquarius": ("Aquarius", "♒"), "Pisces": ("Pisces", "♓"),
 }
 
+# RU/EN phase → EN + optional emoji
+PHASE_MAP = {
+    "Новолуние": ("New Moon", "🌑"), "Полнолуние": ("Full Moon", "🌕"),
+    "Первая четверть": ("First Quarter", "🌓"), "Последняя четверть": ("Last Quarter", "🌗"),
+    "Растущая Луна": ("Waxing Moon", "🌔"), "Убывающая Луна": ("Waning Moon", "🌖"),
+    # EN fallbacks
+    "New Moon": ("New Moon", "🌑"), "Full Moon": ("Full Moon", "🌕"),
+    "First Quarter": ("First Quarter", "🌓"), "Last Quarter": ("Last Quarter", "🌗"),
+    "Waxing": ("Waxing Moon", "🌔"), "Waning": ("Waning Moon", "🌖"),
+}
+
 def _sign_en_emoji(sign: Optional[str]):
     if not sign:
         return "—", ""
     en, emoji = SIGN_MAP.get(sign, (sign, ""))
     return en, emoji
 
+def _phase_en_emoji(phase_name: Optional[str]):
+    if not phase_name:
+        return "—", ""
+    # точное совпадение или по ключевому слову
+    if phase_name in PHASE_MAP:
+        return PHASE_MAP[phase_name]
+    low = phase_name.lower()
+    for k, v in PHASE_MAP.items():
+        if k.lower() in low:
+            return v
+    return phase_name, ""
+
 # ---------- lunar calendar reading ----------
 
 def read_calendar_today():
-    """Read lunar_calendar.json → entry for today if present."""
     cal_path = ROOT / "lunar_calendar.json"
     if not cal_path.exists():
         return None
@@ -46,7 +68,7 @@ def read_calendar_today():
     return days.get(today)
 
 def _parse_voc_datetime(s: Optional[str], base_date: dt.date) -> Optional[dt.datetime]:
-    """Input sample: '04.10 04:32'. Returns naive datetime (UTC-insensitive; for duration only)."""
+    # input "04.10 04:32"
     if not s:
         return None
     try:
@@ -59,7 +81,6 @@ def _parse_voc_datetime(s: Optional[str], base_date: dt.date) -> Optional[dt.dat
         return None
 
 def voc_duration_minutes(voc: dict | None, base_date: dt.date) -> Optional[int]:
-    """Compute VoC duration in minutes (may cross midnight)."""
     if not voc:
         return None
     start = _parse_voc_datetime(voc.get("start"), base_date)
@@ -67,15 +88,13 @@ def voc_duration_minutes(voc: dict | None, base_date: dt.date) -> Optional[int]:
     if not start or not end:
         return None
     if end <= start:
-        end = end + dt.timedelta(days=1)
+        end += dt.timedelta(days=1)
     return int((end - start).total_seconds() // 60)
 
 def pretty_duration(mins: int) -> str:
     h, m = mins // 60, mins % 60
-    if h and m:
-        return f"≈{h}h {m:02d}m"
-    if h:
-        return f"≈{h}h"
+    if h and m: return f"≈{h}h {m:02d}m"
+    if h:       return f"≈{h}h"
     return f"≈{m}m"
 
 def format_voc(voc: dict | None) -> str:
@@ -89,12 +108,18 @@ def format_voc(voc: dict | None) -> str:
         return f"{ts}–{te}"
     return "—"
 
+def voc_badge(mins: Optional[int]) -> str:
+    if mins is None: return ""
+    if mins >= 180:  return "🟠"
+    if mins >= 60:   return "🟡"
+    return ""  # < 60 мин — считаем незначительным
+
 # ---------- energy / tip logic ----------
 
 def base_energy_tip(phase_name_ru: str, percent: int) -> tuple[str, str]:
     pn = (phase_name_ru or "").lower()
     if "новолуние" in pn or "new moon" in pn:
-        return ("Set intentions, keep schedule light.", "Rest, plan, one gentle start.")
+        return ("Set intentions; keep schedule light.", "Rest, plan, one gentle start.")
     if "первая четверть" in pn or "first quarter" in pn:
         return ("Take a clear step forward.", "One priority; short focused block.")
     if "растущ" in pn or "waxing" in pn:
@@ -108,13 +133,11 @@ def base_energy_tip(phase_name_ru: str, percent: int) -> tuple[str, str]:
     return ("Keep plans light; tune into your body.", "Focus on what matters.")
 
 def energy_and_tip(phase_name_ru: str, percent: int, voc_minutes: Optional[int]) -> tuple[str, str]:
-    """Inject VoC-aware advice. Thresholds: 60m soft, 120m no launches, 180m very gentle."""
+    """VoC aware: ≥180m very light; ≥120m avoid launches; ≥60m flexible."""
     energy, tip = base_energy_tip(phase_name_ru, percent)
     if voc_minutes is None:
         return energy, tip
-
     dur = pretty_duration(voc_minutes)
-
     if voc_minutes >= 180:
         return (f"Long VoC ({dur}) — keep schedule very light; avoid launches.",
                 "Routine, journaling, cleanup; move decisions after VoC.")
@@ -134,23 +157,30 @@ def main():
     item = read_calendar_today() or {}
 
     phase_name  = item.get("phase_name") or ""
-    phase_pct   = item.get("percent") or 0
+    phase_pct   = int(item.get("percent") or 0)
     sign_raw    = item.get("sign") or ""
     voc_block   = item.get("void_of_course")
-    voc_text    = format_voc(voc_block)
-    voc_mins    = voc_duration_minutes(voc_block, today)
 
-    sign_en, sign_emoji = _sign_en_emoji(sign_raw)
-    energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), voc_mins)
+    voc_text = format_voc(voc_block)
+    voc_mins = voc_duration_minutes(voc_block, today)
+    voc_len  = pretty_duration(voc_mins) if voc_mins is not None and voc_mins >= 60 else ""
+
+    sign_en, sign_emoji       = _sign_en_emoji(sign_raw)
+    phase_en, phase_emoji     = _phase_en_emoji(phase_name)
+    energy_line, advice_line  = energy_and_tip(phase_name, phase_pct, voc_mins)
 
     out = {
         "DATE": today.isoformat(),
         "WEEKDAY": weekday,
-        "MOON_PHASE": phase_name if phase_name else "—",
+        "MOON_PHASE": phase_name or "—",     # оригинал (может быть RU)
+        "PHASE_EN": phase_en,                # EN-версия
+        "PHASE_EMOJI": phase_emoji,          # эмодзи фазы, где есть
         "MOON_PERCENT": phase_pct if phase_pct is not None else "—",
         "MOON_SIGN": sign_en,
         "MOON_SIGN_EMOJI": sign_emoji,
-        "VOC": voc_text,
+        "VOC": voc_text,                     # "HH:MM–HH:MM" или "—"
+        "VOC_LEN": voc_len,                  # "≈1h 45m" или ""
+        "VOC_BADGE": voc_badge(voc_mins),    # 🟠 / 🟡 / ""
         "ENERGY_LINE": energy_line,
         "ADVICE_LINE": advice_line,
     }
