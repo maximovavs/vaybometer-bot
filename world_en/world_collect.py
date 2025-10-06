@@ -99,10 +99,58 @@ def kp_level_emoji(kp) -> str:
     if k >= 3: return "🟡"   # active
     return "🟢"              # calm
 
-# -------------------- NOAA / SWPC --------------------
+# -------------------- NOAA / SWPC (устойчивый парсер) --------------------
+
+def _safe_json_array(txt: str):
+    """Пытается вытащить последний корректный JSON-массив из грязного ответа SWPC."""
+    s = (txt or "").strip()
+    depth = 0
+    start = None
+    candidate = None
+    for i, ch in enumerate(s):
+        if ch == "[":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "]":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    candidate = s[start:i+1]  # последний завершённый массив
+    if candidate:
+        return json.loads(candidate)
+    li, ri = s.rfind("["), s.rfind("]")
+    if li != -1 and ri != -1 and ri > li:
+        return json.loads(s[li:ri+1])
+    raise ValueError("SWPC: cannot extract JSON array")
+
+def _fetch_solar_wind_rows(headers):
+    """Тянет ряды плазмы с фолбэком и грязным JSON."""
+    urls = [
+        "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json",
+        "https://services.swpc.noaa.gov/products/solar-wind/plasma-5-minute.json",
+    ]
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=20, headers=headers)
+            r.raise_for_status()
+            try:
+                return r.json()
+            except Exception:
+                return _safe_json_array(r.text)
+        except Exception:
+            continue
+    return []
+
+def _to_float(x, ndigits=None):
+    try:
+        v = float(x)
+        return round(v, ndigits) if ndigits is not None else v
+    except Exception:
+        return None
 
 def get_kp_and_solar():
-    # Kp-индекс
+    # --- Kp ---
     kp_url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
     r = requests.get(kp_url, timeout=20, headers=HEADERS); r.raise_for_status()
     rows = r.json()
@@ -114,17 +162,15 @@ def get_kp_and_solar():
     if float(last[1]) > float(ref[1]): trend = "up"
     if float(last[1]) < float(ref[1]): trend = "down"
 
-    # Скорость/плотность солнечного ветра
-    sw = requests.get(
-        "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json",
-        timeout=20, headers=HEADERS
-    ); sw.raise_for_status()
-    sw_rows = sw.json()
-    # header: time, density, speed, temperature
-    den = sw_rows[-1][1]
-    spd = sw_rows[-1][2]
-    den = None if den in ("", None) else round(float(den), 2)
-    spd = None if spd in ("", None) else round(float(spd), 1)
+    # --- Solar wind (robust) ---
+    sw_rows = _fetch_solar_wind_rows(HEADERS)
+    den = spd = None
+    for row in reversed(sw_rows):
+        if isinstance(row, list) and len(row) >= 3 and row[0] != "time_tag":
+            den = _to_float(row[1], 2)   # cm^-3
+            spd = _to_float(row[2], 1)   # km/s
+            break
+
     return kp, trend, spd, den
 
 # -------------------- Schumann --------------------
