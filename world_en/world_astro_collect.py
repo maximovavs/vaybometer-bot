@@ -215,38 +215,54 @@ def energy_and_tip(phase_name_ru: str, percent: int, voc_minutes: Optional[int])
 def main():
     today = dt.date.today()
     weekday = dt.datetime.utcnow().strftime("%a")
+
     item = read_calendar_today() or {}
 
-    phase_name  = item.get("phase_name") or ""
-    phase_pct   = int(item.get("percent") or 0)
-    sign_raw    = item.get("sign") or ""
-    voc_block   = item.get("void_of_course")
+    # исходники из календаря
+    phase_name  = item.get("phase_name") or ""          # RU-строка фазы (может быть пусто)
+    phase_pct   = item.get("percent")                   # число 0..100 (может быть None/"")
+    sign_raw    = item.get("sign") or ""                # RU- или EN-название знака
+    voc_block   = item.get("void_of_course") or {}      # {"start": "...", "end": "..."}
 
-    voc_text = format_voc(voc_block)
-    voc_mins = voc_duration_minutes(voc_block, today)
-    voc_len  = pretty_duration(voc_mins) if voc_mins is not None and voc_mins >= 60 else ""
+    # --- VoC: умные статусы (no / passed / now / upcoming) ---
+    voc_start_str = (voc_block or {}).get("start")
+    voc_end_str   = (voc_block or {}).get("end")
+    start_utc, end_utc = parse_voc_utc(voc_start_str, voc_end_str)
+    VOC_TEXT, VOC_BADGE, VOC_LEN_MIN = voc_text_status(start_utc, end_utc)
+    VOC_LEN_PRETTY = pretty_duration(VOC_LEN_MIN) if isinstance(VOC_LEN_MIN, int) else ""
 
+    # --- Луна: EN-названия и эмодзи (твои уже существующие маппинги) ---
     sign_en, sign_emoji       = _sign_en_emoji(sign_raw)
     phase_en, phase_emoji     = _phase_en_emoji(phase_name)
-    energy_line, advice_line  = energy_and_tip(phase_name, phase_pct, voc_mins)
+
+    # Энергия/совет без дублирования длительности (внутри не вставляем время VoC)
+    energy_line, advice_line  = energy_and_tip(phase_name, int(phase_pct or 0), VOC_LEN_MIN)
 
     out = {
         "DATE": today.isoformat(),
         "WEEKDAY": weekday,
-        "MOON_PHASE": phase_name or "—",     # оригинал (может быть RU)
-        "PHASE_EN": phase_en,                # EN-версия
-        "PHASE_EMOJI": phase_emoji,          # эмодзи фазы, где есть
-        "MOON_PERCENT": phase_pct if phase_pct is not None else "—",
+
+        # Луна
+        "MOON_PHASE": phase_name or "—",            # оригинал (может быть RU)
+        "PHASE_EN": phase_en,                       # EN-название фазы
+        "PHASE_EMOJI": phase_emoji,                 # эмодзи фазы (если есть)
+        "MOON_PERCENT": fmt_percent_or_none(phase_pct),  # скрываем 0%/100% (None => без скобок в шаблоне)
         "MOON_SIGN": sign_en,
         "MOON_SIGN_EMOJI": sign_emoji,
-        "VOC": voc_text,                     # "HH:MM–HH:MM" или "—"
-        "VOC_LEN": voc_len,                  # "≈1h 45m" или ""
-        "VOC_BADGE": voc_badge(voc_mins),    # 🟠 / 🟡 / ""
+
+        # VoC (и для обратной совместимости оставляем ключ "VOC")
+        "VOC": VOC_TEXT,            # ← прежнее поле, теперь содержит умный текст
+        "VOC_TEXT": VOC_TEXT,       # ← новое поле (если используешь в шаблоне)
+        "VOC_LEN": VOC_LEN_PRETTY,  # "≈1h 45m" или "", если нет окна
+        "VOC_BADGE": VOC_BADGE,     # 🟢/🟡/🟠/⚪️
+
+        # Энергия/совет
         "ENERGY_LINE": energy_line,
         "ADVICE_LINE": advice_line,
     }
 
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 if __name__ == "__main__":
     main()
