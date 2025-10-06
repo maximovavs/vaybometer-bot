@@ -135,29 +135,34 @@ def voc_badge_by_len(minutes: int) -> str:
     if minutes >= 60:  return "🟡"
     return "🟢"
 
-def voc_text_status(start_utc: Optional[dt.datetime], end_utc: Optional[dt.datetime]) -> Tuple[str, str, Optional[int]]:
+from typing import Optional, Tuple
+
+def voc_text_status(start_utc: Optional[dt.datetime],
+                    end_utc: Optional[dt.datetime]) -> Tuple[str, str, Optional[int]]:
     """
     Возвращает (VOC_TEXT, VOC_BADGE, VOC_LEN_MIN).
-    Варианты:
-      - 'No VoC today'
-      - 'VoC passed earlier today (HH:MM–HH:MM UTC)'
-      - 'VoC now HH:MM–HH:MM UTC (≈1h 45m)'
-      - 'HH:MM–HH:MM UTC (≈1h 45m)' — если ещё не началось
+
+    Тексты:
+      - 'No VoC today UTC'
+      - 'VoC later today — HH:MM–HH:MM UTC (≈1h 45m)'
+      - 'VoC now — HH:MM–HH:MM UTC (≈1h 45m)'
+      - 'VoC earlier today — HH:MM–HH:MM UTC (≈1h 45m)'
     """
     if not start_utc or not end_utc:
-        return "No VoC today", "", None
+        return "No VoC today UTC", "", None
 
     total_min = max(0, int((end_utc - start_utc).total_seconds() // 60))
-    badge = voc_badge_by_len(total_min)
     pretty = pretty_duration(total_min)
     rng = f"{start_utc.strftime('%H:%M')}–{end_utc.strftime('%H:%M')} UTC"
 
     now = dt.datetime.utcnow().replace(tzinfo=UTC)
     if now < start_utc:
-        return f"{rng} ({pretty})", badge, total_min
+        return f"VoC later today — {rng} ({pretty})", voc_badge_by_len(total_min), total_min
     if start_utc <= now <= end_utc:
-        return f"VoC now {rng} ({pretty})", badge, total_min
-    return f"VoC passed earlier today ({rng})", "⚪️", total_min
+        return f"VoC now — {rng} ({pretty})", voc_badge_by_len(total_min), total_min
+    # прошло раньше сегодня — без цветного бейджа
+    return f"VoC earlier today — {rng} ({pretty})", "", total_min
+
 
 # ---------- lunar calendar reading ----------
 
