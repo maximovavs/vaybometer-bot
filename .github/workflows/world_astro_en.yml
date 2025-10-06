@@ -46,7 +46,7 @@ jobs:
       - name: Send to TEST
         if: ${{ inputs.send_to_test == true }}
         env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_TEST }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_TEST }}
         run: |
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
