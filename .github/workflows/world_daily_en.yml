@@ -1,78 +1,66 @@
 name: world-daily-en
+
 on:
   schedule:
-    - cron: "15 7 * * *"   # 08:55 UTC
+    - cron: "15 7 * * *"   # 07:15 UTC (пример)
   workflow_dispatch:
-# .github/workflows/world_daily_en.yml
+
 jobs:
   run:
     runs-on: ubuntu-latest
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-      - run: pip install jinja2 requests astral pytz
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install jinja2 requests astral pytz
+          which jq || sudo apt-get update && sudo apt-get install -y jq
+
       - name: Collect daily
         env:
           YT_API_KEY: ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
           YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}   # опционально
-          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}   # как запасной вариант
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}   # опционально
         run: python world_en/world_collect.py
+
       - name: Render
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
-      - name: Send
+
+      - name: Send daily text
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
+            -d chat_id="${TG_CHAT}" \
+            -d parse_mode="Markdown" \
             --data-urlencode text@"world_en/message.txt"
-        # ... твои шаги выше без изменений
 
-      - name: Send text
-        env:
-              TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-              TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
-        run: |
-              curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-                -d chat_id="${TG_CHAT}" -d parse_mode="Markdown" \
-                --data-urlencode text@"world_en/message.txt"
-          
       - name: Send Nature card (photo + clean caption + button)
         env:
-              TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-              TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
-              python - <<'PY'
-              import json,urllib.parse,os
-              d=json.load(open('world_en/daily.json',encoding='utf-8'))
-              thumb=d.get('NATURE_THUMB')
-              url=d.get('NATURE_URL')
-              title=d.get('NATURE_TITLE','Nature Break')
-              snippet=d.get('NATURE_SNIPPET','60 seconds of calm')
-              caption=f"🌊 *{title}*\n_{snippet}_"
-              # печатаем три строки для shell:
-              print(thumb or "")
-              print(url or "")
-              print(caption)
-              PY > /tmp/nb.txt
-          
-              THUMB=$(sed -n '1p' /tmp/nb.txt)
-              URL=$(sed -n '2p' /tmp/nb.txt)
-              CAPTION=$(sed -n '3,$p' /tmp/nb.txt)
-          
-              if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-                curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-                  -F chat_id="${TG_CHAT}" \
-                  -F photo="${THUMB}" \
-                  -F parse_mode="Markdown" \
-                  -F caption="$CAPTION" \
-                  -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-              fi
+          THUMB=$(jq -r '.NATURE_THUMB // empty' world_en/daily.json)
+          URL=$(jq -r '.NATURE_URL // empty' world_en/daily.json)
+          TITLE=$(jq -r '.NATURE_TITLE // "Nature Break"' world_en/daily.json)
+          SNIPPET=$(jq -r '.NATURE_SNIPPET // "60 seconds of calm"' world_en/daily.json)
 
-
+          if [ -n "$THUMB" ] && [ -n "$URL" ]; then
+            CAPTION="🌊 *${TITLE}*\n_${SNIPPET}_"
+            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
+              -F chat_id="${TG_CHAT}" \
+              -F photo="$THUMB" \
+              -F parse_mode="Markdown" \
+              -F caption="$CAPTION" \
+              -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
+          fi
