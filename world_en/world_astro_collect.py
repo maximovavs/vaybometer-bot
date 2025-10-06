@@ -267,12 +267,10 @@ def main():
     item = read_calendar_today() or {}
 
     # исходники из календаря
-    phase_name  = item.get("phase_name") or ""          # RU-строка фазы (может быть пусто)
-    phase_pct   = item.get("percent")                   # число 0..100 (может быть None/"")
-    sign_raw    = item.get("sign") or ""                # RU- или EN-название знака
-    voc_block   = item.get("void_of_course") or {}      # {"start": "...", "end": "..."}
-    energy_icon = energy_icon_for_phase(phase_en or phase_name)
-
+    phase_name = item.get("phase_name") or ""          # RU-строка фазы (может быть пусто)
+    phase_pct  = item.get("percent")                   # число 0..100 (может быть None/"")
+    sign_raw   = item.get("sign") or ""                # RU- или EN-название знака
+    voc_block  = item.get("void_of_course") or {}      # {"start": "...", "end": "..."}
 
     # --- VoC: умные статусы (no / passed / now / upcoming) ---
     voc_start_str = (voc_block or {}).get("start")
@@ -285,7 +283,10 @@ def main():
     sign_en, sign_emoji   = _sign_en_emoji(sign_raw)
     phase_en, phase_emoji = _phase_en_emoji(phase_name)
 
-    # Энергия/совет без дублирования длительности (внутри не вставляем время VoC)
+    # иконка энергии считаем ПОСЛЕ того, как знаем phase_en
+    energy_icon = energy_icon_for_phase(phase_en or phase_name)
+
+    # Энергия/совет (длительность VoC внутрь не вставляем)
     energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), VOC_LEN_MIN)
 
     out = {
@@ -293,10 +294,10 @@ def main():
         "WEEKDAY": weekday,
 
         # Луна
-        "MOON_PHASE": phase_name or "—",                 # оригинал (может быть RU)
-        "PHASE_EN": phase_en,                            # EN-название фазы
-        "PHASE_EMOJI": phase_emoji,                      # эмодзи фазы (все стадии поддержаны)
-        "MOON_PERCENT": fmt_percent_or_none(phase_pct),  # скрываем 0%/100%
+        "MOON_PHASE": phase_name or "—",
+        "PHASE_EN": phase_en,
+        "PHASE_EMOJI": phase_emoji,
+        "MOON_PERCENT": fmt_percent_or_none(phase_pct),
         "MOON_SIGN": sign_en,
         "MOON_SIGN_EMOJI": sign_emoji,
 
@@ -313,7 +314,3 @@ def main():
     }
 
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-if __name__ == "__main__":
-    main()
