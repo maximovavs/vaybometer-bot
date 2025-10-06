@@ -38,6 +38,70 @@ PHASE_MAP = {
     "Waxing": ("Waxing Moon", "🌔"), "Waning": ("Waning Moon", "🌖"),
 }
 
+from typing import Optional
+
+def fmt_percent_or_none(x) -> Optional[int]:
+    """Вернёт целое 1..99, иначе None (для скрытия скобок в шаблоне)."""
+    try:
+        p = int(round(float(x)))
+    except Exception:
+        return None
+    return p if 0 < p < 100 else None
+
+def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> tuple[Optional[dt.datetime], Optional[dt.datetime]]:
+    """
+    Принимает строки 'HH:MM' или 'DD.MM HH:MM' (UTC) и возвращает aware-datetime в UTC.
+    Если нет данных — (None, None).
+    """
+    if not start_s or not end_s:
+        return None, None
+
+    def _parse_one(s: str) -> dt.datetime:
+        s = s.strip()
+        today = dt.datetime.utcnow().date()
+        if " " in s:  # 'DD.MM HH:MM'
+            dpart, tpart = s.split()
+            d, m = map(int, dpart.split("."))
+            hh, mm = map(int, tpart.split(":"))
+            return dt.datetime(today.year, m, d, hh, mm, tzinfo=UTC)
+        else:         # 'HH:MM'
+            hh, mm = map(int, s.split(":"))
+            return dt.datetime(today.year, today.month, today.day, hh, mm, tzinfo=UTC)
+
+    try:
+        return _parse_one(start_s), _parse_one(end_s)
+    except Exception:
+        return None, None
+
+def voc_badge_by_len(minutes: int) -> str:
+    if minutes >= 120: return "🟠"
+    if minutes >= 60:  return "🟡"
+    return "🟢"
+
+def voc_text_status(start_utc: Optional[dt.datetime], end_utc: Optional[dt.datetime]) -> tuple[str, str, Optional[int]]:
+    """
+    Возвращает (VOC_TEXT, VOC_BADGE, VOC_LEN_MIN).
+    Варианты текста:
+     - 'No VoC today'
+     - 'VoC passed earlier today (HH:MM–HH:MM UTC)'
+     - 'VoC now HH:MM–HH:MM UTC (≈1h 45m)'
+     - 'HH:MM–HH:MM UTC (≈1h 45m)' — если ещё не началось
+    """
+    if not start_utc or not end_utc:
+        return "No VoC today", "", None
+
+    total_min = max(0, int((end_utc - start_utc).total_seconds() // 60))
+    badge = voc_badge_by_len(total_min)
+    pretty = pretty_duration(total_min)  # у тебя уже есть pretty_duration(minutes) → '≈1h 45m'
+    rng = f"{start_utc.strftime('%H:%M')}–{end_utc.strftime('%H:%M')} UTC"
+
+    now = dt.datetime.utcnow().replace(tzinfo=UTC)
+    if now < start_utc:
+        return f"{rng} ({pretty})", badge, total_min
+    if start_utc <= now <= end_utc:
+        return f"VoC now {rng} ({pretty})", badge, total_min
+    return f"VoC passed earlier today ({rng})", "⚪️", total_min
+
 def _sign_en_emoji(sign: Optional[str]):
     if not sign:
         return "—", ""
@@ -133,20 +197,17 @@ def base_energy_tip(phase_name_ru: str, percent: int) -> tuple[str, str]:
     return ("Keep plans light; tune into your body.", "Focus on what matters.")
 
 def energy_and_tip(phase_name_ru: str, percent: int, voc_minutes: Optional[int]) -> tuple[str, str]:
-    """VoC aware: ≥180m very light; ≥120m avoid launches; ≥60m flexible."""
     energy, tip = base_energy_tip(phase_name_ru, percent)
     if voc_minutes is None:
         return energy, tip
-    dur = pretty_duration(voc_minutes)
     if voc_minutes >= 180:
-        return (f"Long VoC ({dur}) — keep schedule very light; avoid launches.",
+        return ("Long VoC — keep schedule very light; avoid launches.",
                 "Routine, journaling, cleanup; move decisions after VoC.")
     if voc_minutes >= 120:
-        return (f"VoC {dur} — avoid launches; favor routine.",
+        return ("VoC — avoid launches; favor routine.",
                 "Safe tasks: maintenance, drafts, reading, rest.")
     if voc_minutes >= 60:
-        return (f"Short VoC ({dur}) — keep tasks flexible.",
-                tip)
+        return ("Short VoC — keep tasks flexible.", tip)
     return energy, tip
 
 # ---------- main ----------
