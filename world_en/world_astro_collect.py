@@ -1,110 +1,111 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, json, re, datetime as dt
 from pathlib import Path
-from zoneinfo import ZoneInfo
+import sys
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import datetime as dt
+import json
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT  = Path(__file__).parent / "astro.json"
 
-# локальная зона, в которой составлен lunar_calendar.json
-LOCAL_TZ = os.getenv("ASTRO_LOCAL_TZ", "Europe/Kaliningrad")
-UTC = ZoneInfo("UTC")
-
-RU2EN_SIGNS = {
-    "Овен":"Aries","Телец":"Taurus","Близнецы":"Gemini","Рак":"Cancer",
-    "Лев":"Leo","Дева":"Virgo","Весы":"Libra","Скорпион":"Scorpio",
-    "Стрелец":"Sagittarius","Козерог":"Capricorn","Водолей":"Aquarius","Рыбы":"Pisces"
+# --- маппинги знаков (RU/EN) → EN + emoji
+SIGN_MAP = {
+    # RU → (EN, emoji)
+    "Овен": ("Aries", "♈"), "Телец": ("Taurus", "♉"), "Близнецы": ("Gemini", "♊"),
+    "Рак": ("Cancer", "♋"), "Лев": ("Leo", "♌"), "Дева": ("Virgo", "♍"),
+    "Весы": ("Libra", "♎"), "Скорпион": ("Scorpio", "♏"), "Стрелец": ("Sagittarius", "♐"),
+    "Козерог": ("Capricorn", "♑"), "Водолей": ("Aquarius", "♒"), "Рыбы": ("Pisces", "♓"),
+    # EN → (EN, emoji) на всякий
+    "Aries": ("Aries", "♈"), "Taurus": ("Taurus", "♉"), "Gemini": ("Gemini", "♊"),
+    "Cancer": ("Cancer", "♋"), "Leo": ("Leo", "♌"), "Virgo": ("Virgo", "♍"),
+    "Libra": ("Libra", "♎"), "Scorpio": ("Scorpio", "♏"), "Sagittarius": ("Sagittarius", "♐"),
+    "Capricorn": ("Capricorn", "♑"), "Aquarius": ("Aquarius", "♒"), "Pisces": ("Pisces", "♓"),
 }
 
-def _load_calendar():
-    # читаем либо из корня, либо из data/
-    for p in (ROOT / "lunar_calendar.json", ROOT / "data" / "lunar_calendar.json"):
-        if p.exists():
-            return json.loads(p.read_text(encoding="utf-8"))
-    return {}
+def _sign_en_emoji(sign: Optional[str]):
+    if not sign:
+        return "—", ""
+    en, emoji = SIGN_MAP.get(sign, (sign, ""))
+    return en, emoji
 
-def _entry_for(date_iso: str, data: dict):
-    """Пытаемся достать запись дня. Возвращаем (entry|None)."""
-    days = (data or {}).get("days") or {}
-    return days.get(date_iso)
+# Энергия/совет по фазе (RU/EN поддержка)
+def energy_and_tip(phase_name_ru: str, percent: int) -> tuple[str, str]:
+    pn = (phase_name_ru or "").lower()
+    # ключевые слова RU/EN
+    if "новолуние" in pn or "new moon" in pn:
+        return ("Set intentions, keep schedule light.", "Rest, plan, one gentle start.")
+    if "первая четверть" in pn or "first quarter" in pn:
+        return ("Take a clear step forward.", "One priority; short focused block.")
+    if "растущ" in pn or "waxing" in pn:
+        return ("Build momentum; refine work.", "Polish & iterate for 20–40 min.")
+    if "полнолуние" in pn or "full moon" in pn:
+        return ("Emotions peak; seek balance.", "Grounding + gratitude; avoid big decisions.")
+    if "последняя четверть" in pn or "last quarter" in pn:
+        return ("Wrap up & declutter.", "Finish, review, release extras.")
+    if "убыва" in pn or "waning" in pn:
+        return ("Slow down; restore energy.", "Light tasks, gentle body care.")
+    # дефолт
+    return ("Keep plans light; tune into your body.", "Focus on what matters.")
 
-def _parse_sign(entry: dict) -> str | None:
-    """Сначала 'sign', если нет — попробуем вытащить из 'phase' после запятой."""
-    sign_ru = (entry or {}).get("sign")
-    if sign_ru:
-        return RU2EN_SIGNS.get(sign_ru, sign_ru)
-    phase = (entry or {}).get("phase") or ""
-    # ... "Растущая Луна , Водолей"
-    m = re.search(r",\s*([А-Яа-яЁёA-Za-z]+)\s*$", phase)
-    if m:
-        sru = m.group(1)
-        return RU2EN_SIGNS.get(sru, sru)
-    return None
-
-_TIME_PAT = re.compile(r"^\s*(\d{1,2})\.(\d{1,2})\s+(\d{2}):(\d{2})\s*$")
-
-def _to_utc_hhmm(date_iso: str, val: str | None) -> str | None:
-    """Перевод 'dd.MM HH:MM' (локал.) в строку 'HH:MM' UTC для 'date_iso'."""
-    if not val:
+def read_calendar_today():
+    """Читает lunar_calendar.json и отдаёт данные за сегодня, если есть."""
+    cal_path = ROOT / "lunar_calendar.json"
+    if not cal_path.exists():
         return None
-    m = _TIME_PAT.match(val)
-    if not m:
-        return None
-    dd, MM, hh, mm = map(int, m.groups())
-    Y = int(date_iso[:4])
-    try:
-        local = dt.datetime(Y, MM, dd, hh, mm, tzinfo=ZoneInfo(LOCAL_TZ))
-        return local.astimezone(UTC).strftime("%H:%M")
-    except Exception:
-        return None
+    data = json.loads(cal_path.read_text(encoding="utf-8"))
+    days = data.get("days") or {}
+    today = dt.date.today().isoformat()
+    return days.get(today)
 
-def _compose_phase_en(ru_name: str, percent):
-    ru = (ru_name or "").lower()
-    if "нов" in ru: return "New Moon"
-    if "полн" in ru: return "Full Moon"
-    if "первая четверть" in ru: return "First Quarter"
-    if "последняя" in ru or "третья" in ru: return "Last Quarter"
-    # остальное — по проценту
-    p = percent if isinstance(percent, (int, float)) else None
-    if p is None:
-        return "Waxing"  # нейтральный фолбэк
-    return "Waxing Gibbous" if p >= 50 else "Waxing Crescent"
+def format_voc(voc: dict | None) -> str:
+    if not voc:
+        return "—"
+    start = voc.get("start")
+    end   = voc.get("end")
+    # В календаре формат типа "04.10 04:32" — берём время после пробела
+    def only_time(s: Optional[str]) -> Optional[str]:
+        if not s: return None
+        parts = s.split()
+        return parts[-1] if parts else s
+    s = only_time(start)
+    e = only_time(end)
+    if s and e:
+        return f"{s}–{e}"
+    return "—"
 
 def main():
-    today_iso = dt.date.today().isoformat()  # TZ=UTC в workflow
-    cal = _load_calendar()
-    entry = _entry_for(today_iso, cal) or {}
+    today = dt.date.today()
+    weekday = dt.datetime.utcnow().strftime("%a")
+    item = read_calendar_today() or {}
 
-    percent = entry.get("percent")
-    phase_en = _compose_phase_en(entry.get("phase_name"), percent)
-    sign_en = _parse_sign(entry) or "—"
+    # Из календаря (RU)
+    phase_ru  = item.get("phase_name") or ""
+    phase_pct = item.get("percent") or 0
+    sign_ru   = item.get("sign") or ""
+    voc_text  = format_voc(item.get("void_of_course"))
 
-    # VoC: берём из entry. Если null — считаем, что нет окна.
-    voc = entry.get("void_of_course") or {}
-    start_utc = _to_utc_hhmm(today_iso, voc.get("start"))
-    end_utc   = _to_utc_hhmm(today_iso, voc.get("end"))
-    voc_str = "—"
-    if start_utc and end_utc:
-        voc_str = f"{start_utc}–{end_utc} UTC"
-    elif start_utc:
-        voc_str = f"from {start_utc} UTC"
-    elif end_utc:
-        voc_str = f"until {end_utc} UTC"
+    # Конвертируем знак к EN + emoji
+    sign_en, sign_emoji = _sign_en_emoji(sign_ru)
+
+    # Энергия/совет
+    energy_line, advice_line = energy_and_tip(phase_ru, int(phase_pct or 0))
 
     out = {
-        "DATE": today_iso,
-        "MOON_PHASE": phase_en,
-        "MOON_PERCENT": (int(percent) if isinstance(percent,(int,float)) else "—"),
+        "DATE": today.isoformat(),
+        "WEEKDAY": weekday,
+        "MOON_PHASE": phase_ru if phase_ru else "—",
+        "MOON_PERCENT": phase_pct if phase_pct is not None else "—",
         "MOON_SIGN": sign_en,
-        "VOC_WINDOW_UTC": voc_str,
-        "ASTRO_ENERGY_ONE_LINER": (
-            "Push gently through small obstacles." if "quarter" in phase_en.lower()
-            else "Keep plans light; tune into your body."
-        ),
-        "ASTRO_TIP": "Focus on what matters."
+        "MOON_SIGN_EMOJI": sign_emoji,
+        "VOC": voc_text,
+        "ENERGY_LINE": energy_line,
+        "ADVICE_LINE": advice_line,
     }
+
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
 if __name__ == "__main__":
