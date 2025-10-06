@@ -29,8 +29,10 @@ jobs:
       # 1) Сбор данных -> world_en/astro.json
       - name: Collect Astro
         run: |
-          python world_en/world_astro_collect.py
+          python -u world_en/world_astro_collect.py
           echo "---- ls world_en"; ls -l world_en
+          echo "---- head astro.json"; head -c 400 world_en/astro.json || true
+
 
       # 2) Гарантируем наличие astro.json (иначе понятная ошибка)
       - name: Verify astro.json exists
