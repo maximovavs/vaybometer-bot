@@ -2,7 +2,7 @@ name: world-astro-en
 
 on:
   schedule:
-    - cron: "5 17 * * *"   # каждый день 17:05 UTC (ставь своё время)
+    - cron: "5 17 * * *"   # поставь удобное время (UTC)
   workflow_dispatch:
 
 jobs:
@@ -16,23 +16,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install deps
         run: pip install jinja2 pytz
 
-      # 1) Сбор — создаёт world_en/astro.json
+      # 1) Сбор: делает world_en/astro.json
       - name: Collect Astro
-        run: python world_en/world_astro_collect.py
+        run: |
+          python world_en/world_astro_collect.py
+          echo "== ls world_en =="
+          ls -l world_en
 
-      # (опционально) посмотреть, что именно записалось
+      # 2) (опционально) посмотреть содержимое; не валим job, если вдруг пусто
       - name: Debug astro.json
+        continue-on-error: true
         run: cat world_en/astro.json
 
-      # 2) Рендер в текст
+      # 3) Рендер
       - name: Render
         run: python world_en/render.py world_en/templates/astro_en.j2 world_en/astro.json > world_en/astro_msg.txt
 
-      # 3) Отправка
+      # 4) Отправка
       - name: Send
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
