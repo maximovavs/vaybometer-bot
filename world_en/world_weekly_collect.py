@@ -249,8 +249,10 @@ def top_short_7d():
 
 def main():
     today = dt.date.today()
-    week_start = (today - dt.timedelta(days=today.weekday())).isoformat()
-    week_end = today.isoformat()
+    week_start_date = today - dt.timedelta(days=today.weekday())  # Mon
+    week_start = week_start_date.isoformat()
+    week_end   = (week_start_date + dt.timedelta(days=6)).isoformat()  # Sun
+
 
     # 1) Землетрясение недели
     mag, region, note = strongest_quake_week()
