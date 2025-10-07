@@ -1,18 +1,17 @@
-✨ Weekly Vibe Recap • Top 5 Earth Moments ({{ WEEK_START or DATE }}–{{ WEEK_END or DATE }} UTC)
+✨ Weekly Vibe Recap • Top 5 Earth Moments
+({{ WEEK_START }}–{{ WEEK_END }} UTC)
 
-1) Strongest quake: M{{TOP_QUAKE_MAG}} — {{TOP_QUAKE_REGION}}{% if TOP_QUAKE_NOTE %} ({{TOP_QUAKE_NOTE}}){% endif %}
-2) Wildest temp spread: {{HOTTEST_WEEK_PLACE}} {{HOTTEST_WEEK}}°C vs {{COLDEST_WEEK_PLACE}} {{COLDEST_WEEK}}°C
-3) Calm focus window (Kp): {{CALM_WINDOW_UTC}}
-4) Sun highlight: {{SUN_HIGHLIGHT_PLACE}} — {{SUN_HIGHLIGHT_TIME}} UTC
-5) Community favorite Nature Break: [{{TOP_NATURE_TITLE}}]({{TOP_NATURE_URL}})
+1) Strongest quake: M{{ TOP_QUAKE_MAG }} — {{ TOP_QUAKE_REGION }}
+2) Wildest temp spread: {{ HOTTEST_WEEK_PLACE_FLAGGED }}, {{ HOTTEST_WEEK }}°C vs {{ COLDEST_WEEK_PLACE_FLAGGED }}, {{ COLDEST_WEEK }}°C
+3) Calm focus window (Kp): {{ CALM_WINDOW_UTC }}
+4) Sun highlight: Reykjavik, IS — {{ SUN_HIGHLIGHT_TIME }} UTC
+5) Community favorite Nature Break: {{ TOP_NATURE_TITLE }}
 
-{% if fx_line_week or fx_line -%}
 Money, quick glance
-{{ fx_line_week or fx_line }}
-{%- endif %}
+{{ fx_line_week }}
 
 Next week glance
-- Moon: {{NEXT_MOON_PHASE}}
-- Kp outlook: {{NEXT_KP_NOTE}}
+- Moon: {{ NEXT_MOON_PHASE }}
+- Kp outlook: {{ NEXT_KP_NOTE }}
 
 PS: If this recap brought you calm, share it with one mindful friend 🌿
