@@ -1,5 +1,4 @@
 name: world-weekly-en
-
 on:
   schedule:
     - cron: "0 16 * * 0"   # Sun 16:00 UTC
@@ -14,31 +13,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        with: { python-version: "3.11" }
       - run: pip install requests jinja2 pytz astral
 
-      # ⬇️ ПЕРЕДАЁМ ключи в шаг Collect
       - name: Collect weekly
         env:
           YT_API_KEY: ${{ secrets.YT_API_KEY }}
-          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}           # добавь этот secret
-          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}  # опционально
-          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}  # опционально
+          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
         run: python world_en/world_weekly_collect.py
 
       - name: Render
         run: python world_en/render.py world_en/templates/weekly_en.j2 world_en/weekly.json > world_en/weekly_msg.txt
 
-      - name: Debug weekly JSON
-        run: cat world_en/weekly.json
-
-
-      - name: Send
+      - name: Send text
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -d chat_id="${TG_CHAT}" -d parse_mode="Markdown" \
+            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/weekly_msg.txt"
+
+      # отдельная карточка YouTube (чистый caption + кнопка)
+      - name: Send Nature card
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('world_en/weekly.json',encoding='utf-8'))
+          thumb=d.get('TOP_NATURE_THUMB') or ''
+          url=d.get('TOP_NATURE_URL') or ''
+          title=d.get('TOP_NATURE_TITLE','Nature Break')
+          snippet=d.get('TOP_NATURE_SNIPPET','Short calm from Miss Relax')
+          cap=f"🌊 <b>{title}</b>\n<i>{snippet}</i>"
+          print(thumb); print(url); print(cap)
+          PY
+          readarray -t L < <(python - <<'PY'
+          import json; d=json.load(open('world_en/weekly.json')); 
+          print(d.get('TOP_NATURE_THUMB','')); print(d.get('TOP_NATURE_URL','')); 
+          print(f"🌊 <b>{d.get('TOP_NATURE_TITLE','Nature Break')}</b>\n<i>{d.get('TOP_NATURE_SNIPPET','Short calm from Miss Relax')}</i>")
+          PY
+          )
+          THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
+          if [ -n "$THUMB" ] && [ -n "$URL" ]; then
+            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
+              -F chat_id="${TG_CHAT}" \
+              -F photo="${THUMB}" \
+              -F parse_mode="HTML" \
+              -F caption="$CAPTION" \
+              -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
+          fi
