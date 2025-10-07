@@ -81,7 +81,7 @@ jobs:
         if: ${{ inputs.send_to_test == true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
-          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_TEST }}
+          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
@@ -92,7 +92,7 @@ jobs:
         if: ${{ inputs.send_to_test == true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
-          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_TEST }}
+          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           readarray -t L < <(python - <<'PY'
           import json; d=json.load(open('world_en/weekly.json'))
