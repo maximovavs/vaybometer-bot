@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, re, json, datetime as dt, random
+import os, re, json, datetime as dt
 from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -27,14 +27,7 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
-# ---------------- Flags / helpers ----------------
-
-COUNTRY_TO_CC = {
-    "Japan":"JP","Philippines":"PH","Chile":"CL","Mexico":"MX","Russia":"RU",
-    "Indonesia":"ID","United States":"US","Argentina":"AR","Iceland":"IS",
-    "China":"CN","Papua New Guinea":"PG","New Zealand":"NZ","Vanuatu":"VU",
-    "Peru":"PE","Tonga":"TO","Italy":"IT","Greece":"GR","Turkey":"TR",
-}
+# ---------------- flags & formatting ----------------
 
 CITY_TO_CC = {
     "Doha": "QA", "Kuwait City": "KW", "Phoenix": "US", "Dubai": "AE",
@@ -42,54 +35,87 @@ CITY_TO_CC = {
     "Dome A": "AQ", "Yakutsk": "RU", "Oymyakon": "RU", "Verkhoyansk": "RU",
 }
 
+COUNTRY_TO_CC = {
+    "Japan":"JP","Philippines":"PH","Chile":"CL","Mexico":"MX","Russia":"RU",
+    "Indonesia":"ID","United States":"US","Argentina":"AR","Iceland":"IS",
+    "China":"CN","Papua New Guinea":"PG","New Zealand":"NZ","Vanuatu":"VU",
+    "Peru":"PE","Tonga":"TO","Italy":"IT","Greece":"GR","Turkey":"TR",
+    "Qatar":"QA","Kuwait":"KW","Antarctica":"AQ"
+}
+
+THIN_MINUS = "\u2212"
+
 def _country_flag(cc: str) -> str:
     if not cc or len(cc) != 2: return ""
     base = 0x1F1E6
     a, b = ord(cc[0].upper())-65, ord(cc[1].upper())-65
-    if not (0 <= a <= 25 and 0 <= b <= 25): return ""
+    if not (0 <= a < 26 and 0 <= b < 26): return ""
     return chr(base+a) + chr(base+b)
 
-def _append_flag_to_place(s: str) -> str:
-    """Пробует поставить флаг по стране (последний сегмент) или по базе CITY_TO_CC."""
-    if not s: return "—"
+def place_with_flag(place: str) -> str:
+    """'City, CC' → добавляет 🇨🇨. Или пытается по CITY_TO_CC/COUNTRY_TO_CC."""
+    if not place: return "—"
+    s = place.strip()
+    # 1) явный ISO2
+    m = re.search(r",\s*([A-Z]{2})$", s)
+    if m:
+        fl = _country_flag(m.group(1))
+        return f"{s} {fl}".strip()
+    # 2) по базе городов
+    cc = CITY_TO_CC.get(s.split(",")[0].strip())
+    if cc:
+        return f"{s} {_country_flag(cc)}".strip()
+    # 3) по стране после последней запятой
     parts = [p.strip() for p in s.split(",")]
-    cc = None
     if len(parts) >= 2:
         cc = COUNTRY_TO_CC.get(parts[-1])
-    if not cc:
-        cc = CITY_TO_CC.get(parts[0])
-    fl = _country_flag(cc) if cc else ""
-    return f"{s} {fl}".strip()
+        if cc:
+            return f"{s} {_country_flag(cc)}".strip()
+    return s
 
-def kp_level_emoji(kp_val: float | int | None) -> str:
+def append_flag_if_country_at_end(region: str) -> str:
+    """USGS place: '29 km W of El Hoyo, Argentina' → +🇦🇷 если страна известна."""
+    if not region: return "—"
+    parts = [p.strip() for p in region.split(",")]
+    if len(parts) >= 2:
+        country = parts[-1]
+        cc = COUNTRY_TO_CC.get(country)
+        if cc:
+            return f"{region} {_country_flag(cc)}"
+    return region
+
+def fmt_temp_c(v) -> str:
+    """'−5°C' с тонким минусом, либо '5°C'."""
+    if v is None:
+        return "—"
     try:
-        k = float(kp_val or 0)
+        n = int(round(float(v)))
     except Exception:
-        k = 0.0
+        return str(v)
+    if n < 0:
+        return f"{THIN_MINUS}{abs(n)}°C"
+    return f"{n}°C"
+
+def kp_level_emoji(kp_val) -> str:
+    try: k = float(kp_val or 0)
+    except: k = 0.0
     if k >= 7: return "🔴"
     if k >= 5: return "🟠"
     if k >= 3: return "🟡"
     return "🟢"
 
-def pretty_temp(value) -> str:
-    """Строка температуры с тонким минусом U+2212."""
-    try:
-        v = int(round(float(value)))
-    except Exception:
-        return "—"
-    s = f"{v}"
-    if s.startswith("-"):
-        s = "−" + s[1:]  # заменяем на тонкий минус
-    return s
+# ---------------- fetch helpers ----------------
 
 def _get_json(url, params=None, timeout=25):
     r = requests.get(url, params=params or {}, timeout=timeout, headers=HEADERS)
     r.raise_for_status()
     return r.json()
 
-# ---------------- Data fetchers ----------------
-
 def strongest_quake_week():
+    """
+    Возвращает (mag, region, depth_km, time_utc).
+    Берём максимальное M из weekly-ленты USGS.
+    """
     urls = [
         "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/6.0_week.geojson",
         "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_week.geojson",
@@ -97,16 +123,17 @@ def strongest_quake_week():
     for url in urls:
         try:
             feats = _get_json(url).get("features", [])
-            if not feats:
+            if not feats: 
                 continue
-            top = max(feats, key=lambda f: f["properties"]["mag"] or 0)
+            top = max(feats, key=lambda f: (f["properties"]["mag"] or 0))
             mag = round(top["properties"]["mag"], 1)
-            region = top["properties"]["place"]
-            note = top["properties"].get("type","")
-            return mag, region, note
+            region = top["properties"]["place"] or ""
+            depth_km = round(top["geometry"]["coordinates"][2]) if top.get("geometry") else None
+            t_utc = dt.datetime.utcfromtimestamp(top["properties"]["time"]/1000).strftime("%H:%M")
+            return mag, region, depth_km, t_utc
         except Exception:
             continue
-    return None, None, None
+    return None, None, None, None
 
 def openmeteo_week_extremes():
     """Экстремумы последних 7 суток по нашему списку мест."""
@@ -128,7 +155,7 @@ def openmeteo_week_extremes():
             if mx:
                 loc_max = max(mx)
                 if (hottest is None) or (loc_max > hottest["temp"]):
-                    hottest = {"place": name, "temp": loc_max}
+                    hottest = {"place": name, "temp": round(loc_max)}
         except Exception:
             continue
 
@@ -140,7 +167,7 @@ def openmeteo_week_extremes():
             if mn:
                 loc_min = min(mn)
                 if (coldest is None) or (loc_min < coldest["temp"]):
-                    coldest = {"place": name, "temp": loc_min}
+                    coldest = {"place": name, "temp": round(loc_min)}
         except Exception:
             continue
 
@@ -154,6 +181,7 @@ def kp_outlook_3d():
             timeout=25, headers=HEADERS
         ).text
         lines = [ln for ln in txt.splitlines() if "kp" in ln.lower()]
+        import re
         nums = []
         for ln in lines:
             nums += [int(m.group(0)) for m in re.finditer(r"(?<!\d)[0-9](?!\d)", ln)]
@@ -165,16 +193,14 @@ def kp_outlook_3d():
         pass
     return "stable ~3", []
 
-def calm_window_string_from_kp(vals):
-    """
-    «Wed 09–12 UTC (low Kp) 🟢» — день выбираем по минимальному Kp среди ближайших 3-х.
-    """
+def calm_window_from_kp(vals):
+    """Формат: Wed 09–12 UTC (low Kp) 🟢"""
     if not vals:
-        return "Wed 09–12 UTC (low Kp) 🟢", "🟢"
+        return "Wed 09–12 UTC (low Kp) 🟢"
     idx = min(range(len(vals)), key=lambda i: vals[i])
     day = (dt.datetime.utcnow().date() + dt.timedelta(days=idx+1)).strftime("%a")
     emoji = kp_level_emoji(vals[idx])
-    return f"{day} 09–12 UTC (low Kp) {emoji}", emoji
+    return f"{day} 09–12 UTC (low Kp) {emoji}"
 
 def reykjavik_sunset_today():
     try:
@@ -184,7 +210,7 @@ def reykjavik_sunset_today():
     except Exception:
         return dt.datetime.utcnow().strftime("%H:%M")
 
-# ---------------- YouTube (top short 7d) ----------------
+# ---------------- YouTube: top short 7d ----------------
 
 def _yt_iso_to_seconds(iso: str) -> int:
     if not iso: return 0
@@ -249,45 +275,44 @@ def top_short_7d():
 
 def main():
     today = dt.date.today()
-    week_start_date = today - dt.timedelta(days=today.weekday())  # Mon
-    week_start = week_start_date.isoformat()
-    week_end   = (week_start_date + dt.timedelta(days=6)).isoformat()  # Sun
+    week_start = (today - dt.timedelta(days=today.weekday())).isoformat()
+    week_end = today.isoformat()
 
-
-    # 1) Землетрясение недели
-    mag, region, note = strongest_quake_week()
+    # 1) Землетрясение недели — с глубиной и временем
+    mag, region, depth_km, time_utc = strongest_quake_week()
 
     # 2) Экстремумы недели
     hot, cold = openmeteo_week_extremes()
 
     # 3) Kp outlook + calm window
     kp_note, kp_vals = kp_outlook_3d()
-    calm_win_str, kp_emoji_week = calm_window_string_from_kp(kp_vals)
+    calm_win = calm_window_from_kp(kp_vals)
+    kp_emoji_week = kp_level_emoji(min(kp_vals) if kp_vals else 2.5)
 
-    # 4) Луна на конец следующей недели
+    # 4) Фаза на конец след. недели
     next_week_end = today + dt.timedelta(days=7)
     p = moon.phase(next_week_end)
-    def phase_name(pval):
-        if pval == 0: return "New Moon"
-        if 0 < pval < 7: return "Waxing Crescent"
-        if pval == 7: return "First Quarter"
-        if 7 < pval < 15: return "Waxing Gibbous"
-        if pval == 15: return "Full Moon"
-        if 15 < pval < 22: return "Waning Gibbous"
-        if pval == 22: return "Last Quarter"
-        if 22 < pval < 29: return "Waning Crescent"
-        return "New Moon"
-    next_moon_phase = phase_name(p)
+    if p == 0: next_moon_phase = "New Moon"
+    elif 0 < p < 7: next_moon_phase = "Waxing Crescent"
+    elif p == 7: next_moon_phase = "First Quarter"
+    elif 7 < p < 15: next_moon_phase = "Waxing Gibbous"
+    elif p == 15: next_moon_phase = "Full Moon"
+    elif 15 < p < 22: next_moon_phase = "Waning Gibbous"
+    elif p == 22: next_moon_phase = "Last Quarter"
+    elif 22 < p < 29: next_moon_phase = "Waning Crescent"
+    else: next_moon_phase = "New Moon"
 
-    # 5) Валюты (6 штук)
+    # 5) Валюты
     fx = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
     fx_line_week = format_line(fx, order=["USD","EUR","CNY","JPY","INR","IDR"])
-    # разбивка на две строки: majors / Asia EM
+    # две строки (majors / EM)
     parts = fx_line_week.split(" • ")
-    fx_line_week_line1 = " • ".join(seg for seg in parts if any(x in seg for x in ["USD","EUR","CNY","JPY"]))
-    fx_line_week_line2 = " • ".join(seg for seg in parts if any(x in seg for x in ["INR","IDR"])) or "—"
+    line1 = [seg for seg in parts if any(x in seg for x in ["USD","EUR","CNY","JPY"])]
+    line2 = [seg for seg in parts if any(x in seg for x in ["INR","IDR"])]
+    fx_line_week_line1 = " • ".join(line1) if line1 else fx_line_week
+    fx_line_week_line2 = " • ".join(line2) if line2 else "—"
 
-    # 6) YouTube short за 7 дней
+    # 6) YouTube
     nb = top_short_7d() or {
         "title": "Nature Break",
         "snippet": "Short calm from Miss Relax",
@@ -296,38 +321,53 @@ def main():
         "source": "fallback"
     }
 
-    # Флаги и «тонкий минус» температуры
-    hot_place_flag = _append_flag_to_place((hot or {}).get("place","—"))
-    cold_place_flag = _append_flag_to_place((cold or {}).get("place","—"))
-    hot_temp = pretty_temp((hot or {}).get("temp"))
-    cold_temp = pretty_temp((cold or {}).get("temp"))
+    # Sun highlight (один флаг — прямо здесь)
+    sun_place_flagged = place_with_flag("Reykjavik, IS")
+    sun_time = reykjavik_sunset_today()
+
+    # Форматированные температуры (тонкий минус)
+    hot_place_flagged = place_with_flag((hot or {}).get("place","—"))
+    cold_place_flagged = place_with_flag((cold or {}).get("place","—"))
+    hot_temp_fmt  = fmt_temp_c((hot or {}).get("temp"))
+    cold_temp_fmt = fmt_temp_c((cold or {}).get("temp"))
+
+    # Землетрясение с флагом
+    quake_region_flagged = append_flag_if_country_at_end(region or "")
 
     out = {
         "WEEK_START": week_start,
         "WEEK_END": week_end,
 
+        # Quake (расширено)
         "TOP_QUAKE_MAG": mag or "—",
         "TOP_QUAKE_REGION": region or "—",
-        "TOP_QUAKE_REGION_FLAGGED": _append_flag_to_place(region or "—"),
-        "TOP_QUAKE_NOTE": note or "",
+        "TOP_QUAKE_REGION_FLAGGED": quake_region_flagged,
+        "TOP_QUAKE_DEPTH": depth_km if depth_km is not None else "—",
+        "TOP_QUAKE_TIME_UTC": time_utc or "—",
 
+        # Температурные экстремумы (и формат)
         "HOTTEST_WEEK_PLACE": (hot or {}).get("place","—"),
-        "HOTTEST_WEEK": hot_temp,
+        "HOTTEST_WEEK":       (hot or {}).get("temp","—"),
         "COLDEST_WEEK_PLACE": (cold or {}).get("place","—"),
-        "COLDEST_WEEK": cold_temp,
+        "COLDEST_WEEK":       (cold or {}).get("temp","—"),
 
-        "HOTTEST_WEEK_PLACE_FLAGGED": hot_place_flag,
-        "COLDEST_WEEK_PLACE_FLAGGED": cold_place_flag,
+        "HOTTEST_WEEK_PLACE_FLAGGED": hot_place_flagged,
+        "COLDEST_WEEK_PLACE_FLAGGED": cold_place_flagged,
+        "HOTTEST_WEEK_FMT": hot_temp_fmt,
+        "COLDEST_WEEK_FMT": cold_temp_fmt,
 
-        "CALM_WINDOW_UTC": calm_win_str,            # уже с "… UTC (low Kp) 🟢"
-        "KP_EMOJI_WEEK": kp_emoji_week,             # на всякий случай отдельно
-        "SUN_HIGHLIGHT_PLACE": "Reykjavik, IS",
-        "SUN_HIGHLIGHT_TIME": reykjavik_sunset_today(),
+        # Calm window + kp
+        "CALM_WINDOW_UTC": calm_win,
+        "KP_EMOJI_WEEK": kp_emoji_week,
+
+        # Sun highlight (сразу с флагом)
+        "SUN_HIGHLIGHT_PLACE": sun_place_flagged,
+        "SUN_HIGHLIGHT_TIME": sun_time,
 
         "NEXT_MOON_PHASE": next_moon_phase,
         "NEXT_KP_NOTE": kp_note,
-        "KP_VALS": kp_vals,                         # вдруг пригодится
 
+        # FX
         "fx_line_week": fx_line_week,
         "fx_line_week_line1": fx_line_week_line1,
         "fx_line_week_line2": fx_line_week_line2,
@@ -343,4 +383,5 @@ def main():
 
 
 if __name__ == "__main__":
+    import random
     main()
