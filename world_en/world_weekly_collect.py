@@ -15,11 +15,10 @@ from pytz import UTC
 from world_en.fx_intl import fetch_rates, format_line
 from world_en.settings_world_en import (
     HOT_CITIES, COLD_SPOTS,
-    YT_API_KEY, YT_CHANNEL_ID, FALLBACK_NATURE_LIST
+    YT_API_KEY, YT_CHANNEL_ID, YOUTUBE_PLAYLIST_IDS, FALLBACK_NATURE_LIST
 )
 
 OUT = Path(__file__).parent / "weekly.json"
-LOG_EXTREMES = Path(__file__).parent / "logs" / "extremes.jsonl"
 
 HEADERS = {
     "User-Agent": "WorldVibeMeterBot/1.0 (+https://github.com/)",
@@ -28,7 +27,30 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
-# ---------------- helpers ----------------
+# ---- flags --------------------------------------------------------
+
+CITY_TO_CC = {
+    "Doha": "QA", "Kuwait City": "KW", "Phoenix": "US", "Dubai": "AE",
+    "Jazan": "SA", "Ushuaia": "AR", "Reykjavik": "IS", "Vostok": "AQ",
+    "Dome A": "AQ", "Yakutsk": "RU", "Oymyakon": "RU", "Verkhoyansk": "RU",
+}
+
+def _country_flag(cc: str) -> str:
+    if not cc or len(cc) != 2: return ""
+    base = 0x1F1E6
+    a, b = ord(cc[0].upper())-65, ord(cc[1].upper())-65
+    if not (0 <= a < 26 and 0 <= b < 26): return ""
+    return chr(base+a) + chr(base+b)
+
+def _with_flag(place: str) -> str:
+    if not place: return "—"
+    place = place.strip()
+    m = re.search(r",\s*([A-Z]{2})$", place)
+    cc = m.group(1) if m else CITY_TO_CC.get(place.split(",")[0].strip())
+    fl = _country_flag(cc) if cc else ""
+    return f"{place} {fl}".strip()
+
+# ---- helpers ------------------------------------------------------
 
 def _get_json(url, params=None, timeout=25):
     r = requests.get(url, params=params or {}, timeout=timeout, headers=HEADERS)
@@ -43,70 +65,30 @@ def strongest_quake_week():
     for url in urls:
         try:
             feats = _get_json(url).get("features", [])
-            if not feats:
+            if not feats: 
                 continue
             top = max(feats, key=lambda f: f["properties"]["mag"] or 0)
             mag = round(top["properties"]["mag"], 1)
             region = top["properties"]["place"]
-            note = top["properties"].get("type", "")
+            note = top["properties"].get("type","")
             return mag, region, note
         except Exception:
             continue
     return None, None, None
 
-def _read_extremes_from_log(days_back=7):
-    """Читает world_en/logs/extremes.jsonl за N суток и отдаёт глобальные hot/cold."""
-    if not LOG_EXTREMES.exists():
-        return None, None
-    try:
-        cutoff = dt.date.today() - dt.timedelta(days=days_back-1)
-        hottest = None   # {"place":..., "temp":...}
-        coldest = None
-        with LOG_EXTREMES.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                d = rec.get("date")
-                if not d:
-                    continue
-                try:
-                    d_date = dt.date.fromisoformat(d)
-                except Exception:
-                    continue
-                if d_date < cutoff:
-                    continue
-                h_t = rec.get("hottest_temp")
-                c_t = rec.get("coldest_temp")
-                if isinstance(h_t, (int, float)):
-                    if (hottest is None) or (h_t > hottest["temp"]):
-                        hottest = {"place": rec.get("hottest_place", "—"), "temp": round(h_t)}
-                if isinstance(c_t, (int, float)):
-                    if (coldest is None) or (c_t < coldest["temp"]):
-                        coldest = {"place": rec.get("coldest_place", "—"), "temp": round(c_t)}
-        return hottest, coldest
-    except Exception:
-        return None, None
-
 def openmeteo_week_extremes():
-    """Фолбэк: считаем экстремумы за 7 суток из Open-Meteо по спискам городов."""
-    hottest = None
-    coldest = None
-
+    """Экстремумы последних 7 суток по нашему списку мест."""
     def fetch_daily(lat, lon):
-        url = "https://api.open-meteo.com/v1/forecast"
-        params = {
-            "latitude": lat, "longitude": lon,
-            "daily": "temperature_2m_max,temperature_2m_min",
-            "past_days": 7, "forecast_days": 1,
-            "timezone": "UTC"
-        }
-        return _get_json(url, params=params).get("daily", {})
+        return _get_json(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat, "longitude": lon,
+                "daily": "temperature_2m_max,temperature_2m_min",
+                "past_days": 7, "forecast_days": 1, "timezone": "UTC"
+            }
+        ).get("daily", {})
 
+    hottest = None
     for name, la, lo in HOT_CITIES:
         try:
             d = fetch_daily(la, lo)
@@ -118,6 +100,7 @@ def openmeteo_week_extremes():
         except Exception:
             continue
 
+    coldest = None
     for name, la, lo in COLD_SPOTS:
         try:
             d = fetch_daily(la, lo)
@@ -132,10 +115,13 @@ def openmeteo_week_extremes():
     return hottest, coldest
 
 def kp_outlook_3d():
-    """Парсинг SWPC 3-day geomag forecast. Возвращает ('3 / 2 / 4', [3,2,4])."""
+    """Возвращает строку прогноза Kp на 3 дня и список чисел."""
+    import re
     try:
-        txt = requests.get("https://services.swpc.noaa.gov/text/3-day-geomag-forecast.txt",
-                           timeout=25, headers=HEADERS).text
+        txt = requests.get(
+            "https://services.swpc.noaa.gov/text/3-day-geomag-forecast.txt",
+            timeout=25, headers=HEADERS
+        ).text
         lines = [ln for ln in txt.splitlines() if "kp" in ln.lower()]
         nums = []
         for ln in lines:
@@ -155,18 +141,6 @@ def calm_window_from_kp(vals):
     day = (dt.datetime.utcnow().date() + dt.timedelta(days=idx+1)).strftime("%a")
     return f"{day} 09–12 (low Kp ~{vals[idx]})"
 
-def moon_phase_name(d: dt.date):
-    p = moon.phase(d)
-    if p == 0: return "New Moon"
-    if 0 < p < 7: return "Waxing Crescent"
-    if p == 7: return "First Quarter"
-    if 7 < p < 15: return "Waxing Gibbous"
-    if p == 15: return "Full Moon"
-    if 15 < p < 22: return "Waning Gibbous"
-    if p == 22: return "Last Quarter"
-    if 22 < p < 29: return "Waning Crescent"
-    return "New Moon"
-
 def reykjavik_sunset_today():
     try:
         loc = LocationInfo("Reykjavik", "", "UTC", 64.1466, -21.9426)
@@ -175,162 +149,141 @@ def reykjavik_sunset_today():
     except Exception:
         return dt.datetime.utcnow().strftime("%H:%M")
 
-# --------------- YouTube weekly favorite ---------------
+# ---- YouTube (top short за 7 дней + чистый заголовок) ------------
 
-def _yt_is_short_duration(iso_dur: str) -> bool:
-    if not iso_dur:
-        return False
-    m = re.fullmatch(r"PT(?:(\d+)M)?(?:(\d+)S)?", iso_dur)
-    if not m:
-        return False
-    minutes = int(m.group(1) or 0)
-    seconds = int(m.group(2) or 0)
-    return minutes*60 + seconds <= 60
+def _yt_iso_to_seconds(iso: str) -> int:
+    if not iso: return 0
+    m = re.fullmatch(r"^PT(?:(\d+)M)?(?:(\d+)S)?$", iso)
+    return (int(m.group(1) or 0)*60 + int(m.group(2) or 0)) if m else 0
 
-def _md_escape(s: str) -> str:
-    return (s.replace("\\", "\\\\")
-             .replace("[","\\[").replace("]","\\]")
-             .replace("(","\\(").replace(")","\\)")
-             .replace("_","\\_").replace("*","\\*"))
+def _clean_title(t: str, limit: int = 80) -> str:
+    if not t: return "Nature Break"
+    t = re.sub(r"#\w+", "", t)
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    return t if len(t) <= limit else t[:limit-1] + "…"
 
-def _weekly_top_short(days_window: int = 7):
-    """
-    Самый просматриваемый шорт за N дней:
-    - search с publishedAfter за последние N суток,
-    - берём id, тянем statistics+contentDetails,
-    - из коротких (≤60s) выбираем максимум по viewCount.
-    """
+def _thumb_for_video(video_id: str) -> str:
+    # oEmbed (лучше подтягивает превью вертикальных Shorts)
+    try:
+        j = _get_json("https://www.youtube.com/oembed",
+                      params={"url": f"https://youtu.be/{video_id}", "format":"json"},
+                      timeout=15)
+        if "thumbnail_url" in j:
+            return j["thumbnail_url"]
+    except Exception:
+        pass
+    return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+def top_short_7d():
     api = os.getenv("YT_API_KEY", YT_API_KEY)
     ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
     if not (api and ch):
-        return None, None, "fallback"
-
-    # RFC3339 на 7 дней назад
-    cutoff = (dt.datetime.utcnow() - dt.timedelta(days=days_window)).replace(microsecond=0).isoformat() + "Z"
-
+        return None
+    cutoff = (dt.datetime.utcnow() - dt.timedelta(days=7)).replace(microsecond=0).isoformat() + "Z"
     try:
-        # 1) только свежие ролики канала
         search = requests.get(
             "https://www.googleapis.com/youtube/v3/search",
-            params={
-                "key": api,
-                "channelId": ch,
-                "part": "id",
-                "type": "video",
-                "order": "date",
-                "maxResults": 50,
-                "publishedAfter": cutoff
-            },
+            params={"key": api, "channelId": ch, "part":"id", "type":"video",
+                    "order":"date", "maxResults": 50, "publishedAfter": cutoff},
             timeout=20
         ).json()
-
         ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id", {}).get("videoId")]
-
-        # Если вдруг пусто — возьмём просто последние (фолбэк внутри API)
         if not ids:
-            alt = requests.get(
-                "https://www.googleapis.com/youtube/v3/search",
-                params={"key": api, "channelId": ch, "part": "id", "type": "video", "order": "date", "maxResults": 20},
-                timeout=20
-            ).json()
-            ids = [it["id"]["videoId"] for it in alt.get("items", []) if it.get("id", {}).get("videoId")]
-            if not ids:
-                return None, None, "fallback"
-
-        # 2) стата по этим id
+            return None
         stats = requests.get(
             "https://www.googleapis.com/youtube/v3/videos",
-            params={"key": api, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
+            params={"key": api, "id": ",".join(ids), "part":"snippet,statistics,contentDetails"},
             timeout=20
         ).json().get("items", [])
-
-        def is_short(iso):
-            m = re.fullmatch(r"^PT(?:(\d+)M)?(?:(\d+)S)?$", iso or "")
-            if not m: return False
-            return (int(m.group(1) or 0)*60 + int(m.group(2) or 0)) <= 60
-
-        pool = [v for v in stats if is_short(v["contentDetails"]["duration"])]
-        pool = pool or stats
-        if not pool:
-            return None, None, "fallback"
-
-        top = max(pool, key=lambda v: int(v["statistics"].get("viewCount", "0")))
-        title = top["snippet"]["title"]
-        url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=weekly_favorite"
-        return title, url, "api"
-
+        pool = [v for v in stats if _yt_iso_to_seconds(v["contentDetails"]["duration"]) <= 60] or stats
+        if not pool: return None
+        top = max(pool, key=lambda v: int(v["statistics"].get("viewCount","0")))
+        vid = top["id"]
+        title = _clean_title(top["snippet"]["title"])
+        url = f"https://youtu.be/{vid}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=weekly_favorite"
+        return {
+            "title": title,
+            "snippet": "Short calm from Miss Relax",
+            "youtube_url": url,
+            "thumb": _thumb_for_video(vid),
+            "source": "api-7d"
+        }
     except Exception:
-        return None, None, "fallback"
+        return None
 
-
-        stats = requests.get(
-            "https://www.googleapis.com/youtube/v3/videos",
-            params={"key": api, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
-            timeout=20
-        ).json().get("items", [])
-        shorts = [v for v in stats if _yt_is_short_duration(v["contentDetails"]["duration"])] or stats
-        if not shorts:
-            return None, None, "fallback"
-
-        top = max(shorts, key=lambda v: int(v["statistics"].get("viewCount", "0")))
-        title = _md_escape(top["snippet"]["title"])
-        url = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=weekly_favorite"
-        return title, url, "api"
-    except Exception:
-        return None, None, "fallback"
-
-# ---------------- main ----------------
+# ---- main ---------------------------------------------------------
 
 def main():
     today = dt.date.today()
     week_start = (today - dt.timedelta(days=today.weekday())).isoformat()
     week_end = today.isoformat()
 
-    # 1) Землетрясение недели
     mag, region, note = strongest_quake_week()
+    hot, cold = openmeteo_week_extremes()
 
-    # 2) Экстремумы недели: сначала из логов daily, затем фолбэк на open-meteo
-    hot, cold = _read_extremes_from_log(days_back=7)
-    if hot is None and cold is None:
-        hot, cold = openmeteo_week_extremes()
-
-    # 3) Kp outlook + calm window
     kp_note, kp_vals = kp_outlook_3d()
     calm_win = calm_window_from_kp(kp_vals)
 
-    # 4) Луна на конец следующей недели
     next_week_end = today + dt.timedelta(days=7)
-    next_moon_phase = moon_phase_name(next_week_end)
+    p = moon.phase(next_week_end)
+    def phase_name(d):
+        if p == 0: return "New Moon"
+        if 0 < p < 7: return "Waxing Crescent"
+        if p == 7: return "First Quarter"
+        if 7 < p < 15: return "Waxing Gibbous"
+        if p == 15: return "Full Moon"
+        if 15 < p < 22: return "Waning Gibbous"
+        if p == 22: return "Last Quarter"
+        if 22 < p < 29: return "Waning Crescent"
+        return "New Moon"
+    next_moon_phase = phase_name(next_week_end)
 
-    # 5) Валюты (6 штук)
     fx = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
     fx_line_week = format_line(fx, order=["USD","EUR","CNY","JPY","INR","IDR"])
 
-    # 6) Community favorite (топ-шорт за 7 дней)
-    top_title, top_url, top_src = _weekly_top_short(7)
+    nb = top_short_7d() or {
+        "title": "Nature Break",
+        "snippet": "Short calm from Miss Relax",
+        "youtube_url": (random.choice(FALLBACK_NATURE_LIST) if FALLBACK_NATURE_LIST else "https://youtube.com/@misserrelax"),
+        "thumb": None,
+        "source": "fallback"
+    }
 
     out = {
         "WEEK_START": week_start,
         "WEEK_END": week_end,
+
         "TOP_QUAKE_MAG": mag or "—",
         "TOP_QUAKE_REGION": region or "—",
         "TOP_QUAKE_NOTE": note or "",
-        "HOTTEST_WEEK_PLACE": (hot or {}).get("place", "—"),
-        "HOTTEST_WEEK": (hot or {}).get("temp", "—"),
-        "COLDEST_WEEK_PLACE": (cold or {}).get("place", "—"),
-        "COLDEST_WEEK": (cold or {}).get("temp", "—"),
+
+        "HOTTEST_WEEK_PLACE": (hot or {}).get("place","—"),
+        "HOTTEST_WEEK": (hot or {}).get("temp","—"),
+        "COLDEST_WEEK_PLACE": (cold or {}).get("place","—"),
+        "COLDEST_WEEK": (cold or {}).get("temp","—"),
+
+        # те же места — но с флагом
+        "HOTTEST_WEEK_PLACE_FLAGGED": _with_flag((hot or {}).get("place","—")),
+        "COLDEST_WEEK_PLACE_FLAGGED": _with_flag((cold or {}).get("place","—")),
+
         "CALM_WINDOW_UTC": calm_win,
         "SUN_HIGHLIGHT_PLACE": "Reykjavik, IS",
         "SUN_HIGHLIGHT_TIME": reykjavik_sunset_today(),
-        "TOP_NATURE_TITLE": top_title or "Nature Break",
-        "TOP_NATURE_URL": top_url or (FALLBACK_NATURE_LIST[0] if FALLBACK_NATURE_LIST else "https://youtube.com/@misserrelax"),
-        "TOP_NATURE_SOURCE": top_src,
-        "fx_line_week": fx_line_week,
+
         "NEXT_MOON_PHASE": next_moon_phase,
-        "NEXT_KP_NOTE": kp_note
+        "NEXT_KP_NOTE": kp_note,
+
+        "fx_line_week": fx_line_week,
+
+        # Nature Break
+        "TOP_NATURE_TITLE": nb["title"],
+        "TOP_NATURE_SNIPPET": nb["snippet"],
+        "TOP_NATURE_URL": nb["youtube_url"],
+        "TOP_NATURE_THUMB": nb.get("thumb"),
     }
 
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
 if __name__ == "__main__":
+    import random
     main()
