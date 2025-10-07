@@ -52,6 +52,40 @@ def _with_flag(place: str) -> str:
 
 # ---- helpers ------------------------------------------------------
 
+# --- tiny helpers for flags/format ---
+def _country_flag(cc: str) -> str:
+    if not cc or len(cc) != 2: return ""
+    base = 0x1F1E6
+    a, b = ord(cc[0].upper())-65, ord(cc[1].upper())-65
+    if not (0 <= a <= 25 and 0 <= b <= 25): return ""
+    return chr(base+a) + chr(base+b)
+
+COUNTRY_TO_CC = {
+    "Japan":"JP","Philippines":"PH","Chile":"CL","Mexico":"MX","Russia":"RU",
+    "Indonesia":"ID","United States":"US","Argentina":"AR","Iceland":"IS",
+    "China":"CN","Papua New Guinea":"PG","New Zealand":"NZ","Vanuatu":"VU",
+    "Peru":"PE","Tonga":"TO","Italy":"IT","Greece":"GR","Turkey":"TR",
+    # при нужде дополним
+}
+
+def _append_flag_to_place(s: str) -> str:
+    if not s: return "—"
+    # ищем страну после последней запятой
+    parts = [p.strip() for p in s.split(",")]
+    if len(parts) >= 2:
+        country = parts[-1]
+        cc = COUNTRY_TO_CC.get(country)
+        if cc: return f"{s} {_country_flag(cc)}"
+    return s
+
+def kp_level_emoji(kp_val: float | int | None) -> str:
+    try: k = float(kp_val or 0)
+    except: k = 0.0
+    if k >= 7: return "🔴"
+    if k >= 5: return "🟠"
+    if k >= 3: return "🟡"
+    return "🟢"
+
 def _get_json(url, params=None, timeout=25):
     r = requests.get(url, params=params or {}, timeout=timeout, headers=HEADERS)
     r.raise_for_status()
@@ -248,6 +282,25 @@ def main():
         "thumb": None,
         "source": "fallback"
     }
+    # quake region with flag
+        out_quake_region_flagged = _append_flag_to_place(out.get("TOP_QUAKE_REGION") or "")
+        
+        # flags for hottest/coldest уже могли быть; если нет — добавим простую версию:
+        hot_flagged = _append_flag_to_place((hot or {}).get("place","—"))
+        cold_flagged = _append_flag_to_place((cold or {}).get("place","—"))
+        
+        # KPI emoji for the calm window day — возьмём минимум из kp_vals
+        kp_vals = out.get("KP_VALS") or []  # если у тебя уже есть, иначе из функции kp_outlook_3d() верни список
+        kp_emoji_week = kp_level_emoji(min(kp_vals) if kp_vals else 2.5)
+        
+        # FX две строки
+        fxline = fx_line_week
+        # разбивка: majors и Азия EM
+        fx_line_week_line1 = " • ".join(seg for seg in fxline.split(" • ") if any(x in seg for x in ["EUR","CNY","JPY","USD"]))
+        fx_line_week_line2 = " • ".join(seg for seg in fxline.split(" • ") if any(x in seg for x in ["INR","IDR"]))
+        if not fx_line_week_line2:
+            fx_line_week_line2 = "—"
+
 
     out = {
         "WEEK_START": week_start,
@@ -280,7 +333,14 @@ def main():
         "TOP_NATURE_SNIPPET": nb["snippet"],
         "TOP_NATURE_URL": nb["youtube_url"],
         "TOP_NATURE_THUMB": nb.get("thumb"),
-    }
+        
+        "TOP_QUAKE_REGION_FLAGGED": out_quake_region_flagged,
+        "HOTTEST_WEEK_PLACE_FLAGGED": hot_flagged,
+        "COLDEST_WEEK_PLACE_FLAGGED": cold_flagged,
+        "KP_EMOJI_WEEK": kp_emoji_week,
+        "fx_line_week_line1": fx_line_week_line1,
+        "fx_line_week_line2": fx_line_week_line2,
+        }
 
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
