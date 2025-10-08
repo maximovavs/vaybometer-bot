@@ -2,7 +2,8 @@
 ({{ WEEK_START }}–{{ WEEK_END }} UTC)
 
 1) 🧭 Strongest quake: M{{ TOP_QUAKE_MAG }} — {{ TOP_QUAKE_REGION_FLAGGED }} • depth {{ TOP_QUAKE_DEPTH }} km • {{ TOP_QUAKE_TIME_UTC }} UTC
-2) 🌡 Widest temp spread: {{ HOTTEST_WEEK_PLACE_FLAGGED }} — {{ HOTTEST_WEEK_FMT or (HOTTEST_WEEK ~ "°C") }} vs {{ COLDEST_WEEK_PLACE_FLAGGED }} — {{ COLDEST_WEEK_FMT or (COLDEST_WEEK ~ "°C") }}
+2) 🌡 Widest temp spread: {{ HOTTEST_WEEK_PLACE_FLAGGED }} — {{ HOTTEST_WEEK_FMT | default(HOTTEST_WEEK ~ "°C", true) }}
+   vs {{ COLDEST_WEEK_PLACE_FLAGGED }} — {{ COLDEST_WEEK_FMT | default(COLDEST_WEEK ~ "°C", true) }}
 3) 🧘 Calm focus window (Kp): {{ CALM_WINDOW_UTC }}
 4) 🌅 Sun highlight: {{ SUN_HIGHLIGHT_PLACE }} — {{ SUN_HIGHLIGHT_TIME }} UTC
 5) 🌊 Community favorite Nature Break: {{ TOP_NATURE_TITLE }}
@@ -13,9 +14,10 @@ Money, quick glance
 
 Next week glance
 - Moon: {{ NEXT_MOON_PHASE }}
+{# --- Kp outlook --- #}
 {% set kp = NEXT_KP_NOTE %}
-{% if kp and 'stable' in kp|lower %}
-- Kp outlook: {{ (kp|split(' '))[-1] }} ({{ (kp|split(' '))[0] }})
+{% if kp and ('stable' in (kp|lower)) %}
+- Kp outlook: {{ kp|replace('stable','')|replace('Stable','')|trim }} (stable)
 {% else %}
 - Kp outlook: {{ kp }}
 {% endif %}
