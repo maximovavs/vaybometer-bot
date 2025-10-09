@@ -49,6 +49,7 @@ PRIMARY_CITY_NAME = os.getenv("PRIMARY_CITY", "Limassol")
 
 CACHE_DIR = Path(".cache"); CACHE_DIR.mkdir(exist_ok=True, parents=True)
 USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
+DISABLE_SCHUMANN = os.getenv("DISABLE_SCHUMANN", "").strip().lower() in ("1","true","yes","on")
 
 # ────────────────────────── LLM safety ──────────────────────────
 DISABLE_LLM_TIPS = os.getenv("DISABLE_LLM_TIPS", "").strip().lower() in ("1", "true", "yes", "on")
@@ -983,10 +984,17 @@ def build_message(region_name: str,
             P.append("ℹ️ По ветру сейчас спокойно; Kp — глобальный индекс за 3 ч.")
     except Exception: pass
 
-    # Шуман
-    schu_state = get_schumann_with_fallback()
-    P.append(schumann_line(schu_state))
-    P.append("———")
+    # Шуман    # было:
+    # schu_state = get_schumann_with_fallback()
+    # P.append(schumann_line(schu_state))
+    # P.append("———")
+  
+    # стало:
+    schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
+    if not DISABLE_SCHUMANN:
+        P.append(schumann_line(schu_state))
+        P.append("———")
+
 
     # Астрособытия (на завтра по Asia/Nicosia)
     tz_nic = pendulum.timezone("Asia/Nicosia")
