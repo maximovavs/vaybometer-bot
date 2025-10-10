@@ -298,6 +298,12 @@ def main():
 
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    out.update(flat)
+
+    out_path = Path(__file__).parent / "daily.json"
+    out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[world_collect] wrote {out_path} ({out_path.stat().st_size} bytes)")
+
 
 if __name__ == "__main__":
     main()
