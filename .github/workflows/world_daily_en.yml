@@ -2,11 +2,11 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC
+    - cron: "15 7 * * *"   # 07:15 UTC every day
   workflow_dispatch:
     inputs:
       send_to_test:
-        description: "Also post to TEST channel?"
+        description: "Post ONLY to TEST channel (skip main)"
         type: boolean
         default: false
 
@@ -27,6 +27,7 @@ jobs:
       - name: Install deps
         run: pip install jinja2 requests astral pytz
 
+      # ----------------- Collect → daily.json -----------------
       - name: Collect daily (with hard assert)
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
@@ -38,32 +39,49 @@ jobs:
           python world_en/world_collect.py
           echo "---- ls repo root ----"; ls -la
           echo "---- ls world_en ----"; ls -la world_en || true
-          test -f world_en/daily.json || (echo "ERROR: world_en/daily.json was not created" >&2; exit 1)
+          test -f world_en/daily.json || { echo "ERROR: world_en/daily.json was not created" >&2; exit 1; }
           echo "WROTE daily.json, first 400 bytes ↓"
           head -c 400 world_en/daily.json || true
           echo
 
-      - name: Render
+      - name: Render message
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
 
-      - name: Send (MAIN)
+      # ----------------- Send to TEST (only when checkbox ON) -----------------
+      - name: Send to TEST (manual runs with checkbox)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_to_test == true }}
         env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+          # Prefer a dedicated test bot token if present; fallback to main bot token
+          TG_TOKEN_TEST: ${{ secrets.TELEGRAM_TOKEN_TEST }}
+          TG_TOKEN_MAIN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+          # Accept either secret name for test chat id
+          TG_CHAT_TEST_1: ${{ secrets.TELEGRAM_CHAT_ID_TEST }}
+          TG_CHAT_TEST_2: ${{ secrets.CHANNEL_ID_TEST }}
         run: |
+          set -euo pipefail
+          TG_TOKEN="${TG_TOKEN_TEST:-$TG_TOKEN_MAIN}"
+          TG_CHAT="${TG_CHAT_TEST_1:-$TG_CHAT_TEST_2}"
+          if [ -z "${TG_CHAT}" ]; then
+            echo "ERROR: TEST chat_id is empty. Set TELEGRAM_CHAT_ID_TEST or CHANNEL_ID_TEST." >&2
+            exit 1
+          fi
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      # опциональная отправка в ТЕСТ по флажку при ручном запуске
-      - name: Send (TEST, optional)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_to_test == true }}
+      # ----------------- Send to MAIN -----------------
+      # Scheduled runs ALWAYS post to main.
+      # Manual runs post to main only when checkbox is OFF.
+      - name: Send to MAIN
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.send_to_test != true) }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_TEST }}   # убедись, что этот секрет есть и не пустой
+          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
+          set -euo pipefail
           if [ -z "${TG_CHAT}" ]; then
-            echo "ERROR: TELEGRAM_CHAT_ID_TEST secret is empty"; exit 1
+            echo "ERROR: TELEGRAM_CHAT_ID_EN is empty." >&2
+            exit 1
           fi
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
