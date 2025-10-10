@@ -250,60 +250,55 @@ def main():
     item = read_calendar_today() or {}
 
     # исходники из календаря
-    phase_name  = item.get("phase_name") or ""     # RU фаза
-    phase_pct   = item.get("percent")              # 0..100 (может быть None/"")
-    sign_raw    = item.get("sign") or ""           # RU/EN знак
-    voc_block   = item.get("void_of_course") or {} # {"start":"...", "end":"..."}
+    phase_name  = item.get("phase_name") or ""          # RU фаза
+    phase_pct   = item.get("percent")                   # 0..100 (может быть None/"")
+    sign_raw    = item.get("sign") or ""                # RU/EN знак
+    voc_block   = item.get("void_of_course") or {}      # {"start":"...", "end":"..."}
 
-    # --- VoC: умные статусы (no / passed / now / upcoming) ---
+    # --- VoC: умный статус (no / later / now / earlier) ---
     voc_start_str = (voc_block or {}).get("start")
     voc_end_str   = (voc_block or {}).get("end")
     start_utc, end_utc = parse_voc_utc(voc_start_str, voc_end_str)
     VOC_TEXT, VOC_BADGE, VOC_LEN_MIN = voc_text_status(start_utc, end_utc)
     VOC_LEN_PRETTY = pretty_duration(VOC_LEN_MIN) if isinstance(VOC_LEN_MIN, int) else ""
 
-    # --- Луна: EN-названия и эмодзи (с учётом процента для crescent/gibbous) ---
-    sign_en, sign_emoji           = _sign_en_emoji(sign_raw)
-    phase_en, phase_emoji         = _phase_from_name_and_percent(phase_name, phase_pct)
-    energy_icon                   = energy_icon_for_phase(phase_en)
+    # --- Луна: EN-название и эмодзи (с учётом процента для crescent/gibbous) ---
+    sign_en,  sign_emoji   = _sign_en_emoji(sign_raw)
+    phase_en, phase_emoji  = _phase_from_name_and_percent(phase_name, phase_pct)
+    energy_icon            = energy_icon_for_phase(phase_en or phase_name)
 
     # Энергия/совет: учитываем VoC ТОЛЬКО если оно активно сейчас
     voc_active_mins = voc_minutes_if_active(start_utc, end_utc)
-    energy_line, advice_line  = energy_and_tip(phase_name, fmt_percent_or_none(phase_pct), voc_active_mins)
+    energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), voc_active_mins)
 
     out = {
         "DATE": today.isoformat(),
         "WEEKDAY": weekday,
 
         # Луна
-        "MOON_PHASE": phase_name or "—",                 # оригинал (может быть RU)
-        "PHASE_EN": phase_en,                            # EN-название фазы
-        "PHASE_EMOJI": phase_emoji,                      # эмодзи фазы
-        "MOON_PERCENT": fmt_percent_or_none(phase_pct),  # скрываем 0%/100%
+        "MOON_PHASE": phase_name or "—",
+        "PHASE_EN": phase_en,
+        "PHASE_EMOJI": phase_emoji,
+        "MOON_PERCENT": fmt_percent_or_none(phase_pct),
         "MOON_SIGN": sign_en,
         "MOON_SIGN_EMOJI": sign_emoji,
 
         # VoC
-        "VOC": VOC_TEXT,            # обратная совместимость
+        "VOC": VOC_TEXT,               # обратная совместимость
         "VOC_TEXT": VOC_TEXT,
-        "VOC_LEN": VOC_LEN_PRETTY,  # "≈1h 45m" или ""
-        "VOC_BADGE": VOC_BADGE,     # 🟢/🟡/🟠/⚪️
+        "VOC_LEN": VOC_LEN_PRETTY,
+        "VOC_BADGE": VOC_BADGE,
         "VOC_IS_ACTIVE": voc_active_mins is not None,
 
         # Энергия/совет
-        "ENERGY_ICON": energy_icon,   # лёгкая иконка энергии по фазе
+        "ENERGY_ICON": energy_icon,
         "ENERGY_LINE": energy_line,
         "ADVICE_LINE": advice_line,
     }
 
+    # Пишем ТОЛЬКО astro.json
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    out.update(flat)
-
-    out_path = Path(__file__).parent / "daily.json"
-    out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[world_collect] wrote {out_path} ({out_path.stat().st_size} bytes)")
-
+    print(f"[astro] wrote {OUT} ({OUT.stat().st_size} bytes)")
 
 if __name__ == "__main__":
     main()
