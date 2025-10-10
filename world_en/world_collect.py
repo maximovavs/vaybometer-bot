@@ -264,7 +264,9 @@ def main():
 
     # Энергия/совет: учитываем VoC ТОЛЬКО если оно активно сейчас
     voc_active_mins = voc_minutes_if_active(start_utc, end_utc)
-    energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), voc_active_mins)
+    energy_line, advice_line = energy_and_tip(
+        phase_name, int(phase_pct or 0), voc_active_mins
+    )
 
     out = {
         "DATE": today.isoformat(),
@@ -291,9 +293,18 @@ def main():
         "ADVICE_LINE": advice_line,
     }
 
-    # Пишем ТОЛЬКО astro.json
-    OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[astro] wrote {OUT} ({OUT.stat().st_size} bytes)")
+    # Ничего не пишем на диск — только возвращаем
+    return out
+
 
 if __name__ == "__main__":
-    main()
+    data = main()
+    if not isinstance(data, dict):
+        # страховка, чтобы пайплайн не падал
+        data = {
+            "DATE": dt.date.today().isoformat(),
+            "ERROR": "world_astro_collect.main() did not return dict",
+        }
+
+    OUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[astro] wrote {OUT} ({OUT.stat().st_size} bytes)")
