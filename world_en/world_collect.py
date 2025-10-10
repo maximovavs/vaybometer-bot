@@ -13,7 +13,8 @@ from pytz import UTC
 
 from world_en.fx_intl import fetch_rates, format_line
 from world_en.settings_world_en import (
-    HOT_CITIES, COLD_SPOTS, VIBE_TIPS
+    HOT_CITIES, COLD_SPOTS, VIBE_TIPS,
+    YT_API_KEY, YT_CHANNEL_ID, FALLBACK_NATURE_LIST
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,7 +54,6 @@ CITY_TO_CC = {
 def _with_flag(place: str) -> str:
     if not place: return "—"
     place = place.strip()
-    # пытаемся выцепить код из trailing ", XX"
     m = re.search(r",\s*([A-Z]{2})$", place)
     cc = m.group(1) if m else CITY_TO_CC.get(place.split(",")[0].strip(), "")
     fl = _country_flag(cc) if cc else ""
@@ -68,7 +68,6 @@ def kp_emoji(k: float | int | None) -> str:
     return "🟢"
 
 def pretty_minus(n: float | int | str | None) -> str:
-    """Тонкий минус U+2212 для отрицательных температур."""
     if n is None: return "—"
     try:
         v = int(round(float(n)))
@@ -80,10 +79,6 @@ def pretty_minus(n: float | int | str | None) -> str:
 # ---------- external fetchers ----------
 
 def fetch_kp_now() -> tuple[str, float | None]:
-    """
-    NOAA planetary K-index (avg последних 3 значений).
-    Возвращает (текст '1.33', число или None).
-    """
     url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
     try:
         j = requests.get(url, timeout=20, headers=HEADERS).json()
@@ -91,7 +86,6 @@ def fetch_kp_now() -> tuple[str, float | None]:
         if not rows: return "—", None
         vals = []
         for r in rows[-3:]:
-            # формат: ["2025-10-10 09:00:00", "1.33", "???", ...] либо число
             try:
                 vals.append(float(r[1]))
             except Exception:
@@ -103,16 +97,12 @@ def fetch_kp_now() -> tuple[str, float | None]:
         return "—", None
 
 def fetch_solar_wind() -> tuple[str, str]:
-    """
-    Возвращает (speed_km_s, density_cm3) как строки или '—'.
-    """
     url = "https://services.swpc.noaa.gov/products/solar-wind/plasma-5-minute.json"
     try:
         j = requests.get(url, timeout=20, headers=HEADERS).json()
         if not isinstance(j, list) or len(j) < 2: return "—", "—"
         header, last = j[0], j[-1]
         row = dict(zip(header, last))
-        # поля обычно: time_tag, density, speed, temperature
         spd = row.get("speed") or row.get("velocity")
         den = row.get("density") or row.get("proton_density")
         spd_s = f"{int(round(float(spd)))}" if spd not in (None, "") else "—"
@@ -122,17 +112,12 @@ def fetch_solar_wind() -> tuple[str, str]:
         return "—", "—"
 
 def strongest_quake_24h():
-    """USGS: strongest quake за 24 часа (>=4.5)."""
     try:
         url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson"
         feats = requests.get(url, timeout=20, headers=HEADERS).json().get("features", [])
         if not feats: return None
         cutoff = dt.datetime.utcnow() - dt.timedelta(hours=24)
-        def pick(f):
-            p = f["properties"]; t = dt.datetime.utcfromtimestamp(p["time"]/1000.0)
-            return (t >= cutoff, p.get("mag") or 0.0)
-        cand = [f for f in feats if dt.datetime.utcfromtimestamp(f["properties"]["time"]/1000.0) >= cutoff]
-        cand = cand or feats
+        cand = [f for f in feats if dt.datetime.utcfromtimestamp(f["properties"]["time"]/1000.0) >= cutoff] or feats
         top = max(cand, key=lambda f: f["properties"]["mag"] or 0.0)
         p = top["properties"]
         mag = round(p.get("mag") or 0.0, 1)
@@ -144,7 +129,6 @@ def strongest_quake_24h():
         return None
 
 def openmeteo_extremes_today():
-    """hottest/coldest за последние сутки из списков мест."""
     def fetch_daily(lat, lon):
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
@@ -187,23 +171,19 @@ def reykjavik_sunrise_today() -> str:
         return "—"
 
 def schumann_amp_from_file() -> str:
-    """Пытаемся взять последнюю амплитуду из корневого schumann_hourly.json."""
     p = ROOT / "schumann_hourly.json"
     try:
         j = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return "—"
     try:
-        # варианты структур
         if isinstance(j, list):
-            # список объектов
             for item in reversed(j):
                 if isinstance(item, dict):
                     for key in ("amp", "amplitude", "amp_avg"):
                         if key in item:
                             return f"{float(item[key]):.2f}"
         elif isinstance(j, dict):
-            # возможно {'series':[{'amp':...}, ...]}
             series = j.get("series") or j.get("data") or []
             if isinstance(series, list):
                 for item in reversed(series):
@@ -215,10 +195,64 @@ def schumann_amp_from_file() -> str:
         pass
     return "—"
 
+# ---------- YouTube: top short in last 48h ----------
+
+def _yt_is_short_duration(iso_dur: str) -> bool:
+    m = re.fullmatch(r"^PT(?:(\d+)M)?(?:(\d+)S)?$", iso_dur or "")
+    if not m: return False
+    return (int(m.group(1) or 0) * 60 + int(m.group(2) or 0)) <= 60
+
+def top_short_48h() -> tuple[str | None, str | None]:
+    """
+    Самый просматриваемый шорт за последние 48 часов на канале.
+    Возвращает (title, url) или (None, None) при ошибке.
+    """
+    api = (YT_API_KEY or "").strip()
+    ch  = (YT_CHANNEL_ID or "").strip()
+    if not (api and ch):
+        return None, None
+
+    cutoff = (dt.datetime.utcnow() - dt.timedelta(hours=48)).replace(microsecond=0).isoformat() + "Z"
+    try:
+        # 1) свежие видео канала
+        search = requests.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={
+                "key": api,
+                "channelId": ch,
+                "part": "id",
+                "type": "video",
+                "order": "date",
+                "maxResults": 50,
+                "publishedAfter": cutoff,
+            },
+            timeout=20
+        ).json()
+        ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id", {}).get("videoId")]
+        if not ids:
+            return None, None
+
+        # 2) вытягиваем статистику + длительность
+        stats = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"key": api, "id": ",".join(ids), "part": "snippet,statistics,contentDetails"},
+            timeout=20
+        ).json().get("items", [])
+
+        pool = [v for v in stats if _yt_is_short_duration(v["contentDetails"]["duration"])] or stats
+        if not pool:
+            return None, None
+
+        top = max(pool, key=lambda v: int(v["statistics"].get("viewCount", "0")))
+        title = top["snippet"]["title"]
+        url = f"https://youtu.be/{top['id']}"
+        return title, url
+    except Exception:
+        return None, None
+
 # ---------- astro bridge ----------
 
 def load_astro_dict() -> dict:
-    """Пытаемся вызвать world_astro_collect.main(); если нет — читаем astro.json."""
     try:
         from world_en.world_astro_collect import main as astro_main  # type: ignore
         rv = astro_main()
@@ -231,7 +265,7 @@ def load_astro_dict() -> dict:
 # ---------- main ----------
 
 def main():
-    astro = load_astro_dict()  # может быть пустым, но это ок
+    astro = load_astro_dict()
 
     today = dt.date.today().isoformat()
     weekday = dt.datetime.utcnow().strftime("%a")
@@ -261,6 +295,14 @@ def main():
     # Vibe Tip
     tip_core = random.choice(VIBE_TIPS) if VIBE_TIPS else "Sip water and take 10 slow breaths."
     tip_badge = kp_emoji(kp_val)
+    tip_meta = f"(Kp {kp_txt} • 60 sec)" if kp_txt and kp_txt != "—" else "(60 sec)"
+
+    # Nature / YouTube
+    yt_title, yt_url = top_short_48h()
+    if not yt_url:
+        # запасной вариант
+        yt_url = (FALLBACK_NATURE_LIST[0] if FALLBACK_NATURE_LIST else "https://youtube.com/@misserrelax")
+        yt_title = yt_title or "Nature Break"
 
     out = {
         # base
@@ -268,12 +310,12 @@ def main():
         "WEEKDAY": astro.get("WEEKDAY") or weekday,
 
         # ---- Cosmic Weather ----
-        "KP_NOW": kp_txt,                 # строка, напр. "1.33"
-        "KP_VALUE": kp_val,               # число
+        "KP_NOW": kp_txt,
+        "KP_VALUE": kp_val,
         "KP_BADGE": tip_badge,
-        "SCHUMANN_AMP": sch_amp,          # строка, "7.16" или "—"
-        "SOLAR_WIND_SPEED": sw_speed,     # строка-число
-        "SOLAR_WIND_DENSITY": sw_density, # строка-число
+        "SCHUMANN_AMP": sch_amp,
+        "SOLAR_WIND_SPEED": sw_speed,
+        "SOLAR_WIND_DENSITY": sw_density,
 
         # ---- Earth Live ----
         "HOTTEST_PLACE": (hot or {}).get("place") or "—",
@@ -288,14 +330,13 @@ def main():
         "QUAKE_UTC": quake.get("time_utc", "—"),
         "SUN_TIDBIT_PLACE": "Reykjavik, IS",
         "SUN_TIDBIT_TIME": sun_rise,
-        # синонимы для совместимости
         "SUN_HIGHLIGHT_PLACE": "Reykjavik, IS",
         "SUN_HIGHLIGHT_TIME": sun_rise,
 
         # ---- Money ----
         "fx_line": fx_line,
 
-        # ---- Astro (пробрасываем всё, что пришло) ----
+        # ---- Astro passthrough ----
         "MOON_PHASE": astro.get("MOON_PHASE") or "—",
         "PHASE_EN": astro.get("PHASE_EN") or "—",
         "PHASE_EMOJI": astro.get("PHASE_EMOJI") or "",
@@ -310,11 +351,16 @@ def main():
 
         # ---- Vibe Tip ----
         "TIP_TEXT": tip_core,
-        "TIP_META": f"(Kp {kp_txt} • 60 sec)",
+        "TIP_META": tip_meta,
         "TIP_BADGE": tip_badge,
+
+        # ---- Nature video ----
+        "NATURE_TITLE": yt_title or "Nature Break",
+        "NATURE_SNIPPET": "60 seconds of calm",
+        "NATURE_URL": yt_url,
     }
 
-    # запасные ключи, чтобы шаблон точно нашёл
+    # синонимы для старых шаблонов
     out.setdefault("KP", out["KP_NOW"])
     out.setdefault("SCHUMANN", out["SCHUMANN_AMP"])
     out.setdefault("SW_SPEED", out["SOLAR_WIND_SPEED"])
