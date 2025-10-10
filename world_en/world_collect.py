@@ -298,13 +298,35 @@ def main():
 
 
 if __name__ == "__main__":
-    data = main()
-    if not isinstance(data, dict):
-        # страховка, чтобы пайплайн не падал
+    # Надёжная обёртка: при сбое запишем минимальный fallback, чтобы шаг Render не падал.
+    try:
+        data = main()
+        if not isinstance(data, dict):
+            raise TypeError("main() did not return dict")
+    except Exception as e:
+        print(f"[astro][ERROR] main() crashed: {e}")
+        # Минимальный безопасный JSON для шаблона
         data = {
             "DATE": dt.date.today().isoformat(),
-            "ERROR": "world_astro_collect.main() did not return dict",
+            "WEEKDAY": dt.datetime.utcnow().strftime("%a"),
+            "MOON_PHASE": "—",
+            "PHASE_EN": "—",
+            "PHASE_EMOJI": "",
+            "MOON_PERCENT": None,
+            "MOON_SIGN": "—",
+            "MOON_SIGN_EMOJI": "",
+            "VOC": "No VoC today",
+            "VOC_TEXT": "No VoC today",
+            "VOC_LEN": "",
+            "VOC_BADGE": "",
+            "VOC_IS_ACTIVE": False,
+            "ENERGY_ICON": "",
+            "ENERGY_LINE": "Keep plans light; tune into your body.",
+            "ADVICE_LINE": "Focus on what matters.",
         }
 
-    OUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[astro] wrote {OUT} ({OUT.stat().st_size} bytes)")
+    try:
+        OUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[astro] wrote {OUT} ({OUT.stat().st_size} bytes)")
+    except Exception as e:
+        print(f"[astro][FATAL] failed to write {OUT}: {e}")
