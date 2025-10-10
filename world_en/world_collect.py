@@ -30,7 +30,7 @@ SIGN_MAP = {
 
 # ---- phase mapping
 # Точное соответствие фраз → (EN-название, emoji).
-# Для "Растущая/Убывающая" дополнительно ниже учитываем процент, чтобы выбрать Crescent/Gibbous.
+# Для "Растущая/Убывающая" ниже учитываем процент, чтобы выбрать Crescent/Gibbous.
 PHASE_EXACT = {
     "Новолуние": ("New Moon", "🌑"),
     "Полнолуние": ("Full Moon", "🌕"),
@@ -95,26 +95,26 @@ def voc_badge_by_len(minutes: int) -> str:
 def voc_text_status(start_utc: Optional[dt.datetime], end_utc: Optional[dt.datetime]) -> Tuple[str, str, Optional[int]]:
     """
     Возвращает (VOC_TEXT, VOC_BADGE, VOC_LEN_MIN).
-    Варианты текста:
-     - 'No VoC today'
-     - 'VoC passed earlier today (HH:MM–HH:MM UTC)'
-     - 'VoC now HH:MM–HH:MM UTC (≈1h 45m)'
-     - 'HH:MM–HH:MM UTC (≈1h 45m)' — если ещё не началось
+    Формат:
+      - 'No VoC today UTC'
+      - 'VoC later today — HH:MM–HH:MM UTC (≈1h 45m)'
+      - 'VoC now — HH:MM–HH:MM UTC (≈1h 45m)'
+      - 'VoC earlier today — HH:MM–HH:MM UTC (≈1h 45m)'
     """
     if not start_utc or not end_utc:
-        return "No VoC today", "", None
+        return "No VoC today UTC", "", None
 
     total_min = max(0, int((end_utc - start_utc).total_seconds() // 60))
-    badge_len = voc_badge_by_len(total_min)
     rng = f"{start_utc.strftime('%H:%M')}–{end_utc.strftime('%H:%M')} UTC"
     pretty = pretty_duration(total_min)
-
     now = dt.datetime.utcnow().replace(tzinfo=UTC)
+
     if now < start_utc:
-        return f"{rng} ({pretty})", badge_len, total_min
+        return f"VoC later today — {rng} ({pretty})", voc_badge_by_len(total_min), total_min
     if start_utc <= now <= end_utc:
-        return f"VoC now {rng} ({pretty})", badge_len, total_min
-    return f"VoC passed earlier today ({rng})", "⚪️", total_min
+        return f"VoC now — {rng} ({pretty})", voc_badge_by_len(total_min), total_min
+    # прошло раньше сегодня — без бейджа
+    return f"VoC earlier today — {rng} ({pretty})", "", total_min
 
 def voc_minutes_if_active(start_utc: Optional[dt.datetime],
                           end_utc: Optional[dt.datetime]) -> Optional[int]:
@@ -157,10 +157,6 @@ def _phase_from_name_and_percent(name: Optional[str], percent: Optional[int]):
     if name in PHASE_EXACT:
         return PHASE_EXACT[name]
 
-    # EN точные
-    if name in PHASE_EXACT:
-        return PHASE_EXACT[name]
-
     low = name.lower()
 
     # растущая
@@ -199,7 +195,6 @@ def base_energy_tip(phase_name_ru: str, percent: Optional[int]) -> tuple[str, st
     if "первая четверть" in pn or "first quarter" in pn:
         return ("Take a clear step forward.", "One priority; short focused block.")
     if "растущ" in pn or "waxing" in pn:
-        # разделять на crescent/gibbous не критично для текста
         return ("Build momentum; refine work.", "Polish & iterate for 20–40 min.")
     if "полнолуние" in pn or "full moon" in pn:
         return ("Emotions peak; seek balance.", "Grounding + gratitude; avoid big decisions.")
