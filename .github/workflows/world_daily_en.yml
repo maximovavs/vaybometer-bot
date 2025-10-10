@@ -2,8 +2,13 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC (пример)
+    - cron: "15 7 * * *"   # 07:15 UTC
   workflow_dispatch:
+    inputs:
+      send_to_test:
+        description: "Also post to TEST channel?"
+        type: boolean
+        default: false
 
 jobs:
   run:
@@ -20,56 +25,46 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: |
-          pip install jinja2 requests astral pytz
-          which jq || sudo apt-get update && sudo apt-get install -y jq
+        run: pip install jinja2 requests astral pytz
 
-      - name: Collect daily
+      - name: Collect daily (with hard assert)
         env:
-          YT_API_KEY: ${{ secrets.YT_API_KEY }}
-          YT_CHANNEL_ID: ${{ secrets.YT_CHANNEL_ID }}
-          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}   # опционально
-          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}   # опционально
-        run: python world_en/world_collect.py
+          YT_API_KEY:            ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS:  ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
+        run: |
+          set -euo pipefail
+          python world_en/world_collect.py
+          echo "---- ls repo root ----"; ls -la
+          echo "---- ls world_en ----"; ls -la world_en || true
+          test -f world_en/daily.json || (echo "ERROR: world_en/daily.json was not created" >&2; exit 1)
+          echo "WROTE daily.json, first 400 bytes ↓"
+          head -c 400 world_en/daily.json || true
+          echo
 
       - name: Render
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
 
-      - name: Send daily text
+      - name: Send (MAIN)
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -d chat_id="${TG_CHAT}" \
-            -d parse_mode="Markdown" \
-            -d disable_web_page_preview=true \
+            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      - name: Send Nature card (photo + clean caption + button)
+      # опциональная отправка в ТЕСТ по флажку при ручном запуске
+      - name: Send (TEST, optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_to_test == true }}
         env:
-            TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-            TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_TEST }}   # убедись, что этот секрет есть и не пустой
         run: |
-            python - <<'PY' | tee /tmp/nb.txt >/dev/null
-            import json, html
-            d = json.load(open('world_en/daily.json', encoding='utf-8'))
-            thumb   = d.get('NATURE_THUMB','')
-            url     = d.get('NATURE_URL','')
-            title   = html.escape(d.get('NATURE_TITLE','Nature Break'))
-            snippet = html.escape(d.get('NATURE_SNIPPET','60 seconds of calm'))
-            caption = f"🌊 <b>{title}</b>\n<i>{snippet}</i>"
-            print(thumb); print(url); print(caption)
-            PY
-            THUMB=$(sed -n '1p' /tmp/nb.txt)
-            URL=$(sed -n '2p' /tmp/nb.txt)
-            CAPTION=$(sed -n '3,$p' /tmp/nb.txt)
-        
-            if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-              curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-                -F chat_id="${TG_CHAT}" \
-                -F photo="${THUMB}" \
-                -F parse_mode="HTML" \
-                -F caption="$CAPTION" \
-                -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-            fi
+          if [ -z "${TG_CHAT}" ]; then
+            echo "ERROR: TELEGRAM_CHAT_ID_TEST secret is empty"; exit 1
+          fi
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
+            --data-urlencode text@"world_en/message.txt"
