@@ -296,37 +296,32 @@ def main():
     # Ничего не пишем на диск — только возвращаем
     return out
 
+# ---------- write-out guard ----------
 
 if __name__ == "__main__":
-    # Надёжная обёртка: при сбое запишем минимальный fallback, чтобы шаг Render не падал.
+    out_path = Path(__file__).parent / "daily.json"
     try:
-        data = main()
+        data = main()  # main() должен вернуть dict с полями для шаблона
         if not isinstance(data, dict):
-            raise TypeError("main() did not return dict")
+            raise TypeError(f"main() returned {type(data).__name__}, expected dict")
     except Exception as e:
-        print(f"[astro][ERROR] main() crashed: {e}")
-        # Минимальный безопасный JSON для шаблона
+        # Fallback, чтобы шаг Render не падал
+        print(f"[daily][ERROR] main() failed: {e}")
         data = {
-            "DATE": dt.date.today().isoformat(),
+            "date_utc": dt.date.today().isoformat(),
+            "weekday_en": dt.datetime.utcnow().strftime("%a"),
+            "error": f"world_collect crashed: {e}",
+            # минимальные плоские поля, чтобы шаблон не упал
             "WEEKDAY": dt.datetime.utcnow().strftime("%a"),
-            "MOON_PHASE": "—",
-            "PHASE_EN": "—",
-            "PHASE_EMOJI": "",
-            "MOON_PERCENT": None,
-            "MOON_SIGN": "—",
-            "MOON_SIGN_EMOJI": "",
-            "VOC": "No VoC today",
-            "VOC_TEXT": "No VoC today",
-            "VOC_LEN": "",
-            "VOC_BADGE": "",
-            "VOC_IS_ACTIVE": False,
-            "ENERGY_ICON": "",
-            "ENERGY_LINE": "Keep plans light; tune into your body.",
-            "ADVICE_LINE": "Focus on what matters.",
+            "DATE": dt.date.today().isoformat(),
+            "fx_line": "USD 1.00",
+            "TIP_TEXT": "Keep plans light; tune into your body.",
+            "NATURE_TITLE": "Nature Break",
+            "NATURE_SNIPPET": "60 seconds of calm",
+            "NATURE_URL": "https://youtube.com/@misserrelax",
         }
-
     try:
-        OUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[astro] wrote {OUT} ({OUT.stat().st_size} bytes)")
+        out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[daily] wrote {out_path} ({out_path.stat().st_size} bytes)")
     except Exception as e:
-        print(f"[astro][FATAL] failed to write {OUT}: {e}")
+        print(f"[daily][FATAL] failed to write {out_path}: {e}")
