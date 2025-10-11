@@ -69,7 +69,6 @@ def fmt_pct(x: Optional[float]) -> str:
     if x is None:
         return "—"
     s = f"{x:+.2f}%"
-    # уберём +0.00% → +0.00%
     return s
 
 # ---------- Kp (planetary index) ----------
@@ -120,20 +119,13 @@ def vibe_emoji_from_kp(kp: Optional[float]) -> str:
 def fetch_schumann_amp() -> Tuple[str, str]:
     """
     Возвращает (status, amp_abs_str).
-    Источники разнородные, поэтому лёгкая эвристика:
-      - Пытаемся взять амплитуду (или отклонение) в единицах 'Hz amplitude' из любого доступного API.
-      - Если ничего нет — вернём baseline/—.
+    Сейчас безопасный фолбэк: baseline/—.
     """
     try:
-        # Пробуем простой открытый источник (псевдо-амплитуда, пример формата; обернули try)
-        # Если формат не совпадёт — просто уйдём в except и дадим baseline/—.
-        txt = _get_text("https://services.swpc.noaa.gov/text/ace-swepam.txt", timeout=10)
-        # Это не Schumann, но даёт нам устойчивый фолбэк как «нет данных».
+        _ = _get_text("https://services.swpc.noaa.gov/text/ace-swepam.txt", timeout=10)
         raise RuntimeError("no reliable schumann endpoint")
     except Exception:
         pass
-
-    # Нет стабильного источника — безопасный дефолт:
     return "baseline", "—"
 
 # ---------- Solar wind ----------
@@ -148,7 +140,6 @@ def fetch_solar_wind() -> Tuple[Optional[float], Optional[float], str]:
 
     # Попытка 1: сводная панель DSCOVR
     try:
-        # https://services.swpc.noaa.gov/products/summary/solar-wind-speed.json etc — иногда недоступны
         sp = _get_json("https://services.swpc.noaa.gov/products/summary/solar-wind-speed.json")
         de = _get_json("https://services.swpc.noaa.gov/products/summary/solar-wind-density.json")
         # формат: ["time","value"], ["YYYY-MM-DD HH:MM:SS", number]
@@ -167,7 +158,6 @@ def fetch_solar_wind() -> Tuple[Optional[float], Optional[float], str]:
             lines = [ln for ln in txt.splitlines() if ln and ln[0].isdigit()]
             if lines:
                 cols = re.split(r"\s+", lines[-1].strip())
-                # формат у ACE: ... Vp(km/s)=cols[7], Np(/cc)=cols[8] (может отличаться)
                 v = safe_float(cols[-2])
                 n = safe_float(cols[-1])
                 if v: speed = v
@@ -272,11 +262,26 @@ def _is_short_iso(iso: str) -> bool:
     if not m: return False
     return (int(m.group(1) or 0)*60 + int(m.group(2) or 0)) <= 60
 
-def pick_top_short_48h() -> Tuple[Optional[str], Optional[str]]:
+def _thumb_from_snippet(sn: dict, vid: str) -> str:
+    thumbs = (sn or {}).get("thumbnails", {}) or {}
+    for key in ("maxres", "standard", "high", "medium", "default"):
+        u = (thumbs.get(key) or {}).get("url")
+        if u: return u
+    return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else ""
+
+def _video_id_from_url(url: str) -> str:
+    if not url: return ""
+    m = re.search(r"(?:v=|be/)([A-Za-z0-9_-]{6,})", url)
+    return m.group(1) if m else ""
+
+def pick_top_short_48h() -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """
+    Возвращает (title, url_with_utm, thumb_url, snippet).
+    """
     api = os.getenv("YT_API_KEY", YT_API_KEY)
     ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
     if not api or not ch:
-        return None, None
+        return None, None, None, None
 
     cutoff = (dt.datetime.utcnow() - dt.timedelta(hours=48)).replace(microsecond=0).isoformat() + "Z"
 
@@ -304,7 +309,7 @@ def pick_top_short_48h() -> Tuple[Optional[str], Optional[str]]:
                     break
 
         if not ids:
-            return None, None
+            return None, None, None, None
 
         stats = requests.get(
             "https://www.googleapis.com/youtube/v3/videos",
@@ -314,21 +319,31 @@ def pick_top_short_48h() -> Tuple[Optional[str], Optional[str]]:
 
         pool = [v for v in stats if _is_short_iso(v["contentDetails"]["duration"])] or stats
         if not pool:
-            return None, None
+            return None, None, None, None
 
         top = max(pool, key=lambda v: int(v["statistics"].get("viewCount", "0")))
-        title = top["snippet"]["title"]
-        url   = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_nature"
-        return title, url
+        vid = top["id"]
+        sn  = top.get("snippet", {}) or {}
+        title = sn.get("title") or "Nature Break"
+        url   = f"https://youtu.be/{vid}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_nature"
+        thumb = _thumb_from_snippet(sn, vid)
+        # первый осмысленный абзац описания
+        descr = (sn.get("description") or "").strip()
+        snippet = ""
+        if descr:
+            snippet = next((ln.strip() for ln in descr.splitlines() if ln.strip()), "")
+        if not snippet:
+            snippet = "60 seconds of calm"
+        return title, url, thumb, snippet
     except Exception:
-        return None, None
+        return None, None, None, None
 
 # ---------- Vibe Tip ----------
 
 def pick_vibe_tip(kp: Optional[float]) -> Tuple[str, str]:
     """
     Возвращает (emoji, tip_text).
-    Эмодзи завязано на Kp, текст берем из VIBE_TIPS (случайно/циклически).
+    Эмодзи завязано на Kp, текст берём из VIBE_TIPS (случайно/циклически).
     """
     emo = vibe_emoji_from_kp(kp)
     if VIBE_TIPS:
@@ -373,12 +388,21 @@ def main():
     # Vibe Tip
     VIBE_EMOJI, TIP_TEXT = pick_vibe_tip(KP_VAL)
 
-    # Nature short (URL сохраняем — отправка отдельным шагом в workflow)
-    NATURE_TITLE, NATURE_URL = pick_top_short_48h()
+    # Nature short
+    NATURE_TITLE, NATURE_URL, NATURE_THUMB, NATURE_SNIPPET = pick_top_short_48h()
     if not NATURE_URL and FALLBACK_NATURE_LIST:
+        # фолбэк на заранее заданный список
         NATURE_URL = FALLBACK_NATURE_LIST[0]
+        if "utm_source=" not in NATURE_URL:
+            sep = "&" if "?" in NATURE_URL else "?"
+            NATURE_URL = f"{NATURE_URL}{sep}utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_nature"
         if not NATURE_TITLE:
             NATURE_TITLE = "Nature Break"
+        if not NATURE_THUMB:
+            vid = _video_id_from_url(NATURE_URL)
+            NATURE_THUMB = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else ""
+        if not NATURE_SNIPPET:
+            NATURE_SNIPPET = "60 seconds of calm"
 
     out = {
         "WEEKDAY": weekday,
@@ -419,9 +443,11 @@ def main():
         "KP_SHORT": KP_SHORT,
         "TIP_TEXT": TIP_TEXT,
 
-        # For extra post with preview
-        "NATURE_TITLE": NATURE_TITLE or "Nature Break",
-        "NATURE_URL": NATURE_URL or "",
+        # Для карточки с превью (как в weekly)
+        "NATURE_TITLE":   NATURE_TITLE or "Nature Break",
+        "NATURE_URL":     NATURE_URL or "",
+        "NATURE_THUMB":   NATURE_THUMB or "",
+        "NATURE_SNIPPET": NATURE_SNIPPET or "60 seconds of calm",
     }
 
     return out
@@ -449,7 +475,10 @@ if __name__ == "__main__":
             "SUN_TIDBIT_TIME": dt.datetime.utcnow().strftime("%H:%M"),
             "fx_line": "USD 1.0000 (+0.00%)",
             "VIBE_EMOJI": "⚪️", "KP_SHORT": "—", "TIP_TEXT": "Keep plans light; tune into your body.",
-            "NATURE_TITLE": "Nature Break", "NATURE_URL": (FALLBACK_NATURE_LIST[0] if FALLBACK_NATURE_LIST else "")
+            "NATURE_TITLE": "Nature Break",
+            "NATURE_URL": (FALLBACK_NATURE_LIST[0] if FALLBACK_NATURE_LIST else ""),
+            "NATURE_THUMB": "",
+            "NATURE_SNIPPET": "60 seconds of calm",
         }
     try:
         out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
