@@ -2,20 +2,20 @@
 
 Cosmic Weather
 - Geomagnetic (Kp): {{KP_SHORT}} {{KP_TREND_EMOJI}} — {{KP_NOTE}}
-{%- if SCHUMANN_STATUS == 'baseline' and (SCHUMANN_AMP in ['—', '', None]) %}
+{% if SCHUMANN_STATUS == 'baseline' and (SCHUMANN_AMP in ['—', '', None]) -%}
 - Schumann: baseline
-{%- else %}
-- Schumann: {{SCHUMANN_STATUS}} — amp {{SCHUMANN_AMP}} (7.83 Hz baseline)
-{%- endif %}
+{% else -%}
+- Schumann: {{SCHUMANN_STATUS}} — {{SCHUMANN_AMP}} (7.83 Hz baseline)
+{% endif -%}
 - Solar wind: {{SOLAR_WIND_SPEED}} km/s, {{SOLAR_WIND_DENSITY}} cm⁻³ — {{SOLAR_NOTE}}
-{%- if AURORA_HINT %}
+{% if AURORA_HINT -%}
 - Aurora: {{AURORA_HINT}}
-{%- endif %}
+{% endif %}
 
 Earth Live
-🔥 Hottest: {{HOTTEST_PLACE}} {{HOTTEST_TEMP}}°C • 🧊 Coldest: {{COLDEST_PLACE}} {{COLDEST_TEMP}}°C
-🌋 Strongest quake 24h: M{{QUAKE_MAG}}, {{QUAKE_REGION}}, depth {{QUAKE_DEPTH}} km, {{QUAKE_TIME}} UTC
-🌅 Sunlight tidbit: {{SUN_TIDBIT_LABEL}} — {{SUN_TIDBIT_PLACE}}, {{SUN_TIDBIT_TIME}} UTC
+- 🔥 Hottest: {{HOTTEST_PLACE}} {{HOTTEST_TEMP}}°C • 🧊 Coldest: {{COLDEST_PLACE}} {{COLDEST_TEMP}}°C
+- 🌋 Strongest quake 24h: M{{QUAKE_MAG}}, {{QUAKE_REGION}}, depth {{QUAKE_DEPTH}} km, {{QUAKE_TIME}} UTC
+- 🌅 Sunlight tidbit: {{SUN_TIDBIT_LABEL}} — {{SUN_TIDBIT_PLACE}}, {{SUN_TIDBIT_TIME}} UTC
 
 Money, quick glance
 {{ fx_line }}
