@@ -1,19 +1,22 @@
 🌍 World Vibe Snapshot • {{WEEKDAY}}, {{DATE}} (UTC)
 
 Cosmic Weather
-- Geomagnetic (Kp): {{KP}} {{KP_TREND_EMOJI}} — {{KP_NOTE}}
+- Geomagnetic (Kp): {{KP_SHORT}} {{KP_TREND_EMOJI}} — {{KP_NOTE}}
 - Schumann: {{SCHUMANN_STATUS}} — amp {{SCHUMANN_AMP}} (7.83 Hz baseline)
 - Solar wind: {{SOLAR_WIND_SPEED}} km/s, {{SOLAR_WIND_DENSITY}} cm⁻³ — {{SOLAR_NOTE}}
+{% if AURORA_HINT -%}
+- Aurora heads-up: {{AURORA_HINT}}
+{%- endif %}
 
 Earth Live
 - Hottest: {{HOTTEST_PLACE}} {{HOTTEST_TEMP}}°C • Coldest: {{COLDEST_PLACE}} {{COLDEST_TEMP}}°C
 - Strongest quake 24h: M{{QUAKE_MAG}}, {{QUAKE_REGION}}, depth {{QUAKE_DEPTH}} km, {{QUAKE_TIME}} UTC
-- Sunlight tidbit: {{SUN_TIDBIT_LABEL}} — {{SUN_TIDBIT_PLACE}}, {{SUN_TIDBIT_TIME}} UTC
+- Sunlight tidbit: 🌅 {{SUN_TIDBIT_LABEL}} — {{SUN_TIDBIT_PLACE}}, {{SUN_TIDBIT_TIME}} UTC
 
 Money, quick glance
 {{ fx_line }}
 
-Vibe Tip {{VIBE_EMOJI}} (Kp {{KP_SHORT}}  • 60 sec)
+Vibe Tip {{VIBE_EMOJI}} (Kp {{KP_SHORT}} • {{TIP_SECS}} sec)
 {{TIP_TEXT}}
 
 PS: Weather-sensitive? Save & share 🌿
