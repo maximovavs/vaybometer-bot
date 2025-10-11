@@ -364,10 +364,10 @@ def main():
     # Solar wind
     sw_speed, sw_dens = fetch_solar_wind()
     SOLAR_WIND_SPEED   = f"{sw_speed:.0f}" if isinstance(sw_speed, float) else "—"
-    SOLAR_WIND_DENSITY = f"{sw_dens:.0f}"  if isinstance(sw_dens,  float) else "—"
+    SOLAR_WIND_DENSITY = f"{sw_dens:.0f}"  if isinstance(sw_dens, float)  else "—"
     SOLAR_NOTE = solar_note(sw_speed, sw_dens)
 
-    # Earth extremes
+    # Extremes
     HOTTEST_PLACE, HOTTEST_TEMP, COLDEST_PLACE, COLDEST_TEMP = pick_daily_extremes()
     HOTTEST_PLACE = place_with_flag(HOTTEST_PLACE)
     COLDEST_PLACE = place_with_flag(COLDEST_PLACE)
@@ -377,16 +377,22 @@ def main():
 
     # Sunlight tidbit
     SUN_TIDBIT_LABEL, SUN_TIDBIT_PLACE, SUN_TIDBIT_TIME = sunlight_tidbit_today()
+    # добавим флаг к месту, как в Earth Live
+    SUN_TIDBIT_PLACE = place_with_flag(SUN_TIDBIT_PLACE)
 
     # FX
     fx_line = build_fx_line()
 
-    # Vibe Tip (совместимо: если функция возвращает 2 поля)
-    try:
-        VIBE_EMOJI, TIP_TEXT, TIP_SECS = pick_vibe_tip(KP_VAL)
-    except Exception:
-        VIBE_EMOJI, TIP_TEXT = pick_vibe_tip(KP_VAL)
-        TIP_SECS = 60
+    # Vibe Tip
+    VIBE_EMOJI, TIP_TEXT, TIP_SECS = pick_vibe_tip(KP_VAL)
+
+    # Aurora heads-up (по желанию шаблоном печатаем строку)
+    AURORA_HINT = ""
+    if isinstance(KP_VAL, float):
+        if KP_VAL >= 6.0:
+            AURORA_HINT = "Aurora watch possible at mid-latitudes"
+        elif KP_VAL >= 5.0:
+            AURORA_HINT = "High-latitude aurora likely"
 
     # Nature short (для отдельной карточки)
     NATURE_TITLE, NATURE_URL, NATURE_THUMB, NATURE_SNIPPET = pick_top_short_48h()
@@ -399,20 +405,15 @@ def main():
         if not NATURE_THUMB:
             NATURE_THUMB = ""
 
-    # Aurora heads-up (опционально для шаблона)
-    AURORA_HINT = ""
-    if isinstance(KP_VAL, float) and KP_VAL >= 6.0:
-        AURORA_HINT = "Aurora watch possible at mid-latitudes."
-
     out = {
         "WEEKDAY": weekday,
         "DATE": today.isoformat(),
 
         # Cosmic Weather
-        "KP": f"{KP_VAL:.2f}" if isinstance(KP_VAL, float) else "—",  # оставим, но в шаблоне используем KP_SHORT
-        "KP_SHORT": KP_SHORT,
+        "KP": f"{KP_VAL:.2f}" if isinstance(KP_VAL, float) else "—",  # оставляем для обратной совместимости
         "KP_TREND_EMOJI": KP_TREND_EMOJI,
         "KP_NOTE": KP_NOTE,
+        "KP_SHORT": KP_SHORT,  # используем в шаблоне
 
         "SCHUMANN_STATUS": SCHUMANN_STATUS,   # сейчас: "baseline"
         "SCHUMANN_AMP": SCHUMANN_AMP,         # сейчас: "—"
@@ -445,7 +446,7 @@ def main():
         "TIP_TEXT": TIP_TEXT,
         "TIP_SECS": TIP_SECS,
 
-        # Extra post (card)
+        # Extra post (карточка)
         "NATURE_TITLE": NATURE_TITLE or "Nature Break",
         "NATURE_URL": NATURE_URL or "",
         "NATURE_THUMB": NATURE_THUMB or "",
