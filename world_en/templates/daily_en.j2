@@ -2,10 +2,14 @@
 
 Cosmic Weather
 - Geomagnetic (Kp): {{KP_SHORT}} {{KP_TREND_EMOJI}} — {{KP_NOTE}}
+{%- if SCHUMANN_STATUS == 'baseline' and (SCHUMANN_AMP in ['—', '', None]) %}
+- Schumann: baseline
+{%- else %}
 - Schumann: {{SCHUMANN_STATUS}} — amp {{SCHUMANN_AMP}} (7.83 Hz baseline)
+{%- endif %}
 - Solar wind: {{SOLAR_WIND_SPEED}} km/s, {{SOLAR_WIND_DENSITY}} cm⁻³ — {{SOLAR_NOTE}}
-{% if AURORA_HINT -%}
-- Aurora heads-up: {{AURORA_HINT}}
+{%- if AURORA_HINT %}
+- Aurora: {{AURORA_HINT}}
 {%- endif %}
 
 Earth Live
