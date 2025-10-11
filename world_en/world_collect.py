@@ -161,8 +161,22 @@ def fetch_solar_wind() -> Tuple[Optional[float], Optional[float]]:
     return _sanitize_solar(speed, dens)
 
 def solar_note(speed_kms: Optional[float], dens_cm3: Optional[float]) -> str:
-    if speed_kms is None or dens_cm3 is None:
+    if speed_kms is None and dens_cm3 is None:
         return "—"
+    # если плотности нет — оцениваем по скорости
+    if dens_cm3 is None:
+        if speed_kms is None: return "—"
+        if speed_kms < 350: return "calm"
+        if speed_kms < 450: return "gentle stream"
+        if speed_kms < 550: return "moderate stream"
+        return "active stream"
+    # если скорость есть и плотность есть — прежняя логика
+    if speed_kms is None:
+        # по одной плотности оценку даём мягко
+        if dens_cm3 < 3: return "calm"
+        if dens_cm3 < 7: return "gentle stream"
+        if dens_cm3 < 12: return "moderate stream"
+        return "active stream"
     if speed_kms < 350 and dens_cm3 < 3:   return "calm"
     if speed_kms < 450 and dens_cm3 < 7:   return "gentle stream"
     if speed_kms < 550 and dens_cm3 < 12:  return "moderate stream"
