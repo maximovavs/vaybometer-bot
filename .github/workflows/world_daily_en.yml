@@ -69,18 +69,18 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       # Второе сообщение: ссылка на самое просматриваемое видео за 48 часов (если есть)
-      - name: Send nature link (if present)
+      - name: Send nature link (card-style preview)
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           CHAT:     ${{ steps.choose.outputs.chat }}
         run: |
           URL=$(jq -r '.NATURE_URL // ""' world_en/daily.json)
-          TITLE=$(jq -r '.NATURE_TITLE // "Nature Break"' world_en/daily.json)
           if [ -n "$URL" ]; then
-            TEXT="🌊 ${TITLE}\n${URL}"
+            # отправляем ТОЛЬКО ссылку — Telegram сам подтянет заголовок/описание и сделает большую карточку
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${CHAT}" -d parse_mode="HTML" \
-              --data-urlencode text="${TEXT}"
+              -d chat_id="${CHAT}" \
+              -d disable_web_page_preview=false \
+              --data-urlencode text="$URL"
           else
             echo "No NATURE_URL in daily.json — skipping."
           fi
