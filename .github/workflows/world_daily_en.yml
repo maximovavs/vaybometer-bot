@@ -70,39 +70,56 @@ jobs:
 
       # Второе сообщение: ссылка на самое просматриваемое видео за 48 часов (если есть)
       - name: Send nature link (large YouTube preview)
+        # тот же чат, куда ушло daily (если у вас есть choose-степ с CHAT — используйте его;
+        # если нет, подставьте нужный секрет TG_CHAT сюда)
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          CHAT:     ${{ steps.choose.outputs.chat }}
+          CHAT:     ${{ secrets.TELEGRAM_CHAT_ID_EN }} # или ${{ steps.choose.outputs.chat }}
         run: |
           set -euo pipefail
+
           RAW=$(jq -r '.NATURE_URL // ""' world_en/daily.json)
           if [ -z "$RAW" ]; then
             echo "No NATURE_URL in daily.json — skipping."
             exit 0
           fi
 
-          normalize_youtube () {
-            local url="$1" id=""
-            if [[ "$url" =~ ^https?://(www\.)?youtube\.com/watch\?v=([^&?#/]+) ]]; then
-              id="${BASH_REMATCH[2]}"
-            elif [[ "$url" =~ ^https?://(www\.)?youtu\.be/([^?&#/]+) ]]; then
-              id="${BASH_REMATCH[2]}"
-            elif [[ "$url" =~ ^https?://(www\.)?youtube\.com/shorts/([^?&#/]+) ]]; then
-              id="${BASH_REMATCH[2]}"
-            fi
-            if [ -n "$id" ]; then
-              echo "https://www.youtube.com/watch?v=${id}"
-            else
-              # не YouTube — просто обрежем query/fragment
-              echo "$url" | sed -E 's/[?#].*$//'
-            fi
-          }
+          # --- нормализация YouTube URL ---
+          SHORTS=0
+          ID=""
+          if [[ "$RAW" =~ ^https?://(www\.)?youtube\.com/watch\?v=([^&?#/]+) ]]; then
+            ID="${BASH_REMATCH[2]}"
+          elif [[ "$RAW" =~ ^https?://(www\.)?youtu\.be/([^?&#/]+) ]]; then
+            ID="${BASH_REMATCH[2]}"
+          elif [[ "$RAW" =~ ^https?://(www\.)?youtube\.com/shorts/([^?&#/]+) ]]; then
+            ID="${BASH_REMATCH[2]}"; SHORTS=1
+          fi
 
-          CLEAN="$(normalize_youtube "$RAW")"
-          echo "Sending: $CLEAN"
+          if [[ -n "$ID" && $SHORTS -eq 1 ]]; then
+            URL="https://www.youtube.com/shorts/${ID}"
+          elif [[ -n "$ID" ]]; then
+            URL="https://www.youtube.com/watch?v=${ID}"
+          else
+            # не YouTube — просто обрежем query/fragment
+            URL="${RAW%%[\?#]*}"
+          fi
 
-          # Отправляем ТОЛЬКО URL, Telegram сам подтянет большую карточку
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -d chat_id="${CHAT}" \
-            -d disable_web_page_preview=false \
-            --data-urlencode text="$CLEAN"
+          echo "Sending large preview for: $URL"
+
+          # --- просим БОЛЬШОЕ превью (Bot API link_preview_options) ---
+          payload=$(jq -n --arg chat "$CHAT" --arg text "$URL" \
+            '{chat_id:$chat,text:$text,link_preview_options:{is_disabled:false,prefer_large_media:true,show_above_text:false}}')
+
+          curl -sS -H 'Content-Type: application/json' \
+               -d "$payload" \
+               "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            | tee .send_preview_resp.json
+
+          # Подстраховка: если вдруг не ок — шлём обычным способом
+          if ! jq -e '.ok==true' .send_preview_resp.json >/dev/null 2>&1; then
+            echo "Fallback to simple send..."
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              -d chat_id="${CHAT}" \
+              -d disable_web_page_preview=false \
+              --data-urlencode text="$URL" >/dev/null
+          fi
