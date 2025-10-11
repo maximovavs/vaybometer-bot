@@ -2,7 +2,7 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC, every day
+    - cron: "15 7 * * *"   # 07:15 UTC
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -38,9 +38,6 @@ jobs:
           python world_en/world_collect.py
           echo "---- ls world_en ----"; ls -la world_en || true
           test -f world_en/daily.json || { echo "ERROR: world_en/daily.json missing"; exit 1; }
-          echo "WROTE daily.json, first 400 bytes ↓"
-          head -c 400 world_en/daily.json || true
-          echo
 
       - name: Render
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
@@ -67,7 +64,7 @@ jobs:
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           set -euo pipefail
-          # Read fields from daily.json (robust to missing keys)
+          # Read fields from daily.json
           readarray -t L < <(python - <<'PY'
           import json
           d=json.load(open('world_en/daily.json',encoding='utf-8'))
@@ -81,7 +78,6 @@ jobs:
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
 
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-            # Photo card with inline button (как в weekly)
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
               -F chat_id="${TG_CHAT}" \
               -F photo="${THUMB}" \
@@ -89,10 +85,11 @@ jobs:
               -F caption="$CAPTION" \
               -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
           elif [ -n "$URL" ]; then
-            # Fallback: отправить только ссылку (Telegram сам создаст превью)
+            # Fallback: just send link and let Telegram build the preview
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
-              --data-urlencode text="$URL"
+              -d chat_id="${TG_CHAT}" \
+              -d text="$URL" \
+              -d disable_web_page_preview=false
           else
             echo "No nature URL in daily.json — skipping card."
           fi
@@ -139,8 +136,9 @@ jobs:
               -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
           elif [ -n "$URL" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
-              --data-urlencode text="$URL"
+              -d chat_id="${TG_CHAT}" \
+              -d text="$URL" \
+              -d disable_web_page_preview=false
           else
             echo "No nature URL in daily.json — skipping card."
           fi
