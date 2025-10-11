@@ -363,11 +363,11 @@ def main():
 
     # Solar wind
     sw_speed, sw_dens = fetch_solar_wind()
-    SOLAR_WIND_SPEED = f"{sw_speed:.0f}" if isinstance(sw_speed, float) else "—"
-    SOLAR_WIND_DENSITY = f"{sw_dens:.0f}" if isinstance(sw_dens, float) else "—"
+    SOLAR_WIND_SPEED   = f"{sw_speed:.0f}" if isinstance(sw_speed, float) else "—"
+    SOLAR_WIND_DENSITY = f"{sw_dens:.0f}"  if isinstance(sw_dens,  float) else "—"
     SOLAR_NOTE = solar_note(sw_speed, sw_dens)
 
-    # Extremes
+    # Earth extremes
     HOTTEST_PLACE, HOTTEST_TEMP, COLDEST_PLACE, COLDEST_TEMP = pick_daily_extremes()
     HOTTEST_PLACE = place_with_flag(HOTTEST_PLACE)
     COLDEST_PLACE = place_with_flag(COLDEST_PLACE)
@@ -381,8 +381,12 @@ def main():
     # FX
     fx_line = build_fx_line()
 
-    # Vibe Tip
-    VIBE_EMOJI, TIP_TEXT, TIP_SECS = pick_vibe_tip(KP_VAL)
+    # Vibe Tip (совместимо: если функция возвращает 2 поля)
+    try:
+        VIBE_EMOJI, TIP_TEXT, TIP_SECS = pick_vibe_tip(KP_VAL)
+    except Exception:
+        VIBE_EMOJI, TIP_TEXT = pick_vibe_tip(KP_VAL)
+        TIP_SECS = 60
 
     # Nature short (для отдельной карточки)
     NATURE_TITLE, NATURE_URL, NATURE_THUMB, NATURE_SNIPPET = pick_top_short_48h()
@@ -395,12 +399,18 @@ def main():
         if not NATURE_THUMB:
             NATURE_THUMB = ""
 
+    # Aurora heads-up (опционально для шаблона)
+    AURORA_HINT = ""
+    if isinstance(KP_VAL, float) and KP_VAL >= 6.0:
+        AURORA_HINT = "Aurora watch possible at mid-latitudes."
+
     out = {
         "WEEKDAY": weekday,
         "DATE": today.isoformat(),
 
         # Cosmic Weather
-        "KP": f"{KP_VAL:.2f}" if isinstance(KP_VAL, float) else "—",
+        "KP": f"{KP_VAL:.2f}" if isinstance(KP_VAL, float) else "—",  # оставим, но в шаблоне используем KP_SHORT
+        "KP_SHORT": KP_SHORT,
         "KP_TREND_EMOJI": KP_TREND_EMOJI,
         "KP_NOTE": KP_NOTE,
 
@@ -410,6 +420,7 @@ def main():
         "SOLAR_WIND_SPEED": SOLAR_WIND_SPEED,
         "SOLAR_WIND_DENSITY": SOLAR_WIND_DENSITY,
         "SOLAR_NOTE": SOLAR_NOTE,
+        "AURORA_HINT": AURORA_HINT,
 
         # Earth Live
         "HOTTEST_PLACE": HOTTEST_PLACE,
@@ -431,11 +442,10 @@ def main():
 
         # Vibe tip
         "VIBE_EMOJI": VIBE_EMOJI,
-        "KP_SHORT": KP_SHORT,
         "TIP_TEXT": TIP_TEXT,
-        "TIP_SECS": TIP_SECS,  # на будущее (если обновишь шаблон)
+        "TIP_SECS": TIP_SECS,
 
-        # Extra post (карточка)
+        # Extra post (card)
         "NATURE_TITLE": NATURE_TITLE or "Nature Break",
         "NATURE_URL": NATURE_URL or "",
         "NATURE_THUMB": NATURE_THUMB or "",
