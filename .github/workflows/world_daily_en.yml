@@ -69,18 +69,40 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       # Второе сообщение: ссылка на самое просматриваемое видео за 48 часов (если есть)
-      - name: Send nature link (card-style preview)
+      - name: Send nature link (large YouTube preview)
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           CHAT:     ${{ steps.choose.outputs.chat }}
         run: |
-          URL=$(jq -r '.NATURE_URL // ""' world_en/daily.json)
-          if [ -n "$URL" ]; then
-            # отправляем ТОЛЬКО ссылку — Telegram сам подтянет заголовок/описание и сделает большую карточку
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${CHAT}" \
-              -d disable_web_page_preview=false \
-              --data-urlencode text="$URL"
-          else
+          set -euo pipefail
+          RAW=$(jq -r '.NATURE_URL // ""' world_en/daily.json)
+          if [ -z "$RAW" ]; then
             echo "No NATURE_URL in daily.json — skipping."
+            exit 0
           fi
+
+          normalize_youtube () {
+            local url="$1" id=""
+            if [[ "$url" =~ ^https?://(www\.)?youtube\.com/watch\?v=([^&?#/]+) ]]; then
+              id="${BASH_REMATCH[2]}"
+            elif [[ "$url" =~ ^https?://(www\.)?youtu\.be/([^?&#/]+) ]]; then
+              id="${BASH_REMATCH[2]}"
+            elif [[ "$url" =~ ^https?://(www\.)?youtube\.com/shorts/([^?&#/]+) ]]; then
+              id="${BASH_REMATCH[2]}"
+            fi
+            if [ -n "$id" ]; then
+              echo "https://www.youtube.com/watch?v=${id}"
+            else
+              # не YouTube — просто обрежем query/fragment
+              echo "$url" | sed -E 's/[?#].*$//'
+            fi
+          }
+
+          CLEAN="$(normalize_youtube "$RAW")"
+          echo "Sending: $CLEAN"
+
+          # Отправляем ТОЛЬКО URL, Telegram сам подтянет большую карточку
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d chat_id="${CHAT}" \
+            -d disable_web_page_preview=false \
+            --data-urlencode text="$CLEAN"
