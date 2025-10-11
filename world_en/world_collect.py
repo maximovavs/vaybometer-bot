@@ -348,8 +348,6 @@ def pick_vibe_tip(kp: Optional[float]) -> Tuple[str, str, int]:
         tip = "Sip water and take 10 slow breaths."
     return emo, tip, secs
 
-# ---------- main ----------
-
 def main():
     today   = dt.date.today()
     weekday = dt.datetime.utcnow().strftime("%a")
@@ -358,16 +356,19 @@ def main():
     KP_VAL, KP_TREND_EMOJI, KP_NOTE = fetch_kp_latest()
     KP_SHORT = f"{KP_VAL:.1f}" if isinstance(KP_VAL, float) else "—"
 
-    # Schumann (пока без сетевых запросов)
+    # Schumann (пока заглушка)
     SCHUMANN_STATUS, SCHUMANN_AMP = fetch_schumann_amp()
 
     # Solar wind
     sw_speed, sw_dens = fetch_solar_wind()
     SOLAR_WIND_SPEED   = f"{sw_speed:.0f}" if isinstance(sw_speed, float) else "—"
-    SOLAR_WIND_DENSITY = f"{sw_dens:.0f}"  if isinstance(sw_dens, float)  else "—"
+    # тонкий неразрывный пробел как разделитель тысяч
+    SOLAR_WIND_DENSITY = (
+        f"{int(round(sw_dens)):,}".replace(",", "\u202F") if isinstance(sw_dens, float) else "—"
+    )
     SOLAR_NOTE = solar_note(sw_speed, sw_dens)
 
-    # Extremes
+    # Earth extremes
     HOTTEST_PLACE, HOTTEST_TEMP, COLDEST_PLACE, COLDEST_TEMP = pick_daily_extremes()
     HOTTEST_PLACE = place_with_flag(HOTTEST_PLACE)
     COLDEST_PLACE = place_with_flag(COLDEST_PLACE)
@@ -375,9 +376,8 @@ def main():
     # Quake 24h
     QUAKE_MAG, QUAKE_REGION, QUAKE_DEPTH, QUAKE_TIME = strongest_quake_24h()
 
-    # Sunlight tidbit
+    # Sunlight tidbit (+флаг)
     SUN_TIDBIT_LABEL, SUN_TIDBIT_PLACE, SUN_TIDBIT_TIME = sunlight_tidbit_today()
-    # добавим флаг к месту, как в Earth Live
     SUN_TIDBIT_PLACE = place_with_flag(SUN_TIDBIT_PLACE)
 
     # FX
@@ -386,7 +386,7 @@ def main():
     # Vibe Tip
     VIBE_EMOJI, TIP_TEXT, TIP_SECS = pick_vibe_tip(KP_VAL)
 
-    # Aurora heads-up (по желанию шаблоном печатаем строку)
+    # Aurora heads-up (опционально печатается в шаблоне)
     AURORA_HINT = ""
     if isinstance(KP_VAL, float):
         if KP_VAL >= 6.0:
@@ -394,7 +394,7 @@ def main():
         elif KP_VAL >= 5.0:
             AURORA_HINT = "High-latitude aurora likely"
 
-    # Nature short (для отдельной карточки)
+    # Nature short (для карточки)
     NATURE_TITLE, NATURE_URL, NATURE_THUMB, NATURE_SNIPPET = pick_top_short_48h()
     if not NATURE_URL and FALLBACK_NATURE_LIST:
         NATURE_URL = FALLBACK_NATURE_LIST[0]
@@ -410,13 +410,13 @@ def main():
         "DATE": today.isoformat(),
 
         # Cosmic Weather
-        "KP": f"{KP_VAL:.2f}" if isinstance(KP_VAL, float) else "—",  # оставляем для обратной совместимости
+        "KP": f"{KP_VAL:.2f}" if isinstance(KP_VAL, float) else "—",  # на всякий случай оставляем
         "KP_TREND_EMOJI": KP_TREND_EMOJI,
         "KP_NOTE": KP_NOTE,
-        "KP_SHORT": KP_SHORT,  # используем в шаблоне
+        "KP_SHORT": KP_SHORT,
 
-        "SCHUMANN_STATUS": SCHUMANN_STATUS,   # сейчас: "baseline"
-        "SCHUMANN_AMP": SCHUMANN_AMP,         # сейчас: "—"
+        "SCHUMANN_STATUS": SCHUMANN_STATUS,
+        "SCHUMANN_AMP": SCHUMANN_AMP,
 
         "SOLAR_WIND_SPEED": SOLAR_WIND_SPEED,
         "SOLAR_WIND_DENSITY": SOLAR_WIND_DENSITY,
@@ -441,18 +441,17 @@ def main():
         # Money
         "fx_line": fx_line,
 
-        # Vibe tip
+        # Vibe Tip
         "VIBE_EMOJI": VIBE_EMOJI,
         "TIP_TEXT": TIP_TEXT,
         "TIP_SECS": TIP_SECS,
 
-        # Extra post (карточка)
+        # Extra post (card)
         "NATURE_TITLE": NATURE_TITLE or "Nature Break",
         "NATURE_URL": NATURE_URL or "",
         "NATURE_THUMB": NATURE_THUMB or "",
         "NATURE_SNIPPET": NATURE_SNIPPET or "60 seconds of calm",
     }
-
     return out
 
 # ---------- write-out guard ----------
