@@ -27,7 +27,6 @@ HEADERS = {
     "Accept": "application/json,text/plain",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    # SWPC любит явно указывать referer
     "Referer": "https://services.swpc.noaa.gov/",
 }
 
@@ -65,23 +64,16 @@ def place_with_flag(place: str) -> str:
         return f"{name}, {cc} {fl}" if fl else f"{name}, {cc}"
     return place
 
-def fmt_pct(x: Optional[float]) -> str:
-    if x is None:
-        return "—"
-    s = f"{x:+.2f}%"
-    return s
-
 # ---------- Kp (planetary index) ----------
 
 def fetch_kp_latest() -> Tuple[Optional[float], Optional[str], str]:
     """
     Возвращает (kp_value, trend_emoji, note).
-    Источник: SWPC NOAA 'noaa-planetary-k-index' JSON (последние записи).
+    Источник: SWPC NOAA 'noaa-planetary-k-index' JSON.
     """
     try:
         url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
         data = _get_json(url)
-        # data: [header], [timestamp, kp], ...
         rows = [row for row in data if isinstance(row, list) and len(row) >= 2][1:]
         if len(rows) >= 2:
             last  = safe_float(rows[-1][1])
@@ -114,26 +106,29 @@ def vibe_emoji_from_kp(kp: Optional[float]) -> str:
     if kp <= 5.0:  return "🟠"
     return "🔴"
 
-# ---------- Schumann (амплитуда относительно 7.83 Hz) ----------
+# ---------- Schumann ----------
 
 def fetch_schumann_amp() -> Tuple[str, str]:
     """
-    Возвращает (status, amp_abs_str).
-    Сейчас безопасный фолбэк: baseline/—.
+    Источники для Шумана пересматриваем. Пока не делаем сетевых запросов.
+    Возвращаем нейтральную строку для шаблона.
     """
-    try:
-        _ = _get_text("https://services.swpc.noaa.gov/text/ace-swepam.txt", timeout=10)
-        raise RuntimeError("no reliable schumann endpoint")
-    except Exception:
-        pass
     return "baseline", "—"
 
 # ---------- Solar wind ----------
 
-def fetch_solar_wind() -> Tuple[Optional[float], Optional[float], str]:
+def _sanitize_solar(speed, dens):
+    # реалистичные рамки: скорость 200–900 км/с, плотность 0.1–50 cm^-3
+    if not (isinstance(speed, (int, float)) and 200 <= speed <= 900):
+        speed = None
+    if not (isinstance(dens, (int, float)) and 0.1 <= dens <= 50):
+        dens = None
+    return speed, dens
+
+def fetch_solar_wind() -> Tuple[Optional[float], Optional[float]]:
     """
-    Возвращает (speed_km_s, density_cm3, note).
-    Источники: несколько сводных JSON SWPC; берём, что получится.
+    Возвращает (speed_km_s, density_cm3).
+    Пытаемся взять из сводных JSON SWPC; при ошибке возвращаем (None, None).
     """
     speed = None
     dens  = None
@@ -142,7 +137,6 @@ def fetch_solar_wind() -> Tuple[Optional[float], Optional[float], str]:
     try:
         sp = _get_json("https://services.swpc.noaa.gov/products/summary/solar-wind-speed.json")
         de = _get_json("https://services.swpc.noaa.gov/products/summary/solar-wind-density.json")
-        # формат: ["time","value"], ["YYYY-MM-DD HH:MM:SS", number]
         if isinstance(sp, list) and len(sp) >= 2 and isinstance(sp[-1], list):
             speed = safe_float(sp[-1][1])
         if isinstance(de, list) and len(de) >= 2 and isinstance(de[-1], list):
@@ -154,7 +148,6 @@ def fetch_solar_wind() -> Tuple[Optional[float], Optional[float], str]:
     if speed is None or dens is None:
         try:
             txt = _get_text("https://services.swpc.noaa.gov/text/ace-swepam.txt", timeout=15)
-            # берём последнюю числовую строку
             lines = [ln for ln in txt.splitlines() if ln and ln[0].isdigit()]
             if lines:
                 cols = re.split(r"\s+", lines[-1].strip())
@@ -165,7 +158,7 @@ def fetch_solar_wind() -> Tuple[Optional[float], Optional[float], str]:
         except Exception:
             pass
 
-    return speed, dens, solar_note(speed, dens)
+    return _sanitize_solar(speed, dens)
 
 def solar_note(speed_kms: Optional[float], dens_cm3: Optional[float]) -> str:
     if speed_kms is None or dens_cm3 is None:
@@ -188,7 +181,7 @@ def openmeteo_current_temp(lat: float, lon: float) -> Optional[float]:
         return None
 
 def pick_daily_extremes() -> Tuple[str, Optional[int], str, Optional[int]]:
-    hottest = ("—", None)  # (place, temp_int)
+    hottest = ("—", None)
     coldest = ("—", None)
 
     for name, la, lo in HOT_CITIES:
@@ -232,9 +225,6 @@ def strongest_quake_24h():
 # ---------- Sunlight tidbit ----------
 
 def sunlight_tidbit_today() -> Tuple[str, str, str]:
-    """
-    Выбираем город по дню года и даём время восхода (UTC).
-    """
     try:
         today = dt.date.today()
         idx = today.timetuple().tm_yday % max(1, len(SUN_CITIES))
@@ -252,7 +242,6 @@ def build_fx_line() -> str:
         fx = fetch_rates("USD", ["EUR","CNY","JPY","INR","IDR"])
         return format_line(fx, order=["USD","EUR","CNY","JPY","INR","IDR"])
     except Exception:
-        # минимальный фолбэк
         return "USD 1.0000 (+0.00%) • EUR 0.9000 (+0.00%) • CNY 7.10 (+0.00%) • JPY 150.00 (+0.00%) • INR 88.00 (+0.00%) • IDR 16,500 (+0.00%)"
 
 # ---------- YouTube: лучший короткий ролик за 48 часов ----------
@@ -262,21 +251,23 @@ def _is_short_iso(iso: str) -> bool:
     if not m: return False
     return (int(m.group(1) or 0)*60 + int(m.group(2) or 0)) <= 60
 
-def _thumb_from_snippet(sn: dict, vid: str) -> str:
-    thumbs = (sn or {}).get("thumbnails", {}) or {}
+def _pick_thumb(sn: dict) -> str:
+    th = (sn.get("thumbnails") or {})
     for key in ("maxres", "standard", "high", "medium", "default"):
-        u = (thumbs.get(key) or {}).get("url")
-        if u: return u
-    return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else ""
+        if key in th and "url" in th[key]:
+            return th[key]["url"]
+    return ""
 
-def _video_id_from_url(url: str) -> str:
-    if not url: return ""
-    m = re.search(r"(?:v=|be/)([A-Za-z0-9_-]{6,})", url)
-    return m.group(1) if m else ""
+def _clean_snippet(text: str, max_len=140) -> str:
+    text = re.sub(r"#\w+", "", text or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_len:
+        text = text[:max_len-1].rsplit(" ", 1)[0] + "…"
+    return text or "60 seconds of calm"
 
 def pick_top_short_48h() -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
-    Возвращает (title, url_with_utm, thumb_url, snippet).
+    Возвращает (title, url, thumb, snippet) лучшего шорта за 48 ч.
     """
     api = os.getenv("YT_API_KEY", YT_API_KEY)
     ch  = os.getenv("YT_CHANNEL_ID", YT_CHANNEL_ID)
@@ -296,8 +287,8 @@ def pick_top_short_48h() -> Tuple[Optional[str], Optional[str], Optional[str], O
         ).json()
         ids = [it["id"]["videoId"] for it in search.get("items", []) if it.get("id", {}).get("videoId")]
 
+        # фолбэк: плейлисты
         if not ids and YOUTUBE_PLAYLIST_IDS:
-            # фолбэк: последние из заданных плейлистов
             for pl in YOUTUBE_PLAYLIST_IDS:
                 pl_items = requests.get(
                     "https://www.googleapis.com/youtube/v3/playlistItems",
@@ -322,36 +313,26 @@ def pick_top_short_48h() -> Tuple[Optional[str], Optional[str], Optional[str], O
             return None, None, None, None
 
         top = max(pool, key=lambda v: int(v["statistics"].get("viewCount", "0")))
-        vid = top["id"]
-        sn  = top.get("snippet", {}) or {}
-        title = sn.get("title") or "Nature Break"
-        url   = f"https://youtu.be/{vid}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_nature"
-        thumb = _thumb_from_snippet(sn, vid)
-        # первый осмысленный абзац описания
-        descr = (sn.get("description") or "").strip()
-        snippet = ""
-        if descr:
-            snippet = next((ln.strip() for ln in descr.splitlines() if ln.strip()), "")
-        if not snippet:
-            snippet = "60 seconds of calm"
+        sn = top["snippet"]
+        title   = sn.get("title") or "Nature Break"
+        url     = f"https://youtu.be/{top['id']}?utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_nature"
+        thumb   = _pick_thumb(sn)
+        snippet = _clean_snippet(sn.get("description", ""))
         return title, url, thumb, snippet
     except Exception:
         return None, None, None, None
 
 # ---------- Vibe Tip ----------
 
-def pick_vibe_tip(kp: Optional[float]) -> Tuple[str, str]:
-    """
-    Возвращает (emoji, tip_text).
-    Эмодзи завязано на Kp, текст берём из VIBE_TIPS (случайно/циклически).
-    """
+def pick_vibe_tip(kp: Optional[float]) -> Tuple[str, str, int]:
     emo = vibe_emoji_from_kp(kp)
+    secs = 45 if (kp or 0) <= 2 else (60 if (kp or 0) <= 4 else 90)
     if VIBE_TIPS:
         idx = dt.date.today().toordinal() % len(VIBE_TIPS)
         tip = VIBE_TIPS[idx]
     else:
         tip = "Sip water and take 10 slow breaths."
-    return emo, tip
+    return emo, tip, secs
 
 # ---------- main ----------
 
@@ -363,13 +344,14 @@ def main():
     KP_VAL, KP_TREND_EMOJI, KP_NOTE = fetch_kp_latest()
     KP_SHORT = f"{KP_VAL:.1f}" if isinstance(KP_VAL, float) else "—"
 
-    # Schumann
+    # Schumann (пока без сетевых запросов)
     SCHUMANN_STATUS, SCHUMANN_AMP = fetch_schumann_amp()
 
     # Solar wind
-    SOLAR_WIND_SPEED, SOLAR_WIND_DENSITY, SOLAR_NOTE = fetch_solar_wind()
-    SW_S = f"{SOLAR_WIND_SPEED:.0f}" if isinstance(SOLAR_WIND_SPEED, float) else "—"
-    SW_N = f"{SOLAR_WIND_DENSITY:.0f}" if isinstance(SOLAR_WIND_DENSITY, float) else "—"
+    sw_speed, sw_dens = fetch_solar_wind()
+    SOLAR_WIND_SPEED = f"{sw_speed:.0f}" if isinstance(sw_speed, float) else "—"
+    SOLAR_WIND_DENSITY = f"{sw_dens:.0f}" if isinstance(sw_dens, float) else "—"
+    SOLAR_NOTE = solar_note(sw_speed, sw_dens)
 
     # Extremes
     HOTTEST_PLACE, HOTTEST_TEMP, COLDEST_PLACE, COLDEST_TEMP = pick_daily_extremes()
@@ -386,23 +368,18 @@ def main():
     fx_line = build_fx_line()
 
     # Vibe Tip
-    VIBE_EMOJI, TIP_TEXT = pick_vibe_tip(KP_VAL)
+    VIBE_EMOJI, TIP_TEXT, TIP_SECS = pick_vibe_tip(KP_VAL)
 
-    # Nature short
+    # Nature short (для отдельной карточки)
     NATURE_TITLE, NATURE_URL, NATURE_THUMB, NATURE_SNIPPET = pick_top_short_48h()
     if not NATURE_URL and FALLBACK_NATURE_LIST:
-        # фолбэк на заранее заданный список
         NATURE_URL = FALLBACK_NATURE_LIST[0]
-        if "utm_source=" not in NATURE_URL:
-            sep = "&" if "?" in NATURE_URL else "?"
-            NATURE_URL = f"{NATURE_URL}{sep}utm_source=telegram&utm_medium=worldvibemeter&utm_campaign=daily_nature"
         if not NATURE_TITLE:
             NATURE_TITLE = "Nature Break"
-        if not NATURE_THUMB:
-            vid = _video_id_from_url(NATURE_URL)
-            NATURE_THUMB = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else ""
         if not NATURE_SNIPPET:
             NATURE_SNIPPET = "60 seconds of calm"
+        if not NATURE_THUMB:
+            NATURE_THUMB = ""
 
     out = {
         "WEEKDAY": weekday,
@@ -413,11 +390,11 @@ def main():
         "KP_TREND_EMOJI": KP_TREND_EMOJI,
         "KP_NOTE": KP_NOTE,
 
-        "SCHUMANN_STATUS": SCHUMANN_STATUS,
-        "SCHUMANN_AMP": SCHUMANN_AMP,
+        "SCHUMANN_STATUS": SCHUMANN_STATUS,   # сейчас: "baseline"
+        "SCHUMANN_AMP": SCHUMANN_AMP,         # сейчас: "—"
 
-        "SOLAR_WIND_SPEED": SW_S,
-        "SOLAR_WIND_DENSITY": SW_N,
+        "SOLAR_WIND_SPEED": SOLAR_WIND_SPEED,
+        "SOLAR_WIND_DENSITY": SOLAR_WIND_DENSITY,
         "SOLAR_NOTE": SOLAR_NOTE,
 
         # Earth Live
@@ -442,11 +419,12 @@ def main():
         "VIBE_EMOJI": VIBE_EMOJI,
         "KP_SHORT": KP_SHORT,
         "TIP_TEXT": TIP_TEXT,
+        "TIP_SECS": TIP_SECS,  # на будущее (если обновишь шаблон)
 
-        # Для карточки с превью (как в weekly)
-        "NATURE_TITLE":   NATURE_TITLE or "Nature Break",
-        "NATURE_URL":     NATURE_URL or "",
-        "NATURE_THUMB":   NATURE_THUMB or "",
+        # Extra post (карточка)
+        "NATURE_TITLE": NATURE_TITLE or "Nature Break",
+        "NATURE_URL": NATURE_URL or "",
+        "NATURE_THUMB": NATURE_THUMB or "",
         "NATURE_SNIPPET": NATURE_SNIPPET or "60 seconds of calm",
     }
 
@@ -474,11 +452,9 @@ if __name__ == "__main__":
             "SUN_TIDBIT_LABEL": "Sunrise", "SUN_TIDBIT_PLACE": "Reykjavik, IS",
             "SUN_TIDBIT_TIME": dt.datetime.utcnow().strftime("%H:%M"),
             "fx_line": "USD 1.0000 (+0.00%)",
-            "VIBE_EMOJI": "⚪️", "KP_SHORT": "—", "TIP_TEXT": "Keep plans light; tune into your body.",
-            "NATURE_TITLE": "Nature Break",
-            "NATURE_URL": (FALLBACK_NATURE_LIST[0] if FALLBACK_NATURE_LIST else ""),
-            "NATURE_THUMB": "",
-            "NATURE_SNIPPET": "60 seconds of calm",
+            "VIBE_EMOJI": "⚪️", "KP_SHORT": "—", "TIP_TEXT": "Keep plans light; tune into your body.", "TIP_SECS": 60,
+            "NATURE_TITLE": "Nature Break", "NATURE_URL": (FALLBACK_NATURE_LIST[0] if FALLBACK_NATURE_LIST else ""),
+            "NATURE_THUMB": "", "NATURE_SNIPPET": "60 seconds of calm",
         }
     try:
         out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
