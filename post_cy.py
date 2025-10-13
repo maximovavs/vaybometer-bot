@@ -13,14 +13,14 @@ post_cy.py  •  Запуск «Cyprus daily post» для Telegram-канала
   7) --chat-id ID        — явный chat_id канала (перебивает всё остальное).
 
 Переменные окружения:
-  TELEGRAM_TOKEN   — обязательно.
-  CHANNEL_ID       — ID основного канала (если не задан --chat-id/--to-test).
-  CHANNEL_ID_TEST  — ID тестового канала (для --to-test).
+  TELEGRAM_TOKEN      — обязательно.
+  CHANNEL_ID          — ID основного канала (если не задан --chat-id/--to-test).
+  CHANNEL_ID_TEST     — ID тестового канала (для --to-test).
   CHANNEL_ID_OVERRIDE — явный chat_id (перебивает всё; удобно в Actions inputs).
-  DISABLE_LLM_DAILY  — если "1"/"true" → ежедневный LLM отключён (читает post_common).
-  TZ (опц.)          — таймзона, по умолчанию Asia/Nicosia.
+  DISABLE_LLM_DAILY   — если "1"/"true" → ежедневный LLM отключён (читает post_common).
+  TZ (опц.)           — таймзона, по умолчанию Asia/Nicosia.
 
-(Совм.: если CHANNEL_ID не задан, будет попытка взять CHANNEL_ID_KLG.)
+Совместимость: если CHANNEL_ID не задан, будет попытка взять CHANNEL_ID_KLG.
 """
 
 from __future__ import annotations
@@ -49,8 +49,8 @@ if not TOKEN:
 
 # ───────────────────────────── Параметры региона ────────────────────────────
 
-SEA_LABEL   = "Морские города "
-OTHER_LABEL = "Список не-морских городов (тёплые/холодные)"
+SEA_LABEL   = "Морские города"
+OTHER_LABEL = "Континентальные города"
 
 # Часовой пояс — Кипр (можно переопределить переменной TZ)
 TZ_STR = os.getenv("TZ", "Asia/Nicosia")
@@ -61,7 +61,7 @@ SEA_CITIES: Dict[str, Tuple[float, float]] = {
     "Ayia Napa": (34.988, 34.012),
     "Larnaca": (34.916, 33.624),
 }
-# Упорядоченный список (имя, (lat, lon)) — то, чего не хватало
+# Упорядоченный список (имя, (lat, lon)) — порядок как объявлен выше
 SEA_CITIES_ORDERED = list(SEA_CITIES.items())
 
 OTHER_CITIES_ALL: Dict[str, Tuple[float, float]] = {
@@ -74,18 +74,18 @@ OTHER_CITIES_ALL: Dict[str, Tuple[float, float]] = {
 FX_CACHE_PATH = Path("fx_cache.json")  # где хранить кэш для FX-постов
 
 def _fmt_delta(x: float | int | None) -> str:
+    """Формат дельты со знаком: +0.12 / −0.08 (длинное минус)."""
     if x is None:
         return "0.00"
     try:
         x = float(x)
     except Exception:
         return "0.00"
-    sign = "−" if x < 0 else ""
-    return f"{sign}{abs(x):.2f}"
+    return f"{x:+.2f}".replace("-", "−")
 
 def _load_fx_rates(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Dict[str, Any]:
     """
-    Пытаемся получить курсы валют через модуль fx.py (если он в проекте).
+    Пытаемся получить курсы валют через модуль fx.py (если он есть в проекте).
     Ожидаемый интерфейс: fx.get_rates(date=date_local, tz=tz) -> dict.
     Возвращаем {} при любой ошибке.
     """
@@ -99,10 +99,15 @@ def _load_fx_rates(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Dict
         return {}
 
 def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone):
+    """
+    Строит текст блока «Курсы валют (ЦБ РФ)»:
+      USD, EUR, CNY в рублях, с дельтами; плюс спокойные хештеги.
+    """
     rates = _load_fx_rates(date_local, tz)
+    title = "💱 <b>Курсы валют (ЦБ РФ)</b>"
 
     def token(code: str, name: str) -> str:
-        r = rates.get(code) or {}
+        r   = rates.get(code) or {}
         val = r.get("value")
         dlt = r.get("delta")
         if val is None:
@@ -113,11 +118,14 @@ def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone):
             val_s = "—"
         return f"{name}: {val_s} ₽ ({_fmt_delta(dlt)})"
 
+    if not rates:
+        return f"{title}\nДанные временно недоступны.\n\n#Кипр #курсы_валют", rates
+
     line = " • ".join([token("USD", "USD"), token("EUR", "EUR"), token("CNY", "CNY")])
-    title = "💱 <b>Курсы валют</b>"
-    return f"{title}\n{line}", rates
+    return f"{title}\n{line}\n\n#Кипр #курсы_валют", rates
 
 def _normalize_cbr_date(raw) -> str | None:
+    """Нормализуем дату ЦБ для сравнения кэша (YYYY-MM-DD)."""
     if raw is None:
         return None
     if hasattr(raw, "to_date_string"):
@@ -150,6 +158,7 @@ async def _send_fx_only(
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
 
+    # Не публиковать повторно, если ЦБ не обновился (если fx.py поддерживает эти функции)
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -167,6 +176,7 @@ async def _send_fx_only(
 
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
 
+    # Сохранить факт публикации (для анти-дубликата)
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -244,7 +254,7 @@ class _TodayPatch:
         if self._orig_today:
             pendulum.today = self._orig_today  # type: ignore[assignment]
         if self._orig_now:
-            pendulum.now = self._orig_now  # type: ignore[assignment]
+            pendulum.now = self._orig_now      # type: ignore[assignment]
         return False
 
 # ───────────────────────────────── Main ─────────────────────────────────────
