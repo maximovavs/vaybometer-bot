@@ -2,8 +2,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, re, json, random, datetime as dt
-from typing import Optional, Tuple, List
+import os, re, json, datetime as dt
+from typing import Optional, Tuple
 from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -186,9 +186,10 @@ def solar_note(speed_kms: Optional[float], dens_cm3: Optional[float]) -> str:
 
 def openmeteo_current_temp(lat: float, lon: float) -> Optional[float]:
     try:
-        data = _get_json("https://api.open-meteo.com/v1/forecast",
-                         params={"latitude": lat, "longitude": lon,
-                                 "current": "temperature_2m", "timezone": "UTC"})
+        data = _get_json(
+            "https://api.open-meteo.com/v1/forecast",
+            params={"latitude": lat, "longitude": lon, "current": "temperature_2m", "timezone": "UTC"}
+        )
         t = data.get("current", {}).get("temperature_2m", None)
         return safe_float(t)
     except Exception:
@@ -469,7 +470,7 @@ if __name__ == "__main__":
         data = {
             "DATE": dt.date.today().isoformat(),
             "WEEKDAY": dt.datetime.utcnow().strftime("%a"),
-            "KP": "—", "KP_TREND_EMOJI": "—", "KP_NOTE": "—",
+            "KP": "—", "KP_TREND_EMOJI": "—", "KP_NOTE": "—", "KP_SHORT": "—",
             "SCHUMANN_STATUS": "baseline", "SCHUMANN_AMP": "—",
             "SOLAR_WIND_SPEED": "—", "SOLAR_WIND_DENSITY": "—", "SOLAR_NOTE": "—",
             "HOTTEST_PLACE": "—", "HOTTEST_TEMP": "—",
@@ -478,7 +479,8 @@ if __name__ == "__main__":
             "SUN_TIDBIT_LABEL": "Sunrise", "SUN_TIDBIT_PLACE": "Reykjavik, IS",
             "SUN_TIDBIT_TIME": dt.datetime.utcnow().strftime("%H:%M"),
             "fx_line": "USD 1.0000 (+0.00%)",
-            "VIBE_EMOJI": "⚪️", "KP_SHORT": "—", "TIP_TEXT": "Keep plans light; tune into your body.", "TIP_SECS": 60,
+            "VIBE_EMOJI": "⚪️", "TIP_TEXT": "Keep plans light; tune into your body.", "TIP_SECS": 60,
+            "AURORA_HINT": "",
             "NATURE_TITLE": "Nature Break", "NATURE_URL": (FALLBACK_NATURE_LIST[0] if FALLBACK_NATURE_LIST else ""),
             "NATURE_THUMB": "", "NATURE_SNIPPET": "60 seconds of calm",
         }
