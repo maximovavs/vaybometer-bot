@@ -2,7 +2,7 @@
 
 Cosmic Weather
 - Geomagnetic (Kp): {{KP_SHORT}} {{KP_TREND_EMOJI}} — {{KP_NOTE}}
-- Schumann: {{SCHUMANN_STATUS}}{% if SCHUMANN_AMP and SCHUMANN_AMP != "—" %} — amp {{SCHUMANN_AMP}} (7.83 Hz baseline){% endif %}
+- Schumann: {{SCHUMANN_STATUS}}{% if SCHUMANN_AMP and SCHUMANN_AMP != "—" %} — amp {{SCHUMANN_AMP}}{% endif %} (7.83 Hz baseline)
 - Solar wind: {{SOLAR_WIND_SPEED}} km/s{% if SOLAR_WIND_DENSITY != "—" %}, {{SOLAR_WIND_DENSITY}} cm⁻³{% endif %}{% if SOLAR_NOTE and SOLAR_NOTE != "—" %} — {{SOLAR_NOTE}}{% endif %}
 
 Earth Live
@@ -15,9 +15,8 @@ Money, quick glance
 
 Vibe Tip {{VIBE_EMOJI}} (Kp {{KP_SHORT}} • {{TIP_SECS}} sec)
 {{TIP_TEXT}}
-
-PS: Weather-sensitive? Save & share 🌿
 {% if AURORA_HINT %}
-
 ⚡️ {{AURORA_HINT}}
 {% endif %}
+
+PS: Weather-sensitive? Save & share 🌿
