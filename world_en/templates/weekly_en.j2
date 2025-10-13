@@ -10,11 +10,10 @@
 
 Money, quick glance
 {{ fx_line_week_line1 }}
-{% if fx_line_week_line2 != "—" %}{{ fx_line_week_line2 }}{% endif %}
+{% if fx_line_week_line2 and fx_line_week_line2 != "—" %}{{ fx_line_week_line2 }}{% endif %}
 
 Next week glance
 - Moon: {{ NEXT_MOON_PHASE }}
-{# --- Kp outlook --- #}
 {% set kp = NEXT_KP_NOTE %}
 {% if kp and ('stable' in (kp|lower)) %}
 - Kp outlook: {{ kp|replace('stable','')|replace('Stable','')|trim }} (stable)
