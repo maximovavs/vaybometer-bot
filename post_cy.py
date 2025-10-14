@@ -5,8 +5,8 @@ post_cy.py  •  Запуск «Cyprus daily post» для Telegram-канала
 
 Режимы:
   1) Обычный ежедневный пост (по умолчанию) — вызывает post_common.main_common().
-  2) --fx-only           — отправляет только FX-пост (база EUR: межрынок + ЕЦБ + ЦБ РФ с динамикой).
-  3) --dry-run           — ничего не отправляет (логирует текст).
+  2) --fx-only           — отправляет FX-пост (EUR-база): Межрынок • ЕЦБ • ЦБ РФ (с динамикой).
+  3) --dry-run           — ничего не отправляет (пишет текст в лог).
   4) --date YYYY-MM-DD   — дата для заголовков/FX (по умолчанию — сейчас в TZ).
   5) --for-tomorrow      — сдвиг даты +1 день (удобно для «поста на завтра»).
   6) --to-test           — публиковать в тестовый канал (CHANNEL_ID_TEST).
@@ -30,8 +30,10 @@ import asyncio
 import logging
 from typing import Dict, Any, Tuple, Optional
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pendulum
+import requests
 from telegram import Bot, constants
 
 from post_common import main_common  # основной сборщик ежедневного сообщения
@@ -68,16 +70,21 @@ OTHER_CITIES_ALL: Dict[str, Tuple[float, float]] = {
 
 # ───────────────────────────── FX helpers ────────────────────────────────────
 
-FX_CACHE_PATH = Path("fx_cache.json")  # используется для «не дублировать, если ЦБ не обновился»
+FX_CACHE_PATH = Path("fx_cache.json")  # защита от дублирования, если дата ЦБ не обновилась
+
+ECB_HEADERS = {
+    "User-Agent": "VayboMeterBot/1.0 (+https://t.me/vaybometer)",
+    "Accept": "application/xml,text/xml,application/json;q=0.9,*/*;q=0.8",
+}
 
 def _fmt_num(n: Optional[float], digits: int = 2) -> str:
     if n is None:
-        return "—"
+        return "н/д"
     try:
         s = f"{float(n):.{digits}f}"
         return s.rstrip("0").rstrip(".") if "." in s else s
     except Exception:
-        return "—"
+        return "н/д"
 
 def _to_float(x) -> Optional[float]:
     try:
@@ -87,8 +94,8 @@ def _to_float(x) -> Optional[float]:
 
 def _fmt_delta_arrow(d, digits: int = 2, eps: float = 0.005) -> str:
     """
-    Компактная динамика: ↑0.34 / ↓0.12. Если почти ноль — пустая строка.
-    Используем только для ЦБ РФ, чтобы не раздувать текст.
+    Компактная динамика: ↑0.34 / ↓0.12. Если почти ноль — пусто.
+    Используем ТОЛЬКО для ЦБ РФ (чтобы не раздувать текст).
     """
     try:
         x = float(d)
@@ -99,6 +106,7 @@ def _fmt_delta_arrow(d, digits: int = 2, eps: float = 0.005) -> str:
     s = f"{abs(x):.{digits}f}".rstrip("0").rstrip(".")
     return f" ↑{s}" if x > 0 else f" ↓{s}"
 
+# — ЦБ РФ (через локальный модуль fx.py)
 def _load_cbr_rates(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Dict[str, Any]:
     """
     Ожидаем fx.get_rates(date=..., tz=...) -> {'USD': {'value':..., 'delta':...}, 'EUR': {...}, 'as_of': ...}
@@ -112,10 +120,11 @@ def _load_cbr_rates(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Dic
         logging.warning("FX: не удалось получить курсы ЦБ РФ: %s", e)
         return {}
 
+# — Межрынок EUR (через fx.py; фолбэк — пусто)
 def _fetch_intermarket_eur() -> Dict[str, float]:
     """
     Межрыночные кроссы к EUR: USD, GBP, TRY, ILS.
-    Ожидаем fx.get_intermarket_eur() -> dict(code->float). Возвращаем {} при ошибке.
+    Ожидаем fx.get_intermarket_eur() -> dict(code->float).
     """
     try:
         import importlib
@@ -127,70 +136,52 @@ def _fetch_intermarket_eur() -> Dict[str, float]:
         logging.warning("FX: межрынок EUR не получен: %s", e)
     return {}
 
+# — ЕЦБ (официальные курсы к EUR) — прямой фетчер с фолбэком на hist-90d
 def _fetch_ecb_official() -> Tuple[Dict[str, float], Optional[str]]:
     """
-    Официальные курсы ЕЦБ к EUR: USD, GBP, TRY, ILS.
-    Ожидаем fx.get_ecb_eur_rates() -> (dict, as_of) ИЛИ fx.get_ecb_official() -> dict.
+    Возвращает ({'USD': 1.16, 'GBP': 0.87, 'TRY': 48.36, 'ILS': 3.80}, 'YYYY-MM-DD')
     """
-    try:
-        import importlib
-        fx = importlib.import_module("fx")
-        if hasattr(fx, "get_ecb_eur_rates"):  # type: ignore[attr-defined]
-            d, as_of = fx.get_ecb_eur_rates()  # type: ignore[attr-defined]
-            return (d or {}), (str(as_of) if as_of else None)
-        if hasattr(fx, "get_ecb_official"):  # type: ignore[attr-defined]
-            d = fx.get_ecb_official()  # type: ignore[attr-defined]
-            return (d or {}), None
-    except Exception as e:
-        logging.warning("FX: ЕЦБ-курсы не получены: %s", e)
+    urls = [
+        "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
+        "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml",
+    ]
+    want = {"USD", "GBP", "TRY", "ILS"}
+
+    for url in urls:
+        try:
+            r = requests.get(url, headers=ECB_HEADERS, timeout=15)
+            r.raise_for_status()
+            root = ET.fromstring(r.content)
+            cubes = root.findall(".//{*}Cube[@time]")
+            if not cubes:
+                continue
+            cube = cubes[-1]
+            date = cube.attrib.get("time")
+            rates: Dict[str, float] = {}
+            for c in cube.findall("{*}Cube"):
+                code = c.attrib.get("currency")
+                rate = c.attrib.get("rate")
+                if code in want and rate:
+                    v = _to_float(rate)
+                    if v is not None:
+                        rates[code] = v
+            if rates:
+                return rates, date
+        except Exception:
+            continue
     return {}, None
 
-def _build_fx_message_eur(date_local: pendulum.DateTime, tz: pendulum.Timezone):
+def _build_fx_message_eur(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> tuple[str, Dict[str, Any]]:
     """
-    Двухстрочный пост:
-      • ЕЦБ: USD 1.16 • GBP 0.87 • TRY 48.36 • ILS 3.80
-      • ЦБ РФ: €→₽ 93.92 ↓0.13 • $→₽ 80.85 ↑0.34
+    Трёхстрочный пост:
+      • Межрынок: USD 1.16 • GBP 0.87 • TRY 48.36 • ILS 3.80
+      • ЕЦБ:      USD 1.16 • GBP 0.87 • TRY 48.36 • ILS 3.80
+      • ЦБ РФ:    €→₽ 93.92 ↓0.13 • $→₽ 80.85 ↑0.34
     """
-    NBSP = "\u00A0"  # неразрывный пробел
+    NBSP = "\u00A0"
 
-    # 1) ЕЦБ (кросс-курсы к EUR)
-    ecb, _asof = _fetch_ecb_official()  # -> (dict, ts|None)
-
-    def _ecb_line(ecb_dict: Dict[str, float]) -> str:
-        if not ecb_dict:
-            return ""
-        parts = []
-        for code in ("USD", "GBP", "TRY", "ILS"):
-            v = _to_float(ecb_dict.get(code))
-            if v is not None:
-                parts.append(f"{code} {_fmt_num(v, 2)}")
-        return "• ЕЦБ: " + " • ".join(parts) if parts else ""
-
-    line_ecb = _ecb_line(ecb)
-
-    # 2) ЦБ РФ (курсы к рублю + динамика)
-    cbr = _load_cbr_rates(date_local, tz)
-    eur_val = _to_float(((cbr.get("EUR") or {}).get("value")))
-    eur_dlt = _to_float(((cbr.get("EUR") or {}).get("delta")))
-    usd_val = _to_float(((cbr.get("USD") or {}).get("value")))
-    usd_dlt = _to_float(((cbr.get("USD") or {}).get("delta")))
-
-    cbr_parts = []
-    if eur_val is not None:
-        cbr_parts.append(f"€→₽{NBSP}{_fmt_num(eur_val, 2)}{_fmt_delta_arrow(eur_dlt)}")
-    if usd_val is not None:
-        cbr_parts.append(f"$→₽{NBSP}{_fmt_num(usd_val, 2)}{_fmt_delta_arrow(usd_dlt)}")
-
-    line_cbr = "• ЦБ РФ: " + " • ".join(cbr_parts) if cbr_parts else ""
-
-    # Итоговый текст (без пустых строк)
-    title = "💱 <b>Курсы валют (EUR)</b>"
-    body_lines = [l for l in (line_ecb, line_cbr) if l]
-    if not body_lines:
-        body_lines = ["• Данные временно недоступны"]
-
-    text = f"{title}\n" + "\n".join(body_lines) + "\n\n#Кипр #курсы_валют"
-    return text, cbr
+    # 1) Межрынок EUR
+    inter = _fetch_intermarket_eur()
 
     def _line_cross(prefix: str, data: Dict[str, float]) -> str:
         if not data:
@@ -202,13 +193,17 @@ def _build_fx_message_eur(date_local: pendulum.DateTime, tz: pendulum.Timezone):
                 parts.append(f"{code} {_fmt_num(v, 2)}")
         return f"{prefix} " + " • ".join(parts) if parts else ""
 
-    line1 = _line_cross("• Межрынок:", inter)         # может быть пустой
-    line_ecb = _line_cross("ЕЦБ —", ecb)              # может быть пустой
+    line_inter = _line_cross("• Межрынок:", inter)
 
-    # ЦБ РФ (всегда показываем, если есть хотя бы одно значение)
+    # 2) ЕЦБ (официальные к EUR)
+    ecb, _asof = _fetch_ecb_official()
+    line_ecb = _line_cross("• ЕЦБ:", ecb)
+
+    # 3) ЦБ РФ (к рублю + динамика)
+    cbr = _load_cbr_rates(date_local, tz)
     eur_val = _to_float(((cbr.get("EUR") or {}).get("value")))
-    usd_val = _to_float(((cbr.get("USD") or {}).get("value")))
     eur_dlt = _to_float(((cbr.get("EUR") or {}).get("delta")))
+    usd_val = _to_float(((cbr.get("USD") or {}).get("value")))
     usd_dlt = _to_float(((cbr.get("USD") or {}).get("delta")))
 
     cbr_bits = []
@@ -216,28 +211,15 @@ def _build_fx_message_eur(date_local: pendulum.DateTime, tz: pendulum.Timezone):
         cbr_bits.append(f"€→₽{NBSP}{_fmt_num(eur_val, 2)}{_fmt_delta_arrow(eur_dlt)}")
     if usd_val is not None:
         cbr_bits.append(f"$→₽{NBSP}{_fmt_num(usd_val, 2)}{_fmt_delta_arrow(usd_dlt)}")
+    line_cbr = "• ЦБ РФ: " + " • ".join(cbr_bits) if cbr_bits else ""
 
-    cbr_line = f"ЦБ РФ — " + " • ".join(cbr_bits) if cbr_bits else ""
-
-    # Официальные: ЕЦБ (если есть) + ЦБ РФ (если есть)
-    official_parts = []
-    if line_ecb:
-        official_parts.append(line_ecb)
-    if cbr_line:
-        official_parts.append(cbr_line)
-
-    line2 = "• Официальные: " + " • ".join(official_parts) if official_parts else ""
-
-    # Сборка финального текста (пропускаем пустые строки)
-    lines = []
-    if line1:
-        lines.append(line1)
-    if line2:
-        lines.append(line2)
-
+    # Итоговый текст (пропускаем пустые строки)
     title = "💱 <b>Курсы валют (база EUR)</b>"
-    body = ("\n".join(lines) if lines else "• Данные временно недоступны") + "\n\n#Кипр #курсы_валют"
-    return f"{title}\n{body}", cbr
+    lines = [l for l in (line_inter, line_ecb, line_cbr) if l]
+    if not lines:
+        lines = ["• Данные временно недоступны"]
+    text = f"{title}\n" + "\n".join(lines) + "\n\n#Кипр #курсы_валют"
+    return text, cbr
 
 def _normalize_cbr_date(raw) -> Optional[str]:
     if raw is None:
@@ -272,7 +254,7 @@ async def _send_fx_eur_only(
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
 
-    # не постим повтор, если «дата ЦБ» та же (используем функции из fx.py, если есть)
+    # не постим повтор, если дата ЦБ та же (используем функции из fx.py, если есть)
     try:
         import importlib
         fx = importlib.import_module("fx")
