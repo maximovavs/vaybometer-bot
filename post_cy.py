@@ -147,44 +147,66 @@ def _fetch_ecb_official() -> Tuple[Dict[str, float], Optional[str]]:
 
 def _build_fx_message_eur(date_local: pendulum.DateTime, tz: pendulum.Timezone):
     """
-    Двухстрочный FX-пост:
+    Двухстрочный FX-пост (EUR-база).
       • Межрынок: USD 1.16 • GBP 0.87 • TRY 48.36 • ILS 3.80
-      • Официальные: ЕЦБ — USD 1.16 • GBP 0.87 • TRY 48.36 • ILS 3.80 • ЦБ РФ — €→₽ 93.92 ↑0.34 • $→₽ 80.85 ↓0.08
+      • Официальные: ЕЦБ — USD 1.16 • GBP 0.87 • TRY 48.36 • ILS 3.80 • ЦБ РФ — €→₽ 93.92 ↓0.13 • $→₽ 80.85 ↑0.07
+    Если межрынок/ЕЦБ пусты — соответствующие куски скрываются.
     """
+    NBSP = "\u00A0"  # неразрывный пробел (чтобы не ломало строку после «€→₽»)
+
     inter = _fetch_intermarket_eur()
     ecb, _asof = _fetch_ecb_official()
     cbr = _load_cbr_rates(date_local, tz)
 
-    # если межрынок пуст — используем ЕЦБ, чтобы не оставлять строку «н/д»
+    # если межрынок пуст — пробуем показать хотя бы ЕЦБ в первой строке
     if not inter and ecb:
         inter = dict(ecb)
 
     def _line_cross(prefix: str, data: Dict[str, float]) -> str:
         if not data:
-            return f"{prefix} н/д"
+            return ""
         parts = []
         for code in ("USD", "GBP", "TRY", "ILS"):
             v = _to_float(data.get(code))
-            if v is None:
-                continue
-            parts.append(f"{code} {_fmt_num(v, 2)}")
-        return f"{prefix} " + " • ".join(parts) if parts else f"{prefix} н/д"
+            if v is not None:
+                parts.append(f"{code} {_fmt_num(v, 2)}")
+        return f"{prefix} " + " • ".join(parts) if parts else ""
 
-    line1 = _line_cross("• Межрынок:", inter)
-    line_ecb = _line_cross("ЕЦБ —", ecb)
+    line1 = _line_cross("• Межрынок:", inter)         # может быть пустой
+    line_ecb = _line_cross("ЕЦБ —", ecb)              # может быть пустой
 
+    # ЦБ РФ (всегда показываем, если есть хотя бы одно значение)
     eur_val = _to_float(((cbr.get("EUR") or {}).get("value")))
     usd_val = _to_float(((cbr.get("USD") or {}).get("value")))
     eur_dlt = _to_float(((cbr.get("EUR") or {}).get("delta")))
     usd_dlt = _to_float(((cbr.get("USD") or {}).get("delta")))
-    eur_rub = _fmt_num(eur_val, 2)
-    usd_rub = _fmt_num(usd_val, 2)
-    eur_tail = _fmt_delta_arrow(eur_dlt, digits=2)
-    usd_tail = _fmt_delta_arrow(usd_dlt, digits=2)
-    cbr_line = f"ЦБ РФ — €→₽ {eur_rub}{eur_tail} • $→₽ {usd_rub}{usd_tail}"
+
+    cbr_bits = []
+    if eur_val is not None:
+        cbr_bits.append(f"€→₽{NBSP}{_fmt_num(eur_val, 2)}{_fmt_delta_arrow(eur_dlt)}")
+    if usd_val is not None:
+        cbr_bits.append(f"$→₽{NBSP}{_fmt_num(usd_val, 2)}{_fmt_delta_arrow(usd_dlt)}")
+
+    cbr_line = f"ЦБ РФ — " + " • ".join(cbr_bits) if cbr_bits else ""
+
+    # Официальные: ЕЦБ (если есть) + ЦБ РФ (если есть)
+    official_parts = []
+    if line_ecb:
+        official_parts.append(line_ecb)
+    if cbr_line:
+        official_parts.append(cbr_line)
+
+    line2 = "• Официальные: " + " • ".join(official_parts) if official_parts else ""
+
+    # Сборка финального текста (пропускаем пустые строки)
+    lines = []
+    if line1:
+        lines.append(line1)
+    if line2:
+        lines.append(line2)
 
     title = "💱 <b>Курсы валют (база EUR)</b>"
-    body = f"{line1}\n• Официальные: {line_ecb} • {cbr_line}\n\n#Кипр #курсы_валют"
+    body = ("\n".join(lines) if lines else "• Данные временно недоступны") + "\n\n#Кипр #курсы_валют"
     return f"{title}\n{body}", cbr
 
 def _normalize_cbr_date(raw) -> Optional[str]:
