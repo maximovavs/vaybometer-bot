@@ -27,6 +27,22 @@ import random
 import requests
 import pendulum
 from typing import Any, Dict, Optional, List
+__all__ = [
+    "compass",
+    "AIR_EMOJI",
+    "pm_color",
+    "kp_emoji",
+    "kmh_to_ms",
+    "smoke_index",
+    "get_fact",
+    # полезные доп. утилиты (необязательно, но удобно)
+    "ms_to_kmh",
+    "aqi_color",
+    "safe",
+    "pressure_trend",
+    "_get",
+    "_get_retry",
+]
 
 # ──────────────────────── Компас, облака, ветер ──────────────────────────
 
@@ -342,19 +358,17 @@ def get_fact(date: pendulum.Date, region: str = "") -> str:
     """
     r = region.lower()
 
-    # 1) Калининград
+   # 1) Калининград — безопасные фолбэки, если словари не определены в этом модуле
     if "калининград" in r:
         key = date.format("MM-DD")
-        return FACTS_KLGD.get(key, random.choice(FACTS_KLGD_RANDOM))
-
-    # 2) Кипр
-    if "кипр" in r:
-        key = date.format("MM-DD")
-        return FACTS_CY.get(key, random.choice(DEFAULT_FACTS_CY))
-
-    # 3) Универсальный
-    idx = date.day % len(DEFAULT_FACTS_UNI)
-    return DEFAULT_FACTS_UNI[idx]
+        klgd_map = globals().get("FACTS_KLGD", {}) or {}
+        klgd_rand = globals().get("FACTS_KLGD_RANDOM", []) or []
+        if isinstance(klgd_map, dict) and key in klgd_map:
+            return klgd_map[key]
+        if isinstance(klgd_rand, list) and klgd_rand:
+            return random.choice(klgd_rand)
+        # если ничего нет — не падаем, отдадим универсальный факт
+        return random.choice(DEFAULT_FACTS_UNI)
 
 # ─────────────────────── Интеграции и иконки ────────────────────────────────
 
