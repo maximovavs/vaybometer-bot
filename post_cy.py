@@ -4,9 +4,13 @@
 post_cy.py  •  Cyprus daily/FX posts for Telegram.
 
 Modes:
-  --fx-only        -> publish EUR-base FX post (Intermarket • ECB • CBR with deltas)
-  --dry-run        -> log only
-  --date, --for-tomorrow, --to-test, --chat-id  as before
+  --mode morning     -> утренний пост (сегодняшнее, компактные блоки)
+  --mode evening     -> вечерний пост (анонс на завтра)
+  --fx-only          -> публикует EUR-base FX пост (Межрынок • ЕЦБ • ЦБ РФ с динамикой)
+  --dry-run          -> только лог
+
+Также поддерживаются: --date, --for-tomorrow, --to-test, --chat-id
+(режим можно задать через env POST_MODE=morning|evening; приоритет у CLI)
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from typing import Dict, Any, Tuple, Optional
 from pathlib import Path
 import json
 import xml.etree.ElementTree as ET
+import inspect
 
 import pendulum
 import requests
@@ -53,7 +58,7 @@ OTHER_CITIES_ALL = {
 
 # ─────────────── FX helpers ───────────────
 FX_CACHE_PATH     = Path("fx_cache.json")        # для «повтор/не повторять» по ЦБ
-INTER_CACHE_PATH  = Path("fx_inter_cache.json")  # наш лёгкий кэш межрынка «вчера»
+INTER_CACHE_PATH  = Path("fx_inter_cache.json")  # лёгкий кэш межрынка «вчера»
 
 ECB_HEADERS = {
     "User-Agent": "VayboMeterBot/1.0 (+https://t.me/vaybometer)",
@@ -136,10 +141,10 @@ def _fetch_intermarket_eur_with_prev(today_str: str) -> Tuple[Dict[str, float], 
     except Exception as e:
         logging.warning("FX: межрынок EUR сегодня не получен: %s", e)
 
-    # prev: 1) явная функция в модуле; 2) get_intermarket_eur(date=...); 3) наш кэш
+    # prev: 1) явная функция; 2) get_intermarket_eur(date=...); 3) наш кэш
     if not prev_vals:
         try:
-            import importlib, inspect
+            import importlib, inspect as _inspect
             fx = importlib.import_module("fx")
             if hasattr(fx, "get_intermarket_eur_prev"):  # type: ignore[attr-defined]
                 pv = fx.get_intermarket_eur_prev()  # type: ignore[attr-defined]
@@ -147,7 +152,7 @@ def _fetch_intermarket_eur_with_prev(today_str: str) -> Tuple[Dict[str, float], 
                     prev_vals = {k: float(vv) for k,vv in pv.items() if k in CODES and _to_float(vv) is not None}
             else:
                 fn = getattr(fx, "get_intermarket_eur", None)
-                if fn and "date" in (inspect.signature(fn).parameters if callable(fn) else {}):
+                if fn and "date" in (_inspect.signature(fn).parameters if callable(fn) else {}):
                     yday = (pendulum.parse(today_str).subtract(days=1)).to_date_string()
                     pv = fn(date=yday)  # type: ignore[misc]
                     if isinstance(pv, dict):
@@ -174,7 +179,7 @@ def _fetch_ecb_latest_and_prev() -> Tuple[Dict[str,float], Dict[str,float], Opti
     prev:   Dict[str,float] = {}
     d_latest = d_prev = None
 
-    # попробуем daily; если получится — возьмём prev из hist-90d
+    # daily
     ok_latest = False
     try:
         r = requests.get(urls[0], headers=ECB_HEADERS, timeout=12)
@@ -193,7 +198,7 @@ def _fetch_ecb_latest_and_prev() -> Tuple[Dict[str,float], Dict[str,float], Opti
     except Exception:
         pass
 
-    # hist-90d для prev (и для latest — если daily не сработал)
+    # hist-90d
     try:
         r = requests.get(urls[1], headers=ECB_HEADERS, timeout=15)
         r.raise_for_status()
@@ -201,7 +206,6 @@ def _fetch_ecb_latest_and_prev() -> Tuple[Dict[str,float], Dict[str,float], Opti
         cubes = root.findall(".//{*}Cube[@time]")
         if not cubes:
             return latest, prev, d_latest, d_prev
-        # последние два рабочих дня
         c2 = cubes[-2] if len(cubes) >= 2 else None
         if not ok_latest:
             c1 = cubes[-1]
@@ -395,12 +399,20 @@ async def main_cy() -> None:
     parser.add_argument("--fx-only", action="store_true")
     parser.add_argument("--to-test", action="store_true")
     parser.add_argument("--chat-id", type=str, default="")
+    parser.add_argument("--mode", choices=["morning", "evening"], help="Режим ленты (по умолчанию POST_MODE или evening)")
     args = parser.parse_args()
 
     tz = pendulum.timezone(TZ_STR)
     base_date = pendulum.parse(args.date).in_tz(tz) if args.date else pendulum.now(tz)
     if args.for_tomorrow:
         base_date = base_date.add(days=1)
+
+    # Определяем режим: CLI > ENV > default
+    mode = args.mode or os.getenv("POST_MODE", "").strip().lower()
+    if mode not in ("morning", "evening"):
+        mode = "evening"  # дефолт совместим с прежним «вечерним» форматом
+    # Пробрасываем в окружение (на случай, если post_common читает из ENV)
+    os.environ["POST_MODE"] = mode
 
     chat_id = resolve_chat_id(args.chat_id, args.to_test)
     bot = Bot(token=TOKEN)
@@ -411,10 +423,11 @@ async def main_cy() -> None:
             return
 
         if args.dry_run:
-            logging.info("DRY-RUN: пропускаем отправку основного ежедневного поста")
+            logging.info("DRY-RUN: пропускаем отправку основного поста (%s)", mode)
             return
 
-        await main_common(
+        # Безопасная прокидка mode в main_common: если сигнатура поддерживает, передадим, иначе — нет.
+        kwargs = dict(
             bot=bot,
             chat_id=chat_id,
             region_name="Кипр",
@@ -424,6 +437,15 @@ async def main_cy() -> None:
             other_cities=OTHER_CITIES_ALL,
             tz=TZ_STR,
         )
+
+        try:
+            sig = inspect.signature(main_common)  # type: ignore[arg-type]
+            if "mode" in sig.parameters:
+                kwargs["mode"] = mode  # type: ignore[assignment]
+        except Exception:
+            pass
+
+        await main_common(**kwargs)  # type: ignore[misc]
 
 if __name__ == "__main__":
     asyncio.run(main_cy())
