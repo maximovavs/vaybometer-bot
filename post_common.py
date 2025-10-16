@@ -1,4 +1,4 @@
-#!/usr/bin/env python3 
+#!/usr/bin/env python3  
 # -*- coding: utf-8 -*-
 """
 post_common.py — VayboMeter (Кипр/универсальный).
@@ -712,6 +712,116 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[
     return {"max_speed_ms": max_speed_ms, "max_gust_ms": max_gust_ms, "heavy_rain": heavy_rain,
             "thunder": thunder, "warning": bool(reasons),
             "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else ""}
+
+# ───────────── Air helpers для «Вывода» ─────────────
+def _aqi_to_air_label(aqi: Optional[float]) -> Optional[str]:
+    """Лейблы ровно под ключи AIR_EMOJI."""
+    if not isinstance(aqi, (int, float)): return None
+    x = float(aqi)
+    if x <= 50:   return "хороший"
+    if x <= 100:  return "умеренный"
+    if x <= 150:  return "вредный"
+    if x <= 200:  return "оч. вредный"
+    return "опасный"
+
+def _is_air_bad(air: Dict[str, Any]) -> tuple[bool, str]:
+    """Грубая оценка риска воздуха для выбора темы/вывода."""
+    aqi = air.get("aqi")
+    pm25 = air.get("pm25")
+    pm10 = air.get("pm10")
+    try: aqi_f = float(aqi) if aqi is not None else None
+    except Exception: aqi_f = None
+    try: pm25_f = float(pm25) if pm25 is not None else None
+    except Exception: pm25_f = None
+    try: pm10_f = float(pm10) if pm10 is not None else None
+    except Exception: pm10_f = None
+
+    # пороги «плохо»
+    if (aqi_f is not None and aqi_f >= 150) or \
+       (pm25_f is not None and pm25_f >= 55) or \
+       (pm10_f is not None and pm10_f >= 100):
+        return True, "высокий"
+    # пороги «внимание»
+    if (aqi_f is not None and aqi_f >= 100) or \
+       (pm25_f is not None and pm25_f >= 35) or \
+       (pm10_f is not None and pm10_f >= 50):
+        return True, "повышенный"
+    return False, "низкий"
+
+def build_conclusion(kp_val: Optional[float], kp_status: str,
+                     air_now: Dict[str, Any],
+                     storm_region: Dict[str, Any],
+                     schu_state: Dict[str, Any]) -> List[str]:
+    """
+    Короткий, неболтливый вывод на вечер.
+    Возвращает список строк (без заголовка).
+    """
+    lines: List[str] = []
+
+    # 1) Погода (шторм)
+    if storm_region.get("warning"):
+        lines.append(storm_region.get("warning_text", "⚠️ Возможны погодные сюрпризы."))
+
+    # 2) Воздух
+    aqi = air_now.get("aqi")
+    pm25 = air_now.get("pm25")
+    pm10 = air_now.get("pm10")
+
+    aqi_label = _aqi_to_air_label(float(aqi)) if isinstance(aqi, (int, float, str)) else None
+    aqi_emoji = AIR_EMOJI.get(aqi_label or "н/д", "⚪")
+    smoke_em, smoke_lvl = smoke_index(pm25, pm10)
+
+    pm_chunk = []
+    if isinstance(pm25, (int, float, str)):
+        try: pm_chunk.append(f"PM₂.₅ {int(round(float(pm25)))}")
+        except Exception: pass
+    if isinstance(pm10, (int, float, str)):
+        try: pm_chunk.append(f"PM₁₀ {int(round(float(pm10)))}")
+        except Exception: pass
+    pm_part = " / ".join(pm_chunk) if pm_chunk else "PM н/д"
+
+    if isinstance(aqi, (int, float, str)) and str(aqi).strip():
+        try:
+            aqi_i = int(round(float(aqi)))
+            lines.append(f"🏭 Воздух: {aqi_emoji} AQI {aqi_i} ({aqi_label or 'н/д'}) • {pm_part} • {smoke_em} дымка {smoke_lvl}")
+        except Exception:
+            lines.append(f"🏭 Воздух: {aqi_emoji} ({aqi_label or 'н/д'}) • {pm_part} • {smoke_em} дымка {smoke_lvl}")
+    else:
+        lines.append(f"🏭 Воздух: {aqi_emoji} ({aqi_label or 'н/д'}) • {pm_part} • {smoke_em} дымка {smoke_lvl}")
+
+    # 3) Геомагнитка и Шуман
+    kp_part = "Kp н/д"
+    if isinstance(kp_val, (int, float)):
+        kp_part = f"Kp={kp_val:.1f} ({kp_status or 'н/д'})"
+    kp_icon = kp_emoji(kp_val if isinstance(kp_val, (int, float)) else None)
+
+    schu_code = (schu_state or {}).get("status_code")
+    if schu_code == "green":
+        schu_text = "Шуман — норма"
+    elif schu_code == "red":
+        schu_text = "Шуман — сильные отклонения"
+    else:
+        schu_text = "Шуман — колебания"
+
+    lines.append(f"🧲 {kp_icon} {kp_part} • 📡 {schu_text}")
+
+    # 4) Итоговый настрой
+    air_bad, air_level = _is_air_bad(air_now)
+    kp_bad = isinstance(kp_val, (int, float)) and kp_val >= 5
+    schu_bad = (schu_state or {}).get("status_code") == "red"
+    storm_bad = bool(storm_region.get("warning"))
+
+    if storm_bad or kp_bad or schu_bad or air_bad:
+        hints = []
+        if storm_bad: hints.append("погода нервная")
+        if air_bad:   hints.append(f"воздух {air_level}")
+        if kp_bad:    hints.append("магнитные бури")
+        if schu_bad:  hints.append("волны Шумана")
+        lines.append("📌 День с оговорками: " + ", ".join(hints) + ".")
+    else:
+        lines.append("📌 День спокойный: без экстрима по погоде, воздуху и полю.")
+
+    return lines
 
 # ───────────── Air → вывод (утренний комбо-блок) ─────────────
 def _aqi_bucket_label(aqi: Optional[float]) -> Optional[str]:
