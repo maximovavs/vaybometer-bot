@@ -1,4 +1,4 @@
-#!/usr/bin/env python3  
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 post_common.py — VayboMeter (Кипр/универсальный).
@@ -20,6 +20,7 @@ import html
 import asyncio
 import logging
 import math
+import random
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Union
 
@@ -803,7 +804,7 @@ def build_conclusion(kp_val: Optional[float], kp_status: str,
     else:
         schu_text = "Шуман — колебания"
 
-    lines.append(f"🧲 {kp_icon} {kp_part} • 📡 {schu_text}")
+    lines.append(f"🧲 {kp_icon} {kp_part} • 📡 {schу_text if False else schu_text}")
 
     # 4) Итоговый настрой
     air_bad, air_level = _is_air_bad(air_now)
@@ -1135,7 +1136,7 @@ def build_message(region_name: str,
 
         P.append("———")
 
-    # ВЕЧЕР: Шуман + Астро + Вывод/Рекомендации/Факт (как было)
+    # ВЕЧЕР: Шуман + Астро + Вывод/Рекомендации/Факт
     if not is_morning:
         schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
         if not DISABLE_SCHUMANN:
@@ -1150,7 +1151,6 @@ def build_message(region_name: str,
 
         # Вывод
         P.append("📜 <b>Вывод</b>")
-        # для вывода нужны air/kp: соберём минимально (без вывода самих блоков)
         air_now = get_air(CY_LAT, CY_LON) or {}
         kp_tuple = get_kp() or (None, "н/д", None, "n/d")
         try: kp_val, ks, _, _ = kp_tuple
@@ -1160,7 +1160,7 @@ def build_message(region_name: str,
         P.extend(build_conclusion(kp_val, ks, air_now, storm_region, schu_state))
         P.append("———")
 
-        # Рекомендации (безопасные)
+        # Рекомендации
         P.append("✅ <b>Рекомендации</b>")
         theme = (
             "плохая погода" if storm_region.get("warning") else
@@ -1173,7 +1173,15 @@ def build_message(region_name: str,
             P.append(t)
 
         P.append("———")
-        P.append(f"📚 {get_fact(tom, region_name)}")
+        # Фолбэк, если вдруг get_fact вернул None/пусто
+        fact_txt = None
+        try:
+            fact_txt = get_fact(tom, region_name)
+        except Exception:
+            fact_txt = None
+        if not isinstance(fact_txt, str) or not fact_txt.strip():
+            fact_txt = "На Кипре больше 300 солнечных дней в году — запасайтесь очками ☀️"
+        P.append(f"📚 {fact_txt}")
 
     return "\n".join(P)
 
