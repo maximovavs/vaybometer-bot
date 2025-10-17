@@ -194,10 +194,82 @@ def code_desc(c: Any) -> Optional[str]:
     try: return WMO_DESC.get(int(c))
     except Exception: return None
 
-def _iter_city_pairs(cities) -> list[tuple[str, tuple[float, float]]]:
-    if isinstance(cities, dict): return list(cities.items())
-    try: return list(cities)
-    except Exception: return []
+# ───────────── Нормализация входных городов ─────────────
+def _iter_city_pairs(cities) -> List[Tuple[str, Tuple[float, float]]]:
+    """
+    Принимаем:
+      - dict: {"Limassol": (lat, lon)} или {"Limassol": {"lat":..,"lon":..}}
+      - list[ (name, (lat, lon)) ] | list[ (name, lat, lon) ]
+      - list[ {"name"/"city": str, "lat":..., "lon"/"lng":...} ]
+      - list[ (lat, lon) ]  → имя "lat,lon"
+    Всё остальное — пропускаем с warning.
+    """
+    out: List[Tuple[str, Tuple[float, float]]] = []
+    if not cities:
+        return out
+
+    # Если вдруг строка — точно ошибка
+    if isinstance(cities, str):
+        logging.warning("city list is a string (%r). Skipping.", cities)
+        return out
+
+    # dict → items
+    if isinstance(cities, dict):
+        for name, val in cities.items():
+            la = lo = None
+            if isinstance(val, (list, tuple)) and len(val) == 2:
+                la, lo = val[0], val[1]
+            elif isinstance(val, dict):
+                la = val.get("lat") or val.get("latitude")
+                lo = val.get("lon") or val.get("lng") or val.get("longitude")
+            if isinstance(la, (int, float)) and isinstance(lo, (int, float)):
+                out.append((str(name), (float(la), float(lo))))
+            else:
+                logging.warning("bad city entry for %r: %r", name, val)
+        return out
+
+    # последовательность
+    try:
+        seq = list(cities)
+    except Exception:
+        logging.warning("cities is not iterable: %r", cities)
+        return out
+
+    idx_counter = 1
+    for item in seq:
+        # (name, (lat, lon))
+        if isinstance(item, (list, tuple)) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], (list, tuple)) and len(item[1]) == 2:
+            la, lo = item[1][0], item[1][1]
+            if isinstance(la, (int, float)) and isinstance(lo, (int, float)):
+                out.append((item[0], (float(la), float(lo))))
+                continue
+
+        # (name, lat, lon)
+        if isinstance(item, (list, tuple)) and len(item) == 3 and isinstance(item[0], str):
+            _, la, lo = item
+            if isinstance(la, (int, float)) and isinstance(lo, (int, float)):
+                out.append((item[0], (float(la), float(lo))))
+                continue
+
+        # (lat, lon) без имени
+        if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(x, (int, float)) for x in item):
+            la, lo = float(item[0]), float(item[1])
+            out.append((f"{la:.3f},{lo:.3f}", (la, lo)))
+            continue
+
+        # dict с ключами
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("city") or f"Point{idx_counter}"
+            la = item.get("lat") or item.get("latitude")
+            lo = item.get("lon") or item.get("lng") or item.get("longitude")
+            if isinstance(la, (int, float)) and isinstance(lo, (int, float)):
+                out.append((str(name), (float(la), float(lo))))
+                idx_counter += 1
+                continue
+
+        logging.warning("skip invalid city entry: %r", item)
+
+    return out
 
 # ───────────── Рассвет/закат — weather → astral → NOAA ─────────────
 def _parse_iso_to_tz(s: str, tz: pendulum.tz.timezone.Timezone) -> Optional[pendulum.DateTime]:
@@ -1019,9 +1091,15 @@ def build_conclusion(kp_val, ks, air_now, storm_region, schu_state) -> List[str]
 def _collect_city_tmax_list(sea_pairs, other_pairs, tz_obj) -> List[Tuple[str, float]]:
     all_pairs = list(sea_pairs) + list(other_pairs)
     out: List[Tuple[str,float]] = []
-    for city, (la, lo) in all_pairs:
-        tmax, _ = _city_detail_line(city, la, lo, tz_obj, include_sst=False)
-        if isinstance(tmax,(int,float)): out.append((city, float(tmax)))
+    for item in all_pairs:
+        try:
+            city, coords = item
+            la, lo = coords
+            tmax, _ = _city_detail_line(city, la, lo, tz_obj, include_sst=False)
+            if isinstance(tmax,(int,float)): out.append((city, float(tmax)))
+        except Exception:
+            logging.warning("skip bad city pair in tmax list: %r", item)
+            continue
     return out
 
 def _format_all_cities_temps_compact(rows: List[Tuple[str, float]], max_cities: int = None) -> str:
@@ -1058,6 +1136,7 @@ def build_message(region_name: str,
     mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
     is_morning = mode.startswith("morn")
 
+    # Нормализуем входные города максимально терпимо
     sea_pairs   = _iter_city_pairs(sea_cities)
     other_pairs = _iter_city_pairs(other_cities)
 
