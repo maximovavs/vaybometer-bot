@@ -151,9 +151,61 @@ def code_desc(c: Any) -> Optional[str]:
     except Exception: return None
 
 def _iter_city_pairs(cities) -> list[tuple[str, tuple[float, float]]]:
-    if isinstance(cities, dict): return list(cities.items())
-    try: return list(cities)
-    except Exception: return []
+    """
+    Нормализует разные формы:
+      - {"City": (lat, lon)}
+      - [("City", (lat, lon)), ("Town", (lat, lon))]
+      - [("City", lat, lon)]
+      - генераторы/итераторы
+    Игнорирует строки и битые записи.
+    """
+    out: list[tuple[str, tuple[float, float]]] = []
+
+    if not cities:
+        return out
+
+    # dict -> items
+    if isinstance(cities, dict):
+        for k, v in list(cities.items()):
+            try:
+                if isinstance(v, (list, tuple)) and len(v) == 2:
+                    la, lo = float(v[0]), float(v[1])
+                    out.append((str(k), (la, lo)))
+            except Exception:
+                continue
+        return out
+
+    # одиночные строки — точно не города с координатами
+    if isinstance(cities, str):
+        return out
+
+    # общий случай: итерируем
+    try:
+        iterable = list(cities)
+    except Exception:
+        return out
+
+    for item in iterable:
+        try:
+            # ("City",(lat,lon))
+            if isinstance(item, (list, tuple)) and len(item) == 2 and isinstance(item[1], (list, tuple)) and len(item[1]) == 2:
+                name = str(item[0]); la, lo = float(item[1][0]), float(item[1][1])
+                out.append((name, (la, lo)))
+                continue
+
+            # ("City", lat, lon)
+            if isinstance(item, (list, tuple)) and len(item) == 3:
+                name = str(item[0]); la, lo = float(item[1]), float(item[2])
+                out.append((name, (la, lo)))
+                continue
+
+            # строка — пропускаем
+            if isinstance(item, str):
+                continue
+        except Exception:
+            continue
+
+    return out
 
 # ───────────── Рассвет/закат — weather → astral → NOAA ─────────────
 def _parse_iso_to_tz(s: str, tz: pendulum.tz.timezone.Timezone) -> Optional[pendulum.DateTime]:
@@ -870,8 +922,9 @@ async def main_common(
     tz: Union[pendulum.Timezone, str],
     mode: Optional[str] = None,
 ) -> None:
-    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_cities, tz, mode)
 
+# ДОЛЖНО БЫТЬ
+await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz, mode)
 __all__ = [
     "build_message","send_common_post","main_common",
     "schumann_line","get_schumann_with_fallback",
