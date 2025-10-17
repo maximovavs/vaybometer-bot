@@ -3,13 +3,22 @@
 """
 post_common.py — VayboMeter (Кипр/универсальный).
 
-• Утро: «человечный» обзор без блоков Морские/Континентальные:
+Ключевые моменты:
+• Утро: «человечный» обзор БЕЗ блоков «морские/континентальные».
   — самый тёплый / самый прохладный город
   — компактная строка температур по всем городам
-  — риски (ветер/ливни/гроза), закат сегодня
+  — риски (ветер/ливни/гроза)
+  — 🌇 закат сегодня
   — комбо воздух/пыльца/радиация + Kp/солнечный ветер
 
-• Вечер: как и раньше — города, Шуман, Астрособытия, Вывод, Рекомендации, Факт.
+• Вечер: единый список по всем городам (без разделения), затем:
+  — 🌅 рассвет завтра
+  — Шуман, Астрособытия, Вывод, Рекомендации, Факт.
+
+Примечание про ИИ:
+Файл опирается на gpt.py и его gpt_complete()/gpt_blurb().
+Приоритет моделей и ключей задаётся в gpt.py (GEMINI → GROQ → OPENAI),
+здесь только корректные вызовы и защита от сбоев LLM.
 """
 
 from __future__ import annotations
@@ -26,12 +35,12 @@ from typing import Any, Dict, List, Tuple, Optional, Union
 import pendulum
 from telegram import Bot, constants
 
-from utils        import compass, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index
+from utils        import compass, get_fact, AIR_EMOJI, kmh_to_ms, smoke_index
 from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
 from air          import get_air, get_sst, get_kp, get_solar_wind
 from pollen       import get_pollen
 from radiation    import get_radiation
-from gpt          import gpt_blurb, gpt_complete  # микро-LLM для «Астрособытий»
+from gpt          import gpt_blurb, gpt_complete  # LLM для «Астрособытий»/советов
 
 # (опц.) волна из Open-Meteo Marine
 try:
@@ -274,7 +283,7 @@ def sun_line_for_mode(mode: str, tz: pendulum.tz.timezone.Timezone, lat: float, 
         if sr: return f"🌅 Рассвет завтра: {sr.format('HH:mm')}"
     return None
 
-# ───────────── Шуман (как было) ─────────────
+# ───────────── Шуман ─────────────
 def _read_schumann_history() -> List[Dict[str, Any]]:
     candidates: List[Path] = []
     env_path = os.getenv("SCHU_FILE")
@@ -837,7 +846,7 @@ def _fetch_wave_for_tomorrow(lat: float, lon: float, tz_obj: pendulum.Timezone,
             "hourly": "wave_height,wave_period",
             "timezone": tz_obj.name,
         }
-        r = requests.get(url, params=params, timeout=10)  # ↑ увеличили таймаут до 10 с
+        r = requests.get(url, params=params, timeout=10)  # увеличенный таймаут
         r.raise_for_status()
         j = r.json()
         hourly = j.get("hourly") or {}
@@ -965,7 +974,7 @@ def build_conclusion(kp_val, ks, air_now, storm_region, schu_state) -> List[str]
     out.append(verdict)
     return out
 
-# ───────────── утренний «человечный» блок (без разделения городов) ─────────────
+# ───────────── помощники для «человечного» утра ─────────────
 def _collect_city_tmax_list(sea_pairs, other_pairs, tz_obj) -> List[Tuple[str, float]]:
     all_pairs = list(sea_pairs) + list(other_pairs)
     out: List[Tuple[str,float]] = []
@@ -989,7 +998,6 @@ def build_message(region_name: str,
                   mode: Optional[str] = None) -> str:
 
     tz_obj = _as_tz(tz)
-    # режим: morning/evening
     mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
     is_morning = mode.startswith("morn")
 
@@ -1003,7 +1011,7 @@ def build_message(region_name: str,
     wm_region = get_weather(CY_LAT, CY_LON) or {}
     storm_region = storm_flags_for_tomorrow(wm_region, tz_obj)
 
-    # === УТРО: новый формат ===
+    # === УТРО: «человечный» обзор без блоков ===
     if is_morning:
         rows = _collect_city_tmax_list(sea_pairs, other_pairs, tz_obj)
         warm = max(rows, key=lambda x: x[1]) if rows else None
@@ -1031,24 +1039,25 @@ def build_message(region_name: str,
         if combo:
             P.append(combo)
             air_now = get_air(CY_LAT, CY_LON) or {}
-            bad, tip = _is_air_bad(air_now)
+            _, tip = _is_air_bad(air_now)
             if tip:
                 P.append(f"ℹ️ {tip}")
 
         # Геомагнитка + солнечный ветер
         kp_tuple = get_kp() or (None, "н/д", None, "n/d")
-        try: kp, ks, kp_ts, kp_src = kp_tuple
+        try: kp, ks, kp_ts, _ = kp_tuple
         except Exception:
             kp = kp_tuple[0] if isinstance(kp_tuple,(list,tuple)) and len(kp_tuple)>0 else None
             ks = kp_tuple[1] if isinstance(kp_tuple,(list,tuple)) and len(kp_tuple)>1 else "н/д"
-            kp_ts, kp_src = None, "n/d"
+            kp_ts = None
         age_txt = ""
         if isinstance(kp_ts,int) and kp_ts>0:
             try:
                 age_min = int((pendulum.now("UTC").int_timestamp - kp_ts) / 60)
                 if age_min > 180: age_txt = f", 🕓 {age_min // 60}ч назад"
                 elif age_min >= 0: age_txt = f", {age_min} мин назад"
-            except Exception: age_txt = ""
+            except Exception:
+                age_txt = ""
 
         sw = get_solar_wind() or {}
         v, n = sw.get("speed_kms"), sw.get("density")
@@ -1070,52 +1079,45 @@ def build_message(region_name: str,
 
         return "\n".join(P)
 
-    # === ВЕЧЕР: формат с городами, Шуман и т. п. ===
+    # === ВЕЧЕР: единый список всех городов (без разделения) ===
 
     if storm_region.get("warning"):
         P.append(storm_region["warning_text"])
         P.append("———")
 
-    # Морские города
-    sea_rows: List[tuple[float, str]] = []
-    for city, (la, lo) in sea_pairs:
-        tmax, line = _city_detail_line(city, la, lo, tz_obj, include_sst=True)
+    # Соберём строки по всем городам
+    sea_names = {name for name, _ in sea_pairs}  # чтобы печатать SST/вод.активности только там, где уместно
+    all_rows: List[tuple[float, str]] = []
+    for city, (la, lo) in list(sea_pairs) + list(other_pairs):
+        include_sst = city in sea_names or city in SHORE_PROFILE
+        tmax, line = _city_detail_line(city, la, lo, tz_obj, include_sst=include_sst)
         if tmax is not None and line:
-            try:
-                hl = _water_highlights(city, la, lo, tz_obj)
-                if hl:
-                    line = line + f"\n   {hl}"
-            except Exception:
-                pass
-            sea_rows.append((float(tmax), line))
-    if sea_rows:
-        P.append(f"🌊 <b>{sea_label}</b>")
-        sea_rows.sort(key=lambda x: x[0], reverse=True)
+            # водные highlights — пытаться только для прибрежных
+            if include_sst:
+                try:
+                    hl = _water_highlights(city, la, lo, tz_obj)
+                    if hl:
+                        line = line + f"\n   {hl}"
+                except Exception:
+                    pass
+            all_rows.append((float(tmax), line))
+
+    # Отрисуем, тёплые наверх
+    if all_rows:
+        P.append("🏙 <b>Города</b>")
+        all_rows.sort(key=lambda x: x[0], reverse=True)
         medals = ["🥵", "😎", "😌", "🥶"]
-        for i, (_, text) in enumerate(sea_rows[:5]):
-            med = medals[i] if i < len(medals) else f"{i+1}."
+        for i, (_, text) in enumerate(all_rows):
+            med = medals[i] if i < len(medals) else "•"
             P.append(f"{med} {text}")
         P.append("———")
 
-    # Континентальные
-    oth_rows: List[tuple[float, str]] = []
-    for city, (la, lo) in other_pairs:
-        tmax, line = _city_detail_line(city, la, lo, tz_obj, include_sst=False)
-        if tmax is not None and line:
-            oth_rows.append((float(tmax), line))
-    if oth_rows:
-        P.append("🏢 <b>Континентальные города</b>")
-        oth_rows.sort(key=lambda x: x[0], reverse=True)
-        for _, text in oth_rows:
-            P.append(text)
-        P.append("———")
-
-    # Строка про солнце (после городов)
+    # Строка про солнце (после городов): вечером — рассвет завтра
     sun_line = sun_line_for_mode(mode, tz_obj, CY_LAT, CY_LON)
     if sun_line:
         P.append(sun_line)
 
-    # ВЕЧЕР: Шуман + Астро + Вывод/Рекомендации/Факт (как было)
+    # Шуман
     schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
     if not DISABLE_SCHUMANN:
         P.append(schumann_line(schu_state))
@@ -1129,7 +1131,6 @@ def build_message(region_name: str,
 
     # Вывод
     P.append("📜 <b>Вывод</b>")
-    # для вывода нужны air/kp: соберём минимально (без вывода самих блоков)
     air_now = get_air(CY_LAT, CY_LON) or {}
     kp_tuple = get_kp() or (None, "н/д", None, "n/d")
     try: kp_val, ks, _, _ = kp_tuple
@@ -1139,7 +1140,7 @@ def build_message(region_name: str,
     P.extend(build_conclusion(kp_val, ks, air_now, storm_region, schu_state))
     P.append("———")
 
-    # Рекомендации (безопасные)
+    # Рекомендации
     P.append("✅ <b>Рекомендации</b>")
     theme = (
         "плохая погода" if storm_region.get("warning") else
