@@ -908,8 +908,23 @@ async def send_common_post(
     tz: Union[pendulum.Timezone, str],
     mode: Optional[str] = None,
 ) -> None:
-    msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz, mode=mode)
-    await bot.send_message(chat_id=chat_id, text=msg, parse_mode=constants.ParseMode.HTML, disable_web_page_preview=True)
+    """Собираем текст и отправляем в Telegram (HTML)."""
+    msg = build_message(
+        region_name=region_name,
+        sea_label=sea_label,
+        sea_cities=sea_cities,
+        other_label=other_label,
+        other_cities=other_cities,
+        tz=tz,
+        mode=mode,
+    )
+    await bot.send_message(
+        chat_id=chat_id,
+        text=msg,
+        parse_mode=constants.ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
 
 async def main_common(
     bot: Bot,
@@ -922,12 +937,26 @@ async def main_common(
     tz: Union[pendulum.Timezone, str],
     mode: Optional[str] = None,
 ) -> None:
+    """Обёртка для единообразного вызова в разных постах-скриптах."""
+    await send_common_post(
+        bot=bot,
+        chat_id=chat_id,
+        region_name=region_name,
+        sea_label=sea_label,
+        sea_cities=sea_cities,
+        other_label=other_label,          # ← не забываем передать метку для «других» городов
+        other_cities=other_cities,
+        tz=tz,
+        mode=mode,
+    )
 
-# ДОЛЖНО БЫТЬ
-await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz, mode)
+
 __all__ = [
-    "build_message","send_common_post","main_common",
-    "schumann_line","get_schumann_with_fallback",
-    "pick_tomorrow_header_metrics","storm_flags_for_tomorrow",
-    "fetch_kp_latest_world",
+    "build_message",
+    "send_common_post",
+    "main_common",
+    "schumann_line",
+    "get_schumann_with_fallback",
+    "pick_tomorrow_header_metrics",
+    "storm_flags_for_tomorrow",
 ]
