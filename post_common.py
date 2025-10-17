@@ -58,6 +58,16 @@ SAFE_TIPS_FALLBACKS = {
     "волны Шумана": ["🧘 Спокойный темп дня.", "🍵 Лёгкая еда, тёплые напитки.", "😴 Ранний отход ко сну."],
 }
 
+# ───────────── Локализация городов для приветствия ─────────────
+RU_NAMES = {
+    "Nicosia": "Никосия", "Nicosía": "Никосия",
+    "Troodos": "Троодос", "Troodos Mountains": "Троодос",
+    "Limassol": "Лимасол", "Larnaca": "Ларнака",
+    "Pafos": "Пафос", "Paphos": "Пафос",
+    "Ayia Napa": "Айя-Напа", "Protaras": "Протарас",
+}
+def _ru_city(name: str) -> str: return RU_NAMES.get(name, name)
+
 def _escape_html(s: str) -> str:
     return html.escape(str(s), quote=False)
 
@@ -502,8 +512,8 @@ def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
     if not isinstance(rec, dict): return None
     voc = (rec.get("void_of_course") or rec.get("voc") or rec.get("void") or {}) 
     if not isinstance(voc, dict): return None
-    s = voc.get("start") or voc.get("from") or voc.get("start_time")
-    e = voc.get("end")   or voc.get("to")   or voc.get("end_time")
+    s = voc.get("start") or rec.get("from") or voc.get("start_time")
+    e = voc.get("end")   or rec.get("to")   or voc.get("end_time")
     if not s or not e: return None
     tz = pendulum.timezone(tz_local)
     t1 = _parse_voc_dt(s, tz); t2 = _parse_voc_dt(e, tz)
@@ -837,7 +847,7 @@ def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]
     if isinstance(pm10_i,int): pm_part.append(f"PM₁₀ {pm10_i}")
     if pm_part: parts.append(" / ".join(pm_part))
     if dose_line: parts.append(dose_line)
-    if isinstance(risk,str) and risk: parts.append(f"🌿 риск {risk}")
+    if isinstance(risk,str) and risk: parts.append(f"🌿 риск: {risk}")
     if not parts: return None
     return "🏭 " + " • ".join(parts)
 
@@ -1045,8 +1055,8 @@ def build_message(region_name: str,
             if abs(warm[1] - cool[1]) >= 0.5:
                 spread = f" (диапазон {cool[1]:.0f}–{warm[1]:.0f}°)"
             greeting += (
-                f" Сегодня теплее всего — {warm[0]} ({warm[1]:.0f}°), "
-                f"прохладнее — {cool[0]} ({cool[1]:.0f}°){spread}."
+                f" Сегодня теплее всего — {_ru_city(warm[0])} ({warm[1]:.0f}°), "
+                f"прохладнее — {_ru_city(cool[0])} ({cool[1]:.0f}°){spread}."
             )
         P.append(greeting)
 
@@ -1077,7 +1087,7 @@ def build_message(region_name: str,
         if isinstance(kp_ts,int) and kp_ts>0:
             try:
                 age_min = int((pendulum.now("UTC").int_timestamp - kp_ts) / 60)
-                age_txt = f", 🕓 {age_min // 60}ч назад" if age_min > 180 else (f", {age_min} мин назад" if age_min >= 0 else "")
+                age_txt = f", 🕓 {age_min // 60} ч назад" if age_min > 180 else (f", {age_min} мин назад" if age_min >= 0 else "")
             except Exception: age_txt = ""
 
         sw = get_solar_wind() or {}
@@ -1087,8 +1097,14 @@ def build_message(region_name: str,
         if isinstance(n,(int,float)): parts_sw.append(f"n {n:.1f} см⁻³")
         sw_chunk = (", ".join(parts_sw) + (f" — {wind_status}" if parts_sw else "")) if parts_sw or wind_status else "н/д"
 
+        # цветовой маркер Kp
+        kp_mark = ""
         if isinstance(kp,(int,float)):
-            P.append(f"🧲 Kp={kp:.1f} ({ks}{age_txt}) • 🌬️ {sw_chunk}")
+            if kp >= 5: kp_mark = "🔴 "
+            elif kp < 4: kp_mark = "🟢 "
+
+        if isinstance(kp,(int,float)):
+            P.append(f"{kp_mark}🧲 Kp={kp:.1f} ({ks}{age_txt}) • 🌬️ {sw_chunk}")
             try:
                 ws = (wind_status or "")
                 if kp >= 5 or ("спокой" in ws.lower() or "calm" in ws.lower()):
@@ -1107,6 +1123,9 @@ def build_message(region_name: str,
             if persona: P.append(persona)
         except Exception:
             pass
+
+        # тёплая концовка
+        P.append("Хорошего дня и бережного темпа 😊")
 
         return "\n".join(P)
 
@@ -1197,7 +1216,7 @@ async def main_common(
     tz: Union[pendulum.Timezone, str],
     mode: Optional[str] = None,
 ) -> None:
-    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz, mode)
+    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_cities, tz, mode)
 
 __all__ = [
     "build_message","send_common_post","main_common",
