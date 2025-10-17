@@ -172,7 +172,22 @@ def _shore_face_for_city(city: str) -> Tuple[Optional[float], Optional[str]]:
 
 # ───────────── утилиты ─────────────
 def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
-    return pendulum.timezone(tz) if isinstance(tz, str) else tz
+    """Превращает вход в таймзону. Переживает, если сюда по ошибке попал 'morning'/'evening'."""
+    default_tz = os.getenv("TZ", "Asia/Nicosia")
+    if not tz:
+        return pendulum.timezone(default_tz)
+    if isinstance(tz, str):
+        low = tz.strip().lower()
+        # Частая ошибка: вместо tz передали режим
+        if low in ("morning", "evening", "am", "pm"):
+            logging.warning("post_common: tz='%s' выглядит как режим. Беру %s.", tz, default_tz)
+            return pendulum.timezone(default_tz)
+        try:
+            return pendulum.timezone(tz)
+        except Exception:
+            logging.warning("post_common: некорректная tz='%s'. Фолбэк на %s.", tz, default_tz)
+            return pendulum.timezone(default_tz)
+    return tz
 
 WMO_DESC = {0:"☀️ ясно",1:"⛅ ч.обл",2:"☁️ обл",3:"🌥 пасм",45:"🌫 туман",48:"🌫 изморозь",51:"🌦 морось",61:"🌧 дождь",71:"❄️ снег",95:"⛈ гроза"}
 def code_desc(c: Any) -> Optional[str]:
