@@ -43,6 +43,13 @@ DISABLE_SCHUMANN = os.getenv("DISABLE_SCHUMANN", "").strip().lower() in ("1","tr
 DISABLE_LLM_TIPS = os.getenv("DISABLE_LLM_TIPS", "").strip().lower() in ("1","true","yes","on")
 ASTRO_LLM_TEMP = float(os.getenv("ASTRO_LLM_TEMP", "0.2"))
 
+# ───────────── LLM-надстройки (по флагам) ─────────────
+ENABLE_FACT_LLM     = os.getenv("ENABLE_FACT_LLM", "").strip().lower() in ("1","true","yes","on")
+FACT_LLM_TEMP       = float(os.getenv("FACT_LLM_TEMP", "0.2"))
+
+ENABLE_SUMMARY_LLM  = os.getenv("ENABLE_SUMMARY_LLM", "").strip().lower() in ("1","true","yes","on")
+SUMMARY_LLM_TEMP    = float(os.getenv("SUMMARY_LLM_TEMP", "0.2"))
+
 SAFE_TIPS_FALLBACKS = {
     "здоровый день": ["🚶 30–40 мин лёгкой активности.", "🥤 Больше воды и короткие паузы.", "😴 7–9 часов сна — приоритет."],
     "плохая погода": ["🧥 Слои + непромокаемая куртка.", "🌧 Перенесите дела под крышу.", "🚗 Заложите время на дорогу."],
@@ -557,6 +564,107 @@ def build_astro_section(date_local: Optional[pendulum.Date] = None, tz_local: st
     lines += [zsym(x) for x in bullets[:3]]
     return "\n".join(lines)
 
+# ───────────── «Факт дня» через LLM (опционально) ─────────────
+def pretty_fact_line(date_obj: pendulum.Date, region_name: str) -> str:
+    raw = get_fact(date_obj, region_name)
+    if not raw:
+        return ""
+    if not (ENABLE_FACT_LLM and USE_DAILY_LLM):
+        return f"📚 {_escape_html(raw)}"
+
+    cache_file = CACHE_DIR / f"fact_{date_obj.format('YYYY-MM-DD')}.txt"
+    if cache_file.exists():
+        try:
+            txt = cache_file.read_text("utf-8").strip()
+            if txt: return txt
+        except Exception:
+            pass
+
+    system = (
+        "Ты — один человек-эксперт: health-коуч, специалист по функциональной медицине и психолог, "
+        "аккуратный редактор. Пиши по-дружески, коротко, без штампов."
+    )
+    prompt = (
+        "Переформатируй этот факт в 1–2 очень короткие строки, дружелюбно и тепло. "
+        "Не добавляй сведений, которых нет в факте. Одна уместная эмодзи в начале приветствуется. "
+        f"\nФакт: «{raw}»."
+    )
+
+    try:
+        txt = (gpt_complete(prompt=prompt, system=system, temperature=FACT_LLM_TEMP, max_tokens=160) or "").strip()
+        lines = [l.strip() for l in txt.splitlines() if l.strip()]
+        out = " ".join(lines[:2]) if lines else ""
+        if not out or _looks_gibberish(out):
+            return f"📚 {_escape_html(raw)}"
+        out = _sanitize_line(out, 220)
+        if not out.startswith(("📚","📖","📘","📜")):
+            out = "📚 " + out
+        cache_file.write_text(out, "utf-8")
+        return out
+    except Exception:
+        return f"📚 {_escape_html(raw)}"
+
+# ───────────── Persona-подпись (дружеская, 1 строка) ─────────────
+def human_persona_line(kp: Optional[float], storm_region: Dict[str, Any], air_now: Dict[str, Any]) -> str:
+    if isinstance(kp, (int, float)) and kp >= 5:
+        return "💚 Мягкий режим: вода/магний, экраны дозируйте, ранний сон."
+    if storm_region.get("warning"):
+        return "🧥 Слои и дела под крышей, закладываем время и дышим 4-7-8."
+    bad_air, _ = _is_air_bad(air_now or {})
+    if bad_air:
+        return "😮‍💨 Умерьте нагрузки на улице, проветривайте короче — фильтры в помощь."
+    return ""
+
+# ───────────── Микро-дайджест дня (опционально, LLM) ─────────────
+def pretty_summary_line(mode: str,
+                        storm_region: Dict[str, Any],
+                        kp: Optional[float], ks: str,
+                        air_now: Dict[str, Any],
+                        schu_state: Optional[Dict[str, Any]] = None) -> str:
+    if not (ENABLE_SUMMARY_LLM and USE_DAILY_LLM):
+        return ""
+    mode_key = (mode or "evening").split()[0]
+    tz = pendulum.timezone(os.getenv("TZ", "Asia/Nicosia"))
+    date_key = pendulum.today(tz).format("YYYY-MM-DD")
+    cache_file = CACHE_DIR / f"sum_{mode_key}_{date_key}.txt"
+    if cache_file.exists():
+        try:
+            txt = cache_file.read_text("utf-8").strip()
+            if txt: return txt
+        except Exception:
+            pass
+
+    storm_txt = storm_region.get("warning_text") or ("без шторма" if not storm_region.get("warning") else "штормовые факторы")
+    kp_txt = "н/д"
+    if isinstance(kp, (int, float)):
+        kp_txt = f"{kp:.1f} ({ks})" if ks else f"{kp:.1f}"
+    aqi = air_now.get("aqi")
+    try: aqi_f = float(aqi) if aqi is not None else None
+    except Exception: aqi_f = None
+    air_lbl = _aqi_bucket_label(aqi_f) or "н/д"
+    schu_lbl = (schu_state or {}).get("status") or ""
+
+    system = ("Ты — один человек-эксперт: коуч по здоровью, функциональная медицина и психолог. "
+              "Тон — дружеский, спокойный, без штампов.")
+    prompt = (
+        "Собери 1–2 очень короткие строки-дайджеста, начинай с «Коротко:». "
+        "Только перефразируй данные, не добавляй новых фактов. "
+        "Скажи, где стоит быть аккуратным, и добавь мягкий позитив.\n"
+        f"Данные: шторм — {storm_txt}; Kp — {kp_txt}; воздух — {air_lbl}; Шуман — {schu_lbl}."
+    )
+
+    try:
+        txt = (gpt_complete(prompt=prompt, system=system, temperature=SUMMARY_LLM_TEMP, max_tokens=160) or "").strip()
+        lines = [l.strip() for l in txt.splitlines() if l.strip()]
+        out = " ".join(lines[:2]) if lines else ""
+        if not out or _looks_gibberish(out):
+            return ""
+        out = _sanitize_line(out, 220)
+        cache_file.write_text(out, "utf-8")
+        return out
+    except Exception:
+        return ""
+
 # ───────────── hourly/ветер/давление ─────────────
 def _pick(d: Dict[str, Any], *keys, default=None):
     for k in keys:
@@ -919,7 +1027,7 @@ def build_message(region_name: str,
 
     P: List[str] = []
     today = pendulum.today(tz_obj); tom = today.add(days=1)
-    # Заголовок без эмодзи, по ТЗ
+    # Заголовок без эмодзи
     P.append(f"<b>{region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
 
     wm_region = get_weather(CY_LAT, CY_LON) or {}
@@ -937,12 +1045,12 @@ def build_message(region_name: str,
             if abs(warm[1] - cool[1]) >= 0.5:
                 spread = f" (диапазон {cool[1]:.0f}–{warm[1]:.0f}°)"
             greeting += (
-                f" Сегодня теплее всего — {warm[0]} ({warm[1]:.1f}°C), "
-                f"прохладнее — {cool[0]} ({cool[1]:.1f}°C){spread}."
+                f" Сегодня теплее всего — {warm[0]} ({warm[1]:.0f}°), "
+                f"прохладнее — {cool[0]} ({cool[1]:.0f}°){spread}."
             )
         P.append(greeting)
 
-        # Без длинного списка «🌡️ По городам …» — по ТЗ
+        # Без длинного списка «🌡️ По городам …»
 
         if storm_region.get("warning"):
             P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
@@ -955,8 +1063,9 @@ def build_message(region_name: str,
         if combo:
             P.append(combo)
             air_now = get_air(CY_LAT, CY_LON) or {}
-            _, tip = _is_air_bad(air_now)
-            if tip: P.append(f"ℹ️ {tip}")
+            bad_air, tip = _is_air_bad(air_now)
+            if bad_air and tip:
+                P.append(f"ℹ️ {tip}")
 
         kp_tuple = get_kp() or (None, "н/д", None, "n/d")
         try: kp, ks, kp_ts, _ = kp_tuple
@@ -988,6 +1097,16 @@ def build_message(region_name: str,
                 pass
         else:
             P.append(f"🧲 Kp: н/д • 🌬️ {sw_chunk}")
+
+        # — микро-дайджест и persona-подпись (опционально)
+        try:
+            air_now2 = get_air(CY_LAT, CY_LON) or {}
+            sum_line = pretty_summary_line("morning", storm_region, kp if isinstance(kp,(int,float)) else None, ks, air_now2)
+            if sum_line: P.append(sum_line)
+            persona = human_persona_line(kp if isinstance(kp,(int,float)) else None, storm_region, air_now2)
+            if persona: P.append(persona)
+        except Exception:
+            pass
 
         return "\n".join(P)
 
@@ -1037,15 +1156,19 @@ def build_message(region_name: str,
         kp_val = kp_tuple[0] if isinstance(kp_tuple,(list,tuple)) and len(kp_tuple)>0 else None
         ks = kp_tuple[1] if isinstance(kp_tuple,(list,tuple)) and len(kp_tuple)>1 else "н/д"
     P.extend(build_conclusion(kp_val, ks, air_now, storm_region, schu_state))
-    P.append("———")
 
-    P.append("✅ <b>Рекомендации</b>")
-    theme = ("плохая погода" if storm_region.get("warning") else
-             ("магнитные бури" if isinstance(kp_val,(int,float)) and kp_val >= 5 else
-              ("плохой воздух" if _is_air_bad(air_now)[0] else
-               ("волны Шумана" if (schu_state or {}).get("status_code") == "red" else "здоровый день"))))
-    for t in safe_tips(theme): P.append(t)
-    P.append("———"); P.append(f"📚 {_escape_html(get_fact(tom, region_name))}")
+    # — микро-дайджест и persona-подпись (опционально)
+    try:
+        air_now2 = get_air(CY_LAT, CY_LON) or {}
+        sum_line = pretty_summary_line("evening", storm_region, kp_val if isinstance(kp_val,(int,float)) else None, ks, air_now2, schu_state)
+        if sum_line: P.append(sum_line)
+        persona = human_persona_line(kp_val if isinstance(kp_val,(int,float)) else None, storm_region, air_now2)
+        if persona: P.append(persona)
+    except Exception:
+        pass
+
+    P.append("———")
+    P.append(pretty_fact_line(tom, region_name))
     return "\n".join(P)
 
 # ───────────── отправка ─────────────
@@ -1080,4 +1203,5 @@ __all__ = [
     "build_message","send_common_post","main_common",
     "schumann_line","get_schumann_with_fallback",
     "pick_tomorrow_header_metrics","storm_flags_for_tomorrow",
+    "pretty_fact_line","pretty_summary_line","human_persona_line",
 ]
