@@ -1127,7 +1127,6 @@ def build_message(region_name: str,
         mode = tz
         tz = os.getenv("TZ", "Asia/Nicosia")
 
-    # Лог входных аргументов (помогает в CI)
     logging.info("build_message: mode=%s, tz=%s",
                  (mode or "∅"),
                  (tz if isinstance(tz, str) else getattr(tz, 'name', 'obj')))
@@ -1136,21 +1135,88 @@ def build_message(region_name: str,
     mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
     is_morning = mode.startswith("morn")
 
-    # Нормализуем входные города максимально терпимо
+    # Нормализуем входные города
     sea_pairs   = _iter_city_pairs(sea_cities)
     other_pairs = _iter_city_pairs(other_cities)
+    all_pairs   = list(sea_pairs) + list(other_pairs)
 
     P: List[str] = []
-    today = pendulum.today(tz_obj); tom = today.add(days=1)
-    # Заголовок без эмодзи
-    P.append(f"<b>{region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
+    today = pendulum.today(tz_obj)
+    tom   = today.add(days=1)
+
+    # ✅ корректный заголовок
+    label = "сегодня" if is_morning else "завтра"
+    date_label = (today if is_morning else tom).format("DD.MM.YYYY")
+    P.append(f"<b>{region_name}: погода на {label} ({date_label})</b>")
 
     wm_region = get_weather(CY_LAT, CY_LON) or {}
-    storm_region = storm_flags_for_tomorrow(wm_region, tz_obj)
 
-    # === УТРО ===
+    # маленький хелпер для шторм-флагов на конкретную дату (0=сегодня, 1=завтра)
+    def _storm_flags_for_day_offset(wm: Dict[str, Any], day_offset: int) -> Dict[str, Any]:
+        hourly = wm.get("hourly") or {}
+        times  = _hourly_times(wm)
+        target_date = (today if day_offset == 0 else tom).date()
+
+        idxs: List[int] = []
+        for i, dt in enumerate(times):
+            try:
+                if dt.in_tz(tz_obj).date() == target_date:
+                    idxs.append(i)
+            except Exception:
+                pass
+        if not idxs:
+            return {"warning": False}
+
+        def _arr(*names, default=None):
+            v = _pick(hourly, *names, default=default)
+            return v if isinstance(v, list) else []
+
+        def _vals(arr):
+            out=[]
+            for i in idxs:
+                if i < len(arr):
+                    try: out.append(float(arr[i]))
+                    except Exception: pass
+            return out
+
+        speeds_kmh = _vals(_arr("windspeed_10m","windspeed","wind_speed_10m","wind_speed", default=[]))
+        gusts_kmh  = _vals(_arr("windgusts_10m","wind_gusts_10m","wind_gusts", default=[]))
+        rain_mm_h  = _vals(_arr("rain", default=[]))
+        tprob      = _vals(_arr("thunderstorm_probability", default=[]))
+
+        max_speed_ms = kmh_to_ms(max(speeds_kmh)) if speeds_kmh else None
+        max_gust_ms  = kmh_to_ms(max(gusts_kmh))  if gusts_kmh  else None
+        heavy_rain   = (max(rain_mm_h) >= 8.0) if rain_mm_h else False
+        thunder      = (max(tprob) >= 60) if tprob else False
+
+        reasons=[]
+        if isinstance(max_speed_ms,(int,float)) and max_speed_ms >= 13: reasons.append(f"ветер до {max_speed_ms:.0f} м/с")
+        if isinstance(max_gust_ms,(int,float)) and max_gust_ms >= 17: reasons.append(f"порывы до {max_gust_ms:.0f} м/с")
+        if heavy_rain: reasons.append("сильный дождь")
+        if thunder: reasons.append("гроза")
+
+        return {
+            "max_speed_ms": max_speed_ms,
+            "max_gust_ms":  max_gust_ms,
+            "heavy_rain":   heavy_rain,
+            "thunder":      thunder,
+            "warning":      bool(reasons),
+            "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else ""
+        }
+
+    storm_today   = _storm_flags_for_day_offset(wm_region, 0)
+    storm_tomorrow= _storm_flags_for_day_offset(wm_region, 1)
+
+    # === УТРО (обсуждаем СЕГОДНЯ) ===
     if is_morning:
-        rows = _collect_city_tmax_list(sea_pairs, other_pairs, tz_obj)
+        # tmax по СЕГОДНЯ
+        rows: List[Tuple[str, float]] = []
+        for city, (la, lo) in all_pairs:
+            st = day_night_stats(la, lo, tz=tz_obj.name) or {}
+            tmax = st.get("t_day_max")
+            if isinstance(tmax, (int, float)):
+                rows.append((city, float(tmax)))
+
         warm = max(rows, key=lambda x: x[1]) if rows else None
         cool = min(rows, key=lambda x: x[1]) if rows else None
 
@@ -1165,35 +1231,45 @@ def build_message(region_name: str,
             )
         P.append(greeting)
 
-        # Без длинного списка «🌡️ По городам …»
+        # 🎓 Факт дня — короткая человечная строка
+        try:
+            fact_line = pretty_fact_line(today, region_name)
+            if fact_line: P.append(fact_line)
+        except Exception:
+            pass
 
-        if storm_region.get("warning"):
-            P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
+        # предупреждение — на СЕГОДНЯ
+        if storm_today.get("warning"):
+            P.append(storm_today["warning_text"] + " Берегите планы и закладывайте время.")
 
+        # солнце
         la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
-        sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)
+        sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)  # вернёт «Закат сегодня: …»
         if sun_line: P.append(sun_line)
 
+        # воздух/пыльца/радиация
         combo = _morning_combo_air_radiation_pollen(CY_LAT, CY_LON)
         if combo:
             P.append(combo)
             air_now = get_air(CY_LAT, CY_LON) or {}
             bad_air, tip = _is_air_bad(air_now)
-            if bad_air and tip:
-                P.append(f"ℹ️ {tip}")
+            if bad_air and tip: P.append(f"ℹ️ {tip}")
 
+        # Kp + солнечный ветер (последний закрытый трёхчасовой слот)
         kp_tuple = get_kp() or (None, "н/д", None, "n/d")
         try: kp, ks, kp_ts, _ = kp_tuple
         except Exception:
             kp = kp_tuple[0] if isinstance(kp_tuple,(list,tuple)) and len(kp_tuple)>0 else None
             ks = kp_tuple[1] if isinstance(kp_tuple,(list,tuple)) and len(kp_tuple)>1 else "н/д"
             kp_ts = None
+
         age_txt = ""
         if isinstance(kp_ts,int) and kp_ts>0:
             try:
                 age_min = int((pendulum.now("UTC").int_timestamp - kp_ts) / 60)
                 age_txt = f", 🕓 {age_min // 60} ч назад" if age_min > 180 else (f", {age_min} мин назад" if age_min >= 0 else "")
-            except Exception: age_txt = ""
+            except Exception:
+                age_txt = ""
 
         sw = get_solar_wind() or {}
         v, n = sw.get("speed_kms"), sw.get("density"); wind_status = sw.get("status", "н/д")
@@ -1202,7 +1278,6 @@ def build_message(region_name: str,
         if isinstance(n,(int,float)): parts_sw.append(f"n {n:.1f} см⁻³")
         sw_chunk = (", ".join(parts_sw) + (f" — {wind_status}" if parts_sw else "")) if parts_sw or wind_status else "н/д"
 
-        # цветовой маркер Kp
         kp_mark = ""
         if isinstance(kp,(int,float)):
             if kp >= 5: kp_mark = "🔴 "
@@ -1219,27 +1294,27 @@ def build_message(region_name: str,
         else:
             P.append(f"🧲 Kp: н/д • 🌬️ {sw_chunk}")
 
-        # — микро-дайджест и persona-подпись (опционально)
+        # микро-дайджест и «persona» — на СЕГОДНЯ
         try:
             air_now2 = get_air(CY_LAT, CY_LON) or {}
-            sum_line = pretty_summary_line("morning", storm_region, kp if isinstance(kp,(int,float)) else None, ks, air_now2)
+            sum_line = pretty_summary_line("morning", storm_today, kp if isinstance(kp,(int,float)) else None, ks, air_now2)
             if sum_line: P.append(sum_line)
-            persona = human_persona_line(kp if isinstance(kp,(int,float)) else None, storm_region, air_now2)
+            persona = human_persona_line(kp if isinstance(kp,(int,float)) else None, storm_today, air_now2)
             if persona: P.append(persona)
         except Exception:
             pass
 
-        # тёплая концовка
         P.append("Хорошего дня и бережного темпа 😊")
-
         return "\n".join(P)
 
-    # === ВЕЧЕР ===
+    # === ВЕЧЕР (обсуждаем ЗАВТРА) ===
+    storm_region = storm_tomorrow  # яснее по смыслу
+
     if storm_region.get("warning"):
         P.append(storm_region["warning_text"]); P.append("———")
 
     sea_names = {name for name, _ in sea_pairs}
-    all_rows: List[tuple[float, str]] = []
+    all_rows_out: List[tuple[float, str]] = []
     for city, (la, lo) in list(sea_pairs) + list(other_pairs):
         include_sst = city in sea_names or city in SHORE_PROFILE
         tmax, line = _city_detail_line(city, la, lo, tz_obj, include_sst=include_sst)
@@ -1248,19 +1323,20 @@ def build_message(region_name: str,
                 try:
                     hl = _water_highlights(city, la, lo, tz_obj)
                     if hl: line = line + f"\n   {hl}"
-                except Exception: pass
-            all_rows.append((float(tmax), line))
-    if all_rows:
+                except Exception:
+                    pass
+            all_rows_out.append((float(tmax), line))
+    if all_rows_out:
         P.append("🏙 <b>Города</b>")
-        all_rows.sort(key=lambda x: x[0], reverse=True)
+        all_rows_out.sort(key=lambda x: x[0], reverse=True)
         medals = ["🥵","😎","😌","🥶"]
-        for i, (_, text) in enumerate(all_rows):
+        for i, (_, text) in enumerate(all_rows_out):
             med = medals[i] if i < len(medals) else "•"
             P.append(f"{med} {text}")
         P.append("———")
 
     la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
-    sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)
+    sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)  # вернёт «Рассвет завтра: …»
     if sun_line: P.append(sun_line)
 
     schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
@@ -1281,7 +1357,7 @@ def build_message(region_name: str,
         ks = kp_tuple[1] if isinstance(kp_tuple,(list,tuple)) and len(kp_tuple)>1 else "н/д"
     P.extend(build_conclusion(kp_val, ks, air_now, storm_region, schu_state))
 
-    # — микро-дайджест и persona-подпись (опционально)
+    # микро-дайджест и «persona» — на ЗАВТРА
     try:
         air_now2 = get_air(CY_LAT, CY_LON) or {}
         sum_line = pretty_summary_line("evening", storm_region, kp_val if isinstance(kp_val,(int,float)) else None, ks, air_now2, schu_state)
