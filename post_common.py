@@ -167,14 +167,20 @@ def _iter_city_pairs(cities) -> list[tuple[str, tuple[float, float]]]:
     try: return list(cities)
     except Exception: return []
 
-# ───────────── Рассвет/закат — 3-ступенчатый фолбэк (weather → astral → NOAA) ─────────────
+# ───────────── Рассвет/закат — weather → astral → NOAA ─────────────
 def _parse_iso_to_tz(s: str, tz: pendulum.tz.timezone.Timezone) -> Optional[pendulum.DateTime]:
     try: return pendulum.parse(str(s)).in_tz(tz)
     except Exception: return None
 
+def _noaa_dt_from_utc_fraction(date_obj: pendulum.Date, ut_hours: float, tz: pendulum.tz.timezone.Timezone):
+    h = int(ut_hours)
+    m = int(round((ut_hours - h) * 60))
+    base = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, tz="UTC")
+    return base.add(hours=h, minutes=m).in_tz(tz)
+
 def _noaa_sun_times(date_obj: pendulum.Date, lat: float, lon: float, tz: pendulum.tz.timezone.Timezone)\
         -> tuple[Optional[pendulum.DateTime], Optional[pendulum.DateTime]]:
-    """Мини-реализация алгоритма NOAA для гражданских сумерек (зенит 90.833°)."""
+    """Мини-реализация алгоритма NOAA (зенит 90.833°)."""
     def _sun_utc(is_sunrise: bool) -> Optional[float]:
         N  = date_obj.day_of_year
         lngHour = lon / 15.0
@@ -185,8 +191,7 @@ def _noaa_sun_times(date_obj: pendulum.Date, lat: float, lon: float, tz: pendulu
         RA = math.degrees(math.atan(0.91764 * math.tan(math.radians(L))))
         RA = (RA + 360.0) % 360.0
         Lq = (math.floor(L/90.0))*90.0; RAq = (math.floor(RA/90.0))*90.0
-        RA += (Lq - RAq)
-        RA /= 15.0
+        RA += (Lq - RAq); RA /= 15.0
         sinDec = 0.39782 * math.sin(math.radians(L))
         cosDec = math.cos(math.asin(sinDec))
         zenith = math.radians(90.833)
@@ -199,9 +204,9 @@ def _noaa_sun_times(date_obj: pendulum.Date, lat: float, lon: float, tz: pendulu
         return UT
     try:
         ut_sr = _sun_utc(True); ut_ss = _sun_utc(False)
-        sr = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, tz="UTC").add(hours=ut_sr) if ut_sr is not None else None
-        ss = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, tz="UTC").add(hours=ut_ss) if ut_ss is not None else None
-        return (sr.in_tz(tz) if sr else None, ss.in_tz(tz) if ss else None)
+        sr = _noaa_dt_from_utc_fraction(date_obj, ut_sr, tz) if ut_sr is not None else None
+        ss = _noaa_dt_from_utc_fraction(date_obj, ut_ss, tz) if ut_ss is not None else None
+        return sr, ss
     except Exception:
         return None, None
 
@@ -397,13 +402,17 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
 
 def load_safecast() -> Optional[Dict[str, Any]]:
     paths: List[Path] = []
-    if os.getenv("SAFECAST_FILE"): paths.append(Path(os.getenv("SAFECAST_FILE")))
-    here = Path(__file__).parent; paths.append(here / "data" / "safecast_cy.json")
+    if os.getenv("SAFECAST_FILE"):
+        paths.append(Path(os.getenv("SAFECAST_FILE")))
+    here = Path(__file__).parent
+    paths.append(here / "data" / "safecast_cy.json")
     sc: Optional[Dict[str, Any]] = None
     for p in paths:
-        sc = _read_json(p); if sc: break
+        sc = _read_json(p)
+        if sc:
+            break
     if not sc: return None
-    ts = sc.get("ts"); 
+    ts = sc.get("ts")
     if not isinstance(ts, (int, float)): return None
     now_ts = pendulum.now("UTC").int_timestamp
     if now_ts - int(ts) > 24 * 3600: return None
@@ -932,12 +941,10 @@ def build_message(region_name: str,
         if storm_region.get("warning"):
             P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
 
-        # 🌇 закат сегодня — берём «умные» координаты
         la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
         sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)
         if sun_line: P.append(sun_line)
 
-        # Комбо воздух/радиация/пыльца
         combo = _morning_combo_air_radiation_pollen(CY_LAT, CY_LON)
         if combo:
             P.append(combo)
@@ -945,7 +952,6 @@ def build_message(region_name: str,
             _, tip = _is_air_bad(air_now)
             if tip: P.append(f"ℹ️ {tip}")
 
-        # Геомагнитка + солнечный ветер
         kp_tuple = get_kp() or (None, "н/д", None, "n/d")
         try: kp, ks, kp_ts, _ = kp_tuple
         except Exception:
@@ -1003,7 +1009,6 @@ def build_message(region_name: str,
             P.append(f"{med} {text}")
         P.append("———")
 
-    # 🌅 рассвет завтра — «умные» координаты
     la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
     sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)
     if sun_line: P.append(sun_line)
