@@ -349,26 +349,44 @@ def get_fact(date: pendulum.Date, region: str = "") -> str:
     Возвращает «факт дня» для date и region.
 
     Логика:
-      1) Если region содержит «калининград» → факт из FACTS_KLGD по дате (MM-DD),
-         иначе случайный из FACTS_KLGD_RANDOM.
-      2) Если region содержит «кипр»      → факт из FACTS_CY по дате (MM-DD),
-         иначе случайный из DEFAULT_FACTS_CY.
-      3) В остальных случаях (универсальный) —
-         факт из DEFAULT_FACTS_UNI по индексу (date.day % len(DEFAULT_FACTS_UNI)).
+      • Если region содержит «калининград»:
+          - сначала ищем по дате (MM-DD) в FACTS_KLGD (если он есть в globals),
+          - иначе случайный из FACTS_KLGD_RANDOM (если есть),
+          - иначе — универсальный дефолт.
+      • Если region содержит «кипр»:
+          - сначала ищем по дате (MM-DD) в FACTS_CY,
+          - иначе случайный из DEFAULT_FACTS_CY,
+          - иначе — универсальный дефолт.
+      • Во всех остальных случаях — цикличный универсальный факт.
     """
-    r = region.lower()
+    r = (region or "").lower().strip()
+    key = date.format("MM-DD")
 
-   # 1) Калининград — безопасные фолбэки, если словари не определены в этом модуле
+    # 1) Калининград
     if "калининград" in r:
-        key = date.format("MM-DD")
         klgd_map = globals().get("FACTS_KLGD", {}) or {}
         klgd_rand = globals().get("FACTS_KLGD_RANDOM", []) or []
         if isinstance(klgd_map, dict) and key in klgd_map:
             return klgd_map[key]
         if isinstance(klgd_rand, list) and klgd_rand:
             return random.choice(klgd_rand)
-        # если ничего нет — не падаем, отдадим универсальный факт
-        return random.choice(DEFAULT_FACTS_UNI)
+        # падение в универсальный случай
+        facts = DEFAULT_FACTS_UNI if DEFAULT_FACTS_UNI else ["Сегодня хороший день для маленьких шагов."]
+
+        return facts[date.day % len(facts)]
+
+    # 2) Кипр
+    if "кипр" in r:
+        if isinstance(FACTS_CY, dict) and key in FACTS_CY:
+            return FACTS_CY[key]
+        if isinstance(DEFAULT_FACTS_CY, list) and DEFAULT_FACTS_CY:
+            return random.choice(DEFAULT_FACTS_CY)
+        facts = DEFAULT_FACTS_UNI if DEFAULT_FACTS_UNI else ["Сегодня хороший день для маленьких шагов."]
+        return facts[date.day % len(facts)]
+
+    # 3) Универсальный дефолт
+    facts = DEFAULT_FACTS_UNI if DEFAULT_FACTS_UNI else ["Сегодня хороший день для маленьких шагов."]
+    return facts[date.day % len(facts)]
 
 # ─────────────────────── Интеграции и иконки ────────────────────────────────
 
