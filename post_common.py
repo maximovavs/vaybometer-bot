@@ -919,7 +919,8 @@ def build_message(region_name: str,
 
     P: List[str] = []
     today = pendulum.today(tz_obj); tom = today.add(days=1)
-    P.append(f"<b>🌅 {region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
+    # Заголовок без эмодзи, по ТЗ
+    P.append(f"<b>{region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
 
     wm_region = get_weather(CY_LAT, CY_LON) or {}
     storm_region = storm_flags_for_tomorrow(wm_region, tz_obj)
@@ -932,11 +933,16 @@ def build_message(region_name: str,
 
         greeting = "👋 Доброе утро!"
         if warm and cool:
-            greeting += f" Сегодня теплее всего — {warm[0]} ({warm[1]:.1f}°C), прохладнее — {cool[0]} ({cool[1]:.1f}°C)."
+            spread = ""
+            if abs(warm[1] - cool[1]) >= 0.5:
+                spread = f" (диапазон {cool[1]:.0f}–{warm[1]:.0f}°)"
+            greeting += (
+                f" Сегодня теплее всего — {warm[0]} ({warm[1]:.1f}°C), "
+                f"прохладнее — {cool[0]} ({cool[1]:.1f}°C){spread}."
+            )
         P.append(greeting)
 
-        line_all = _format_all_cities_temps_compact(rows)
-        if line_all: P.append(line_all)
+        # Без длинного списка «🌡️ По городам …» — по ТЗ
 
         if storm_region.get("warning"):
             P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
@@ -975,7 +981,8 @@ def build_message(region_name: str,
         if isinstance(kp,(int,float)):
             P.append(f"🧲 Kp={kp:.1f} ({ks}{age_txt}) • 🌬️ {sw_chunk}")
             try:
-                if kp >= 5 and isinstance(wind_status,str) and ("спокой" in wind_status.lower()):
+                ws = (wind_status or "")
+                if kp >= 5 or ("спокой" in ws.lower() or "calm" in ws.lower()):
                     P.append("ℹ️ Kp — глобальный индекс за 3 ч.")
             except Exception:
                 pass
@@ -1038,7 +1045,7 @@ def build_message(region_name: str,
               ("плохой воздух" if _is_air_bad(air_now)[0] else
                ("волны Шумана" if (schu_state or {}).get("status_code") == "red" else "здоровый день"))))
     for t in safe_tips(theme): P.append(t)
-    P.append("———"); P.append(f"📚 {get_fact(tom, region_name)}")
+    P.append("———"); P.append(f"📚 {_escape_html(get_fact(tom, region_name))}")
     return "\n".join(P)
 
 # ───────────── отправка ─────────────
