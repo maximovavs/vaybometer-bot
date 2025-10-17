@@ -3,32 +3,13 @@
 """
 post_common.py — VayboMeter (Кипр/универсальный).
 
-Ключевые моменты:
-• Утро: «человечный» обзор БЕЗ блоков «морские/континентальные».
-  — самый тёплый / самый прохладный город
-  — компактная строка температур по всем городам
-  — риски (ветер/ливни/гроза)
-  — 🌇 закат сегодня
-  — комбо воздух/пыльца/радиация + Kp/солнечный ветер
-
-• Вечер: единый список по всем городам (без разделения), затем:
-  — 🌅 рассвет завтра
-  — Шуман, Астрособытия, Вывод, Рекомендации, Факт.
-
-Примечание про ИИ:
-Файл опирается на gpt.py и его gpt_complete()/gpt_blurb().
-Приоритет моделей и ключей задаётся в gpt.py (GEMINI → GROQ → OPENAI),
-здесь только корректные вызовы и защита от сбоев LLM.
+Утро: «человечный» обзор без блоков, + 🌇 закат СЕГОДНЯ.
+Вечер: единый список городов, + 🌅 рассвет ЗАВТРА.
+Астроблок и рекомендации — через gpt.py (логика моделей там).
 """
 
 from __future__ import annotations
-import os
-import re
-import json
-import html
-import asyncio
-import logging
-import math
+import os, re, json, html, asyncio, logging, math
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Union
 
@@ -40,9 +21,8 @@ from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
 from air          import get_air, get_sst, get_kp, get_solar_wind
 from pollen       import get_pollen
 from radiation    import get_radiation
-from gpt          import gpt_blurb, gpt_complete  # LLM для «Астрособытий»/советов
+from gpt          import gpt_blurb, gpt_complete
 
-# (опц.) волна из Open-Meteo Marine
 try:
     import requests  # type: ignore
 except Exception:
@@ -51,24 +31,24 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ────────────────────────── базовые константы ──────────────────────────
-CY_LAT, CY_LON = 34.707, 33.022  # базовые координаты региона
+CY_LAT, CY_LON = 34.707, 33.022
 CPM_TO_USVH = float(os.getenv("CPM_TO_USVH", "0.000571"))
 PRIMARY_CITY_NAME = os.getenv("PRIMARY_CITY", "Limassol")
 
 CACHE_DIR = Path(".cache"); CACHE_DIR.mkdir(exist_ok=True, parents=True)
-USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
+USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1","true","yes","on")
 DISABLE_SCHUMANN = os.getenv("DISABLE_SCHUMANN", "").strip().lower() in ("1","true","yes","on")
 
 # ────────────────────────── LLM safety ──────────────────────────
-DISABLE_LLM_TIPS = os.getenv("DISABLE_LLM_TIPS", "").strip().lower() in ("1", "true", "yes", "on")
+DISABLE_LLM_TIPS = os.getenv("DISABLE_LLM_TIPS", "").strip().lower() in ("1","true","yes","on")
 ASTRO_LLM_TEMP = float(os.getenv("ASTRO_LLM_TEMP", "0.2"))
 
 SAFE_TIPS_FALLBACKS = {
-    "здоровый день": ["🚶 30–40 мин лёгкой активности.", "🥤 Пейте воду и делайте короткие паузы.", "😴 Спланируйте 7–9 часов сна."],
-    "плохая погода": ["🧥 Тёплые слои и непромокаемая куртка.", "🌧 Перенесите дела под крышу; больше пауз.", "🚗 Заложите время на дорогу."],
-    "магнитные бури": ["🧘 Уменьшите перегрузки, больше отдыха.", "💧 Больше воды и магний/калий в рационе.", "😴 Режим сна, меньше экранов вечером."],
-    "плохой воздух": ["😮‍💨 Сократите время на улице и проветривания.", "🪟 Чаще проветривайте, используйте фильтры.", "🏃 Тренировки — в помещении."],
-    "волны Шумана": ["🧘 Спокойный темп дня, без авралов.", "🍵 Лёгкая еда, тёплые напитки.", "😴 Лёгкая прогулка и ранний сон."],
+    "здоровый день": ["🚶 30–40 мин лёгкой активности.", "🥤 Больше воды и короткие паузы.", "😴 7–9 часов сна — приоритет."],
+    "плохая погода": ["🧥 Слои + непромокаемая куртка.", "🌧 Перенесите дела под крышу.", "🚗 Заложите время на дорогу."],
+    "магнитные бури": ["🧘 Берегите нервную систему.", "💧 Пейте воду, больше магния/калия.", "📵 Меньше экранов вечером."],
+    "плохой воздух": ["😮‍💨 Сократите нагрузку на улице.", "🪟 Проветривайте короче, фильтры в помощь.", "🏃 Тренировки — в помещении."],
+    "волны Шумана": ["🧘 Спокойный темп дня.", "🍵 Лёгкая еда, тёплые напитки.", "😴 Ранний отход ко сну."],
 }
 
 def _escape_html(s: str) -> str:
@@ -77,12 +57,10 @@ def _escape_html(s: str) -> str:
 def _sanitize_line(s: str, max_len: int = 140) -> str:
     s = " ".join(str(s).split())
     s = re.sub(r"(.)\1{3,}", r"\1\1\1", s)
-    s = s[:max_len-1] + "…" if len(s) > max_len else s
-    return _escape_html(s).strip()
+    return (_escape_html(s[:max_len-1]) + "…") if len(s) > max_len else _escape_html(s)
 
 def _looks_gibberish(s: str) -> bool:
-    if re.search(r"(.)\1{5,}", s):
-        return True
+    if re.search(r"(.)\1{5,}", s): return True
     letters = re.findall(r"[A-Za-zА-Яа-яЁё]", s)
     return (len(set(letters)) <= 2 and len("".join(letters)) >= 10)
 
@@ -94,17 +72,14 @@ def safe_tips(theme: str) -> list[str]:
         _, tips = gpt_blurb(theme_key)
         out: list[str] = []
         for t in (tips or [])[:3]:
-            t = _sanitize_line(t, max_len=140)
-            if not t or _looks_gibberish(t):
-                continue
-            out.append(t)
+            t = _sanitize_line(t, 140)
+            if t and not _looks_gibberish(t): out.append(t)
         if out: return out
     except Exception as e:
         logging.warning("LLM tips failed: %s", e)
     return SAFE_TIPS_FALLBACKS.get(theme_key, SAFE_TIPS_FALLBACKS["здоровый день"])
 
 # ────────────────────────── ENV TUNABLES (водные активности) ──────────────────────────
-# KITE — м/с
 KITE_WIND_MIN        = float(os.getenv("KITE_WIND_MIN",        "6"))
 KITE_WIND_GOOD_MIN   = float(os.getenv("KITE_WIND_GOOD_MIN",   "7"))
 KITE_WIND_GOOD_MAX   = float(os.getenv("KITE_WIND_GOOD_MAX",   "12"))
@@ -112,7 +87,6 @@ KITE_WIND_STRONG_MAX = float(os.getenv("KITE_WIND_STRONG_MAX", "18"))
 KITE_GUST_RATIO_BAD  = float(os.getenv("KITE_GUST_RATIO_BAD",  "1.5"))
 KITE_WAVE_WARN       = float(os.getenv("KITE_WAVE_WARN",       "2.5"))
 
-# SUP — м/с и м
 SUP_WIND_GOOD_MAX    = float(os.getenv("SUP_WIND_GOOD_MAX",    "4"))
 SUP_WIND_OK_MAX      = float(os.getenv("SUP_WIND_OK_MAX",      "6"))
 SUP_WIND_EDGE_MAX    = float(os.getenv("SUP_WIND_EDGE_MAX",    "8"))
@@ -121,12 +95,10 @@ SUP_WAVE_OK_MAX      = float(os.getenv("SUP_WAVE_OK_MAX",      "0.8"))
 SUP_WAVE_BAD_MIN     = float(os.getenv("SUP_WAVE_BAD_MIN",     "1.5"))
 OFFSHORE_SUP_WIND_MIN= float(os.getenv("OFFSHORE_SUP_WIND_MIN","5"))
 
-# SURF (для «Сёрф — отлично»)
 SURF_WAVE_GOOD_MIN   = float(os.getenv("SURF_WAVE_GOOD_MIN",   "0.9"))
 SURF_WAVE_GOOD_MAX   = float(os.getenv("SURF_WAVE_GOOD_MAX",   "2.5"))
 SURF_WIND_MAX        = float(os.getenv("SURF_WIND_MAX",        "10"))
 
-# Wetsuit thresholds (°C)
 WSUIT_NONE  = float(os.getenv("WSUIT_NONE",  "22"))
 WSUIT_SHORTY= float(os.getenv("WSUIT_SHORTY","20"))
 WSUIT_32    = float(os.getenv("WSUIT_32",   "17"))
@@ -142,7 +114,6 @@ def _sst_key(la: float, lo: float) -> Tuple[float, float]:
     return (round(float(la), 3), round(float(lo), 3))
 
 def get_sst_cached(la: float, lo: float) -> Optional[float]:
-    """Возвращает кэшированное SST; если нет — запрашивает и сохраняет. При TTL=0 — кэш бессрочный."""
     key = _sst_key(la, lo)
     now = pendulum.now("UTC").int_timestamp
     if key in _SST_CACHE:
@@ -153,69 +124,33 @@ def get_sst_cached(la: float, lo: float) -> Optional[float]:
     if isinstance(val, (int, float)):
         _SST_CACHE[key] = (float(val), now)
         return float(val)
-    # если не удалось обновить — вернём старое, даже просроченное
     return _SST_CACHE.get(key, (None, 0))[0]
 
-# ────────────────────────── споты и профиль береговой линии ──────────────────────────
-# face = направление «с моря к берегу», градусы (0=N, 90=E, 180=S, 270=W)
-SHORE_PROFILE: Dict[str, float] = {
-    "Limassol": 180.0,
-    "Larnaca":  180.0,
-    "Ayia Napa":140.0,
-    "Pafos":    210.0,
-}
-
+# ────────────────────────── береговая линия/споты ──────────────────────────
+SHORE_PROFILE: Dict[str, float] = {"Limassol":180.0, "Larnaca":180.0, "Ayia Napa":140.0, "Pafos":210.0}
 SPOT_SHORE_PROFILE: Dict[str, float] = {
-    "Lady's Mile":               170.0,
-    "Paramali":                  210.0,
-    "Kourion (Curium)":          210.0,
-    "Governor's Beach":          180.0,
-    "Pissouri":                  220.0,
-    "Avdimou":                   210.0,
-    "Larnaca Kite Beach (Kiti)": 180.0,
-    "Mazotos":                   180.0,
-    "Mackenzie":                 150.0,
-    "Ayia Napa (Nissi)":         140.0,
-    "Protaras":                  135.0,
-    "Cape Greco":                120.0,
-    "Paphos (Alykes)":           230.0,
-    "Coral Bay":                 260.0,
-    "Latchi":                    320.0,
+    "Lady's Mile":170.0,"Paramali":210.0,"Kourion (Curium)":210.0,"Governor's Beach":180.0,"Pissouri":220.0,
+    "Avdimou":210.0,"Larnaca Kite Beach (Kiti)":180.0,"Mazotos":180.0,"Mackenzie":150.0,"Ayia Napa (Nissi)":140.0,
+    "Protaras":135.0,"Cape Greco":120.0,"Paphos (Alykes)":230.0,"Coral Bay":260.0,"Latchi":320.0,
 }
-
-def _norm_key(s: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", s.lower())
-
+def _norm_key(s: str) -> str: return re.sub(r"[^a-z0-9]", "", s.lower())
 _SPOT_INDEX = {_norm_key(k): k for k in SPOT_SHORE_PROFILE.keys()}
-
 def _parse_deg(val: Optional[str]) -> Optional[float]:
     if not val: return None
     try: return float(str(val).strip())
     except Exception: return None
-
-def _env_city_key(city: str) -> str:
-    return city.upper().replace(" ", "_")
-
-def _spot_from_env(name: Optional[str]) -> Optional[Tuple[str, float]]:
+def _env_city_key(city: str) -> str: return city.upper().replace(" ", "_")
+def _spot_from_env(name: Optional[str]) -> Optional[Tuple[str,float]]:
     if not name: return None
-    key = _norm_key(name)
-    real = _SPOT_INDEX.get(key)
-    if real: return real, SPOT_SHORE_PROFILE[real]
-    return None
-
+    key = _norm_key(name); real = _SPOT_INDEX.get(key)
+    return (real, SPOT_SHORE_PROFILE[real]) if real else None
 def _shore_face_for_city(city: str) -> Tuple[Optional[float], Optional[str]]:
     face_env = _parse_deg(os.getenv(f"SHORE_FACE_{_env_city_key(city)}"))
-    if face_env is not None:
-        return face_env, f"ENV:SHORE_FACE_{_env_city_key(city)}"
+    if face_env is not None: return face_env, f"ENV:SHORE_FACE_{_env_city_key(city)}"
     spot_env = os.getenv(f"SPOT_{_env_city_key(city)}")
-    sp = _spot_from_env(spot_env) if spot_env else None
-    if not sp:
-        sp = _spot_from_env(os.getenv("ACTIVE_SPOT"))
-    if sp:
-        label, deg = sp
-        return deg, label
-    if city in SHORE_PROFILE:
-        return SHORE_PROFILE[city], city
+    sp = _spot_from_env(spot_env) if spot_env else _spot_from_env(os.getenv("ACTIVE_SPOT"))
+    if sp: label, deg = sp; return deg, label
+    if city in SHORE_PROFILE: return SHORE_PROFILE[city], city
     return None, None
 
 # ───────────── утилиты ─────────────
@@ -232,15 +167,46 @@ def _iter_city_pairs(cities) -> list[tuple[str, tuple[float, float]]]:
     try: return list(cities)
     except Exception: return []
 
-# ───────────── Вспомогательное: рассвет/закат ─────────────
+# ───────────── Рассвет/закат — 3-ступенчатый фолбэк (weather → astral → NOAA) ─────────────
 def _parse_iso_to_tz(s: str, tz: pendulum.tz.timezone.Timezone) -> Optional[pendulum.DateTime]:
-    try:
-        return pendulum.parse(str(s)).in_tz(tz)
-    except Exception:
-        return None
+    try: return pendulum.parse(str(s)).in_tz(tz)
+    except Exception: return None
 
-def _sun_times_for_date(lat: float, lon: float, date_obj: pendulum.Date, tz: pendulum.tz.timezone.Timezone) -> tuple[Optional[pendulum.DateTime], Optional[pendulum.DateTime]]:
-    """Возвращает (sunrise_dt, sunset_dt) для указанной даты и TZ, сначала пробуем weather, затем astral."""
+def _noaa_sun_times(date_obj: pendulum.Date, lat: float, lon: float, tz: pendulum.tz.timezone.Timezone)\
+        -> tuple[Optional[pendulum.DateTime], Optional[pendulum.DateTime]]:
+    """Мини-реализация алгоритма NOAA для гражданских сумерек (зенит 90.833°)."""
+    def _sun_utc(is_sunrise: bool) -> Optional[float]:
+        N  = date_obj.day_of_year
+        lngHour = lon / 15.0
+        t = N + ((6 - lngHour)/24.0 if is_sunrise else (18 - lngHour)/24.0)
+        M = (0.9856*t) - 3.289
+        L = M + (1.916*math.sin(math.radians(M))) + (0.020*math.sin(math.radians(2*M))) + 282.634
+        L = (L + 360.0) % 360.0
+        RA = math.degrees(math.atan(0.91764 * math.tan(math.radians(L))))
+        RA = (RA + 360.0) % 360.0
+        Lq = (math.floor(L/90.0))*90.0; RAq = (math.floor(RA/90.0))*90.0
+        RA += (Lq - RAq)
+        RA /= 15.0
+        sinDec = 0.39782 * math.sin(math.radians(L))
+        cosDec = math.cos(math.asin(sinDec))
+        zenith = math.radians(90.833)
+        cosH = (math.cos(zenith) - (sinDec*math.sin(math.radians(lat)))) / (cosDec*math.cos(math.radians(lat)))
+        if cosH > 1 or cosH < -1: return None
+        H = (360 - math.degrees(math.acos(cosH))) if is_sunrise else math.degrees(math.acos(cosH))
+        H /= 15.0
+        T = H + RA - (0.06571*t) - 6.622
+        UT = (T - lngHour) % 24.0
+        return UT
+    try:
+        ut_sr = _sun_utc(True); ut_ss = _sun_utc(False)
+        sr = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, tz="UTC").add(hours=ut_sr) if ut_sr is not None else None
+        ss = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, tz="UTC").add(hours=ut_ss) if ut_ss is not None else None
+        return (sr.in_tz(tz) if sr else None, ss.in_tz(tz) if ss else None)
+    except Exception:
+        return None, None
+
+def _sun_times_for_date(lat: float, lon: float, date_obj: pendulum.Date, tz: pendulum.tz.timezone.Timezone)\
+        -> tuple[Optional[pendulum.DateTime], Optional[pendulum.DateTime]]:
     # 1) из weather (Open-Meteo)
     try:
         wm = get_weather(lat, lon) or {}
@@ -256,8 +222,7 @@ def _sun_times_for_date(lat: float, lon: float, date_obj: pendulum.Date, tz: pen
         if idx is not None:
             sr = _parse_iso_to_tz(sunr[idx], tz) if idx < len(sunr) else None
             ss = _parse_iso_to_tz(suns[idx], tz) if idx < len(suns) else None
-            if sr or ss:
-                return sr, ss
+            if sr or ss: return sr, ss
     except Exception:
         pass
     # 2) фолбэк на astral
@@ -268,10 +233,25 @@ def _sun_times_for_date(lat: float, lon: float, date_obj: pendulum.Date, tz: pen
         s = sun(loc.observer, date=date_obj.to_date_string(), tzinfo=tz)
         return (pendulum.instance(s["sunrise"]).in_tz(tz), pendulum.instance(s["sunset"]).in_tz(tz))
     except Exception:
-        return None, None
+        pass
+    # 3) последний фолбэк — NOAA
+    return _noaa_sun_times(date_obj, lat, lon, tz)
 
-def sun_line_for_mode(mode: str, tz: pendulum.tz.timezone.Timezone, lat: float, lon: float) -> Optional[str]:
-    """Утром печатаем закат СЕГОДНЯ; вечером — рассвет ЗАВТРА."""
+def _choose_sun_coords(sea_pairs, other_pairs) -> Tuple[float,float]:
+    """PRIMARY_CITY → первый морской → первый любой → координаты региона."""
+    prim = (PRIMARY_CITY_NAME or "").strip().lower()
+    def _find(pairs):
+        for name,(la,lo) in pairs:
+            if name.strip().lower()==prim: return (la,lo)
+        return None
+    sea_pairs = list(sea_pairs); other_pairs = list(other_pairs)
+    cand = _find(sea_pairs) or _find(other_pairs)
+    if not cand and sea_pairs: cand = sea_pairs[0][1]
+    if not cand and other_pairs: cand = other_pairs[0][1]
+    return cand if cand else (CY_LAT, CY_LON)
+
+def sun_line_for_mode(mode: str, tz: pendulum.tz.timezone.Timezone,
+                      lat: float, lon: float) -> Optional[str]:
     m = (mode or "evening").lower()
     if m.startswith("morn"):
         date_use = pendulum.today(tz)
@@ -389,8 +369,8 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
 
 def _gentle_interpretation(code: str) -> str:
     if code == "green":  return "Волны Шумана близки к норме — организм реагирует как на обычный день."
-    if code == "yellow": return "Заметны колебания — возможна лёгкая чувствительность к погоде и настроению."
-    return "Сильные отклонения — прислушивайтесь к самочувствию и снижайте перегрузки."
+    if code == "yellow": return "Заметны колебания — возможна лёгкая чувствительность."
+    return "Сильные отклонения — снижайте перегрузки и наблюдайте самочувствие."
 
 def schumann_line(s: Dict[str, Any]) -> str:
     freq = s.get("freq"); amp = s.get("amp")
@@ -405,7 +385,7 @@ def schumann_line(s: Dict[str, Any]) -> str:
     astr = f"{amp:.2f} pT" if isinstance(amp, (int, float)) else "н/д"
     return f"{status_lbl}{stale} • Шуман: {fstr} Гц / {astr} • тренд: {trend_text} • {h7line}\n{interp}"
 
-# ───────────── Safecast / чтение файла ─────────────
+# ───────────── Safecast ─────────────
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
     try:
         if not path.exists(): return None
@@ -417,16 +397,13 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
 
 def load_safecast() -> Optional[Dict[str, Any]]:
     paths: List[Path] = []
-    if os.getenv("SAFECAST_FILE"):
-        paths.append(Path(os.getenv("SAFECAST_FILE")))
-    here = Path(__file__).parent
-    paths.append(here / "data" / "safecast_cy.json")
+    if os.getenv("SAFECAST_FILE"): paths.append(Path(os.getenv("SAFECAST_FILE")))
+    here = Path(__file__).parent; paths.append(here / "data" / "safecast_cy.json")
     sc: Optional[Dict[str, Any]] = None
     for p in paths:
-        sc = _read_json(p)
-        if sc: break
+        sc = _read_json(p); if sc: break
     if not sc: return None
-    ts = sc.get("ts")
+    ts = sc.get("ts"); 
     if not isinstance(ts, (int, float)): return None
     now_ts = pendulum.now("UTC").int_timestamp
     if now_ts - int(ts) > 24 * 3600: return None
@@ -449,8 +426,7 @@ def safecast_pm_level(pm25: Optional[float], pm10: Optional[float]) -> Tuple[str
     if isinstance(pm25,(int,float)): worst=max(worst,l25(float(pm25)))
     if isinstance(pm10,(int,float)): worst=max(worst,l10(float(pm10)))
     if worst<0: return "⚪","н/д"
-    return (["🟢","🟡","🟠","🔴"][worst],
-            ["низкий","умеренный","высокий","очень высокий"][worst])
+    return (["🟢","🟡","🟠","🔴"][worst], ["низкий","умеренный","высокий","очень высокий"][worst])
 
 def safecast_block_lines() -> List[str]:
     sc = load_safecast()
@@ -518,41 +494,25 @@ def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
     if not t1 or not t2: return None
     return (t1, t2)
 
-def format_voc_for_post(start: pendulum.DateTime, end: pendulum.DateTime, label: str = "сегодня") -> str:
-    if not start or not end: return ""
-    return f"⚫️ VoC {label} {start.format('HH:mm')}–{end.format('HH:mm')}."
-
-def lunar_advice_for_date(cal: dict, date_obj) -> list[str]:
-    key = date_obj.to_date_string() if hasattr(date_obj, "to_date_string") else str(date_obj)
-    rec = (cal or {}).get(key, {}) or {}
-    adv = rec.get("advice")
-    return [str(x).strip() for x in adv][:3] if isinstance(adv, list) and adv else []
-
 def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> List[str]:
     cache_file = CACHE_DIR / f"astro_{date_str}.txt"
     if cache_file.exists():
         lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
         if lines: return lines[:3]
-    if not USE_DAILY_LLM:
-        return []
-
-    system = ("Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
-              "Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
-              "Пиши грамотно по-русски, без клише. Используй ТОЛЬКО данную информацию: "
-              "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
-              "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи и содержит одну мысль.")
+    if not USE_DAILY_LLM: return []
+    system = ("Действуй как АстроЭксперт: сделай 2–3 очень короткие строки про день. "
+              "Используй только: фаза Луны, освещённость, знак Луны, интервал VoC. Без выдумок.")
     prompt = (f"Дата: {date_str}. Фаза Луны: {phase or 'н/д'} ({percent}% освещённости). "
               f"Знак: {sign or 'н/д'}. VoC: {voc_text or 'нет'}.")
-
     try:
         txt = gpt_complete(prompt=prompt, system=system, temperature=ASTRO_LLM_TEMP, max_tokens=160)
         raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
         safe: List[str] = []
         for l in raw_lines:
-            l = _sanitize_line(l, max_len=120)
-            if not l or _looks_gibberish(l): continue
-            if not re.match(r"^\W", l): l = "• " + l
-            safe.append(l)
+            l = _sanitize_line(l, 120)
+            if l and not _looks_gibberish(l):
+                if not re.match(r"^\W", l): l = "• " + l
+                safe.append(l)
         if safe:
             cache_file.write_text("\n".join(safe[:3]), "utf-8")
             return safe[:3]
@@ -586,9 +546,6 @@ def build_astro_section(date_local: Optional[pendulum.Date] = None, tz_local: st
         bullets = [base + prm, (f"♒ Знак: {sign}" if sign else "— знак Луны н/д")]
     lines = ["🌌 <b>Астрособытия</b>"]
     lines += [zsym(x) for x in bullets[:3]]
-    llm_used = bool(bullets) and USE_DAILY_LLM
-    if voc_text and not llm_used:
-        lines.append(f"⚫️ VoC: {voc_text}")
     return "\n".join(lines)
 
 # ───────────── hourly/ветер/давление ─────────────
@@ -631,12 +588,12 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
     hourly = wm.get("hourly") or {}
     times = _hourly_times(wm)
     tomorrow = pendulum.now(tz).add(days=1).date()
-    spd_arr = _pick(hourly, "windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed", default=[])
-    dir_arr = _pick(hourly, "winddirection_10m", "winddirection", "wind_dir_10m", "wind_dir", default=[])
+    spd_arr = _pick(hourly, "windspeed_10m","windspeed","wind_speed_10m","wind_speed", default=[])
+    dir_arr = _pick(hourly, "winddirection_10m","winddirection","wind_dir_10m","wind_dir", default=[])
     prs_arr = hourly.get("surface_pressure", []) or hourly.get("pressure", [])
     if times:
-        idx_noon = _nearest_index_for_day(times, tomorrow, prefer_hour=12, tz=tz)
-        idx_morn = _nearest_index_for_day(times, tomorrow, prefer_hour=6,  tz=tz)
+        idx_noon = _nearest_index_for_day(times, tomorrow, 12, tz)
+        idx_morn = _nearest_index_for_day(times, tomorrow, 6,  tz)
     else:
         idx_noon = idx_morn = None
     wind_ms = wind_dir = press_val = None; trend = "→"
@@ -653,8 +610,7 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
         wind_dir = int(round(wdir)) if isinstance(wdir, (int, float)) else None
         press_val = int(round(p_noon)) if isinstance(p_noon, (int, float)) else None
         if isinstance(p_noon,(int,float)) and isinstance(p_morn,(int,float)):
-            diff = p_noon - p_morn
-            trend = "↑" if diff>=0.3 else "↓" if diff<=-0.3 else "→"
+            diff = p_noon - p_morn; trend = "↑" if diff>=0.3 else "↓" if diff<=-0.3 else "→"
     if wind_ms is None and times:
         idxs = [i for i,t in enumerate(times) if t.in_tz(tz).date()==tomorrow]
         if idxs:
@@ -682,8 +638,7 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
 
 # === индексы на завтра и шторм-флаги ============================
 def _tomorrow_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[int]:
-    times = _hourly_times(wm)
-    tom = pendulum.now(tz).add(days=1).date()
+    times = _hourly_times(wm); tom = pendulum.now(tz).add(days=1).date()
     idxs: List[int] = []
     for i, dt in enumerate(times):
         try:
@@ -732,16 +687,12 @@ def _aqi_bucket_label(aqi: Optional[float]) -> Optional[str]:
     return "очень высокий"
 
 def _is_air_bad(air_now: Dict[str, Any]) -> tuple[bool, str]:
-    """Возвращает (не зелёный?, пояснение)."""
     aqi = air_now.get("aqi")
     try: aqi_f = float(aqi) if aqi is not None else None
     except Exception: aqi_f = None
-    if aqi_f is None:
-        return False, ""
-    if aqi_f <= 50:
-        return False, "🟢 воздух в норме"
-    if aqi_f <= 100:
-        return True, "🟡 воздух умеренный — избегайте интенсивных тренировок на улице"
+    if aqi_f is None: return False, ""
+    if aqi_f <= 50:   return False, "🟢 воздух в норме"
+    if aqi_f <= 100:  return True,  "🟡 воздух умеренный — избегайте интенсивных тренировок на улице"
     return True, "🟠 воздух неблагоприятный — тренировки лучше перенести в помещение"
 
 def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]:
@@ -750,41 +701,32 @@ def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]
     try: aqi_f = float(aqi) if aqi is not None else None
     except Exception: aqi_f = None
     lbl = _aqi_bucket_label(aqi_f)
-
     pm25 = air.get("pm25"); pm10 = air.get("pm10")
     try: pm25_i = int(round(float(pm25))) if pm25 is not None else None
     except Exception: pm25_i = None
     try: pm10_i = int(round(float(pm10))) if pm10 is not None else None
     except Exception: pm10_i = None
-
     dose_line = None
     data_rad = get_radiation(lat, lon) or {}
     dose = data_rad.get("dose")
-    if isinstance(dose,(int,float)):
-        dose_line = f"📟 {float(dose):.2f} μSv/h"
-
-    p = get_pollen() or {}
-    risk = p.get("risk")
-
+    if isinstance(dose,(int,float)): dose_line = f"📟 {float(dose):.2f} μSv/h"
+    p = get_pollen() or {}; risk = p.get("risk")
     parts = []
     aqi_part = f"AQI {int(round(aqi_f))}" if isinstance(aqi_f,(int,float)) else "AQI н/д"
     if lbl: aqi_part += f" ({lbl})"
     parts.append(aqi_part)
-
     pm_part = []
     if isinstance(pm25_i,int): pm_part.append(f"PM₂.₅ {pm25_i}")
     if isinstance(pm10_i,int): pm_part.append(f"PM₁₀ {pm10_i}")
     if pm_part: parts.append(" / ".join(pm_part))
-
     if dose_line: parts.append(dose_line)
     if isinstance(risk,str) and risk: parts.append(f"🌿 риск {risk}")
-
-    if not parts:
-        return None
+    if not parts: return None
     return "🏭 " + " • ".join(parts)
 
-# ───────────── детальная строка города ─────────────
-def _city_detail_line(city: str, la: float, lo: float, tz_obj: pendulum.Timezone, include_sst: bool) -> tuple[Optional[float], Optional[str]]:
+# ───────────── «городская» строка ─────────────
+def _city_detail_line(city: str, la: float, lo: float, tz_obj: pendulum.Timezone, include_sst: bool)\
+        -> tuple[Optional[float], Optional[str]]:
     tz_name = tz_obj.name
     tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
     if tmax is None:
@@ -807,25 +749,22 @@ def _city_detail_line(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         if isinstance(wind_dir,int): wind_part += f" ({compass(wind_dir)})"
         if isinstance(gust,(int,float)): wind_part += f" • порывы до {gust:.0f}"
         parts.append(wind_part)
-    if isinstance(press_val,int):
-        parts.append(f"🔹 {press_val} гПа {press_trend}")
+    if isinstance(press_val,int): parts.append(f"🔹 {press_val} гПа {press_trend}")
     if include_sst:
         sst = get_sst_cached(la, lo)
         if isinstance(sst,(int,float)): parts.append(f"🌊 {sst:.1f}")
     return float(tmax), " • ".join(parts)
 
-# ───────────── Водные активности: короткий «highlights» ─────────────
+# ───────────── Водные активности ─────────────
 def _deg_diff(a: float, b: float) -> float:
     return abs((a - b + 180) % 360 - 180)
 
 def _cardinal(deg: Optional[float]) -> Optional[str]:
     if deg is None: return None
-    dirs = ["N","NE","E","SE","S","SW","W","NW"]
-    idx = int((deg + 22.5) // 45) % 8
+    dirs = ["N","NE","E","SE","S","SW","W","NW"]; idx = int((deg + 22.5) // 45) % 8
     return dirs[idx]
 
 def _shore_class(city: str, wind_from_deg: Optional[float]) -> Tuple[Optional[str], Optional[str]]:
-    """Возвращает (class, source_label). class ∈ {onshore,cross,offshore}."""
     if wind_from_deg is None: return None, None
     face_deg, src_label = _shore_face_for_city(city)
     if face_deg is None: return None, src_label
@@ -836,26 +775,16 @@ def _shore_class(city: str, wind_from_deg: Optional[float]) -> Tuple[Optional[st
 
 def _fetch_wave_for_tomorrow(lat: float, lon: float, tz_obj: pendulum.Timezone,
                              prefer_hour: int = 12) -> Tuple[Optional[float], Optional[float]]:
-    if not requests:
-        return None, None
+    if not requests: return None, None
     try:
         url = "https://marine-api.open-meteo.com/v1/marine"
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "hourly": "wave_height,wave_period",
-            "timezone": tz_obj.name,
-        }
-        r = requests.get(url, params=params, timeout=10)  # увеличенный таймаут
-        r.raise_for_status()
-        j = r.json()
-        hourly = j.get("hourly") or {}
+        params = {"latitude": lat,"longitude": lon,"hourly": "wave_height,wave_period","timezone": tz_obj.name}
+        r = requests.get(url, params=params, timeout=10); r.raise_for_status()
+        j = r.json(); hourly = j.get("hourly") or {}
         times = [pendulum.parse(t) for t in (hourly.get("time") or []) if t]
         idx = _nearest_index_for_day(times, pendulum.now(tz_obj).add(days=1).date(), prefer_hour, tz_obj)
-        if idx is None:
-            return None, None
-        h = hourly.get("wave_height") or []
-        p = hourly.get("wave_period") or []
+        if idx is None: return None, None
+        h = hourly.get("wave_height") or []; p = hourly.get("wave_period") or []
         w_h = float(h[idx]) if idx < len(h) and h[idx] is not None else None
         w_t = float(p[idx]) if idx < len(p) and p[idx] is not None else None
         return w_h, w_t
@@ -864,9 +793,7 @@ def _fetch_wave_for_tomorrow(lat: float, lon: float, tz_obj: pendulum.Timezone,
         return None, None
 
 def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
-    """Подсказка по толщине гидрика по температуре воды (°C)."""
-    if not isinstance(sst, (int, float)):
-        return None
+    if not isinstance(sst, (int, float)): return None
     t = float(sst)
     if t >= WSUIT_NONE:   return None
     if t >= WSUIT_SHORTY: return "гидрокостюм шорти 2 мм"
@@ -877,35 +804,23 @@ def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
     return "гидрокостюм 6/5 мм + капюшон (боты, перчатки)"
 
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
-    """
-    Возвращает ОДНУ короткую строку вида:
-      🧜‍♂️ Отлично: Кайт/Винг/Винд; SUP; Сёрф @Spot (SE/cross) • гидрокостюм 4/3 мм
-    Только если есть «good»-активности. Если нет — None.
-    """
     wm = get_weather(la, lo) or {}
     wind_ms, wind_dir, _, _ = pick_tomorrow_header_metrics(wm, tz_obj)
     wave_h, _ = _fetch_wave_for_tomorrow(la, lo, tz_obj)
-
-    # порывы в тот же час, что и ветер
     def _gust_at_noon(wm: Dict[str, Any], tz: pendulum.Timezone) -> Optional[float]:
-        hourly = wm.get("hourly") or {}
-        times  = _hourly_times(wm)
+        hourly = wm.get("hourly") or {}; times  = _hourly_times(wm)
         idx = _nearest_index_for_day(times, pendulum.now(tz).add(days=1).date(), 12, tz)
         arr = _pick(hourly, "windgusts_10m","wind_gusts_10m","wind_gusts", default=[])
         if idx is not None and idx < len(arr):
             try: return kmh_to_ms(float(arr[idx]))
             except Exception: return None
         return None
-
-    gust = _gust_at_noon(wm, tz_obj)
-    sst  = get_sst_cached(la, lo)  # кэш SST
-
+    gust = _gust_at_noon(wm, tz_obj); sst  = get_sst_cached(la, lo)
     wind_val = float(wind_ms) if isinstance(wind_ms,(int,float)) else None
     gust_val = float(gust)    if isinstance(gust,(int,float)) else None
     card = _cardinal(float(wind_dir)) if isinstance(wind_dir,(int,float)) else None
     shore, shore_src = _shore_class(city, float(wind_dir) if isinstance(wind_dir,(int,float)) else None)
 
-    # — kite good?
     kite_good = False
     if wind_val is not None:
         if KITE_WIND_GOOD_MIN <= wind_val <= KITE_WIND_GOOD_MAX: kite_good = True
@@ -913,13 +828,11 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         if gust_val and wind_val and (gust_val / max(wind_val, 0.1) > KITE_GUST_RATIO_BAD): kite_good = False
         if wave_h is not None and wave_h >= KITE_WAVE_WARN: kite_good = False
 
-    # — sup good?
     sup_good = False
     if wind_val is not None:
         if (wind_val <= SUP_WIND_GOOD_MAX) and (wave_h is None or wave_h <= SUP_WAVE_GOOD_MAX): sup_good = True
         if shore == "offshore" and wind_val >= OFFSHORE_SUP_WIND_MIN: sup_good = False
 
-    # — surf good?
     surf_good = False
     if wave_h is not None:
         if SURF_WAVE_GOOD_MIN <= wave_h <= SURF_WAVE_GOOD_MAX and (wind_val is None or wind_val <= SURF_WIND_MAX):
@@ -929,23 +842,17 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     if kite_good: goods.append("Кайт/Винг/Винд")
     if sup_good:  goods.append("SUP")
     if surf_good: goods.append("Сёрф")
-
-    if not goods:
-        return None
+    if not goods: return None
 
     dir_part  = f" ({card}/{shore})" if card or shore else ""
     spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
     env_mark  = " (ENV)" if shore_src and shore_src.startswith("ENV:") else ""
-
-    suit_txt  = _wetsuit_hint(sst)
-    suit_part = f" • {suit_txt}" if suit_txt else ""
-
+    suit_txt  = _wetsuit_hint(sst); suit_part = f" • {suit_txt}" if suit_txt else ""
     return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part
 
-# ───────────── вывод/советы для вечера ─────────────
+# ───────────── вывод/советы (вечер) ─────────────
 def build_conclusion(kp_val, ks, air_now, storm_region, schu_state) -> List[str]:
     out: List[str] = []
-    # воздух
     pm25 = air_now.get("pm25"); pm10 = air_now.get("pm10"); aqi = air_now.get("aqi")
     emoji, smoke = smoke_index(pm25, pm10)
     aqi_part = f"{AIR_EMOJI.get('хороший','🟢')} AQI {int(round(aqi))}" if isinstance(aqi,(int,float)) else "AQI н/д"
@@ -953,42 +860,39 @@ def build_conclusion(kp_val, ks, air_now, storm_region, schu_state) -> List[str]
                           f"PM₁₀ {int(round(pm10))}"  if isinstance(pm10,(int,float)) else ""]).replace("  • ","").strip(" •")
     air_line = f"🏭 Воздух: {aqi_part}" + (f" • {pm_part}" if pm_part else "") + (f" • {emoji} дымка {smoke}" if smoke!="н/д" else "")
     out.append(air_line)
-
-    # kp + шуман
     if isinstance(kp_val,(int,float)):
         kp_color = "🟢" if kp_val < 5 else "🔴"
         shu_status = (schu_state or {}).get("status") or "колебания"
         out.append(f"🧲 {kp_color} Kp={kp_val:.1f} ({ks}) • 📡 Шуман — {shu_status}")
     else:
         out.append("🧲 Kp: н/д")
-
-    # общий вердикт
     bad_air, _ = _is_air_bad(air_now)
     verdict = "📌 День комфортный."
-    if storm_region.get("warning"):
-        verdict = "📌 День с оговорками: непогода."
-    if isinstance(kp_val,(int,float)) and kp_val >= 5:
-        verdict = "📌 День с оговорками: магнитные бури."
-    if bad_air:
-        verdict = "📌 День с оговорками: воздух не зелёный."
-    out.append(verdict)
-    return out
+    if storm_region.get("warning"): verdict = "📌 День с оговорками: непогода."
+    if isinstance(kp_val,(int,float)) and kp_val >= 5: verdict = "📌 День с оговорками: магнитные бури."
+    if bad_air: verdict = "📌 День с оговорками: воздух не зелёный."
+    out.append(verdict); return out
 
-# ───────────── помощники для «человечного» утра ─────────────
+# ───────────── утро — сборка «человечного» блока ─────────────
 def _collect_city_tmax_list(sea_pairs, other_pairs, tz_obj) -> List[Tuple[str, float]]:
     all_pairs = list(sea_pairs) + list(other_pairs)
     out: List[Tuple[str,float]] = []
     for city, (la, lo) in all_pairs:
         tmax, _ = _city_detail_line(city, la, lo, tz_obj, include_sst=False)
-        if isinstance(tmax,(int,float)):
-            out.append((city, float(tmax)))
+        if isinstance(tmax,(int,float)): out.append((city, float(tmax)))
     return out
 
-def _format_all_cities_temps(rows: List[Tuple[str, float]]) -> str:
+def _format_all_cities_temps_compact(rows: List[Tuple[str, float]], max_cities: int = None) -> str:
     if not rows: return ""
     rows = sorted(rows, key=lambda x: x[1], reverse=True)
-    parts = [f"{name} {t:.1f}°" for name, t in rows]
-    return "🌡️ Температуры по городам: " + " • ".join(parts)
+    if max_cities is None:
+        try: max_cities = int(os.getenv("MORNING_CITY_TEMPS_MAX", "3"))
+        except Exception: max_cities = 3
+    top = rows[:max_cities]
+    spread = f"{rows[-1][1]:.1f}–{rows[0][1]:.1f}°"
+    short = ", ".join([f"{name} {t:.1f}°" for name, t in top])
+    suffix = "…" if len(rows) > max_cities else ""
+    return f"🌡️ По городам: {short}{suffix} (диапазон {spread})"
 
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
@@ -1011,7 +915,7 @@ def build_message(region_name: str,
     wm_region = get_weather(CY_LAT, CY_LON) or {}
     storm_region = storm_flags_for_tomorrow(wm_region, tz_obj)
 
-    # === УТРО: «человечный» обзор без блоков ===
+    # === УТРО ===
     if is_morning:
         rows = _collect_city_tmax_list(sea_pairs, other_pairs, tz_obj)
         warm = max(rows, key=lambda x: x[1]) if rows else None
@@ -1019,20 +923,19 @@ def build_message(region_name: str,
 
         greeting = "👋 Доброе утро!"
         if warm and cool:
-            greeting += f" Сегодня теплее всего — {warm[0]} ({warm[1]:.1f}°C), "
-            greeting += f"прохладнее — {cool[0]} ({cool[1]:.1f}°C)."
+            greeting += f" Сегодня теплее всего — {warm[0]} ({warm[1]:.1f}°C), прохладнее — {cool[0]} ({cool[1]:.1f}°C)."
         P.append(greeting)
 
-        line_all = _format_all_cities_temps(rows)
-        if line_all:
-            P.append(line_all)
+        line_all = _format_all_cities_temps_compact(rows)
+        if line_all: P.append(line_all)
 
         if storm_region.get("warning"):
-            P.append(storm_region["warning_text"] + " Будьте осторожны.")
+            P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
 
-        sun_line = sun_line_for_mode(mode, tz_obj, CY_LAT, CY_LON)
-        if sun_line:
-            P.append(sun_line)
+        # 🌇 закат сегодня — берём «умные» координаты
+        la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
+        sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)
+        if sun_line: P.append(sun_line)
 
         # Комбо воздух/радиация/пыльца
         combo = _morning_combo_air_radiation_pollen(CY_LAT, CY_LON)
@@ -1040,8 +943,7 @@ def build_message(region_name: str,
             P.append(combo)
             air_now = get_air(CY_LAT, CY_LON) or {}
             _, tip = _is_air_bad(air_now)
-            if tip:
-                P.append(f"ℹ️ {tip}")
+            if tip: P.append(f"ℹ️ {tip}")
 
         # Геомагнитка + солнечный ветер
         kp_tuple = get_kp() or (None, "н/д", None, "n/d")
@@ -1054,14 +956,11 @@ def build_message(region_name: str,
         if isinstance(kp_ts,int) and kp_ts>0:
             try:
                 age_min = int((pendulum.now("UTC").int_timestamp - kp_ts) / 60)
-                if age_min > 180: age_txt = f", 🕓 {age_min // 60}ч назад"
-                elif age_min >= 0: age_txt = f", {age_min} мин назад"
-            except Exception:
-                age_txt = ""
+                age_txt = f", 🕓 {age_min // 60}ч назад" if age_min > 180 else (f", {age_min} мин назад" if age_min >= 0 else "")
+            except Exception: age_txt = ""
 
         sw = get_solar_wind() or {}
-        v, n = sw.get("speed_kms"), sw.get("density")
-        wind_status = sw.get("status", "н/д")
+        v, n = sw.get("speed_kms"), sw.get("density"); wind_status = sw.get("status", "н/д")
         parts_sw = []
         if isinstance(v,(int,float)): parts_sw.append(f"v {v:.0f} км/с")
         if isinstance(n,(int,float)): parts_sw.append(f"n {n:.1f} см⁻³")
@@ -1079,57 +978,45 @@ def build_message(region_name: str,
 
         return "\n".join(P)
 
-    # === ВЕЧЕР: единый список всех городов (без разделения) ===
-
+    # === ВЕЧЕР ===
     if storm_region.get("warning"):
-        P.append(storm_region["warning_text"])
-        P.append("———")
+        P.append(storm_region["warning_text"]); P.append("———")
 
-    # Соберём строки по всем городам
-    sea_names = {name for name, _ in sea_pairs}  # чтобы печатать SST/вод.активности только там, где уместно
+    sea_names = {name for name, _ in sea_pairs}
     all_rows: List[tuple[float, str]] = []
     for city, (la, lo) in list(sea_pairs) + list(other_pairs):
         include_sst = city in sea_names or city in SHORE_PROFILE
         tmax, line = _city_detail_line(city, la, lo, tz_obj, include_sst=include_sst)
         if tmax is not None and line:
-            # водные highlights — пытаться только для прибрежных
             if include_sst:
                 try:
                     hl = _water_highlights(city, la, lo, tz_obj)
-                    if hl:
-                        line = line + f"\n   {hl}"
-                except Exception:
-                    pass
+                    if hl: line = line + f"\n   {hl}"
+                except Exception: pass
             all_rows.append((float(tmax), line))
-
-    # Отрисуем, тёплые наверх
     if all_rows:
         P.append("🏙 <b>Города</b>")
         all_rows.sort(key=lambda x: x[0], reverse=True)
-        medals = ["🥵", "😎", "😌", "🥶"]
+        medals = ["🥵","😎","😌","🥶"]
         for i, (_, text) in enumerate(all_rows):
             med = medals[i] if i < len(medals) else "•"
             P.append(f"{med} {text}")
         P.append("———")
 
-    # Строка про солнце (после городов): вечером — рассвет завтра
-    sun_line = sun_line_for_mode(mode, tz_obj, CY_LAT, CY_LON)
-    if sun_line:
-        P.append(sun_line)
+    # 🌅 рассвет завтра — «умные» координаты
+    la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
+    sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)
+    if sun_line: P.append(sun_line)
 
-    # Шуман
     schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
     if not DISABLE_SCHUMANN:
-        P.append(schumann_line(schu_state))
-        P.append("———")
+        P.append(schumann_line(schu_state)); P.append("———")
 
-    # Астрособытия (на завтра по Asia/Nicosia)
     tz_nic = pendulum.timezone("Asia/Nicosia")
     date_for_astro = pendulum.today(tz_nic).add(days=1)
     P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
     P.append("———")
 
-    # Вывод
     P.append("📜 <b>Вывод</b>")
     air_now = get_air(CY_LAT, CY_LON) or {}
     kp_tuple = get_kp() or (None, "н/д", None, "n/d")
@@ -1140,20 +1027,13 @@ def build_message(region_name: str,
     P.extend(build_conclusion(kp_val, ks, air_now, storm_region, schu_state))
     P.append("———")
 
-    # Рекомендации
     P.append("✅ <b>Рекомендации</b>")
-    theme = (
-        "плохая погода" if storm_region.get("warning") else
-        ("магнитные бури" if isinstance(kp_val,(int,float)) and kp_val >= 5 else
-         ("плохой воздух" if _is_air_bad(air_now)[0] else
-          ("волны Шумана" if (schu_state or {}).get("status_code") == "red" else
-           "здоровый день"))))
-    for t in safe_tips(theme):
-        P.append(t)
-
-    P.append("———")
-    P.append(f"📚 {get_fact(tom, region_name)}")
-
+    theme = ("плохая погода" if storm_region.get("warning") else
+             ("магнитные бури" if isinstance(kp_val,(int,float)) and kp_val >= 5 else
+              ("плохой воздух" if _is_air_bad(air_now)[0] else
+               ("волны Шумана" if (schu_state or {}).get("status_code") == "red" else "здоровый день"))))
+    for t in safe_tips(theme): P.append(t)
+    P.append("———"); P.append(f"📚 {get_fact(tom, region_name)}")
     return "\n".join(P)
 
 # ───────────── отправка ─────────────
@@ -1182,24 +1062,10 @@ async def main_common(
     tz: Union[pendulum.Timezone, str],
     mode: Optional[str] = None,
 ) -> None:
-    await send_common_post(
-        bot=bot,
-        chat_id=chat_id,
-        region_name=region_name,
-        sea_label=sea_label,
-        sea_cities=sea_cities,
-        other_label=other_label,
-        other_cities=other_cities,
-        tz=tz,
-        mode=mode,
-    )
+    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz, mode)
 
 __all__ = [
-    "build_message",
-    "send_common_post",
-    "main_common",
-    "schumann_line",
-    "get_schumann_with_fallback",
-    "pick_tomorrow_header_metrics",
-    "storm_flags_for_tomorrow",
+    "build_message","send_common_post","main_common",
+    "schumann_line","get_schumann_with_fallback",
+    "pick_tomorrow_header_metrics","storm_flags_for_tomorrow",
 ]
