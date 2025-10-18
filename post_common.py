@@ -861,9 +861,9 @@ def build_message(region_name: str,
         kp_status = _kp_status_label(kp_val)
         P.append(f"🔎 Итого: воздух {air_icon} • {storm} • Kp {kp_status}")
 
-        tips = ["вода с завтраком"]
+        tips = ["вода и завтрак"]
         if not bad_air: tips.append("20-мин прогулка до полудня")
-        tips.append("короткая растяжка вечером" if not storm_region.get("warning") else "минус экраны за час до сна")
+        tips.append("короткая растяжка вечером" if not storm_region.get("warning") else "без экранов за час до сна")
         P.append("✅ Сегодня: " + ", ".join(tips) + ".")
 
         # Хэштеги
