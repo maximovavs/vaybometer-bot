@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Tuple, Optional, Union
 import pendulum
 from telegram import Bot, constants
 
-from utils        import compass, get_fact, kmh_to_ms
+from utils        import compass, get_fact, kmh_to_ms, smoke_index
 from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
 from air          import get_air, get_sst, get_solar_wind
 from pollen       import get_pollen
@@ -580,6 +580,10 @@ def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]
     if isinstance(risk,str) and risk: parts.append(f"🌿 пыльца: {risk}")
     if not parts: return None
     return "🏭 " + " • ".join(parts)
+
+em_sm, lbl_sm = smoke_index(pm25, pm10)
+if isinstance(lbl_sm, str) and lbl_sm.lower() not in ("низкое", "низкий", "нет", "н/д"):
+    parts.append(f"😮‍💨 задымление: {lbl_sm}")
 
 # ───────────── городская строка ─────────────
 def _deg_diff(a: float, b: float) -> float:
