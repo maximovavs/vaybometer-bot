@@ -527,7 +527,7 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[
     thunder      = (max(tprob) >= 60) if tprob else False
     reasons=[]
     if isinstance(max_speed_ms,(int,float)) and max_speed_ms >= 13: reasons.append(f"ветер до {max_speed_ms:.0f} м/с")
-    if isinstance(max_gust_ms,(int,float)) and max_gust_ms >= 17: reasons.append(f"порывы до {max_gust_ms:.0f} м/с")
+    if isinstance(max_gust_ms,(int,float)) and max_gust_ms >= 17: reasons.append(f"порывы {max_gust_ms:.0f} м/с")
     if heavy_rain: reasons.append("сильный дождь")
     if thunder: reasons.append("гроза")
     return {"max_speed_ms": max_speed_ms, "max_gust_ms": max_gust_ms, "heavy_rain": heavy_rain,
@@ -653,12 +653,12 @@ def _city_detail_line(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     if isinstance(wind_ms,(int,float)):
         wind_part = f"💨 {float(wind_ms):.1f} м/с"
         if isinstance(wind_dir,int): wind_part += f" ({compass(wind_dir)})"
-        if isinstance(gust,(int,float)): wind_part += f" • порывы до {float(gust):.0f}"
+        if isinstance(gust,(int,float)): wind_part += f" • порывы {float(gust):.0f}"
         parts.append(wind_part)
     if isinstance(press_val,int): parts.append(f"🔹 {press_val} гПа {press_trend}")
     if include_sst:
         sst = get_sst_cached(la, lo)
-        if isinstance(sst,(int,float)): parts.append(f"🌊 {float(sst):.1f}")
+        if isinstance(sst,(int,float)): parts.append(f"🌊 {float(sst):.0f}")
     return float(tmax), " • ".join(parts)
 
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
