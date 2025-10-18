@@ -873,7 +873,8 @@ def _city_detail_line(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     storm = storm_flags_for_tomorrow(wm, tz_obj); gust = storm.get("max_gust_ms")
 
     city_ru = _ru_city(city)
-    parts = [f"{city_ru}: {tmax:.1f}/{tmin:.1f} °C", f"{descx}"]
+    # 👇 жирный город + экранирование
+    parts = [f"<b>{_escape_html(city_ru)}</b>: {tmax:.1f}/{tmin:.1f} °C", f"{descx}"]
     if isinstance(wind_ms,(int,float)):
         wind_part = f"💨 {wind_ms:.1f} м/с"
         if isinstance(wind_dir,int): wind_part += f" ({compass(wind_dir)})"
@@ -980,30 +981,7 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     suit_txt  = _wetsuit_hint(sst); suit_part = f" • {suit_txt}" if suit_txt else ""
     return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part
 
-# ───────────── вывод/советы (вечер) ─────────────
-def build_conclusion(kp_val, ks, air_now, storm_region, schu_state) -> List[str]:
-    out: List[str] = []
-    pm25 = air_now.get("pm25"); pm10 = air_now.get("pm10"); aqi = air_now.get("aqi")
-    emoji, smoke = smoke_index(pm25, pm10)
-    aqi_part = f"{AIR_EMOJI.get('хороший','🟢')} AQI {int(round(aqi))}" if isinstance(aqi,(int,float)) else "AQI н/д"
-    pm_part = " • ".join([f"PM₂.₅ {int(round(pm25))}" if isinstance(pm25,(int,float)) else "",
-                          f"PM₁₀ {int(round(pm10))}"  if isinstance(pm10,(int,float)) else ""]).replace("  • ","").strip(" •")
-    air_line = f"🏭 Воздух: {aqi_part}" + (f" • {pm_part}" if pm_part else "") + (f" • {emoji} дымка {smoke}" if smoke!="н/д" else "")
-    out.append(air_line)
-    if isinstance(kp_val,(int,float)):
-        kp_color = "🟢" if kp_val < 5 else "🔴"
-        shu_status = (schu_state or {}).get("status") or "колебания"
-        out.append(f"🧲 {kp_color} Kp={kp_val:.1f} ({ks}) • 📡 Шуман — {shu_status}")
-    else:
-        out.append("🧲 Kp: н/д")
-    bad_air, _ = _is_air_bad(air_now)
-    verdict = "📌 День комфортный."
-    if storm_region.get("warning"): verdict = "📌 День с оговорками: непогода."
-    if isinstance(kp_val,(int,float)) and kp_val >= 5: verdict = "📌 День с оговорками: магнитные бури."
-    if bad_air: verdict = "📌 День с оговорками: воздух не зелёный."
-    out.append(verdict); return out
-
-# ───────────── утренние «человечные» вставки ─────────────
+# ───────────── утренние вставки / дайджест ─────────────
 def pretty_fact_line(date_obj: pendulum.Date, region_name: str) -> str:
     fact = get_fact(date_obj, region_name) or ""
     fact = re.sub(r"\s+", " ", fact).strip()
@@ -1112,8 +1090,6 @@ def build_message(region_name: str,
             )
         P.append(greeting.strip())
 
-        # Без длинного списка «🌡️ По городам …»
-
         if storm_region.get("warning"):
             P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
 
@@ -1131,7 +1107,7 @@ def build_message(region_name: str,
         else:
             air_now = get_air(CY_LAT, CY_LON) or {}
 
-        # Kp: источник world/NOAA (по умолчанию) + фолбэк на get_kp()
+        # Kp: world/NOAA + фолбэк
         kp_val = None; kp_age = None; kp_label = "н/д"
         if USE_WORLD_KP:
             wv, age = _fetch_world_kp()
@@ -1160,7 +1136,6 @@ def build_message(region_name: str,
         sw_tail = (" — " + wind_status) if parts_sw and isinstance(wind_status,str) and wind_status not in ("", "н/д") else ""
         sw_chunk = (", ".join(parts_sw) + sw_tail) if parts_sw or wind_status else "н/д"
 
-        # Космопогода
         if isinstance(kp_val,(int,float)):
             age_txt = ""
             if isinstance(kp_age,int):
@@ -1169,14 +1144,10 @@ def build_message(region_name: str,
         else:
             P.append(f"🧲 Космопогода: Kp н/д • 🌬️ {sw_chunk}")
 
-        # Итого + persona
         P.append(pretty_summary_line("morning", storm_region, kp_val, "", air_now))
         P.append(human_persona_line(kp_val, storm_region, air_now))
-
-        # Тёплая концовка
         P.append("Хорошего дня и бережного темпа 😊")
 
-        # Хэштеги (умеренно)
         warm_name = warm[0] if warm else None
         cool_name = cool[0] if cool else None
         P.append(hashtags_line(warm_name, cool_name))
@@ -1221,20 +1192,34 @@ def build_message(region_name: str,
     P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
     P.append("———")
 
-    P.append("📜 <b>Вывод</b>")
-    air_now = get_air(CY_LAT, CY_LON) or {}
-    kp_val_e = None
+    # 🧲 Космопогода (коротко) — без отдельных «Вывод/Рекомендации/Факт дня»
+    kp_val_e = None; kp_age_e = None
     if USE_WORLD_KP:
-        kp_val_e, _ = _fetch_world_kp()
+        kp_val_e, kp_age_e = _fetch_world_kp()
     if kp_val_e is None:
         kp_tuple = get_kp() or (None, "н/д", None, "n/d")
-        try: kp_val_e, ks, _, _ = kp_tuple
+        try: kp_val_e, _, kp_ts_e, _ = kp_tuple
         except Exception:
             kp_val_e = kp_tuple[0] if isinstance(kp_tuple,(list,tuple)) and len(kp_tuple)>0 else None
-            ks = kp_tuple[1] if isinstance(kp_tuple,(list,tuple)) and len(kp_tuple)>1 else "н/д"
-    P.extend(build_conclusion(kp_val_e, _kp_status_label(kp_val_e), air_now, storm_region, schu_state))
+            kp_ts_e = None
+        if kp_val_e is not None and isinstance(kp_ts_e,int):
+            try: kp_age_e = int((pendulum.now("UTC").int_timestamp - kp_ts_e) / 60)
+            except Exception: kp_age_e = None
 
-    # Небольшой дайджест и persona
+    sw = get_solar_wind() or {}
+    parts_sw = []
+    if isinstance(sw.get("speed_kms"), (int,float)): parts_sw.append(f"v {sw['speed_kms']:.0f} км/с")
+    if isinstance(sw.get("density"), (int,float)):   parts_sw.append(f"n {sw['density']:.1f} см⁻³")
+    sw_tail = (" — " + sw.get("status","н/д")) if parts_sw and isinstance(sw.get("status"),str) else ""
+    sw_chunk = (", ".join(parts_sw) + sw_tail) if parts_sw else "н/д"
+    if isinstance(kp_val_e,(int,float)):
+        age_txt = f", {kp_age_e//60} ч назад" if isinstance(kp_age_e,int) and kp_age_e>=180 else (f", {kp_age_e} мин назад" if isinstance(kp_age_e,int) and kp_age_e>=0 else "")
+        P.append(f"🧲 Космопогода: Kp {kp_val_e:.1f} ({_kp_status_label(kp_val_e)}{age_txt}) • 🌬️ {sw_chunk}")
+    else:
+        P.append(f"🧲 Космопогода: Kp н/д • 🌬️ {sw_chunk}")
+
+    # Микро-дайджест и persona (оставляем в вечернем)
+    air_now = get_air(CY_LAT, CY_LON) or {}
     try:
         sum_line = pretty_summary_line("evening", storm_region, kp_val_e, "", air_now, schu_state)
         if sum_line: P.append(sum_line)
@@ -1243,9 +1228,12 @@ def build_message(region_name: str,
     except Exception:
         pass
 
-    # Факт дня к завтрашнему «вечернему» посту — всё ещё про завтра? оставим про завтра в конце
-    P.append("———")
-    P.append(pretty_fact_line(tom, region_name))
+    # Хэштеги по тёплому/прохладному (быстрый пересчёт)
+    rows_for_tags = _collect_city_tmax_list(sea_pairs, other_pairs, tz_obj)
+    warm = max(rows_for_tags, key=lambda x: x[1]) if rows_for_tags else None
+    cool = min(rows_for_tags, key=lambda x: x[1]) if rows_for_tags else None
+    P.append(hashtags_line(warm[0] if warm else None, cool[0] if cool else None))
+
     return "\n".join(P)
 
 # ───────────── отправка ─────────────
