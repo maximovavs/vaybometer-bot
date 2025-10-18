@@ -556,34 +556,63 @@ def _is_air_bad(air_now: Dict[str, Any]) -> tuple[bool, str]:
 def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]:
     air = get_air(lat, lon) or {}
     aqi = air.get("aqi")
-    try: aqi_f = float(aqi) if aqi is not None else None
-    except Exception: aqi_f = None
+    try:
+        aqi_f = float(aqi) if aqi is not None else None
+    except Exception:
+        aqi_f = None
+
     lbl = _aqi_bucket_label(aqi_f)
-    pm25 = air.get("pm25"); pm10 = air.get("pm10")
-    try: pm25_i = int(round(float(pm25))) if pm25 is not None else None
-    except Exception: pm25_i = None
-    try: pm10_i = int(round(float(pm10))) if pm10 is not None else None
-    except Exception: pm10_i = None
-    dose_line = None
+
+    pm25 = air.get("pm25")
+    pm10 = air.get("pm10")
+    try:
+        pm25_i = int(round(float(pm25))) if pm25 is not None else None
+    except Exception:
+        pm25_i = None
+    try:
+        pm10_i = int(round(float(pm10))) if pm10 is not None else None
+    except Exception:
+        pm10_i = None
+
+    # локальная радиация
     data_rad = get_radiation(lat, lon) or {}
     dose = data_rad.get("dose")
-    if isinstance(dose,(int,float)): dose_line = f"📟 {float(dose):.2f} μSv/h"
-    p = get_pollen() or {}; risk = p.get("risk")
-    parts = []
-    aqi_part = f"AQI {int(round(aqi_f))}" if isinstance(aqi_f,(int,float)) else "AQI н/д"
-    if lbl: aqi_part += f" ({lbl})"
+    dose_line = f"📟 {float(dose):.2f} μSv/h" if isinstance(dose, (int, float)) else None
+
+    # пыльца
+    p = get_pollen() or {}
+    risk = p.get("risk")
+
+    parts: list[str] = []
+
+    aqi_part = f"AQI {int(round(aqi_f))}" if isinstance(aqi_f, (int, float)) else "AQI н/д"
+    if lbl:
+        aqi_part += f" ({lbl})"
     parts.append(aqi_part)
-    pm_part = []
-    if isinstance(pm25_i,int): pm_part.append(f"PM₂.₅ {pm25_i}")
-    if isinstance(pm10_i,int): pm_part.append(f"PM₁₀ {pm10_i}")
-    if pm_part: parts.append(" / ".join(pm_part))
-    if dose_line: parts.append(dose_line)
-    if isinstance(risk,str) and risk: parts.append(f"🌿 пыльца: {risk}")
-    if not parts: return None
-    return "🏭 " + " • ".join(parts)
+
+    pm_part: list[str] = []
+    if isinstance(pm25_i, int):
+        pm_part.append(f"PM₂.₅ {pm25_i}")
+    if isinstance(pm10_i, int):
+        pm_part.append(f"PM₁₀ {pm10_i}")
+    if pm_part:
+        parts.append(" / ".join(pm_part))
+
+    # 🔥 добавили задымление (показываем только если риск не «низкий»)
     em_sm, lbl_sm = smoke_index(pm25, pm10)
     if isinstance(lbl_sm, str) and lbl_sm.lower() not in ("низкое", "низкий", "нет", "н/д"):
-    parts.append(f"😮‍💨 задымление: {lbl_sm}")
+        parts.append(f"😮‍💨 задымление: {lbl_sm}")
+
+    if dose_line:
+        parts.append(dose_line)
+
+    if isinstance(risk, str) and risk:
+        parts.append(f"🌿 пыльца: {risk}")
+
+    if not parts:
+        return None
+
+    return "🏭 " + " • ".join(parts)
 
 # ───────────── городская строка ─────────────
 def _deg_diff(a: float, b: float) -> float:
