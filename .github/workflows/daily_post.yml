@@ -2,12 +2,19 @@ name: Daily VayboMeter (Cyprus)
 
 on:
   schedule:
+    # Утренний пост: ~08:30 на Кипре летом / ~07:30 зимой (UTC only)
+    - cron: '30 5 * * *'
     # Вечерний пост: 14:00 UTC (≈17:00 на Кипре летом / 16:00 зимой)
     - cron: '0 14 * * *'
     # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
     - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
+      run_morning:
+        description: "Запустить утренний пост"
+        type: boolean
+        default: false
+        required: false
       run_evening:
         description: "Запустить вечерний пост"
         type: boolean
@@ -40,8 +47,8 @@ concurrency:
 # общие переменные окружения
 env:
   TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-  CHANNEL_ID:         ${{ secrets.CHANNEL_ID }}
-  CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
+  CHANNEL_ID:          ${{ secrets.CHANNEL_ID }}
+  CHANNEL_ID_TEST:     ${{ secrets.CHANNEL_ID_TEST }}
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -54,6 +61,57 @@ env:
   TO_TEST:   ${{ github.event.inputs.to_test }}
 
 jobs:
+  morning:
+    name: Morning post (for today)
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '30 5 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.run_morning == true || github.event.inputs.run_morning == 'true'))
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Time debug
+        run: |
+          echo "UTC:   $(date -u)"
+          echo "Local: $(date)"
+          echo "MSK:   $(TZ=Europe/Moscow date)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Post morning (for today)
+        shell: bash
+        run: |
+          python <<'PY'
+          import os, runpy, sys, pendulum
+          wd = os.getenv("WORK_DATE")
+          if wd:
+              def _fake_today(tz=None):
+                  dt = pendulum.parse(wd)
+                  return dt.in_tz(tz) if tz else dt
+              pendulum.today = _fake_today
+
+          args = ["post_cy.py", "--mode", "morning"]
+          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
+          if chat_override:
+              args += ["--chat-id", chat_override]
+          else:
+              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
+              if to_test:
+                  args.append("--to-test")
+
+          sys.argv = args
+          runpy.run_path("post_cy.py", run_name="__main__")
+          PY
+
   evening:
     name: Evening post (for tomorrow)
     runs-on: ubuntu-latest
@@ -80,7 +138,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Post daily (announce tomorrow)
+      - name: Post evening (announce tomorrow)
         shell: bash
         run: |
           python <<'PY'
@@ -92,7 +150,7 @@ jobs:
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
 
-          args = ["post_cy.py"]
+          args = ["post_cy.py", "--mode", "evening"]
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           if chat_override:
               args += ["--chat-id", chat_override]

@@ -27,6 +27,22 @@ import random
 import requests
 import pendulum
 from typing import Any, Dict, Optional, List
+__all__ = [
+    "compass",
+    "AIR_EMOJI",
+    "pm_color",
+    "kp_emoji",
+    "kmh_to_ms",
+    "smoke_index",
+    "get_fact",
+    # полезные доп. утилиты (необязательно, но удобно)
+    "ms_to_kmh",
+    "aqi_color",
+    "safe",
+    "pressure_trend",
+    "_get",
+    "_get_retry",
+]
 
 # ──────────────────────── Компас, облака, ветер ──────────────────────────
 
@@ -333,28 +349,44 @@ def get_fact(date: pendulum.Date, region: str = "") -> str:
     Возвращает «факт дня» для date и region.
 
     Логика:
-      1) Если region содержит «калининград» → факт из FACTS_KLGD по дате (MM-DD),
-         иначе случайный из FACTS_KLGD_RANDOM.
-      2) Если region содержит «кипр»      → факт из FACTS_CY по дате (MM-DD),
-         иначе случайный из DEFAULT_FACTS_CY.
-      3) В остальных случаях (универсальный) —
-         факт из DEFAULT_FACTS_UNI по индексу (date.day % len(DEFAULT_FACTS_UNI)).
+      • Если region содержит «калининград»:
+          - сначала ищем по дате (MM-DD) в FACTS_KLGD (если он есть в globals),
+          - иначе случайный из FACTS_KLGD_RANDOM (если есть),
+          - иначе — универсальный дефолт.
+      • Если region содержит «кипр»:
+          - сначала ищем по дате (MM-DD) в FACTS_CY,
+          - иначе случайный из DEFAULT_FACTS_CY,
+          - иначе — универсальный дефолт.
+      • Во всех остальных случаях — цикличный универсальный факт.
     """
-    r = region.lower()
+    r = (region or "").lower().strip()
+    key = date.format("MM-DD")
 
     # 1) Калининград
     if "калининград" in r:
-        key = date.format("MM-DD")
-        return FACTS_KLGD.get(key, random.choice(FACTS_KLGD_RANDOM))
+        klgd_map = globals().get("FACTS_KLGD", {}) or {}
+        klgd_rand = globals().get("FACTS_KLGD_RANDOM", []) or []
+        if isinstance(klgd_map, dict) and key in klgd_map:
+            return klgd_map[key]
+        if isinstance(klgd_rand, list) and klgd_rand:
+            return random.choice(klgd_rand)
+        # падение в универсальный случай
+        facts = DEFAULT_FACTS_UNI if DEFAULT_FACTS_UNI else ["Сегодня хороший день для маленьких шагов."]
+
+        return facts[date.day % len(facts)]
 
     # 2) Кипр
     if "кипр" in r:
-        key = date.format("MM-DD")
-        return FACTS_CY.get(key, random.choice(DEFAULT_FACTS_CY))
+        if isinstance(FACTS_CY, dict) and key in FACTS_CY:
+            return FACTS_CY[key]
+        if isinstance(DEFAULT_FACTS_CY, list) and DEFAULT_FACTS_CY:
+            return random.choice(DEFAULT_FACTS_CY)
+        facts = DEFAULT_FACTS_UNI if DEFAULT_FACTS_UNI else ["Сегодня хороший день для маленьких шагов."]
+        return facts[date.day % len(facts)]
 
-    # 3) Универсальный
-    idx = date.day % len(DEFAULT_FACTS_UNI)
-    return DEFAULT_FACTS_UNI[idx]
+    # 3) Универсальный дефолт
+    facts = DEFAULT_FACTS_UNI if DEFAULT_FACTS_UNI else ["Сегодня хороший день для маленьких шагов."]
+    return facts[date.day % len(facts)]
 
 # ─────────────────────── Интеграции и иконки ────────────────────────────────
 
