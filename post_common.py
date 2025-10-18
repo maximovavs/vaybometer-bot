@@ -551,6 +551,7 @@ def _is_air_bad(air_now: Dict[str, Any]) -> tuple[bool, str]:
     if aqi_f <= 50:   return False, "🟢 воздух в норме"
     if aqi_f <= 100:  return True,  "🟡 воздух умеренный — избегайте интенсивных тренировок на улице"
     return True, "🟠 воздух неблагоприятный — тренировки лучше перенести в помещение"
+    
 
 def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]:
     air = get_air(lat, lon) or {}
@@ -580,9 +581,8 @@ def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]
     if isinstance(risk,str) and risk: parts.append(f"🌿 пыльца: {risk}")
     if not parts: return None
     return "🏭 " + " • ".join(parts)
-
-em_sm, lbl_sm = smoke_index(pm25, pm10)
-if isinstance(lbl_sm, str) and lbl_sm.lower() not in ("низкое", "низкий", "нет", "н/д"):
+    em_sm, lbl_sm = smoke_index(pm25, pm10)
+    if isinstance(lbl_sm, str) and lbl_sm.lower() not in ("низкое", "низкий", "нет", "н/д"):
     parts.append(f"😮‍💨 задымление: {lbl_sm}")
 
 # ───────────── городская строка ─────────────
