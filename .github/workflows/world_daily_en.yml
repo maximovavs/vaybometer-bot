@@ -19,6 +19,8 @@ jobs:
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -27,13 +29,11 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: |
-            requirements.txt
+          cache-dependency-path: requirements.txt
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          # Ставим всё из корневого requirements + jinja2 (на случай отсутствия в requirements.txt)
           pip install -r requirements.txt jinja2
 
       - name: Show versions
@@ -42,8 +42,7 @@ jobs:
           pip -V
           python - <<'PY'
           import sys, pkgutil
-          print("PYTHON:", sys.version)
-          for m in ("pendulum","jinja2","requests"):
+          for m in ("pendulum","jinja2","requests","pandas","astral"):
               print(m, "OK" if pkgutil.find_loader(m) else "MISSING")
           PY
 
@@ -56,7 +55,24 @@ jobs:
         run: |
           set -euo pipefail
           python world_en/world_collect.py
-          echo "---- ls world_en ----"; ls -la world_en || true
+
+          echo "---- ls (repo root) ----"; ls -la || true
+          echo "---- ls world_en ----";     ls -la world_en || true
+
+          # Файл мог лечь не в ту папку — аккуратно перекладываем в нужный путь.
+          if [ ! -f world_en/daily.json ]; then
+            if   [ -f daily.json ]; then
+              echo "Found ./daily.json -> moving to world_en/daily.json"
+              mv daily.json world_en/daily.json
+            elif [ -f world_en/daily_en.json ]; then
+              echo "Found world_en/daily_en.json -> moving to world_en/daily.json"
+              mv world_en/daily_en.json world_en/daily.json
+            elif [ -f world/daily.json ]; then
+              echo "Found world/daily.json -> moving to world_en/daily.json"
+              mv world/daily.json world_en/daily.json
+            fi
+          fi
+
           test -f world_en/daily.json || { echo "ERROR: world_en/daily.json missing"; exit 1; }
 
       - name: Render
