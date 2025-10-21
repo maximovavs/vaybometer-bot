@@ -1,18 +1,14 @@
-name: world-daily-en
-
-defaults:
-  run:
-    shell: bash
+name: world-astro-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC
+    - cron: "5 17 * * *"   # время на твой вкус (UTC)
   workflow_dispatch:
     inputs:
       send_to_test:
+        description: "Send to TEST channel?"
         type: boolean
-        description: "Send to TEST channel instead of main"
-        default: false
+        default: true
 
 jobs:
   run:
@@ -20,285 +16,55 @@ jobs:
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
-
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements.txt
 
-      - name: Install dependencies
+      - name: Install deps
+        run: pip install jinja2 pytz
+
+      # 1) Сбор данных -> world_en/astro.json
+      - name: Collect Astro
         run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt jinja2
+          python -u world_en/world_astro_collect.py
+          echo "---- ls world_en"; ls -l world_en
+          echo "---- head astro.json"; head -c 400 world_en/astro.json || true
 
-      - name: Show versions
+
+      # 2) Гарантируем наличие astro.json (иначе понятная ошибка)
+      - name: Verify astro.json exists
         run: |
-          set -euo pipefail
-          python -c "import pkgutil; mods=('pendulum','jinja2','requests','pandas','astral'); \
-          print('\n'.join(f'{m}: ' + ('OK' if pkgutil.find_loader(m) else 'MISSING') for m in mods))"
+          test -f world_en/astro.json || { echo "ERROR: world_en/astro.json was not created"; exit 1; }
+          echo "---- head astro.json"; head -c 600 world_en/astro.json || true
 
-      - name: Collect daily (capture log, do not fail pipeline)
-        id: collect
+      # 3) Рендерим сообщение
+      - name: Render
+        run: python world_en/render.py world_en/templates/astro_en.j2 world_en/astro.json > world_en/astro_msg.txt
+
+      - name: Send to TEST (if checked)
+        if: ${{ inputs.send_to_test == true }}
         env:
-          YT_API_KEY:            ${{ secrets.YT_API_KEY }}
-          YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
-          YOUTUBE_PLAYLIST_IDS:  ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
-          FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
-          PYTHONUNBUFFERED: "1"
+          # сначала пробуем тестовый токен, иначе — продовый
+          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST || secrets.TELEGRAM_BOT_TOKEN_EN }}
+          # сначала пробуем CHANNEL_ID_TEST, иначе TELEGRAM_CHAT_ID_TEST (если когда-нибудь добавишь)
+          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST || secrets.TELEGRAM_CHAT_ID_TEST }}
         run: |
-          set -euo pipefail
-          ( python -u world_en/world_collect.py ) > world_en/collect.log 2>&1 || true
-          echo "---- world_en dir ----"; ls -la world_en || true
-          echo "---- collector log head ----"; head -n 60 world_en/collect.log || true
+          test -n "${TG_TOKEN}" || { echo "ERROR: TG_TOKEN is empty (set TELEGRAM_TOKEN_TEST)"; exit 1; }
+          test -n "${TG_CHAT}"  || { echo "ERROR: TG_CHAT is empty (set CHANNEL_ID_TEST or TELEGRAM_CHAT_ID_TEST)"; exit 1; }
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
+            --data-urlencode text@"world_en/astro_msg.txt"
 
-      - name: Validate daily.json (existence only)
-        id: validate
-        run: |
-          set -euo pipefail
-          if [ -s world_en/daily.json ]; then
-            echo "ok=true"  >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Render (normal or SMART FALLBACK)
-        run: |
-          set -euo pipefail
-          if [ "${{ steps.validate.outputs.ok }}" = "true" ]; then
-            python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
-          else
-            # --------- УМНЫЙ ФОЛБЭК без heredoc ---------
-            F="world_en/_fallback.py"
-            : > "$F"
-            echo '#!/usr/bin/env python3' >> "$F"
-            echo '# -*- coding: utf-8 -*-' >> "$F"
-            echo 'import json,requests,pendulum' >> "$F"
-            echo 'from datetime import datetime, timezone' >> "$F"
-            echo '' >> "$F"
-            echo 'def _om_temp(lat, lon):' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        j=requests.get("https://api.open-meteo.com/v1/forecast",params={"latitude":lat,"longitude":lon,"current":"temperature_2m","timezone":"UTC"},timeout=12).json()' >> "$F"
-            echo '        cur=(j.get("current") or {})' >> "$F"
-            echo '        t=cur.get("temperature_2m")' >> "$F"
-            echo '        return float(t) if isinstance(t,(int,float)) else None' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None' >> "$F"
-            echo '' >> "$F"
-            echo 'def earth_extremes():' >> "$F"
-            echo '    hot_cands=[("Jazan, SA",16.889,42.570),("Dallol, ET",14.241,40.300),("Basra, IQ",30.50,47.82),("Death Valley, US",36.462,-116.866)]' >> "$F"
-            echo '    cold_cands=[("Dome A, AQ",-80.37,77.53),("Vostok, AQ",-78.47,106.87),("South Pole, AQ",-90.0,0.0)]' >> "$F"
-            echo '    hot_best=None; cold_best=None' >> "$F"
-            echo '    for name,la,lo in hot_cands:' >> "$F"
-            echo '        t=_om_temp(la,lo)' >> "$F"
-            echo '        if isinstance(t,(int,float)):' >> "$F"
-            echo '            if (hot_best is None) or (t>hot_best[1]): hot_best=(name,t)' >> "$F"
-            echo '    for name,la,lo in cold_cands:' >> "$F"
-            echo '        t=_om_temp(la,lo)' >> "$F"
-            echo '        if isinstance(t,(int,float)):' >> "$F"
-            echo '            if (cold_best is None) or (t<cold_best[1]): cold_best=(name,t)' >> "$F"
-            echo '    hot_txt = f"{hot_best[0]}  {hot_best[1]:.0f}°C" if hot_best else None' >> "$F"
-            echo '    cold_txt= f"{cold_best[0]} {cold_best[1]:.0f}°C" if cold_best else None' >> "$F"
-            echo '    return hot_txt,cold_txt' >> "$F"
-            echo '' >> "$F"
-            echo 'def kp_world_like():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        data=requests.get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",timeout=20).json()' >> "$F"
-            echo '        rows=[]' >> "$F"
-            echo '        for r in data[1:]:' >> "$F"
-            echo '            try:' >> "$F"
-            echo '                ts=pendulum.parse(r[0]).in_tz("UTC"); val=float(r[1]); rows.append((ts,val))' >> "$F"
-            echo '            except Exception: pass' >> "$F"
-            echo '        if not rows: raise RuntimeError("empty")' >> "$F"
-            echo '        now=pendulum.now("UTC")' >> "$F"
-            echo '        end=now.replace(minute=0,second=0,microsecond=0); end=end.subtract(hours=end.hour%3); start=end.subtract(hours=3)' >> "$F"
-            echo '        last=None' >> "$F"
-            echo '        for ts,val in reversed(rows):' >> "$F"
-            echo '            if start<=ts<end: last=(ts,val); break' >> "$F"
-            echo '        if not last: last=rows[-1]' >> "$F"
-            echo '        v=round(float(last[1]),1); age=max(0,int((now-end).total_seconds()//60))' >> "$F"
-            echo '        note="quiet" if v<3 else ("active" if v<5 else "storm")' >> "$F"
-            echo '        return v,note,age' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None,None,None' >> "$F"
-            echo '' >> "$F"
-            echo 'def solar_wind():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        from air import get_solar_wind' >> "$F"
-            echo '        d=get_solar_wind() or {}; v=d.get("speed_kms"); n=d.get("density"); st=d.get("status")' >> "$F"
-            echo '        parts=[]' >> "$F"
-            echo '        if isinstance(v,(int,float)): parts.append(f"{v:.0f} km/s")' >> "$F"
-            echo '        if isinstance(n,(int,float)): parts.append(f"{n:.1f} cm⁻³")' >> "$F"
-            echo '        return (", ".join(parts) + (f" — {st}" if parts and st else "")) or None' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None' >> "$F"
-            echo '' >> "$F"
-            echo 'def schumann_live():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        import schumann' >> "$F"
-            echo '        if hasattr(schumann,"get_schumann"):' >> "$F"
-            echo '            p=schumann.get_schumann() or {}' >> "$F"
-            echo '            f=p.get("freq"); a=p.get("amp"); s=p.get("status")' >> "$F"
-            echo '            bits=[]' >> "$F"
-            echo '            if isinstance(f,(int,float)): bits.append(f"{f:.2f} Hz")' >> "$F"
-            echo '            if isinstance(a,(int,float)): bits.append(f"{a:.2f} pT")' >> "$F"
-            echo '            if s: bits.append(str(s))' >> "$F"
-            echo '            return " / ".join(bits) if bits else None' >> "$F"
-            echo '    except Exception: pass' >> "$F"
-            echo '    for path in ("schumann_hourly.json","world_en/schumann_hourly.json","data/schumann_hourly.json"):' >> "$F"
-            echo '        try:' >> "$F"
-            echo '            import json, pathlib' >> "$F"
-            echo '            p=pathlib.Path(path)' >> "$F"
-            echo '            if p.exists():' >> "$F"
-            echo '                arr=json.loads(p.read_text("utf-8"))' >> "$F"
-            echo '                if isinstance(arr,list) and arr:' >> "$F"
-            echo '                    last=arr[-1]; f=last.get("freq"); a=last.get("amp")' >> "$F"
-            echo '                    bits=[]' >> "$F"
-            echo '                    if isinstance(f,(int,float)): bits.append(f"{f:.2f} Hz")' >> "$F"
-            echo '                    if isinstance(a,(int,float)): bits.append(f"{a:.2f} pT")' >> "$F"
-            echo '                    if bits: return " / ".join(bits)' >> "$F"
-            echo '        except Exception: pass' >> "$F"
-            echo '    return None' >> "$F"
-            echo '' >> "$F"
-            echo 'def quake_max():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        j=requests.get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",timeout=20).json()' >> "$F"
-            echo '        feats=j.get("features",[])' >> "$F"
-            echo '        if not feats: return None' >> "$F"
-            echo '        best=max(feats,key=lambda f:(f.get("properties",{}).get("mag") or 0))' >> "$F"
-            echo '        prop=best.get("properties",{})' >> "$F"
-            echo '        mag=prop.get("mag"); place=(prop.get("place") or "").strip()' >> "$F"
-            echo '        tms=prop.get("time")' >> "$F"
-            echo '        when=pendulum.from_timestamp(tms/1000,tz="UTC").format("HH:mm") if isinstance(tms,(int,float)) else ""' >> "$F"
-            echo '        depth=best.get("geometry",{}).get("coordinates",[None,None,None])[2]' >> "$F"
-            echo '        parts=[]' >> "$F"
-            echo '        if isinstance(mag,(int,float)): parts.append(f"M{mag:.1f}")' >> "$F"
-            echo '        if isinstance(depth,(int,float)): parts.append(f"depth {depth:.0f} km")' >> "$F"
-            echo '        if when: parts.append(when + " UTC")' >> "$F"
-            echo '        if place: parts.append(place)' >> "$F"
-            echo '        return ", ".join(parts)' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None' >> "$F"
-            echo '' >> "$F"
-            echo 'def sunrise():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        from astral.sun import sun' >> "$F"
-            echo '        from astral import LocationInfo' >> "$F"
-            echo '        loc=LocationInfo("Reykjavik","IS","Atlantic/Reykjavik",64.1466,-21.9426)' >> "$F"
-            echo '        s=sun(loc.observer,tzinfo="UTC")' >> "$F"
-            echo '        return "Sunrise — Reykjavik, IS, " + s["sunrise"].strftime("%H:%M") + " UTC"' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None' >> "$F"
-            echo '' >> "$F"
-            echo 'now=pendulum.now("UTC").format("ddd, YYYY-MM-DD (HH:mm [UTC])")' >> "$F"
-            echo 'lines=[f"🌍 World Vibe Snapshot • {now}","", "Cosmic Weather"]' >> "$F"
-            echo 'k,note,age=kp_world_like()' >> "$F"
-            echo 'if isinstance(k,(int,float)):' >> "$F"
-            echo '    age_txt=f", {age//60}h ago" if isinstance(age,int) and age>=180 else (f", {age} min ago" if isinstance(age,int) else "")' >> "$F"
-            echo '    lines.append(f"- Geomagnetic (Kp):  {k:.1f} — {note}{age_txt}")' >> "$F"
-            echo 'else:' >> "$F"
-            echo '    lines.append("- Geomagnetic (Kp):  n/a")' >> "$F"
-            echo 'sch=schumann_live(); lines.append(f"- Schumann: {sch}" if sch else "- Schumann: baseline (7.83 Hz)")' >> "$F"
-            echo 'sw=solar_wind();   lines.append(f"- Solar wind: {sw}" if sw else "- Solar wind: —")' >> "$F"
-            echo 'lines.append("Earth Live")' >> "$F"
-            echo 'hot,cold=earth_extremes()' >> "$F"
-            echo 'hot_s = hot if hot else "—"' >> "$F"
-            echo 'cold_s = cold if cold else "—"' >> "$F"
-            echo 'lines.append(f"• 🔥 Hottest: {hot_s}   🧊 Coldest: {cold_s}")' >> "$F"
-            echo 'q=quake_max(); lines.append(f"• 🌎 Strongest quake 24h: {q}" if q else "• 🌎 Strongest quake 24h: —")' >> "$F"
-            echo 'sun=sunrise(); lines.append(f"• 🟧 Sunlight tidbit: {sun}" if sun else "• 🟧 Sunlight tidbit: —")' >> "$F"
-            echo 'lines+=["","Vibe Tip  🔆  (Kp • sec)","","PS: Weather-sensitive? Save & share 🌿","#DailyCalm #CosmicWeather"]' >> "$F"
-            echo 'print("\n".join(lines))' >> "$F"
-            python "$F" > world_en/message.txt
-          fi
-          test -s world_en/message.txt
-
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: world-daily-en-artifacts
-          path: |
-            world_en/collect.log
-            world_en/daily.json
-            world_en/message.txt
-          if-no-files-found: ignore
-          retention-days: 7
-
-      # ===== MAIN channel =====
-      - name: Send text (MAIN)
+      # 4б) Отправляем в ПРОД (если галочка выключена)
+      - name: Send to PROD
         if: ${{ inputs.send_to_test != true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
-          set -euo pipefail
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
-            --data-urlencode text@"world_en/message.txt"
-
-      - name: Send Nature card (MAIN, only if real daily.json)
-        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test != true
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
-        run: |
-          set -euo pipefail
-          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
-          THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
-          if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-              -F chat_id="${TG_CHAT}" -F photo="${THUMB}" \
-              -F parse_mode="HTML" -F caption="$CAPTION" \
-              -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-          elif [ -n "$URL" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
-          else
-            echo "No nature URL — skipping card."
-          fi
-
-      # ===== TEST channel =====
-      - name: Send text (TEST)
-        if: ${{ inputs.send_to_test == true }}
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
-          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
-        run: |
-          set -euo pipefail
-          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
-            --data-urlencode text@"world_en/message.txt"
-
-      - name: Send Nature card (TEST, only if real daily.json)
-        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test == true
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
-          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
-        run: |
-          set -euo pipefail
-          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
-          THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
-          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
-          if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-              -F chat_id="${TG_CHAT}" -F photo="${THUMB}" \
-              -F parse_mode="HTML" -F caption="$CAPTION" \
-              -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-          elif [ -n "$URL" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
-          else
-            echo "No nature URL — skipping card."
-          fi
+            --data-urlencode text@"world_en/astro_msg.txt"
