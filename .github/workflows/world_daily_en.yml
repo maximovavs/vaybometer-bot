@@ -1,9 +1,5 @@
 name: world-daily-en
 
-defaults:
-  run:
-    shell: bash
-
 on:
   schedule:
     - cron: "15 7 * * *"   # 07:15 UTC
@@ -39,8 +35,12 @@ jobs:
       - name: Show versions
         run: |
           set -euo pipefail
-          python -c "import pkgutil; mods=('pendulum','jinja2','requests','pandas','astral'); \
-          print('\n'.join(f'{m}: ' + ('OK' if pkgutil.find_loader(m) else 'MISSING') for m in mods))"
+          python - <<'PY'
+          import pkgutil
+          mods = ("pendulum","jinja2","requests","pandas","astral")
+          for m in mods:
+              print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
+          PY
 
       - name: Collect daily (capture log, do not fail pipeline)
         id: collect
@@ -67,155 +67,184 @@ jobs:
           fi
 
       - name: Render (normal or SMART FALLBACK)
+        env:
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
         run: |
           set -euo pipefail
           if [ "${{ steps.validate.outputs.ok }}" = "true" ]; then
             python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           else
-            # --------- УМНЫЙ ФОЛБЭК без heredoc ---------
-            F="world_en/_fallback.py"
-            : > "$F"
-            echo '#!/usr/bin/env python3' >> "$F"
-            echo '# -*- coding: utf-8 -*-' >> "$F"
-            echo 'import json,requests,pendulum' >> "$F"
-            echo 'from datetime import datetime, timezone' >> "$F"
-            echo '' >> "$F"
-            echo 'def _om_temp(lat, lon):' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        j=requests.get("https://api.open-meteo.com/v1/forecast",params={"latitude":lat,"longitude":lon,"current":"temperature_2m","timezone":"UTC"},timeout=12).json()' >> "$F"
-            echo '        cur=(j.get("current") or {})' >> "$F"
-            echo '        t=cur.get("temperature_2m")' >> "$F"
-            echo '        return float(t) if isinstance(t,(int,float)) else None' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None' >> "$F"
-            echo '' >> "$F"
-            echo 'def earth_extremes():' >> "$F"
-            echo '    hot_cands=[("Jazan, SA",16.889,42.570),("Dallol, ET",14.241,40.300),("Basra, IQ",30.50,47.82),("Death Valley, US",36.462,-116.866)]' >> "$F"
-            echo '    cold_cands=[("Dome A, AQ",-80.37,77.53),("Vostok, AQ",-78.47,106.87),("South Pole, AQ",-90.0,0.0)]' >> "$F"
-            echo '    hot_best=None; cold_best=None' >> "$F"
-            echo '    for name,la,lo in hot_cands:' >> "$F"
-            echo '        t=_om_temp(la,lo)' >> "$F"
-            echo '        if isinstance(t,(int,float)):' >> "$F"
-            echo '            if (hot_best is None) or (t>hot_best[1]): hot_best=(name,t)' >> "$F"
-            echo '    for name,la,lo in cold_cands:' >> "$F"
-            echo '        t=_om_temp(la,lo)' >> "$F"
-            echo '        if isinstance(t,(int,float)):' >> "$F"
-            echo '            if (cold_best is None) or (t<cold_best[1]): cold_best=(name,t)' >> "$F"
-            echo '    hot_txt = f"{hot_best[0]}  {hot_best[1]:.0f}°C" if hot_best else None' >> "$F"
-            echo '    cold_txt= f"{cold_best[0]} {cold_best[1]:.0f}°C" if cold_best else None' >> "$F"
-            echo '    return hot_txt,cold_txt' >> "$F"
-            echo '' >> "$F"
-            echo 'def kp_world_like():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        data=requests.get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",timeout=20).json()' >> "$F"
-            echo '        rows=[]' >> "$F"
-            echo '        for r in data[1:]:' >> "$F"
-            echo '            try:' >> "$F"
-            echo '                ts=pendulum.parse(r[0]).in_tz("UTC"); val=float(r[1]); rows.append((ts,val))' >> "$F"
-            echo '            except Exception: pass' >> "$F"
-            echo '        if not rows: raise RuntimeError("empty")' >> "$F"
-            echo '        now=pendulum.now("UTC")' >> "$F"
-            echo '        end=now.replace(minute=0,second=0,microsecond=0); end=end.subtract(hours=end.hour%3); start=end.subtract(hours=3)' >> "$F"
-            echo '        last=None' >> "$F"
-            echo '        for ts,val in reversed(rows):' >> "$F"
-            echo '            if start<=ts<end: last=(ts,val); break' >> "$F"
-            echo '        if not last: last=rows[-1]' >> "$F"
-            echo '        v=round(float(last[1]),1); age=max(0,int((now-end).total_seconds()//60))' >> "$F"
-            echo '        note="quiet" if v<3 else ("active" if v<5 else "storm")' >> "$F"
-            echo '        return v,note,age' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None,None,None' >> "$F"
-            echo '' >> "$F"
-            echo 'def solar_wind():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        from air import get_solar_wind' >> "$F"
-            echo '        d=get_solar_wind() or {}; v=d.get("speed_kms"); n=d.get("density"); st=d.get("status")' >> "$F"
-            echo '        parts=[]' >> "$F"
-            echo '        if isinstance(v,(int,float)): parts.append(f"{v:.0f} km/s")' >> "$F"
-            echo '        if isinstance(n,(int,float)): parts.append(f"{n:.1f} cm⁻³")' >> "$F"
-            echo '        return (", ".join(parts) + (f" — {st}" if parts and st else "")) or None' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None' >> "$F"
-            echo '' >> "$F"
-            echo 'def schumann_live():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        import schumann' >> "$F"
-            echo '        if hasattr(schumann,"get_schumann"):' >> "$F"
-            echo '            p=schumann.get_schumann() or {}' >> "$F"
-            echo '            f=p.get("freq"); a=p.get("amp"); s=p.get("status")' >> "$F"
-            echo '            bits=[]' >> "$F"
-            echo '            if isinstance(f,(int,float)): bits.append(f"{f:.2f} Hz")' >> "$F"
-            echo '            if isinstance(a,(int,float)): bits.append(f"{a:.2f} pT")' >> "$F"
-            echo '            if s: bits.append(str(s))' >> "$F"
-            echo '            return " / ".join(bits) if bits else None' >> "$F"
-            echo '    except Exception: pass' >> "$F"
-            echo '    for path in ("schumann_hourly.json","world_en/schumann_hourly.json","data/schumann_hourly.json"):' >> "$F"
-            echo '        try:' >> "$F"
-            echo '            import json, pathlib' >> "$F"
-            echo '            p=pathlib.Path(path)' >> "$F"
-            echo '            if p.exists():' >> "$F"
-            echo '                arr=json.loads(p.read_text("utf-8"))' >> "$F"
-            echo '                if isinstance(arr,list) and arr:' >> "$F"
-            echo '                    last=arr[-1]; f=last.get("freq"); a=last.get("amp")' >> "$F"
-            echo '                    bits=[]' >> "$F"
-            echo '                    if isinstance(f,(int,float)): bits.append(f"{f:.2f} Hz")' >> "$F"
-            echo '                    if isinstance(a,(int,float)): bits.append(f"{a:.2f} pT")' >> "$F"
-            echo '                    if bits: return " / ".join(bits)' >> "$F"
-            echo '        except Exception: pass' >> "$F"
-            echo '    return None' >> "$F"
-            echo '' >> "$F"
-            echo 'def quake_max():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        j=requests.get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",timeout=20).json()' >> "$F"
-            echo '        feats=j.get("features",[])' >> "$F"
-            echo '        if not feats: return None' >> "$F"
-            echo '        best=max(feats,key=lambda f:(f.get("properties",{}).get("mag") or 0))' >> "$F"
-            echo '        prop=best.get("properties",{})' >> "$F"
-            echo '        mag=prop.get("mag"); place=(prop.get("place") or "").strip()' >> "$F"
-            echo '        tms=prop.get("time")' >> "$F"
-            echo '        when=pendulum.from_timestamp(tms/1000,tz="UTC").format("HH:mm") if isinstance(tms,(int,float)) else ""' >> "$F"
-            echo '        depth=best.get("geometry",{}).get("coordinates",[None,None,None])[2]' >> "$F"
-            echo '        parts=[]' >> "$F"
-            echo '        if isinstance(mag,(int,float)): parts.append(f"M{mag:.1f}")' >> "$F"
-            echo '        if isinstance(depth,(int,float)): parts.append(f"depth {depth:.0f} km")' >> "$F"
-            echo '        if when: parts.append(when + " UTC")' >> "$F"
-            echo '        if place: parts.append(place)' >> "$F"
-            echo '        return ", ".join(parts)' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None' >> "$F"
-            echo '' >> "$F"
-            echo 'def sunrise():' >> "$F"
-            echo '    try:' >> "$F"
-            echo '        from astral.sun import sun' >> "$F"
-            echo '        from astral import LocationInfo' >> "$F"
-            echo '        loc=LocationInfo("Reykjavik","IS","Atlantic/Reykjavik",64.1466,-21.9426)' >> "$F"
-            echo '        s=sun(loc.observer,tzinfo="UTC")' >> "$F"
-            echo '        return "Sunrise — Reykjavik, IS, " + s["sunrise"].strftime("%H:%M") + " UTC"' >> "$F"
-            echo '    except Exception:' >> "$F"
-            echo '        return None' >> "$F"
-            echo '' >> "$F"
-            echo 'now=pendulum.now("UTC").format("ddd, YYYY-MM-DD (HH:mm [UTC])")' >> "$F"
-            echo 'lines=[f"🌍 World Vibe Snapshot • {now}","", "Cosmic Weather"]' >> "$F"
-            echo 'k,note,age=kp_world_like()' >> "$F"
-            echo 'if isinstance(k,(int,float)):' >> "$F"
-            echo '    age_txt=f", {age//60}h ago" if isinstance(age,int) and age>=180 else (f", {age} min ago" if isinstance(age,int) else "")' >> "$F"
-            echo '    lines.append(f"- Geomagnetic (Kp):  {k:.1f} — {note}{age_txt}")' >> "$F"
-            echo 'else:' >> "$F"
-            echo '    lines.append("- Geomagnetic (Kp):  n/a")' >> "$F"
-            echo 'sch=schumann_live(); lines.append(f"- Schumann: {sch}" if sch else "- Schumann: baseline (7.83 Hz)")' >> "$F"
-            echo 'sw=solar_wind();   lines.append(f"- Solar wind: {sw}" if sw else "- Solar wind: —")' >> "$F"
-            echo 'lines.append("Earth Live")' >> "$F"
-            echo 'hot,cold=earth_extremes()' >> "$F"
-            echo 'hot_s = hot if hot else "—"' >> "$F"
-            echo 'cold_s = cold if cold else "—"' >> "$F"
-            echo 'lines.append(f"• 🔥 Hottest: {hot_s}   🧊 Coldest: {cold_s}")' >> "$F"
-            echo 'q=quake_max(); lines.append(f"• 🌎 Strongest quake 24h: {q}" if q else "• 🌎 Strongest quake 24h: —")' >> "$F"
-            echo 'sun=sunrise(); lines.append(f"• 🟧 Sunlight tidbit: {sun}" if sun else "• 🟧 Sunlight tidbit: —")' >> "$F"
-            echo 'lines+=["","Vibe Tip  🔆  (Kp • sec)","","PS: Weather-sensitive? Save & share 🌿","#DailyCalm #CosmicWeather"]' >> "$F"
-            echo 'print("\n".join(lines))' >> "$F"
-            python "$F" > world_en/message.txt
+            # ---------- Fallback: генерим message.txt и минимальный daily.json ----------
+            python - <<'PY'
+            import os, re, json, pendulum, requests
+            from pathlib import Path
+
+            def _om_temp(lat, lon):
+                try:
+                    j=requests.get(
+                        "https://api.open-meteo.com/v1/forecast",
+                        params={"latitude":lat,"longitude":lon,"current":"temperature_2m","timezone":"UTC"},
+                        timeout=15).json()
+                    cur=j.get("current") or {}
+                    t=cur.get("temperature_2m")
+                    return float(t) if isinstance(t,(int,float)) else None
+                except Exception:
+                    return None
+
+            def earth_extremes():
+                hot_cands=[("Jazan, SA",16.889,42.570),("Dallol, ET",14.241,40.300),("Basra, IQ",30.50,47.82),("Death Valley, US",36.462,-116.866)]
+                cold_cands=[("Dome A, AQ",-80.37,77.53),("Vostok, AQ",-78.47,106.87),("South Pole, AQ",-90.0,0.0)]
+                hot=cold=None
+                for name,la,lo in hot_cands:
+                    t=_om_temp(la,lo)
+                    if isinstance(t,(int,float)) and (hot is None or t>hot[1]): hot=(name,t)
+                for name,la,lo in cold_cands:
+                    t=_om_temp(la,lo)
+                    if isinstance(t,(int,float)) and (cold is None or t<cold[1]): cold=(name,t)
+                hot_txt = ("%s  %.0f°C" % hot) if hot else None
+                cold_txt= ("%s %.0f°C" % cold) if cold else None
+                return hot_txt,cold_txt
+
+            def kp_world_like():
+                try:
+                    data=requests.get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",timeout=20).json()
+                    rows=[]
+                    for r in data[1:]:
+                        try:
+                            ts=pendulum.parse(r[0]).in_tz("UTC"); val=float(r[1]); rows.append((ts,val))
+                        except Exception:
+                            pass
+                    if not rows: raise RuntimeError("empty")
+                    now=pendulum.now("UTC")
+                    end=now.replace(minute=0,second=0,microsecond=0); end=end.subtract(hours=end.hour%3)
+                    start=end.subtract(hours=3)
+                    last=None
+                    for ts,val in reversed(rows):
+                        if start<=ts<end:
+                            last=(ts,val); break
+                    if not last: last=rows[-1]
+                    v=round(float(last[1]),1); age=max(0,int((now-end).total_seconds()//60))
+                    note=("quiet" if v<3 else ("active" if v<5 else "storm"))
+                    return v,note,age
+                except Exception:
+                    return None,None,None
+
+            def solar_wind():
+                try:
+                    from air import get_solar_wind
+                    d=get_solar_wind() or {}; v=d.get("speed_kms"); n=d.get("density"); st=d.get("status")
+                    parts=[]
+                    if isinstance(v,(int,float)): parts.append("%d km/s" % int(round(v)))
+                    if isinstance(n,(int,float)): parts.append("%.1f cm^-3" % float(n))
+                    s=" , ".join(parts)
+                    return (s + (" — "+st if s and st else "")) if s or st else None
+                except Exception:
+                    return None
+
+            def schumann_live():
+                try:
+                    import schumann
+                    if hasattr(schumann,"get_schumann"):
+                        p=schumann.get_schumann() or {}
+                        f=p.get("freq"); a=p.get("amp"); s=p.get("status")
+                        bits=[]
+                        if isinstance(f,(int,float)): bits.append("%.2f Hz" % f)
+                        if isinstance(a,(int,float)): bits.append("%.2f pT" % a)
+                        if s: bits.append(str(s))
+                        return " / ".join(bits) if bits else None
+                except Exception:
+                    pass
+                for path in ("schumann_hourly.json","world_en/schumann_hourly.json","data/schumann_hourly.json"):
+                    try:
+                        p=Path(path)
+                        if p.exists():
+                            arr=json.loads(p.read_text("utf-8"))
+                            if isinstance(arr,list) and arr:
+                                last=arr[-1]; f=last.get("freq"); a=last.get("amp")
+                                bits=[]
+                                if isinstance(f,(int,float)): bits.append("%.2f Hz" % f)
+                                if isinstance(a,(int,float)): bits.append("%.2f pT" % a)
+                                if bits: return " / ".join(bits)
+                    except Exception:
+                        pass
+                return None
+
+            def quake_max():
+                try:
+                    j=requests.get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",timeout=20).json()
+                    feats=j.get("features",[])
+                    if not feats: return None
+                    best=max(feats,key=lambda f:(f.get("properties",{}).get("mag") or 0))
+                    prop=best.get("properties",{})
+                    mag=prop.get("mag"); place=(prop.get("place") or "").strip()
+                    tms=prop.get("time")
+                    when=pendulum.from_timestamp(tms/1000,tz="UTC").format("HH:mm") if isinstance(tms,(int,float)) else ""
+                    depth=None
+                    try: depth=best.get("geometry",{}).get("coordinates",[None,None,None])[2]
+                    except Exception: pass
+                    parts=[]
+                    if isinstance(mag,(int,float)): parts.append("M%.1f" % mag)
+                    if isinstance(depth,(int,float)): parts.append("depth %d km" % round(depth))
+                    if when: parts.append(when+" UTC")
+                    if place: parts.append(place)
+                    return ", ".join(parts)
+                except Exception:
+                    return None
+
+            def sunrise():
+                try:
+                    from astral.sun import sun
+                    from astral import LocationInfo
+                    loc=LocationInfo("Reykjavik","IS","Atlantic/Reykjavik",64.1466,-21.9426)
+                    s=sun(loc.observer,tzinfo="UTC")
+                    return "Sunrise — Reykjavik, IS, %s UTC" % s["sunrise"].strftime("%H:%M")
+                except Exception:
+                    return None
+
+            now=pendulum.now("UTC").format("ddd, YYYY-MM-DD (HH:mm [UTC])")
+            lines=["🌍 World Vibe Snapshot • %s" % now, "", "Cosmic Weather"]
+            k,note,age=kp_world_like()
+            if isinstance(k,(int,float)):
+                if isinstance(age,int): age_txt=", %dh ago" % (age//60) if age>=180 else (", %d min ago" % age if age>=0 else "")
+                else: age_txt=""
+                lines.append("- Geomagnetic (Kp):  %.1f — %s%s" % (k,note,age_txt))
+            else:
+                lines.append("- Geomagnetic (Kp):  n/a")
+            sch=schumann_live(); lines.append("- Schumann: %s" % sch if sch else "- Schumann: baseline (7.83 Hz)")
+            sw=solar_wind();     lines.append("- Solar wind: %s" % (sw or "—"))
+            lines.append("Earth Live")
+            hot,cold=earth_extremes()
+            if hot or cold:
+                lines.append("• Hottest: %s   Coldest: %s" % (hot or "n/a", cold or "n/a"))
+            else:
+                lines.append("• Hottest: n/a   Coldest: n/a")
+            q=quake_max(); lines.append("• Strongest quake 24h: %s" % (q or "n/a"))
+            sun_txt=sunrise(); lines.append("• Sunlight tidbit: %s" % (sun_txt or "n/a"))
+            lines += ["", "Vibe Tip (Kp • sec)", "", "PS: Weather-sensitive? Save & share 🌿", "#DailyCalm #CosmicWeather"]
+            Path("world_en/message.txt").write_text("\n".join(lines), "utf-8")
+            PY
+
+            # Минимальный daily.json — чтобы карточка YouTube и кнопка были всегда
+            python - <<'PY'
+            import os, re, json
+            from pathlib import Path
+            raw = os.getenv("FALLBACK_NATURE_LIST","").strip()
+            urls = [u.strip() for u in re.split(r'[,\s]+', raw) if u.strip()] if raw else []
+            url  = urls[0] if urls else "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            m = re.search(r'youtu\.be/([A-Za-z0-9_-]{6,})', url) or re.search(r'v=([A-Za-z0-9_-]{6,})', url)
+            thumb = f"https://i.ytimg.com/vi/{m.group(1)}/hqdefault.jpg" if m else ""
+            out = {
+              "NATURE_TITLE":   "Nature Break",
+              "NATURE_SNIPPET": "Short calm video",
+              "NATURE_URL":     url,
+              "NATURE_THUMB":   thumb
+            }
+            Path("world_en/daily.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), "utf-8")
+            print("Wrote fallback world_en/daily.json with URL:", url)
+            PY
+
+            test -s world_en/message.txt
           fi
-          test -s world_en/message.txt
 
       - name: Upload artifacts
         if: always()
@@ -229,7 +258,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # ===== MAIN channel =====
+      # ========== MAIN channel ==========
       - name: Send text (MAIN)
         if: ${{ inputs.send_to_test != true }}
         env:
@@ -248,10 +277,16 @@ jobs:
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
+          mapfile -t L < <(python - <<'PY'
+          import json
+          d=json.load(open("world_en/daily.json",encoding="utf-8"))
+          print(d.get("NATURE_THUMB",""))
+          print(d.get("NATURE_URL",""))
+          title=d.get("NATURE_TITLE","Nature Break")
+          snip =d.get("NATURE_SNIPPET","60 seconds of calm")
+          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+          PY
+          )
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
@@ -265,7 +300,7 @@ jobs:
             echo "No nature URL — skipping card."
           fi
 
-      # ===== TEST channel =====
+      # ========== TEST channel ==========
       - name: Send text (TEST)
         if: ${{ inputs.send_to_test == true }}
         env:
@@ -285,10 +320,16 @@ jobs:
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
+          mapfile -t L < <(python - <<'PY'
+          import json
+          d=json.load(open("world_en/daily.json",encoding="utf-8"))
+          print(d.get("NATURE_THUMB",""))
+          print(d.get("NATURE_URL",""))
+          title=d.get("NATURE_TITLE","Nature Break")
+          snip =d.get("NATURE_SNIPPET","60 seconds of calm")
+          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+          PY
+          )
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
