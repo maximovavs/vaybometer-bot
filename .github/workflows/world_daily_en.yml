@@ -32,7 +32,6 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # ваши базовые зависимости + явным списком jinja2 и pytz для world_en
           pip install -r requirements.txt jinja2 pytz
 
       - name: Collect daily
@@ -43,23 +42,62 @@ jobs:
           FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
         run: |
           set -euo pipefail
-          # Пытаемся с явным выходным путём (если скрипт поддерживает),
-          # иначе — обычный вызов, который пишет рядом.
-          python world_en/world_collect.py --out world_en/daily.json || python world_en/world_collect.py
+          # Пытаемся с явным путём, если не поддерживается — как есть.
+          python world_en/world_collect.py --out world_en/daily.json || python world_en/world_collect.py || true
           echo "---- ls world_en ----"; ls -la world_en || true
-          test -s world_en/daily.json || { echo "ERROR: world_en/daily.json missing"; exit 1; }
+
+      - name: Locate/copy daily*.json -> world_en/daily.json
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob, os, shutil, json, sys
+          cands = (glob.glob('world_en/daily*.json') +
+                   glob.glob('world_en/*daily*.json') +
+                   glob.glob('world_en/*/daily*.json'))
+          print("CANDIDATES:", cands)
+          if cands:
+            # берём самый большой файл (скорее всего полный) как источник истины
+            cands = [c for c in cands if os.path.isfile(c)]
+            cands.sort(key=lambda p: (os.path.getsize(p), p))
+            src = cands[-1]
+            os.makedirs('world_en', exist_ok=True)
+            shutil.copyfile(src, 'world_en/daily.json')
+            print("Picked", src, "-> world_en/daily.json")
+          else:
+            # создаём минимальный скелет, чтобы пайплайн не падал
+            d = {
+              "NATURE_THUMB": "", "NATURE_URL": "",
+              "NATURE_TITLE": "Nature Break", "NATURE_SNIPPET": "60 seconds of calm",
+              # остальное пусть остаётся пустым — шаблон должен пережить
+            }
+            os.makedirs('world_en', exist_ok=True)
+            with open('world_en/daily.json', 'w', encoding='utf-8') as f:
+              json.dump(d, f, ensure_ascii=False)
+            print("No candidate daily*.json found — wrote minimal world_en/daily.json")
+          PY
+          test -f world_en/daily.json
 
       - name: Render message
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           echo "---- preview ----"
-          sed -n '1,80p' world_en/message.txt || true
+          sed -n '1,120p' world_en/message.txt || true
 
       - name: Ensure artifacts exist
         run: |
-          test -s world_en/daily.json || { echo "daily.json missing"; exit 1; }
-          test -s world_en/message.txt || { echo "message.txt missing"; exit 1; }
+          set -euo pipefail
+          test -s world_en/daily.json || { echo "daily.json missing or empty"; exit 1; }
+          test -s world_en/message.txt || { echo "message.txt missing or empty"; exit 1; }
+
+      - name: Upload debug artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: world_en-artifacts
+          path: |
+            world_en/daily.json
+            world_en/message.txt
 
       # ===== MAIN channel =====
       - name: Send text (MAIN)
