@@ -34,7 +34,6 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # jinja2 нужно для рендера шаблона, а в requirements его может не быть
           pip install -r requirements.txt jinja2
 
       - name: Show versions
@@ -76,6 +75,8 @@ jobs:
             # --------- УМНЫЙ ФОЛБЭК без heredoc ---------
             F="world_en/_fallback.py"
             : > "$F"
+            echo '#!/usr/bin/env python3' >> "$F"
+            echo '# -*- coding: utf-8 -*-' >> "$F"
             echo 'import json,requests,pendulum' >> "$F"
             echo 'from datetime import datetime, timezone' >> "$F"
             echo '' >> "$F"
@@ -189,7 +190,7 @@ jobs:
             echo '        from astral import LocationInfo' >> "$F"
             echo '        loc=LocationInfo("Reykjavik","IS","Atlantic/Reykjavik",64.1466,-21.9426)' >> "$F"
             echo '        s=sun(loc.observer,tzinfo="UTC")' >> "$F"
-            echo '        return f"Sunrise — Reykjavik, IS, {s["sunrise"].strftime("%H:%M")} UTC"' >> "$F"
+            echo '        return "Sunrise — Reykjavik, IS, " + s["sunrise"].strftime("%H:%M") + " UTC"' >> "$F"
             echo '    except Exception:' >> "$F"
             echo '        return None' >> "$F"
             echo '' >> "$F"
@@ -205,10 +206,9 @@ jobs:
             echo 'sw=solar_wind();   lines.append(f"- Solar wind: {sw}" if sw else "- Solar wind: —")' >> "$F"
             echo 'lines.append("Earth Live")' >> "$F"
             echo 'hot,cold=earth_extremes()' >> "$F"
-            echo 'if hot or cold:' >> "$F"
-            echo '    lines.append(f"• 🔥 Hottest: {hot or "—"}   🧊 Coldest: {cold or "—"}")' >> "$F"
-            echo 'else:' >> "$F"
-            echo '    lines.append("• 🔥 Hottest: —   🧊 Coldest: —")' >> "$F"
+            echo 'hot_s = hot if hot else "—"' >> "$F"
+            echo 'cold_s = cold if cold else "—"' >> "$F"
+            echo 'lines.append(f"• 🔥 Hottest: {hot_s}   🧊 Coldest: {cold_s}")' >> "$F"
             echo 'q=quake_max(); lines.append(f"• 🌎 Strongest quake 24h: {q}" if q else "• 🌎 Strongest quake 24h: —")' >> "$F"
             echo 'sun=sunrise(); lines.append(f"• 🟧 Sunlight tidbit: {sun}" if sun else "• 🟧 Sunlight tidbit: —")' >> "$F"
             echo 'lines+=["","Vibe Tip  🔆  (Kp • sec)","","PS: Weather-sensitive? Save & share 🌿","#DailyCalm #CosmicWeather"]' >> "$F"
