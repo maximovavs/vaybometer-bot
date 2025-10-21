@@ -32,37 +32,84 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Collect daily
+      - name: Show versions
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pkgutil, sys
+          mods = ("pendulum","jinja2","requests","pandas","astral")
+          for m in mods:
+              print(f"{m:12s}:", "OK" if pkgutil.find_loader(m) else "MISSING")
+          PY
+
+      - name: Collect daily (with log)
+        id: collect
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
           YOUTUBE_PLAYLIST_IDS:  ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
           FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
+          PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
-          # Если коллектор упадёт — продолжаем, дальше сделаем фолбэк
-          python world_en/world_collect.py || true
-          echo "---- after collect ----"
+          # Пишем stdout/stderr в лог, но не роняем шаг — дальше валидатор решит, слать или нет.
+          ( python -u world_en/world_collect.py ) > world_en/collect.log 2>&1 || true
+          echo "---- collector log head ----"
+          head -n 80 world_en/collect.log || true
+          echo "---- world_en dir ----"
           ls -la world_en || true
 
-      - name: Ensure daily.json (fallback if missing)
+      - name: Validate daily.json
+        id: validate
         run: |
           set -euo pipefail
           if [ ! -f world_en/daily.json ]; then
-            echo "Collector did not create world_en/daily.json — creating minimal fallback."
-            python -c "import json,os; d={'TITLE':'World Vibe Snapshot','WHEN_UTC':'','KP':None,'KP_STATUS':'','SCHUMANN_FREQ':None,'SCHUMANN_STATUS':'baseline (7.83 Hz)','SOLAR_WIND_SPEED':None,'SOLAR_WIND_DENSITY':None,'EARTH_HOTTEST_CITY':'','EARTH_HOTTEST_TEMP_C':None,'EARTH_COLDEST_CITY':'','EARTH_COLDEST_TEMP_C':None,'QUAKE_TITLE':'','QUAKE_DEPTH_KM':None,'QUAKE_TIME_UTC':'','SUN_TIDBIT':'','SUN_TIDBIT_TIME_UTC':'','VIBE_TIP':'','VIBE_TIP_SRC':'','NATURE_THUMB':'','NATURE_URL':'','NATURE_TITLE':'Nature Break','NATURE_SNIPPET':'60 seconds of calm'}; open('world_en/daily.json','w',encoding='utf-8').write(json.dumps(d,ensure_ascii=False,indent=2))"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "reason=no_file" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          test -f world_en/daily.json
+          python - <<'PY'
+          import json, os, sys
+          d=json.load(open('world_en/daily.json',encoding='utf-8'))
+          # Мини-набор обязательных полей, чтобы пост выглядел «живым»
+          req = {
+            "KP": (int,float),
+            "EARTH_HOTTEST_CITY": str,
+            "EARTH_HOTTEST_TEMP_C": (int,float),
+            "EARTH_COLDEST_CITY": str,
+            "EARTH_COLDEST_TEMP_C": (int,float),
+          }
+          def filled(v): return not (v is None or v=="" or v==[] or v=={})
+          ok = all( (k in d) and filled(d[k]) for k in req.keys() )
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+              f.write(f"ok={'true' if ok else 'false'}\n")
+          if not ok:
+              print("Validation failed. Keys present:", [k for k in d.keys()])
+          PY
 
       - name: Render
+        if: steps.validate.outputs.ok == 'true'
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           test -s world_en/message.txt
 
+      # Загружаем артефакты всегда — для дебага
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-daily-en-artifacts
+          path: |
+            world_en/collect.log
+            world_en/daily.json
+            world_en/message.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
       # ========== MAIN ==========
       - name: Send text (MAIN)
-        if: ${{ inputs.send_to_test != true }}
+        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test != true
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -73,7 +120,7 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN)
-        if: ${{ inputs.send_to_test != true }}
+        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test != true
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -99,7 +146,7 @@ jobs:
 
       # ========== TEST ==========
       - name: Send text (TEST)
-        if: ${{ inputs.send_to_test == true }}
+        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test == true
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
@@ -111,7 +158,7 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST)
-        if: ${{ inputs.send_to_test == true }}
+        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test == true
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
