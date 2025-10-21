@@ -63,8 +63,8 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Render (normal or SMART FALLBACK)
-        run: |
+            - name: Render (normal or SMART FALLBACK)
+          run: |
           set -euo pipefail
           if [ "${{ steps.validate.outputs.ok }}" = "true" ]; then
             python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
@@ -74,6 +74,31 @@ jobs:
             : > "$F"
             echo 'import json,requests,pendulum' >> "$F"
             echo 'from datetime import datetime, timezone' >> "$F"
+            echo '' >> "$F"
+            echo 'def _om_temp(lat, lon):' >> "$F"
+            echo '    try:' >> "$F"
+            echo '        j=requests.get("https://api.open-meteo.com/v1/forecast",params={"latitude":lat,"longitude":lon,"current":"temperature_2m","timezone":"UTC"},timeout=12).json()' >> "$F"
+            echo '        cur=(j.get("current") or {})' >> "$F"
+            echo '        t=cur.get("temperature_2m")' >> "$F"
+            echo '        return float(t) if isinstance(t,(int,float)) else None' >> "$F"
+            echo '    except Exception:' >> "$F"
+            echo '        return None' >> "$F"
+            echo '' >> "$F"
+            echo 'def earth_extremes():' >> "$F"
+            echo '    hot_cands=[("Jazan, SA",16.889,42.570),("Dallol, ET",14.241,40.300),("Basra, IQ",30.50,47.82),("Death Valley, US",36.462,-116.866)]' >> "$F"
+            echo '    cold_cands=[("Dome A, AQ",-80.37,77.53),("Vostok, AQ",-78.47,106.87),("South Pole, AQ",-90.0,0.0)]' >> "$F"
+            echo '    hot_best=None; cold_best=None' >> "$F"
+            echo '    for name,la,lo in hot_cands:' >> "$F"
+            echo '        t=_om_temp(la,lo)' >> "$F"
+            echo '        if isinstance(t,(int,float)):' >> "$F"
+            echo '            if (hot_best is None) or (t>hot_best[1]): hot_best=(name,t)' >> "$F"
+            echo '    for name,la,lo in cold_cands:' >> "$F"
+            echo '        t=_om_temp(la,lo)' >> "$F"
+            echo '        if isinstance(t,(int,float)):' >> "$F"
+            echo '            if (cold_best is None) or (t<cold_best[1]): cold_best=(name,t)' >> "$F"
+            echo '    hot_txt = f"{hot_best[0]}  {hot_best[1]:.0f}°C" if hot_best else None' >> "$F"
+            echo '    cold_txt= f"{cold_best[0]} {cold_best[1]:.0f}°C" if cold_best else None' >> "$F"
+            echo '    return hot_txt,cold_txt' >> "$F"
             echo '' >> "$F"
             echo 'def kp_world_like():' >> "$F"
             echo '    try:' >> "$F"
@@ -139,7 +164,7 @@ jobs:
             echo '        j=requests.get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",timeout=20).json()' >> "$F"
             echo '        feats=j.get("features",[])' >> "$F"
             echo '        if not feats: return None' >> "$F"
-            echo '        best=max(feats,key=lambda f:(f.get(\"properties\",{}).get(\"mag\") or 0))' >> "$F"
+            echo '        best=max(feats,key=lambda f:(f.get("properties",{}).get("mag") or 0))' >> "$F"
             echo '        prop=best.get("properties",{})' >> "$F"
             echo '        mag=prop.get("mag"); place=(prop.get("place") or "").strip()' >> "$F"
             echo '        tms=prop.get("time")' >> "$F"
@@ -175,7 +200,11 @@ jobs:
             echo 'sch=schumann_live(); lines.append(f"- Schumann: {sch}" if sch else "- Schumann: baseline (7.83 Hz)")' >> "$F"
             echo 'sw=solar_wind();   lines.append(f"- Solar wind: {sw}" if sw else "- Solar wind: —")' >> "$F"
             echo 'lines.append("Earth Live")' >> "$F"
-            echo 'lines.append("• 🔥 Hottest: —   🧊 Coldest: —")' >> "$F"
+            echo 'hot,cold=earth_extremes()' >> "$F"
+            echo 'if hot or cold:' >> "$F"
+            echo '    lines.append(f"• 🔥 Hottest: {hot or \"—\"}   🧊 Coldest: {cold or \"—\"}")' >> "$F"
+            echo 'else:' >> "$F"
+            echo '    lines.append("• 🔥 Hottest: —   🧊 Coldest: —")' >> "$F"
             echo 'q=quake_max(); lines.append(f"• 🌎 Strongest quake 24h: {q}" if q else "• 🌎 Strongest quake 24h: —")' >> "$F"
             echo 'sun=sunrise(); lines.append(f"• 🟧 Sunlight tidbit: {sun}" if sun else "• 🟧 Sunlight tidbit: —")' >> "$F"
             echo 'lines+=["","Vibe Tip  🔆  (Kp • sec)","","PS: Weather-sensitive? Save & share 🌿","#DailyCalm #CosmicWeather"]' >> "$F"
@@ -183,6 +212,7 @@ jobs:
             python "$F" > world_en/message.txt
           fi
           test -s world_en/message.txt
+
 
       - name: Upload artifacts
         if: always()
