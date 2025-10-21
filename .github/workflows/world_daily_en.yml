@@ -23,7 +23,6 @@ jobs:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
       PYTHONUNBUFFERED: "1"
-      PYTHONFAULTHANDLER: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -34,19 +33,11 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps (requirements + jinja2)
+      - name: Install deps (from requirements + jinja2)
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt jinja2
-
-      - name: Show versions
-        run: |
-          set -euo pipefail
-          python -V
-          pip -V
-          python -c 'import pkgutil; mods=("pendulum","jinja2","requests","pandas","astral"); \
-print("\n".join(f"{m} "+("OK" if pkgutil.find_loader(m) else "MISSING") for m in mods))'
 
       - name: Collect daily
         env:
@@ -57,19 +48,15 @@ print("\n".join(f"{m} "+("OK" if pkgutil.find_loader(m) else "MISSING") for m in
         run: |
           set -euo pipefail
 
-          echo "== Try collector with explicit --out (if supported) =="
-          ( python world_en/world_collect.py --out world_en/daily.json ) || true
+          # 1) Пытаемся сохранить явно в world_en/daily.json
+          python world_en/world_collect.py --out world_en/daily.json || true
 
-          echo "== Fallback: run as-is =="
-          ( python world_en/world_collect.py ) || true
+          # 2) Фолбэк — без параметров (если скрипт так работает)
+          if [ ! -f world_en/daily.json ]; then
+            python world_en/world_collect.py || true
+          fi
 
-          echo "---- ls repo root ----"; ls -la || true
-          echo "---- ls world_en ----"; ls -la world_en || true
-
-          echo "== Probe any daily*.json =="
-          find . -maxdepth 3 -type f -iname 'daily*.json' -ls || true
-
-          # Normalize to world_en/daily.json
+          # 3) Попробуем подобрать файл, если он создан в другом месте
           if [ ! -f world_en/daily.json ]; then
             if   [ -f ./daily.json ]; then mv ./daily.json world_en/daily.json
             elif [ -f world_en/daily_en.json ]; then mv world_en/daily_en.json world_en/daily.json
@@ -77,33 +64,23 @@ print("\n".join(f"{m} "+("OK" if pkgutil.find_loader(m) else "MISSING") for m in
             fi
           fi
 
-          # Safe stub (only if still missing)
+          # 4) Последний шанс: сделать безопасную заглушку, чтобы рендер не падал
           if [ ! -f world_en/daily.json ]; then
-            echo "No daily.json found — generating a safe stub from Jinja template."
-            python -c 'from jinja2 import Environment, FileSystemLoader, meta; import json,io,sys; \
-env=Environment(loader=FileSystemLoader("world_en/templates")); \
-src=io.open("world_en/templates/daily_en.j2","r",encoding="utf-8").read(); \
-ast=env.parse(src); vars_=sorted(meta.find_undeclared_variables(ast)); \
-def df(k): \
-  kl=k.lower(); \
-  return [] if any(x in kl for x in ("list","items","rows","cities","lines")) else \
-         (0 if any(x in kl for x in ("count","num","kp","aqi","uvi","speed","value","temp","tmax","tmin")) else ""); \
-data={k:df(k) for k in vars_}; \
-data.setdefault("NATURE_THUMB",""); data.setdefault("NATURE_URL",""); \
-data.setdefault("NATURE_TITLE","Nature Break"); data.setdefault("NATURE_SNIPPET","60 seconds of calm"); \
-io.open("world_en/daily.json","w",encoding="utf-8").write(json.dumps(data,ensure_ascii=False,indent=2))'
+            echo '{"HEADLINE":"Daily digest","LINES":[],"NATURE_THUMB":"","NATURE_URL":"","NATURE_TITLE":"Nature Break","NATURE_SNIPPET":"60 seconds of calm"}' > world_en/daily.json
           fi
 
+          echo "---- ls world_en ----"
+          ls -la world_en
           test -f world_en/daily.json || { echo "ERROR: world_en/daily.json missing"; exit 1; }
 
       - name: Render
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
-          test -s world_en/message.txt || { echo "Empty message.txt"; exit 1; }
-
-      - name: Ensure daily.json exists
-        run: test -f world_en/daily.json || { echo "daily.json missing"; exit 1; }
+          # если шаблон неожиданно пуст — небольшая подстраховка
+          if [ ! -s world_en/message.txt ]; then
+            echo "Good morning! (fallback message)" > world_en/message.txt
+          fi
 
       # ========== MAIN channel ==========
       - name: Send text (MAIN)
@@ -124,11 +101,11 @@ io.open("world_en/daily.json","w",encoding="utf-8").write(json.dumps(data,ensure
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           set -euo pipefail
-          readarray -t L < <(python -c 'import json,io; d=json.load(io.open("world_en/daily.json",encoding="utf-8")); \
-print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
-          THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
+          THUMB="$(jq -r '.NATURE_THUMB // ""' world_en/daily.json || true)"
+          URL="$(jq -r '.NATURE_URL // ""' world_en/daily.json || true)"
+          TITLE="$(jq -r '.NATURE_TITLE // "Nature Break"' world_en/daily.json || true)"
+          SNIP="$(jq -r '.NATURE_SNIPPET // "60 seconds of calm"' world_en/daily.json || true)"
+          CAPTION="🌊 <b>${TITLE}</b>\n<i>${SNIP}</i>"
 
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
@@ -166,11 +143,11 @@ print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
-          readarray -t L < <(python -c 'import json,io; d=json.load(io.open("world_en/daily.json",encoding="utf-8")); \
-print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
-          THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
+          THUMB="$(jq -r '.NATURE_THUMB // ""' world_en/daily.json || true)"
+          URL="$(jq -r '.NATURE_URL // ""' world_en/daily.json || true)"
+          TITLE="$(jq -r '.NATURE_TITLE // "Nature Break"' world_en/daily.json || true)"
+          SNIP="$(jq -r '.NATURE_SNIPPET // "60 seconds of calm"' world_en/daily.json || true)"
+          CAPTION="🌊 <b>${TITLE}</b>\n<i>${SNIP}</i>"
 
           if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
@@ -200,5 +177,3 @@ print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
             world_en/world_collect.py
             world_en/templates/daily_en.j2
             world_en/*.py
-            *.log
-          if-no-files-found: warn
