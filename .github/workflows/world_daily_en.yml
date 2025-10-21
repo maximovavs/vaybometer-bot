@@ -16,6 +16,9 @@ jobs:
     concurrency:
       group: world-daily-en
       cancel-in-progress: true
+    defaults:
+      run:
+        shell: bash
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
@@ -28,23 +31,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps
+      - name: Install deps (from repo requirements + jinja2)
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt jinja2
 
       - name: Show versions
         run: |
+          set -euo pipefail
           python -V
           pip -V
           python - <<'PY'
-          import sys, pkgutil
-          for m in ("pendulum","jinja2","requests","pandas","astral"):
-              print(m, "OK" if pkgutil.find_loader(m) else "MISSING")
-          PY
+import pkgutil
+for m in ("pendulum","jinja2","requests","pandas","astral"):
+    print(m, "OK" if pkgutil.find_loader(m) else "MISSING")
+PY
 
       - name: Collect daily
         env:
@@ -59,7 +64,7 @@ jobs:
           ( python world_en/world_collect.py --out world_en/daily.json ) || true
 
           echo "== Fallback: run as-is =="
-          python world_en/world_collect.py || true
+          ( python world_en/world_collect.py ) || true
 
           echo "---- ls repo root ----"; ls -la || true
           echo "---- ls world_en ----"; ls -la world_en || true
@@ -67,48 +72,37 @@ jobs:
           echo "== Probe any daily*.json =="
           find . -maxdepth 3 -type f -iname 'daily*.json' -ls || true
 
-          # Normalize path to world_en/daily.json if file exists elsewhere
+          # Normalize to world_en/daily.json
           if [ ! -f world_en/daily.json ]; then
-            if   [ -f ./daily.json ]; then
-              echo "Moving ./daily.json -> world_en/daily.json"
-              mv ./daily.json world_en/daily.json
-            elif [ -f world_en/daily_en.json ]; then
-              echo "Moving world_en/daily_en.json -> world_en/daily.json"
-              mv world_en/daily_en.json world_en/daily.json
-            elif [ -f world/daily.json ]; then
-              echo "Moving world/daily.json -> world_en/daily.json"
-              mv world/daily.json world_en/daily.json
+            if   [ -f ./daily.json ]; then mv ./daily.json world_en/daily.json
+            elif [ -f world_en/daily_en.json ]; then mv world_en/daily_en.json world_en/daily.json
+            elif [ -f world/daily.json ]; then mv world/daily.json world_en/daily.json
             fi
           fi
 
-          # Last-resort: build a safe stub from the Jinja template so Render won't fail
+          # Safe stub from template (only if still no file)
           if [ ! -f world_en/daily.json ]; then
             echo "No daily.json found — generating a safe stub from Jinja template."
             python - <<'PY'
-            import json, re
-            from jinja2 import Environment, FileSystemLoader, meta
-            env = Environment(loader=FileSystemLoader("world_en/templates"))
-            src = open("world_en/templates/daily_en.j2", "r", encoding="utf-8").read()
-            ast = env.parse(src)
-            vars_ = sorted(meta.find_undeclared_variables(ast))
-            # Heuristics: lists/arrays vs. scalars
-            def default_for(k):
-                k_low = k.lower()
-                if any(x in k_low for x in ("list","items","rows","cities","lines")):
-                    return []
-                if any(x in k_low for x in ("count","num","kp","aqi","uvi","speed","value","temp","tmax","tmin")):
-                    return 0
-                return ""
-            data = {k: default_for(k) for k in vars_}
-            # Nice defaults for nature card to keep sender step safe
-            data.setdefault("NATURE_THUMB","")
-            data.setdefault("NATURE_URL","")
-            data.setdefault("NATURE_TITLE","Nature Break")
-            data.setdefault("NATURE_SNIPPET","60 seconds of calm")
-            with open("world_en/daily.json","w",encoding="utf-8") as f:
-                json.dump(data,f,ensure_ascii=False,indent=2)
-            print("Stub world_en/daily.json generated with keys:", len(data))
-            PY
+from jinja2 import Environment, FileSystemLoader, meta
+import json
+env = Environment(loader=FileSystemLoader("world_en/templates"))
+src = open("world_en/templates/daily_en.j2","r",encoding="utf-8").read()
+ast = env.parse(src)
+vars_ = sorted(meta.find_undeclared_variables(ast))
+def default_for(k:str):
+    kl=k.lower()
+    if any(x in kl for x in ("list","items","rows","cities","lines")): return []
+    if any(x in kl for x in ("count","num","kp","aqi","uvi","speed","value","temp","tmax","tmin")): return 0
+    return ""
+data = {k: default_for(k) for k in vars_}
+data.setdefault("NATURE_THUMB","")
+data.setdefault("NATURE_URL","")
+data.setdefault("NATURE_TITLE","Nature Break")
+data.setdefault("NATURE_SNIPPET","60 seconds of calm")
+open("world_en/daily.json","w",encoding="utf-8").write(json.dumps(data,ensure_ascii=False,indent=2))
+print("Stub generated with", len(data), "keys")
+PY
           fi
 
           test -f world_en/daily.json || { echo "ERROR: world_en/daily.json missing"; exit 1; }
@@ -142,14 +136,14 @@ jobs:
         run: |
           set -euo pipefail
           readarray -t L < <(python - <<'PY'
-          import json
-          d=json.load(open('world_en/daily.json',encoding='utf-8'))
-          print(d.get('NATURE_THUMB',''))
-          print(d.get('NATURE_URL',''))
-          title=d.get('NATURE_TITLE','Nature Break')
-          snip =d.get('NATURE_SNIPPET','60 seconds of calm')
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
-          PY
+import json
+d=json.load(open('world_en/daily.json',encoding='utf-8'))
+print(d.get('NATURE_THUMB',''))
+print(d.get('NATURE_URL',''))
+title=d.get('NATURE_TITLE','Nature Break')
+snip =d.get('NATURE_SNIPPET','60 seconds of calm')
+print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+PY
           )
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
 
@@ -190,17 +184,18 @@ jobs:
         run: |
           set -euo pipefail
           readarray -t L < <(python - <<'PY'
-          import json
-          d=json.load(open('world_en/daily.json',encoding='utf-8'))
-          print(d.get('NATURE_THUMB',''))
-          print(d.get('NATURE_URL',''))
-          title=d.get('NATURE_TITLE','Nature Break')
-          snip =d.get('NATURE_SNIPPET','60 seconds of calm')
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
-          PY
+import json
+d=json.load(open('world_en/daily.json',encoding='utf-8'))
+print(d.get('NATURE_THUMB',''))
+print(d.get('NATURE_URL',''))
+title=d.get('NATURE_TITLE','Nature Break')
+snip =d.get('NATURE_SNIPPET','60 seconds of calm')
+print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+PY
           )
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
 
+          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
               -F chat_id="${TG_CHAT}" \
