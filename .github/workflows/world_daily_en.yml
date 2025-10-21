@@ -1,5 +1,9 @@
 name: world-daily-en
 
+defaults:
+  run:
+    shell: bash
+
 on:
   schedule:
     - cron: "15 7 * * *"   # 07:15 UTC
@@ -30,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # jinja2 нужно для рендера шаблона, а в requirements его нет
+          # jinja2 нужно для рендера шаблона, а в requirements его может не быть
           pip install -r requirements.txt jinja2
 
       - name: Show versions
@@ -63,8 +67,8 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-            - name: Render (normal or SMART FALLBACK)
-          run: |
+      - name: Render (normal or SMART FALLBACK)
+        run: |
           set -euo pipefail
           if [ "${{ steps.validate.outputs.ok }}" = "true" ]; then
             python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
@@ -212,7 +216,6 @@ jobs:
             python "$F" > world_en/message.txt
           fi
           test -s world_en/message.txt
-
 
       - name: Upload artifacts
         if: always()
