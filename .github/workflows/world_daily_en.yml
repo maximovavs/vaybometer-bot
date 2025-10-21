@@ -30,19 +30,16 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # В requirements нет jinja2 — ставим явно
+          # jinja2 нужно для рендера шаблона, а в requirements его нет
           pip install -r requirements.txt jinja2
 
       - name: Show versions
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import pkgutil
-          for m in ("pendulum","jinja2","requests","pandas","astral"):
-              print(f"{m:12s}:", "OK" if pkgutil.find_loader(m) else "MISSING")
-          PY
+          python -c "import pkgutil; mods=('pendulum','jinja2','requests','pandas','astral'); \
+          print('\n'.join(f'{m}: ' + ('OK' if pkgutil.find_loader(m) else 'MISSING') for m in mods))"
 
-      - name: Collect daily (capture log)
+      - name: Collect daily (capture log, do not fail pipeline)
         id: collect
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
@@ -54,14 +51,14 @@ jobs:
           set -euo pipefail
           ( python -u world_en/world_collect.py ) > world_en/collect.log 2>&1 || true
           echo "---- world_en dir ----"; ls -la world_en || true
-          echo "---- collector log head ----"; head -n 80 world_en/collect.log || true
+          echo "---- collector log head ----"; head -n 60 world_en/collect.log || true
 
       - name: Validate daily.json (existence only)
         id: validate
         run: |
           set -euo pipefail
           if [ -s world_en/daily.json ]; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "ok=true"  >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
@@ -72,167 +69,118 @@ jobs:
           if [ "${{ steps.validate.outputs.ok }}" = "true" ]; then
             python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           else
-            # --------- УМНЫЙ ФОЛБЭК: собираем всё, что можно, прямо тут ---------
-            python - <<'PY' > world_en/message.txt
-            import json, math, os, sys
-            from pathlib import Path
-            from datetime import datetime, timezone
-            import requests
-            import pendulum
-
-            def kp_world_like():
-                # NOAA closed 3-hour slot; fallback to air.get_kp()
-                try:
-                    url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
-                    data = requests.get(url, timeout=20).json()
-                    rows=[]
-                    for r in data[1:]:
-                        try:
-                            ts = pendulum.parse(r[0]).in_tz("UTC")
-                            val = float(r[1])
-                            rows.append((ts,val))
-                        except Exception:
-                            pass
-                    if not rows: raise RuntimeError("empty NOAA rows")
-                    now = pendulum.now("UTC")
-                    end = now.replace(minute=0, second=0, microsecond=0)
-                    end = end.subtract(hours=end.hour % 3)
-                    start = end.subtract(hours=3)
-                    last=None
-                    for ts,val in reversed(rows):
-                        if start <= ts < end:
-                            last=(ts,val); break
-                    if not last: last = rows[-1]
-                    v = round(float(last[1]),1)
-                    age = max(0, int((now-end).total_seconds()//60))
-                    def note(x):
-                        if x < 3:  return "quiet"
-                        if x < 5:  return "active"
-                        return "storm"
-                    return {"kp": v, "note": note(v), "age_min": age}
-                except Exception:
-                    try:
-                        from air import get_kp
-                        tup = get_kp() or ()
-                        kp = float(tup[0]) if tup and isinstance(tup[0],(int,float)) else None
-                        note = tup[1] if len(tup)>1 else None
-                        return {"kp": kp, "note": note}
-                    except Exception:
-                        return {}
-
-            def solar_wind():
-                try:
-                    from air import get_solar_wind
-                    d = get_solar_wind() or {}
-                    v = d.get("speed_kms"); n = d.get("density"); st = d.get("status")
-                    out=[]
-                    if isinstance(v,(int,float)): out.append(f"{v:.0f} km/s")
-                    if isinstance(n,(int,float)): out.append(f"{n:.1f} cm⁻³")
-                    return {"text": (", ".join(out) + (f" — {st}" if out and st else "")) or None}
-                except Exception:
-                    return {}
-
-            def schumann_live():
-                # try module → fall back to local json (last record)
-                try:
-                    import schumann
-                    if hasattr(schumann, "get_schumann"):
-                        p = schumann.get_schumann() or {}
-                        f = p.get("freq"); a = p.get("amp")
-                        st = p.get("status") or ""
-                        if isinstance(f,(int,float)) or isinstance(a,(int,float)) or st:
-                            bits=[]
-                            if isinstance(f,(int,float)): bits.append(f"{f:.2f} Hz")
-                            if isinstance(a,(int,float)): bits.append(f"{a:.2f} pT")
-                            if st: bits.append(st)
-                            return {"text": " / ".join(bits)}
-                except Exception:
-                    pass
-                for path in ("schumann_hourly.json","world_en/schumann_hourly.json","data/schumann_hourly.json"):
-                    try:
-                        p = Path(path)
-                        if p.exists():
-                            arr = json.loads(p.read_text("utf-8"))
-                            if isinstance(arr,list) and arr:
-                                last = arr[-1]
-                                f = last.get("freq"); a = last.get("amp")
-                                bits=[]
-                                if isinstance(f,(int,float)): bits.append(f"{f:.2f} Hz")
-                                if isinstance(a,(int,float)): bits.append(f"{a:.2f} pT")
-                                return {"text": " / ".join(bits) if bits else None}
-                    except Exception:
-                        pass
-                return {}
-
-            def quake_max_24h():
-                try:
-                    u = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
-                    j = requests.get(u, timeout=20).json()
-                    feats = j.get("features", [])
-                    if not feats: return {}
-                    best = max(feats, key=lambda f: (f.get("properties",{}).get("mag") or 0))
-                    prop = best.get("properties",{})
-                    mag = prop.get("mag")
-                    place = (prop.get("place") or "").replace(" of", " of")
-                    tms = prop.get("time")
-                    when = pendulum.from_timestamp(tms/1000, tz="UTC").format("HH:mm") if isinstance(tms,(int,float)) else ""
-                    depth = best.get("geometry",{}).get("coordinates",[None,None,None])[2]
-                    parts=[]
-                    if isinstance(mag,(int,float)): parts.append(f"M{mag:.1f}")
-                    if isinstance(depth,(int,float)): parts.append(f"depth {depth:.0f} km")
-                    if when: parts.append(when + " UTC")
-                    if place: parts.append(place)
-                    return {"text": ", ".join(parts)}
-                except Exception:
-                    return {}
-
-            def sunrise_tidbit():
-                try:
-                    from astral.sun import sun
-                    from astral import LocationInfo
-                    loc = LocationInfo("Reykjavik","IS","Atlantic/Reykjavik",64.1466,-21.9426)
-                    s = sun(loc.observer, date=datetime.now(timezone.utc).date(), tzinfo="UTC")
-                    t = s["sunrise"].strftime("%H:%M")
-                    return {"text": f"Sunrise — Reykjavik, IS, {t} UTC"}
-                except Exception:
-                    return {}
-
-            # --- assemble
-            now = datetime.now(timezone.utc).strftime("%a, %Y-%m-%d (%H:%M UTC)")
-            lines=[]
-            lines.append(f"🌍 World Vibe Snapshot • {now}\n")
-            lines.append("Cosmic Weather")
-
-            kp = kp_world_like()
-            if kp.get("kp") is not None:
-                age = kp.get("age_min")
-                age_txt = (f", {age//60}h ago" if isinstance(age,int) and age>=180 else (f", {age} min ago" if isinstance(age,int) else ""))
-                lines.append(f"- Geomagnetic (Kp):  {kp['kp']:.1f} — {kp.get('note') or 'status'}{age_txt}")
-            else:
-                lines.append("- Geomagnetic (Kp):  —")
-
-            sch = schumann_live().get("text")
-            lines.append(f"- Schumann: {sch}" if sch else "- Schumann: baseline (7.83 Hz)")
-
-            sw = solar_wind().get("text")
-            lines.append(f"- Solar wind: {sw}" if sw else "- Solar wind: —")
-
-            lines.append("Earth Live")
-            lines.append("• 🔥 Hottest: —   🧊 Coldest: —")
-
-            q = quake_max_24h().get("text")
-            lines.append(f"• 🌎 Strongest quake 24h: {q}" if q else "• 🌎 Strongest quake 24h: —")
-
-            sun = sunrise_tidbit().get("text")
-            lines.append(f"• 🟧 Sunlight tidbit: {sun}" if sun else "• 🟧 Sunlight tidbit: —")
-
-            lines.append("")
-            lines.append("Vibe Tip  🔆  (Kp • sec)")
-            lines.append("")
-            lines.append("PS: Weather-sensitive? Save & share 🌿")
-            lines.append("#DailyCalm #CosmicWeather")
-            print("\n".join(lines))
-            PY
+            # --------- УМНЫЙ ФОЛБЭК без heredoc ---------
+            F="world_en/_fallback.py"
+            : > "$F"
+            echo 'import json,requests,pendulum' >> "$F"
+            echo 'from datetime import datetime, timezone' >> "$F"
+            echo '' >> "$F"
+            echo 'def kp_world_like():' >> "$F"
+            echo '    try:' >> "$F"
+            echo '        data=requests.get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",timeout=20).json()' >> "$F"
+            echo '        rows=[]' >> "$F"
+            echo '        for r in data[1:]:' >> "$F"
+            echo '            try:' >> "$F"
+            echo '                ts=pendulum.parse(r[0]).in_tz("UTC"); val=float(r[1]); rows.append((ts,val))' >> "$F"
+            echo '            except Exception: pass' >> "$F"
+            echo '        if not rows: raise RuntimeError("empty")' >> "$F"
+            echo '        now=pendulum.now("UTC")' >> "$F"
+            echo '        end=now.replace(minute=0,second=0,microsecond=0); end=end.subtract(hours=end.hour%3); start=end.subtract(hours=3)' >> "$F"
+            echo '        last=None' >> "$F"
+            echo '        for ts,val in reversed(rows):' >> "$F"
+            echo '            if start<=ts<end: last=(ts,val); break' >> "$F"
+            echo '        if not last: last=rows[-1]' >> "$F"
+            echo '        v=round(float(last[1]),1); age=max(0,int((now-end).total_seconds()//60))' >> "$F"
+            echo '        note="quiet" if v<3 else ("active" if v<5 else "storm")' >> "$F"
+            echo '        return v,note,age' >> "$F"
+            echo '    except Exception:' >> "$F"
+            echo '        return None,None,None' >> "$F"
+            echo '' >> "$F"
+            echo 'def solar_wind():' >> "$F"
+            echo '    try:' >> "$F"
+            echo '        from air import get_solar_wind' >> "$F"
+            echo '        d=get_solar_wind() or {}; v=d.get("speed_kms"); n=d.get("density"); st=d.get("status")' >> "$F"
+            echo '        parts=[]' >> "$F"
+            echo '        if isinstance(v,(int,float)): parts.append(f"{v:.0f} km/s")' >> "$F"
+            echo '        if isinstance(n,(int,float)): parts.append(f"{n:.1f} cm⁻³")' >> "$F"
+            echo '        return (", ".join(parts) + (f" — {st}" if parts and st else "")) or None' >> "$F"
+            echo '    except Exception:' >> "$F"
+            echo '        return None' >> "$F"
+            echo '' >> "$F"
+            echo 'def schumann_live():' >> "$F"
+            echo '    try:' >> "$F"
+            echo '        import schumann' >> "$F"
+            echo '        if hasattr(schumann,"get_schumann"):' >> "$F"
+            echo '            p=schumann.get_schumann() or {}' >> "$F"
+            echo '            f=p.get("freq"); a=p.get("amp"); s=p.get("status")' >> "$F"
+            echo '            bits=[]' >> "$F"
+            echo '            if isinstance(f,(int,float)): bits.append(f"{f:.2f} Hz")' >> "$F"
+            echo '            if isinstance(a,(int,float)): bits.append(f"{a:.2f} pT")' >> "$F"
+            echo '            if s: bits.append(str(s))' >> "$F"
+            echo '            return " / ".join(bits) if bits else None' >> "$F"
+            echo '    except Exception: pass' >> "$F"
+            echo '    for path in ("schumann_hourly.json","world_en/schumann_hourly.json","data/schumann_hourly.json"):' >> "$F"
+            echo '        try:' >> "$F"
+            echo '            import json, pathlib' >> "$F"
+            echo '            p=pathlib.Path(path)' >> "$F"
+            echo '            if p.exists():' >> "$F"
+            echo '                arr=json.loads(p.read_text("utf-8"))' >> "$F"
+            echo '                if isinstance(arr,list) and arr:' >> "$F"
+            echo '                    last=arr[-1]; f=last.get("freq"); a=last.get("amp")' >> "$F"
+            echo '                    bits=[]' >> "$F"
+            echo '                    if isinstance(f,(int,float)): bits.append(f"{f:.2f} Hz")' >> "$F"
+            echo '                    if isinstance(a,(int,float)): bits.append(f"{a:.2f} pT")' >> "$F"
+            echo '                    if bits: return " / ".join(bits)' >> "$F"
+            echo '        except Exception: pass' >> "$F"
+            echo '    return None' >> "$F"
+            echo '' >> "$F"
+            echo 'def quake_max():' >> "$F"
+            echo '    try:' >> "$F"
+            echo '        j=requests.get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",timeout=20).json()' >> "$F"
+            echo '        feats=j.get("features",[])' >> "$F"
+            echo '        if not feats: return None' >> "$F"
+            echo '        best=max(feats,key=lambda f:(f.get(\"properties\",{}).get(\"mag\") or 0))' >> "$F"
+            echo '        prop=best.get("properties",{})' >> "$F"
+            echo '        mag=prop.get("mag"); place=(prop.get("place") or "").strip()' >> "$F"
+            echo '        tms=prop.get("time")' >> "$F"
+            echo '        when=pendulum.from_timestamp(tms/1000,tz="UTC").format("HH:mm") if isinstance(tms,(int,float)) else ""' >> "$F"
+            echo '        depth=best.get("geometry",{}).get("coordinates",[None,None,None])[2]' >> "$F"
+            echo '        parts=[]' >> "$F"
+            echo '        if isinstance(mag,(int,float)): parts.append(f"M{mag:.1f}")' >> "$F"
+            echo '        if isinstance(depth,(int,float)): parts.append(f"depth {depth:.0f} km")' >> "$F"
+            echo '        if when: parts.append(when + " UTC")' >> "$F"
+            echo '        if place: parts.append(place)' >> "$F"
+            echo '        return ", ".join(parts)' >> "$F"
+            echo '    except Exception:' >> "$F"
+            echo '        return None' >> "$F"
+            echo '' >> "$F"
+            echo 'def sunrise():' >> "$F"
+            echo '    try:' >> "$F"
+            echo '        from astral.sun import sun' >> "$F"
+            echo '        from astral import LocationInfo' >> "$F"
+            echo '        loc=LocationInfo("Reykjavik","IS","Atlantic/Reykjavik",64.1466,-21.9426)' >> "$F"
+            echo '        s=sun(loc.observer,tzinfo="UTC")' >> "$F"
+            echo '        return f"Sunrise — Reykjavik, IS, {s[\"sunrise\"].strftime(\"%H:%M\")} UTC"' >> "$F"
+            echo '    except Exception:' >> "$F"
+            echo '        return None' >> "$F"
+            echo '' >> "$F"
+            echo 'now=pendulum.now("UTC").format("ddd, YYYY-MM-DD (HH:mm [UTC])")' >> "$F"
+            echo 'lines=[f"🌍 World Vibe Snapshot • {now}","", "Cosmic Weather"]' >> "$F"
+            echo 'k,note,age=kp_world_like()' >> "$F"
+            echo 'if isinstance(k,(int,float)):' >> "$F"
+            echo '    age_txt=f", {age//60}h ago" if isinstance(age,int) and age>=180 else (f", {age} min ago" if isinstance(age,int) else "")' >> "$F"
+            echo '    lines.append(f"- Geomagnetic (Kp):  {k:.1f} — {note}{age_txt}")' >> "$F"
+            echo 'else:' >> "$F"
+            echo '    lines.append("- Geomagnetic (Kp):  n/a")' >> "$F"
+            echo 'sch=schumann_live(); lines.append(f"- Schumann: {sch}" if sch else "- Schumann: baseline (7.83 Hz)")' >> "$F"
+            echo 'sw=solar_wind();   lines.append(f"- Solar wind: {sw}" if sw else "- Solar wind: —")' >> "$F"
+            echo 'lines.append("Earth Live")' >> "$F"
+            echo 'lines.append("• 🔥 Hottest: —   🧊 Coldest: —")' >> "$F"
+            echo 'q=quake_max(); lines.append(f"• 🌎 Strongest quake 24h: {q}" if q else "• 🌎 Strongest quake 24h: —")' >> "$F"
+            echo 'sun=sunrise(); lines.append(f"• 🟧 Sunlight tidbit: {sun}" if sun else "• 🟧 Sunlight tidbit: —")' >> "$F"
+            echo 'lines+=["","Vibe Tip  🔆  (Kp • sec)","","PS: Weather-sensitive? Save & share 🌿","#DailyCalm #CosmicWeather"]' >> "$F"
+            echo 'print("\n".join(lines))' >> "$F"
+            python "$F" > world_en/message.txt
           fi
           test -s world_en/message.txt
 
@@ -248,7 +196,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # ========== MAIN ==========
+      # ===== MAIN channel =====
       - name: Send text (MAIN)
         if: ${{ inputs.send_to_test != true }}
         env:
@@ -260,14 +208,17 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      - name: Send Nature card (MAIN, only if real daily)
+      - name: Send Nature card (MAIN, only if real daily.json)
         if: steps.validate.outputs.ok == 'true' && inputs.send_to_test != true
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
+          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
+          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
+          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
+          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
@@ -281,7 +232,7 @@ jobs:
             echo "No nature URL — skipping card."
           fi
 
-      # ========== TEST ==========
+      # ===== TEST channel =====
       - name: Send text (TEST)
         if: ${{ inputs.send_to_test == true }}
         env:
@@ -294,14 +245,17 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      - name: Send Nature card (TEST, only if real daily)
+      - name: Send Nature card (TEST, only if real daily.json)
         if: steps.validate.outputs.ok == 'true' && inputs.send_to_test == true
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
+          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
+          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
+          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
+          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
