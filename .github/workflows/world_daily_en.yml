@@ -1,18 +1,20 @@
 name: world-daily-en
 
-defaults:
-  run:
-    shell: bash
+# !!! ВАЖНО: никаких табов, только обычные пробелы. Строк перед "name:" тоже не должно быть.
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC
+    - cron: "15 7 * * *"    # 07:15 UTC
   workflow_dispatch:
     inputs:
       send_to_test:
         type: boolean
         description: "Send to TEST channel instead of main"
         default: false
+  push:
+    paths:
+      - ".github/workflows/world_daily_en.yml"
+      - "world_en/**"
 
 jobs:
   run:
@@ -76,8 +78,7 @@ PY
           if [ "${{ steps.validate.outputs.ok }}" = "true" ]; then
             python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           else
-            # ---------- Fallback: генерим message.txt и минимальный daily.json ----------
-            # ВНИМАНИЕ: закрывающий PY ДОЛЖЕН БЫТЬ В НАЧАЛЕ СТРОКИ, БЕЗ ПРОБЕЛОВ!
+            # Fallback: генерим message.txt и минимальный daily.json
             python - <<'PY'
 import re, json, pendulum, requests
 from pathlib import Path
@@ -227,8 +228,7 @@ lines += ["", "Vibe Tip (Kp • sec)", "", "PS: Weather-sensitive? Save & share 
 Path("world_en/message.txt").write_text("\n".join(lines), "utf-8")
 PY
 
-            # Минимальный daily.json — чтобы карточка YouTube и кнопка были всегда
-            # ВНИМАНИЕ: закрывающий PY ДОЛЖЕН БЫТЬ В НАЧАЛЕ СТРОКИ, БЕЗ ПРОБЕЛОВ!
+            # Минимальный daily.json для карточки
             python - <<'PY'
 import os, re, json
 from pathlib import Path
@@ -237,12 +237,7 @@ urls = [u.strip() for u in re.split(r'[,\s]+', raw) if u.strip()] if raw else []
 url  = urls[0] if urls else "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 m = re.search(r'youtu\.be/([A-Za-z0-9_-]{6,})', url) or re.search(r'v=([A-Za-z0-9_-]{6,})', url)
 thumb = f"https://i.ytimg.com/vi/{m.group(1)}/hqdefault.jpg" if m else ""
-out = {
-  "NATURE_TITLE":   "Nature Break",
-  "NATURE_SNIPPET": "Short calm video",
-  "NATURE_URL":     url,
-  "NATURE_THUMB":   thumb
-}
+out = {"NATURE_TITLE":"Nature Break","NATURE_SNIPPET":"Short calm video","NATURE_URL":url,"NATURE_THUMB":thumb}
 Path("world_en/daily.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), "utf-8")
 print("Wrote fallback world_en/daily.json with URL:", url)
 PY
@@ -275,7 +270,7 @@ PY
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN, only if real daily.json)
-        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test != true
+        if: ${{ steps.validate.outputs.ok == 'true' && inputs.send_to_test != true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -312,7 +307,7 @@ PY
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST, only if real daily.json)
-        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test == true
+        if: ${{ steps.validate.outputs.ok == 'true' && inputs.send_to_test == true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
