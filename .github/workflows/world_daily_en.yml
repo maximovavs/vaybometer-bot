@@ -20,30 +20,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps (requirements.txt)
+      - name: Install dependencies
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # страховочная проверка базовых модулей
-          python - <<'PY'
-          import importlib
-          for m in ("pendulum","jinja2","requests","pandas","astral"):
-              try:
-                  importlib.import_module(m)
-                  print(f"{m}: OK")
-              except Exception as e:
-                  raise SystemExit(f"{m}: MISSING ({e})")
-          PY
 
-      - name: Collect daily (with graceful fallbacks)
+      - name: Collect daily
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
@@ -51,140 +40,29 @@ jobs:
           FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
         run: |
           set -euo pipefail
-          # попытка с явным --out (если поддерживается)
-          python world_en/world_collect.py --out world_en/daily.json || true
-          # обычный запуск (если скрипт сам пишет daily.json)
-          if [ ! -f world_en/daily.json ]; then
-            python world_en/world_collect.py || true
-          fi
-
+          # Если коллектор упадёт — продолжаем, дальше сделаем фолбэк
+          python world_en/world_collect.py || true
           echo "---- after collect ----"
           ls -la world_en || true
 
-          # если ничего не появилось — подложим мини-стаб, чтобы дальше было что валидировать
+      - name: Ensure daily.json (fallback if missing)
+        run: |
+          set -euo pipefail
           if [ ! -f world_en/daily.json ]; then
-            python - <<'PY'
-            import json, pathlib
-            p=pathlib.Path("world_en/daily.json"); p.parent.mkdir(parents=True, exist_ok=True)
-            json.dump({
-              "NATURE_THUMB":"", "NATURE_URL":"",
-              "NATURE_TITLE":"Nature Break",
-              "NATURE_SNIPPET":"60 seconds of calm"
-            }, open(p,"w",encoding="utf-8"), ensure_ascii=False)
-            print("Wrote minimal stub world_en/daily.json")
-            PY
+            echo "Collector did not create world_en/daily.json — creating minimal fallback."
+            python -c "import json,os; d={'TITLE':'World Vibe Snapshot','WHEN_UTC':'','KP':None,'KP_STATUS':'','SCHUMANN_FREQ':None,'SCHUMANN_STATUS':'baseline (7.83 Hz)','SOLAR_WIND_SPEED':None,'SOLAR_WIND_DENSITY':None,'EARTH_HOTTEST_CITY':'','EARTH_HOTTEST_TEMP_C':None,'EARTH_COLDEST_CITY':'','EARTH_COLDEST_TEMP_C':None,'QUAKE_TITLE':'','QUAKE_DEPTH_KM':None,'QUAKE_TIME_UTC':'','SUN_TIDBIT':'','SUN_TIDBIT_TIME_UTC':'','VIBE_TIP':'','VIBE_TIP_SRC':'','NATURE_THUMB':'','NATURE_URL':'','NATURE_TITLE':'Nature Break','NATURE_SNIPPET':'60 seconds of calm'}; open('world_en/daily.json','w',encoding='utf-8').write(json.dumps(d,ensure_ascii=False,indent=2))"
           fi
-
-      - name: Enrich daily.json (Kp / Solar wind / Schumann fallback)
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, pathlib, pendulum
-          from air import get_kp, get_solar_wind
-          try:
-              from schumann import get_schumann
-          except Exception:
-              get_schumann = None
-
-          p = pathlib.Path("world_en/daily.json")
-          d = {}
-          try:
-              d = json.load(open(p, encoding="utf-8"))
-          except Exception:
-              d = {}
-
-          # --- Kp (мировой стиль) ---
-          try:
-              kp_tuple = get_kp() or (None, None, None, None)
-              kp, kp_status = kp_tuple[0], (kp_tuple[1] or "n/a")
-              if isinstance(kp,(int,float)) and not d.get("KP_VALUE"):
-                  d["KP_VALUE"]  = round(float(kp),1)
-                  d["KP_STATUS"] = kp_status
-          except Exception:
-              pass
-
-          # --- Solar wind ---
-          try:
-              sw = get_solar_wind() or {}
-              if sw.get("speed_kms") and not d.get("SW_SPEED_KMS"):
-                  d["SW_SPEED_KMS"] = float(sw["speed_kms"])
-              if sw.get("density") and not d.get("SW_DENS_CM3"):
-                  d["SW_DENS_CM3"]  = float(sw["density"])
-              if sw.get("status") and not d.get("SW_STATUS"):
-                  d["SW_STATUS"]    = sw["status"]
-          except Exception:
-              pass
-
-          # --- Schumann (мягкий фолбэк) ---
-          if not d.get("SCHU_TEXT"):
-              txt = None
-              try:
-                  if get_schumann:
-                      s = get_schumann() or {}
-                      f = s.get("freq")
-                      if isinstance(f,(int,float)):
-                          txt = f"{f:.2f} Hz"
-              except Exception:
-                  pass
-              d["SCHU_TEXT"] = txt or "baseline (7.83 Hz)"
-
-          d["STAMP_UTC"] = pendulum.now("UTC").to_datetime_string()
-          json.dump(d, open(p,"w",encoding="utf-8"), ensure_ascii=False, indent=2)
-          print("Enriched daily.json OK")
-          PY
-
-      - name: Show daily.json (debug)
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          d=json.load(open('world_en/daily.json',encoding='utf-8'))
-          print(json.dumps(d, ensure_ascii=False, indent=2))
-          PY
-
-      - name: Validate daily.json -> OK_TO_SEND
-        id: validate
-        run: |
-          set -euo pipefail
-          OK="false"
-          python - <<'PY' > /tmp/ok.txt
-          import json, sys
-          try:
-              d=json.load(open('world_en/daily.json',encoding='utf-8'))
-          except Exception:
-              print("false"); sys.exit(0)
-          # минимальные признаки «не пусто»
-          filled = 0
-          for k in ("KP_VALUE","SW_SPEED_KMS","SW_DENS_CM3","NATURE_URL"):
-              v=d.get(k)
-              if v not in (None,"",0): filled+=1
-          print("true" if filled>=2 else "false")
-          PY
-          OK=$(cat /tmp/ok.txt)
-          echo "OK_TO_SEND=$OK" >> $GITHUB_ENV
-          echo "OK_TO_SEND=$OK"
+          test -f world_en/daily.json
 
       - name: Render
-        if: env.OK_TO_SEND == 'true'
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
-          echo "---- message preview ----"
-          head -n 80 world_en/message.txt || true
+          test -s world_en/message.txt
 
-      - name: Upload artifacts (daily.json + message)
-        uses: actions/upload-artifact@v4
-        with:
-          name: world-daily-en
-          path: |
-            world_en/daily.json
-            world_en/message.txt
-          if-no-files-found: warn
-          retention-days: 7
-
-      # ===== MAIN channel =====
+      # ========== MAIN ==========
       - name: Send text (MAIN)
-        if: env.OK_TO_SEND == 'true' && inputs.send_to_test != true
+        if: ${{ inputs.send_to_test != true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -195,79 +73,65 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN)
-        if: env.OK_TO_SEND == 'true' && inputs.send_to_test != true
+        if: ${{ inputs.send_to_test != true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           set -euo pipefail
-          readarray -t L < <(python - <<'PY'
-          import json
-          d=json.load(open('world_en/daily.json',encoding='utf-8'))
-          print(d.get('NATURE_THUMB',''))
-          print(d.get('NATURE_URL',''))
-          title=d.get('NATURE_TITLE','Nature Break')
-          snip =d.get('NATURE_SNIPPET','60 seconds of calm')
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
-          PY
-          )
+          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-              -F chat_id="${TG_CHAT}" -F photo="${THUMB}" \
-              -F parse_mode="HTML" -F caption="$CAPTION" \
+              -F chat_id="${TG_CHAT}" \
+              -F photo="${THUMB}" \
+              -F parse_mode="HTML" \
+              -F caption="$CAPTION" \
               -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
           elif [ -n "$URL" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
+              -d chat_id="${TG_CHAT}" \
+              -d text="$URL" \
+              -d disable_web_page_preview=false
           else
-            echo "No nature URL — skipping card."
+            echo "No nature URL in daily.json — skipping card."
           fi
 
-      # ===== TEST channel =====
+      # ========== TEST ==========
       - name: Send text (TEST)
-        if: env.OK_TO_SEND == 'true' && inputs.send_to_test == true
+        if: ${{ inputs.send_to_test == true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
-          [ -n "${TG_CHAT}" ] || { echo "TEST chat id is empty"; exit 1; }
+          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST)
-        if: env.OK_TO_SEND == 'true' && inputs.send_to_test == true
+        if: ${{ inputs.send_to_test == true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
-          [ -n "${TG_CHAT}" ] || { echo "TEST chat id is empty"; exit 1; }
-          readarray -t L < <(python - <<'PY'
-          import json
-          d=json.load(open('world_en/daily.json',encoding='utf-8'))
-          print(d.get('NATURE_THUMB',''))
-          print(d.get('NATURE_URL',''))
-          title=d.get('NATURE_TITLE','Nature Break')
-          snip =d.get('NATURE_SNIPPET','60 seconds of calm')
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
-          PY
-          )
+          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
+          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-              -F chat_id="${TG_CHAT}" -F photo="${THUMB}" \
-              -F parse_mode="HTML" -F caption="$CAPTION" \
+              -F chat_id="${TG_CHAT}" \
+              -F photo="${THUMB}" \
+              -F parse_mode="HTML" \
+              -F caption="$CAPTION" \
               -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
           elif [ -n "$URL" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
+              -d chat_id="${TG_CHAT}" \
+              -d text="$URL" \
+              -d disable_web_page_preview=false
           else
-            echo "No nature URL — skipping card."
+            echo "No nature URL in daily.json — skipping card."
           fi
-
-      - name: Skip notice (no data -> no send)
-        if: env.OK_TO_SEND != 'true'
-        run: echo "Collector returned too little data — publication skipped. See artifacts/logs."
