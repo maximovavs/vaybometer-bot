@@ -30,7 +30,6 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # jinja2 нужно для шаблона
           pip install -r requirements.txt jinja2
 
       - name: Show versions
@@ -41,6 +40,7 @@ jobs:
 
       - name: Collect daily (capture full log; do not fail step)
         id: collect
+        shell: bash
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
@@ -48,19 +48,33 @@ jobs:
           FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
           PYTHONUNBUFFERED: "1"
         run: |
-          # ВАЖНО: лог всегда пишем, код возврата сохраняем, но шаг не валим
-          set -euo pipefail
-          echo "UTC now: $(date -u '+%Y-%m-%d %H:%M:%S')"
+          set -Eeuo pipefail
+          mkdir -p world_en
+          : > world_en/collect.log
+          # Всё, что ниже, одновременно на консоль и в world_en/collect.log
+          exec > >(tee -a world_en/collect.log) 2>&1
+
+          echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
+          echo "PWD: $PWD"
+          echo "Python: $(python -V)"
+
           set +e
-          python -u world_en/world_collect.py 2>&1 | tee world_en/collect.log
-          ec=${PIPESTATUS[0]}
+          python -u world_en/world_collect.py
+          EC=$?
           set -e
-          echo "collector exit code: ${ec}"
+
+          echo "collector exit code: ${EC}"
           echo "---- world_en dir ----"; ls -la world_en || true
-          echo "---- collector log (head) ----"; head -n 120 world_en/collect.log || true
-          echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
-          # Код сохранён в вывод шага (можно использовать далее при желании)
-          echo "exitcode=${ec}" >> "$GITHUB_OUTPUT"
+          if [ -s world_en/daily.json ]; then
+            echo "daily.json size: $(stat -c%s world_en/daily.json) bytes"
+          else
+            echo "NO daily.json produced."
+          fi
+          echo "=== Collect end ==="
+
+          # Сохраним код вывода шага для возможного анализа далее
+          echo "exitcode=${EC}" >> "$GITHUB_OUTPUT"
+          # Не валим шаг — пусть валидатор решает
 
       - name: Validate daily.json (MUST exist)
         id: validate
