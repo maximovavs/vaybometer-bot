@@ -30,23 +30,27 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # jinja2 для шаблона (в requirements может не быть)
           pip install -r requirements.txt jinja2
 
       - name: Show versions
         run: |
           set -euo pipefail
           python - <<'PY'
-          import pkgutil, sys
-          mods=('pendulum','jinja2','requests','pandas','astral')
-          for m in mods:
+          import pkgutil
+          for m in ('pendulum','jinja2','requests','pandas','astral'):
               print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
           PY
 
       - name: Collect daily (capture full log, do not fail pipeline)
+        env:
+          YT_API_KEY:            ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS:  ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
+          PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
-          python -u world_en/world_collect.py > world_en/collect.log 2>&1 || true
+          ( python -u world_en/world_collect.py ) > world_en/collect.log 2>&1 || true
           echo "---- world_en dir ----"; ls -la world_en || true
 
       - name: Validate daily.json (MUST exist)
@@ -55,8 +59,8 @@ jobs:
           set -euo pipefail
           if [ ! -s world_en/daily.json ]; then
             echo "::error::world_en/daily.json is missing — collector failed."
-            echo "---- collector log (head) ----"
-            sed -n '1,200p' world_en/collect.log || true
+            echo "---- collector log (head) ----"; sed -n '1,120p' world_en/collect.log || true
+            echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
             exit 1
           fi
           echo "ok=true" >> "$GITHUB_OUTPUT"
