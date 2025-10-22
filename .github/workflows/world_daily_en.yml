@@ -30,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
+          # jinja2 нужно для рендера шаблона, а в requirements его нет
           pip install -r requirements.txt jinja2
 
       - name: Show versions
@@ -37,11 +38,13 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import pkgutil
-          for m in ('pendulum','jinja2','requests','pandas','astral'):
+          mods = ('pendulum','jinja2','requests','pandas','astral')
+          for m in mods:
               print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
           PY
 
       - name: Collect daily (capture full log, do not fail pipeline)
+        id: collect
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
@@ -50,7 +53,8 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
-          ( python -u world_en/world_collect.py ) > world_en/collect.log 2>&1 || true
+          # Пишем лог и одновременно показываем в консоль
+          python -u world_en/world_collect.py |& tee world_en/collect.log || true
           echo "---- world_en dir ----"; ls -la world_en || true
 
       - name: Validate daily.json (MUST exist)
@@ -58,29 +62,35 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -s world_en/daily.json ]; then
-            echo "::error::world_en/daily.json is missing — collector failed."
-            echo "---- collector log (head) ----"; sed -n '1,120p' world_en/collect.log || true
-            echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
+            echo "Error: world_en/daily.json is missing — collector failed."
+            echo "---- collector log (head) ----"
+            sed -n '1,200p' world_en/collect.log || true
+            echo "---- collector log (tail) ----"
+            tail -n 200 world_en/collect.log || true
             exit 1
           fi
           echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Decide target channel (MAIN/TEST)
+        id: target
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.send_to_test }}" = "true" ]; then
+            echo "to_test=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "to_test=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Chosen target (to_test): $(grep to_test= $GITHUB_OUTPUT || true)"
 
       - name: Render from template
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
-          test -s world_en/message.txt
 
-      - name: Decide target channel (MAIN/TEST)
-        id: decide
+      - name: Ensure message exists (only when we plan to send)
         run: |
           set -euo pipefail
-          val="false"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.send_to_test }}" = "true" ]; then
-            val="true"
-          fi
-          echo "to_test=$val" >> "$GITHUB_OUTPUT"
-          echo "Chosen target (to_test): $val"
+          test -s world_en/message.txt
 
       - name: Upload artifacts
         if: always()
@@ -91,54 +101,32 @@ jobs:
             world_en/collect.log
             world_en/daily.json
             world_en/message.txt
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 7
 
       # ===== MAIN channel =====
       - name: Send text (MAIN)
-        if: steps.decide.outputs.to_test != 'true'
+        if: steps.target.outputs.to_test != 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           set -euo pipefail
-          RESP=$(curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-                   -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
-                   --data-urlencode text@"world_en/message.txt")
-          echo "$RESP"
-          echo "$RESP" | python - <<'PY'
-          import sys,json
-          try:
-              j=json.loads(sys.stdin.read())
-              print("Telegram ok:", j.get("ok"))
-              if j.get("ok"):
-                  res=j["result"]; mid=res.get("message_id")
-                  chat=res.get("chat",{}); uname=chat.get("username"); cid=str(chat.get("id",""))
-                  url=None
-                  if uname:
-                      url=f"https://t.me/{uname}/{mid}"
-                  elif cid.startswith("-100"):
-                      url=f"https://t.me/c/{cid[4:]}/{mid}"
-                  if url: print("Message URL:", url)
-          except Exception as e:
-              print("Parse error:", e)
-          PY
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
+            --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN, only if real daily.json)
-        if: steps.decide.outputs.to_test != 'true' && steps.validate.outputs.ok == 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test != 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python - <<'PY'
-          import json
-          d=json.load(open("world_en/daily.json",encoding="utf-8"))
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL",""))
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm")
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
-          PY
-          )
+          mapfile -t L < <(python -c 'import json,sys; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
+          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
+          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
+          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
@@ -154,46 +142,28 @@ jobs:
 
       # ===== TEST channel =====
       - name: Send text (TEST)
-        if: steps.decide.outputs.to_test == 'true'
+        if: steps.target.outputs.to_test == 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
           if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
-          RESP=$(curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-                   -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
-                   --data-urlencode text@"world_en/message.txt")
-          echo "$RESP"
-          echo "$RESP" | python - <<'PY'
-          import sys,json
-          try:
-              j=json.loads(sys.stdin.read())
-              print("Telegram ok:", j.get("ok"))
-              if j.get("ok"):
-                  res=j["result"]; mid=res.get("message_id")
-                  chat=res.get("chat",{}); cid=str(chat.get("id",""))
-                  url=f"https://t.me/c/{cid[4:]}/{mid}" if cid.startswith("-100") else None
-                  if url: print("Message URL:", url)
-          except Exception as e:
-              print("Parse error:", e)
-          PY
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
+            --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST, only if real daily.json)
-        if: steps.decide.outputs.to_test == 'true' && steps.validate.outputs.ok == 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test == 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python - <<'PY'
-          import json
-          d=json.load(open("world_en/daily.json",encoding="utf-8"))
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL",""))
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm")
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
-          PY
-          )
+          mapfile -t L < <(python -c 'import json,sys; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
+          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
+          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
+          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
