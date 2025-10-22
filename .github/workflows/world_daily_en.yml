@@ -16,6 +16,8 @@ jobs:
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
+      # Надёжный флаг тестового запуска для всех типов событий
+      SEND_TO_TEST: ${{ (github.event_name == 'workflow_dispatch' && inputs.send_to_test) && 'true' || 'false' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +32,6 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # jinja2 нужно для рендера, в requirements его может не быть
           pip install -r requirements.txt jinja2
 
       - name: Show versions
@@ -38,13 +39,11 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import pkgutil
-          mods=('pendulum','jinja2','requests','pandas','astral')
-          for m in mods:
-              ok = 'OK' if pkgutil.find_loader(m) else 'MISSING'
-              print(f'{m}: {ok}')
+          for m in ('pendulum','jinja2','requests','pandas','astral'):
+              print(f'{m}:', 'OK' if pkgutil.find_loader(m) else 'MISSING')
           PY
 
-      # ─────────────────── СБОРКА ДАННЫХ ───────────────────
+      # ── Сборщик: всегда пишем полный лог, но пайплайн не валим ──
       - name: Collect daily (capture full log, do not fail pipeline)
         id: collect
         env:
@@ -56,7 +55,6 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: |
           set +e
-          # Пишем stdout+stderr одновременно и в консоль, и в файл
           python -X faulthandler -u world_en/world_collect.py 2>&1 | tee world_en/collect.log
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           set -e
@@ -73,16 +71,16 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ─────────────────── РЕНДЕР ШАБЛОНА ───────────────────
+      # ── Рендерим ШАБЛОН (только когда есть настоящий daily.json) ──
       - name: Render from template
-        if: steps.validate.outputs.ok == 'true'
+        if: ${{ steps.validate.outputs.ok == 'true' }}
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
 
-      # ─────────────────── ФОЛБЭК ТОЛЬКО ДЛЯ TEST ───────────────────
+      # ── ФОЛБЭК — доступен ТОЛЬКО в TEST ──
       - name: Fallback — build message.txt (TEST only)
-        if: steps.validate.outputs.ok != 'true' && inputs.send_to_test == true
+        if: ${{ steps.validate.outputs.ok != 'true' && env.SEND_TO_TEST == 'true' }}
         shell: python
         run: |
           from pathlib import Path
@@ -93,12 +91,12 @@ jobs:
           )
 
       - name: Ensure message exists (only when we plan to send)
-        if: (steps.validate.outputs.ok == 'true' && inputs.send_to_test != true) || inputs.send_to_test == true
+        if: ${{ (steps.validate.outputs.ok == 'true' && env.SEND_TO_TEST == 'false') || env.SEND_TO_TEST == 'true' }}
         run: |
           set -euo pipefail
           test -s world_en/message.txt
 
-      # ─────────────────── АРТЕФАКТЫ ───────────────────
+      # ── Артефакты для дебага ──
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -111,9 +109,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # ===== MAIN channel (только если есть настоящий daily.json) =====
+      # ===== MAIN (только реальный шаблон) =====
       - name: Send text (MAIN)
-        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test != true
+        if: ${{ steps.validate.outputs.ok == 'true' && env.SEND_TO_TEST == 'false' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -124,7 +122,7 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN)
-        if: steps.validate.outputs.ok == 'true' && inputs.send_to_test != true
+        if: ${{ steps.validate.outputs.ok == 'true' && env.SEND_TO_TEST == 'false' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -147,9 +145,9 @@ jobs:
             echo "No nature URL — skipping card."
           fi
 
-      # ===== TEST channel =====
+      # ===== TEST =====
       - name: Send text (TEST)
-        if: ${{ inputs.send_to_test == true }}
+        if: ${{ env.SEND_TO_TEST == 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
@@ -161,7 +159,7 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST)
-        if: inputs.send_to_test == true
+        if: ${{ env.SEND_TO_TEST == 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
