@@ -35,8 +35,12 @@ jobs:
       - name: Show versions
         run: |
           set -euo pipefail
-          python -c "import pkgutil; mods=('pendulum','jinja2','requests','pandas','astral'); \
-          print('\n'.join(f'{m}: ' + ('OK' if pkgutil.find_loader(m) else 'MISSING') for m in mods))"
+          python - <<'PY'
+import pkgutil
+mods = ('pendulum','jinja2','requests','pandas','astral')
+for m in mods:
+    print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
+PY
 
       - name: Collect daily (capture full log; do not fail step)
         id: collect
@@ -50,53 +54,36 @@ jobs:
           set -Eeuo pipefail
           mkdir -p world_en
           : > world_en/collect.log
-          exec > >(tee -a world_en/collect.log) 2>&1
-
-          echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
-          echo "PWD: $PWD"
-          echo "Python: $(python -V)"
-
-          # Try as module, then as a script (some projects rely on one of two).
-          set +e
-          python -u -m world_en.world_collect
-          EC=$?
-          if [ $EC -ne 0 ]; then
-            echo "[info] module run returned $EC, retrying as script…"
-            python -u world_en/world_collect.py
+          {
+            echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
+            echo "PWD: $PWD"
+            echo "Python: $(python -V)"
+            # запускаем как модуль (если пакетируется), иначе как скрипт
+            python -u -m world_en.world_collect || python -u world_en/world_collect.py
             EC=$?
-          fi
-          set -e
+            echo "collector exit code: $EC"
+            echo "---- world_en dir ----"; ls -la world_en || true
+            if [ -s world_en/daily.json ]; then
+              echo "daily.json size: $(stat -c%s world_en/daily.json) bytes"
+            else
+              echo "NO daily.json produced."
+            fi
+            echo "=== Collect end ==="
+            exit $EC
+          } | tee -a world_en/collect.log
 
-          echo "collector exit code: ${EC}"
-
-          # If daily.json appeared elsewhere, copy it into the expected location.
-          FOUND="$(find . -maxdepth 5 -type f -name 'daily.json' ! -path './world_en/daily.json' | head -n 1 || true)"
-          if [ -n "$FOUND" ]; then
-            echo "Found daily.json at: $FOUND (moving to world_en/daily.json)"
-            cp -f "$FOUND" world_en/daily.json || true
-          fi
-
-          echo "---- world_en dir ----"; ls -la world_en || true
-          if [ -s world_en/daily.json ]; then
-            echo "daily.json size: $(stat -c%s world_en/daily.json) bytes"
-          else
-            echo "NO daily.json produced."
-          fi
-          echo "=== Collect end ==="
-
-          echo "exitcode=${EC}" >> "$GITHUB_OUTPUT"
-
-      - name: Validate daily.json (existence only — do not fail job)
+      - name: Validate daily.json (MUST exist)
         id: validate
         run: |
           set -euo pipefail
           if [ -s world_en/daily.json ]; then
-            echo "ok=true"  >> "$GITHUB_OUTPUT"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "Error: world_en/daily.json is missing — collector failed."
             echo "---- collector log (head) ----"; head -n 120 world_en/collect.log || true
             echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
+            exit 1
           fi
 
       - name: Decide target channel (MAIN/TEST)
@@ -110,186 +97,11 @@ jobs:
           echo "to_test=${TO_TEST}" >> "$GITHUB_OUTPUT"
           echo "Chosen target (to_test): ${TO_TEST}"
 
-      - name: Render from template (real daily.json)
-        if: steps.validate.outputs.ok == 'true'
+      - name: Render from template
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
-
-      - name: Fallback — build message.txt + minimal daily.json (TEST-friendly)
-        if: steps.validate.outputs.ok != 'true'
-        env:
-          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-import os, re, json, pendulum, requests
-from pathlib import Path
-
-def _om_temp(lat, lon):
-    try:
-        j=requests.get("https://api.open-meteo.com/v1/forecast",
-                       params={"latitude":lat,"longitude":lon,"current":"temperature_2m","timezone":"UTC"},
-                       timeout=15).json()
-        cur=j.get("current") or {}
-        t=cur.get("temperature_2m")
-        return float(t) if isinstance(t,(int,float)) else None
-    except Exception:
-        return None
-
-def earth_extremes():
-    hot_cands=[("Jazan, SA",16.889,42.570),("Dallol, ET",14.241,40.300),("Basra, IQ",30.50,47.82),("Death Valley, US",36.462,-116.866)]
-    cold_cands=[("Dome A, AQ",-80.37,77.53),("Vostok, AQ",-78.47,106.87),("South Pole, AQ",-90.0,0.0)]
-    hot=cold=None
-    for name,la,lo in hot_cands:
-        t=_om_temp(la,lo)
-        if isinstance(t,(int,float)) and (hot is None or t>hot[1]): hot=(name,t)
-    for name,la,lo in cold_cands:
-        t=_om_temp(la,lo)
-        if isinstance(t,(int,float)) and (cold is None or t<cold[1]): cold=(name,t)
-    hot_txt = ("%s  %.0f°C" % hot) if hot else None
-    cold_txt= ("%s %.0f°C" % cold) if cold else None
-    return hot_txt,cold_txt
-
-def kp_world_like():
-    try:
-        data=requests.get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",timeout=20).json()
-        rows=[]
-        for r in data[1:]:
-            try:
-                ts=pendulum.parse(r[0]).in_tz("UTC"); val=float(r[1]); rows.append((ts,val))
-            except Exception:
-                pass
-        if not rows: raise RuntimeError("empty")
-        now=pendulum.now("UTC")
-        end=now.replace(minute=0,second=0,microsecond=0); end=end.subtract(hours=end.hour%3); start=end.subtract(hours=3)
-        last=None
-        for ts,val in reversed(rows):
-            if start<=ts<end:
-                last=(ts,val); break
-        if not last: last=rows[-1]
-        v=round(float(last[1]),1); age=max(0,int((now-end).total_seconds()//60))
-        note=("quiet" if v<3 else ("active" if v<5 else "storm"))
-        return v,note,age
-    except Exception:
-        return None,None,None
-
-def solar_wind():
-    try:
-        from air import get_solar_wind
-        d=get_solar_wind() or {}; v=d.get("speed_kms"); n=d.get("density"); st=d.get("status")
-        parts=[]
-        if isinstance(v,(int,float)): parts.append("%d km/s" % int(round(v)))
-        if isinstance(n,(int,float)): parts.append("%.1f cm^-3" % float(n))
-        s=" , ".join(parts)
-        return (s + (" — "+st if s and st else "")) if s or st else None
-    except Exception:
-        return None
-
-def schumann_live():
-    try:
-        import schumann
-        if hasattr(schumann,"get_schumann"):
-            p=schumann.get_schumann() or {}
-            f=p.get("freq"); a=p.get("amp"); s=p.get("status")
-            bits=[]
-            if isinstance(f,(int,float)): bits.append("%.2f Hz" % f)
-            if isinstance(a,(int,float)): bits.append("%.2f pT" % a)
-            if s: bits.append(str(s))
-            return " / ".join(bits) if bits else None
-    except Exception:
-        pass
-    for path in ("schumann_hourly.json","world_en/schumann_hourly.json","data/schumann_hourly.json"):
-        try:
-            p=Path(path)
-            if p.exists():
-                arr=json.loads(p.read_text("utf-8"))
-                if isinstance(arr,list) and arr:
-                    last=arr[-1]; f=last.get("freq"); a=last.get("amp")
-                    bits=[]
-                    if isinstance(f,(int,float)): bits.append("%.2f Hz" % f)
-                    if isinstance(a,(int,float)): bits.append("%.2f pT" % a)
-                    if bits: return " / ".join(bits)
-        except Exception:
-            pass
-    return None
-
-def quake_max():
-    try:
-        j=requests.get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",timeout=20).json()
-        feats=j.get("features",[])
-        if not feats: return None
-        best=max(feats,key=lambda f:(f.get("properties",{}).get("mag") or 0))
-        prop=best.get("properties",{})
-        mag=prop.get("mag"); place=(prop.get("place") or "").strip()
-        tms=prop.get("time")
-        when=pendulum.from_timestamp(tms/1000,tz="UTC").format("HH:mm") if isinstance(tms,(int,float)) else ""
-        depth=None
-        try: depth=best.get("geometry",{}).get("coordinates",[None,None,None])[2]
-        except Exception: pass
-        parts=[]
-        if isinstance(mag,(int,float)): parts.append("M%.1f" % mag)
-        if isinstance(depth,(int,float)): parts.append("depth %d km" % round(depth))
-        if when: parts.append(when+" UTC")
-        if place: parts.append(place)
-        return ", ".join(parts)
-    except Exception:
-        return None
-
-def sunrise():
-    try:
-        from astral.sun import sun
-        from astral import LocationInfo
-        loc=LocationInfo("Reykjavik","IS","Atlantic/Reykjavik",64.1466,-21.9426)
-        s=sun(loc.observer,tzinfo="UTC")
-        return "Sunrise — Reykjavik, IS, %s UTC" % s["sunrise"].strftime("%H:%M")
-    except Exception:
-        return None
-
-now=pendulum.now("UTC").format("ddd, YYYY-MM-DD (HH:mm [UTC])")
-lines=["🌍 World Vibe Snapshot • %s" % now, "", "Cosmic Weather"]
-k,note,age=kp_world_like()
-if isinstance(k,(int,float)):
-    age_txt=", %dh ago" % (age//60) if isinstance(age,int) and age>=180 else (", %d min ago" % age if isinstance(age,int) else "")
-    lines.append("- Geomagnetic (Kp):  %.1f — %s%s" % (k,note,age_txt))
-else:
-    lines.append("- Geomagnetic (Kp):  n/a")
-sch=schumann_live(); lines.append("- Schumann: %s" % sch if sch else "- Schumann: baseline (7.83 Hz)")
-sw=solar_wind();     lines.append("- Solar wind: %s" % (sw or "—"))
-lines.append("Earth Live")
-hot,cold=earth_extremes()
-if hot or cold: lines.append("• Hottest: %s   Coldest: %s" % (hot or "n/a", cold or "n/a"))
-else:           lines.append("• Hottest: n/a   Coldest: n/a")
-q=quake_max();  lines.append("• Strongest quake 24h: %s" % (q or "n/a"))
-sun_txt=sunrise(); lines.append("• Sunlight tidbit: %s" % (sun_txt or "n/a"))
-lines += ["", "Vibe Tip (Kp • sec)", "", "PS: Weather-sensitive? Save & share 🌿", "#DailyCalm #CosmicWeather"]
-Path("world_en/message.txt").write_text("\n".join(lines), "utf-8")
-
-# Minimal daily.json so the Nature card can still work (TEST-friendly).
-raw = os.getenv("FALLBACK_NATURE_LIST","").strip()
-urls = [u.strip() for u in re.split(r'[,\s]+', raw) if u.strip()] if raw else []
-url  = urls[0] if urls else "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-m = re.search(r'youtu\.be/([A-Za-z0-9_-]{6,})', url) or re.search(r'v=([A-Za-z0-9_-]{6,})', url)
-thumb = ("https://i.ytimg.com/vi/%s/hqdefault.jpg" % m.group(1)) if m else ""
-out = {
-  "NATURE_TITLE":   "Nature Break",
-  "NATURE_SNIPPET": "Short calm video",
-  "NATURE_URL":     url,
-  "NATURE_THUMB":   thumb
-}
-Path("world_en/daily.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), "utf-8")
-print("Wrote fallback world_en/daily.json with URL:", url)
-PY
-
-      - name: Ensure message exists (only when we plan to send)
-        id: msg
-        run: |
-          set -euo pipefail
-          if [ -s world_en/message.txt ]; then
-            echo "have_msg=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "have_msg=false" >> "$GITHUB_OUTPUT"
-          fi
+          test -s world_en/message.txt
 
       - name: Upload artifacts
         if: always()
@@ -305,7 +117,7 @@ PY
 
       # ===== MAIN channel =====
       - name: Send text (MAIN)
-        if: steps.target.outputs.to_test != 'true' && steps.msg.outputs.have_msg == 'true'
+        if: ${{ steps.target.outputs.to_test != 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -316,7 +128,7 @@ PY
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN, only if real daily.json)
-        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test != 'true'
+        if: ${{ steps.target.outputs.to_test != 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -341,7 +153,7 @@ PY
 
       # ===== TEST channel =====
       - name: Send text (TEST)
-        if: steps.target.outputs.to_test == 'true' && steps.msg.outputs.have_msg == 'true'
+        if: ${{ steps.target.outputs.to_test == 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
@@ -353,7 +165,7 @@ PY
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST, only if real daily.json)
-        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test == 'true'
+        if: ${{ steps.target.outputs.to_test == 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
