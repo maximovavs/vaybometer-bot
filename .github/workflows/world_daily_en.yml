@@ -2,12 +2,12 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC
+    - cron: "15 7 * * *"     # 07:15 UTC
   workflow_dispatch:
     inputs:
       send_to_test:
         type: boolean
-        description: "Send to TEST channel instead of main"
+        description: "Send to TEST channel instead of MAIN"
         default: false
 
 jobs:
@@ -30,20 +30,21 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # jinja2 нужно для рендера шаблона, а в requirements его нет
-          pip install -r requirements.txt jinja2
+          # jinja2 нужно для шаблона; на всякий случай дотащим и базовые либы
+          pip install -r requirements.txt jinja2 requests pendulum astral pandas
 
       - name: Show versions
         run: |
           set -euo pipefail
+          python -V
+          pip list | sort | sed -n '1,120p'
           python - <<'PY'
           import pkgutil
           mods = ('pendulum','jinja2','requests','pandas','astral')
-          for m in mods:
-              print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
+          print("\n".join(f"{m}: "+("OK" if pkgutil.find_loader(m) else "MISSING") for m in mods))
           PY
 
-      - name: Collect daily (capture full log, do not fail pipeline)
+      - name: Collect daily (capture full log; do not fail step)
         id: collect
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
@@ -53,41 +54,50 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
-          # Пишем лог и одновременно показываем в консоль
-          python -u world_en/world_collect.py |& tee world_en/collect.log || true
-          echo "---- world_en dir ----"; ls -la world_en || true
+          echo "---- world_en dir before ----"; ls -la world_en || true
+          # Пишем И в файл, И в job log; сохраняем код выхода
+          set +e
+          python -u world_en/world_collect.py 2>&1 | tee world_en/collect.log
+          EC=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=${EC}" >> "$GITHUB_OUTPUT"
+          echo "Collector exit code: ${EC}"
 
       - name: Validate daily.json (MUST exist)
         id: validate
         run: |
           set -euo pipefail
-          if [ ! -s world_en/daily.json ]; then
-            echo "Error: world_en/daily.json is missing — collector failed."
-            echo "---- collector log (head) ----"
-            sed -n '1,200p' world_en/collect.log || true
-            echo "---- collector log (tail) ----"
-            tail -n 200 world_en/collect.log || true
-            exit 1
+          if [ -s world_en/daily.json ]; then
+            echo "ok=true"  >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "ok=true" >> "$GITHUB_OUTPUT"
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          echo "Error: world_en/daily.json is missing — collector failed."
+          echo "---- collector log (head) ----"; head -n 120 world_en/collect.log || true
+          echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
+          exit 1
 
       - name: Decide target channel (MAIN/TEST)
-        id: target
+        id: decide
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.send_to_test }}" = "true" ]; then
             echo "to_test=true"  >> "$GITHUB_OUTPUT"
+            CHOSEN=true
           else
             echo "to_test=false" >> "$GITHUB_OUTPUT"
+            CHOSEN=false
           fi
-          echo "Chosen target (to_test): $(grep to_test= $GITHUB_OUTPUT || true)"
+          echo "Chosen target (to_test): ${CHOSEN}"
 
       - name: Render from template
+        if: steps.validate.outputs.ok == 'true'
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
 
       - name: Ensure message exists (only when we plan to send)
+        if: steps.validate.outputs.ok == 'true'
         run: |
           set -euo pipefail
           test -s world_en/message.txt
@@ -106,7 +116,7 @@ jobs:
 
       # ===== MAIN channel =====
       - name: Send text (MAIN)
-        if: steps.target.outputs.to_test != 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.decide.outputs.to_test != 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -117,16 +127,20 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN, only if real daily.json)
-        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test != 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.decide.outputs.to_test != 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python -c 'import json,sys; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
+          mapfile -t L < <(python - <<'PY'
+          import json
+          d=json.load(open("world_en/daily.json",encoding="utf-8"))
+          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL",""));
+          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm");
+          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+          PY
+          )
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
@@ -136,13 +150,11 @@ jobs:
           elif [ -n "$URL" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
-          else
-            echo "No nature URL — skipping card."
           fi
 
       # ===== TEST channel =====
       - name: Send text (TEST)
-        if: steps.target.outputs.to_test == 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.decide.outputs.to_test == 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
@@ -154,16 +166,20 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST, only if real daily.json)
-        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test == 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.decide.outputs.to_test == 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python -c 'import json,sys; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
+          mapfile -t L < <(python - <<'PY'
+          import json
+          d=json.load(open("world_en/daily.json",encoding="utf-8"))
+          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL",""));
+          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm");
+          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+          PY
+          )
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
@@ -174,6 +190,4 @@ jobs:
           elif [ -n "$URL" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
-          else
-            echo "No nature URL — skipping card."
           fi
