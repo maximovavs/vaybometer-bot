@@ -51,19 +51,33 @@ jobs:
           set -Eeuo pipefail
           mkdir -p world_en
           : > world_en/collect.log
-          # Всё, что ниже, одновременно на консоль и в world_en/collect.log
+          # Весь вывод шага дублируем в world_en/collect.log
           exec > >(tee -a world_en/collect.log) 2>&1
 
           echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
           echo "PWD: $PWD"
           echo "Python: $(python -V)"
 
+          # Пробуем как модуль (корректный пакетный запуск), затем как файл
           set +e
-          python -u world_en/world_collect.py
+          python -u -m world_en.world_collect
           EC=$?
+          if [ $EC -ne 0 ]; then
+            echo "[info] module run returned $EC, retrying as script…"
+            python -u world_en/world_collect.py
+            EC=$?
+          fi
           set -e
 
           echo "collector exit code: ${EC}"
+
+          # Если daily.json вдруг создан не в ожидаемом месте — покажем и переложим.
+          FOUND="$(find . -maxdepth 5 -type f -name 'daily.json' ! -path './world_en/daily.json' | head -n 1 || true)"
+          if [ -n "$FOUND" ]; then
+            echo "Found daily.json at: $FOUND (moving to world_en/daily.json)"
+            cp -f "$FOUND" world_en/daily.json || true
+          fi
+
           echo "---- world_en dir ----"; ls -la world_en || true
           if [ -s world_en/daily.json ]; then
             echo "daily.json size: $(stat -c%s world_en/daily.json) bytes"
@@ -72,9 +86,7 @@ jobs:
           fi
           echo "=== Collect end ==="
 
-          # Сохраним код вывода шага для возможного анализа далее
           echo "exitcode=${EC}" >> "$GITHUB_OUTPUT"
-          # Не валим шаг — пусть валидатор решает
 
       - name: Validate daily.json (MUST exist)
         id: validate
