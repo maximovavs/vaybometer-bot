@@ -30,22 +30,17 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # jinja2 нужно для рендера шаблона
-          pip install jinja2
+          # jinja2 нужно для шаблона
+          pip install -r requirements.txt jinja2
 
       - name: Show versions
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import pkgutil, sys
-          mods = ['pendulum','jinja2','requests','pandas','astral']
-          for m in mods:
-              print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
-          print('Python:', sys.version)
-          PY
+          python -c "import pkgutil; mods=('pendulum','jinja2','requests','pandas','astral'); \
+          print('\n'.join(f'{m}: ' + ('OK' if pkgutil.find_loader(m) else 'MISSING') for m in mods))"
 
-      - name: Collect daily (capture full log, do not fail step)
+      - name: Collect daily (capture full log; do not fail step)
+        id: collect
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
@@ -53,17 +48,19 @@ jobs:
           FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
           PYTHONUNBUFFERED: "1"
         run: |
+          # ВАЖНО: лог всегда пишем, код возврата сохраняем, но шаг не валим
           set -euo pipefail
-          GH_LOG="world_en/collector_gh.log"
-          : > "$GH_LOG"
-          # Пишем stdout+stderr коллектора в отдельный лог и на экран
-          python -u world_en/world_collect.py 2>&1 | tee -a "$GH_LOG"
+          echo "UTC now: $(date -u '+%Y-%m-%d %H:%M:%S')"
+          set +e
+          python -u world_en/world_collect.py 2>&1 | tee world_en/collect.log
           ec=${PIPESTATUS[0]}
-          echo "collector exit code: $ec" | tee -a "$GH_LOG"
-          echo "---- world_en dir ----" | tee -a "$GH_LOG"
-          ls -la world_en | tee -a "$GH_LOG" || true
-          # Не фейлим шаг - жёсткая проверка будет ниже
-          exit 0
+          set -e
+          echo "collector exit code: ${ec}"
+          echo "---- world_en dir ----"; ls -la world_en || true
+          echo "---- collector log (head) ----"; head -n 120 world_en/collect.log || true
+          echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
+          # Код сохранён в вывод шага (можно использовать далее при желании)
+          echo "exitcode=${ec}" >> "$GITHUB_OUTPUT"
 
       - name: Validate daily.json (MUST exist)
         id: validate
@@ -71,23 +68,24 @@ jobs:
           set -euo pipefail
           if [ -s world_en/daily.json ]; then
             echo "ok=true"  >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "Error: world_en/daily.json is missing — collector failed."
-            echo "---- collector log (head) ----"; head -n 80 world_en/collector_gh.log || true
-            echo "---- collector log (tail) ----"; tail -n 80 world_en/collector_gh.log || true
-            exit 1
+            exit 0
           fi
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          echo "Error: world_en/daily.json is missing — collector failed."
+          echo "---- collector log (head) ----"; head -n 120 world_en/collect.log || true
+          echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
+          exit 1
 
       - name: Decide target channel (MAIN/TEST)
         id: target
         run: |
           set -euo pipefail
+          TO_TEST=false
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.send_to_test }}" = "true" ]; then
-            echo "to_test=true"  >> "$GITHUB_OUTPUT"
-          else
-            echo "to_test=false" >> "$GITHUB_OUTPUT"
+            TO_TEST=true
           fi
+          echo "to_test=${TO_TEST}" >> "$GITHUB_OUTPUT"
+          echo "Chosen target (to_test): ${TO_TEST}"
 
       - name: Render from template
         if: steps.validate.outputs.ok == 'true'
@@ -102,7 +100,6 @@ jobs:
         with:
           name: world-daily-en-artifacts
           path: |
-            world_en/collector_gh.log
             world_en/collect.log
             world_en/daily.json
             world_en/message.txt
@@ -111,7 +108,7 @@ jobs:
 
       # ===== MAIN channel =====
       - name: Send text (MAIN)
-        if: steps.target.outputs.to_test != 'true' && steps.validate.outputs.ok == 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test != 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -122,7 +119,7 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN, only if real daily.json)
-        if: steps.target.outputs.to_test != 'true' && steps.validate.outputs.ok == 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test != 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -147,7 +144,7 @@ jobs:
 
       # ===== TEST channel =====
       - name: Send text (TEST)
-        if: steps.target.outputs.to_test == 'true' && steps.validate.outputs.ok == 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test == 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
@@ -159,7 +156,7 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST, only if real daily.json)
-        if: steps.target.outputs.to_test == 'true' && steps.validate.outputs.ok == 'true'
+        if: steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test == 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
