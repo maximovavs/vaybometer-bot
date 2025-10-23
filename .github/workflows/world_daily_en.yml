@@ -35,14 +35,10 @@ jobs:
       - name: Show versions
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import pkgutil
-          mods=('pendulum','jinja2','requests','pandas','astral')
-          for m in mods:
-              print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
-          PY
+          python -c "import pkgutil; mods=('pendulum','jinja2','requests','pandas','astral'); \
+          print('\n'.join(f'{m}: ' + ('OK' if pkgutil.find_loader(m) else 'MISSING') for m in mods))"
 
-      - name: Collect daily (capture logs; do not fail step)
+      - name: Collect daily (capture full log; do not fail step)
         id: collect
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
@@ -53,43 +49,34 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p world_en
-
           {
             echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
             echo "PWD: $PWD"
             echo "Python: $(python -V)"
-
-            # Запускаем модуль через runpy, чтобы получить traceback при исключениях
-            python -u - <<'PY'
-            import runpy, sys, os
-            try:
-                runpy.run_module("world_en.world_collect", run_name="__main__")
-                sys.exit(0)
-            except SystemExit as e:
-                sys.exit(e.code if isinstance(e.code, int) else 0)
-            except Exception:
-                import traceback; traceback.print_exc()
-                sys.exit(1)
-            PY
+            # сам сборщик
+            python -u -m world_en.world_collect || true
             EC=$?
             echo "collector exit code: $EC"
-
             echo "---- world_en dir ----"
             ls -la world_en || true
-
-            echo "---- search for daily.json anywhere (maxdepth 3) ----"
-            FOUND="$(find . -maxdepth 3 -type f -name 'daily.json' -print | sed -n '1p' || true)"
+            # иногда json пишется не туда — ищем и переносим
+            FOUND="$(find . -maxdepth 3 -type f -name 'daily.json' -print | head -n1 || true)"
             if [ -n "$FOUND" ] && [ "$FOUND" != "./world_en/daily.json" ]; then
               echo "Found stray daily.json at: $FOUND"
               cp -f "$FOUND" world_en/daily.json || true
             fi
-
             if [ -s world_en/daily.json ]; then
               echo "daily.json size: $(stat -c%s world_en/daily.json) bytes"
             else
               echo "NO daily.json produced."
             fi
-
+            # собственный лог коллектора (если он его пишет)
+            if [ -f world_en/collect.log ]; then
+              echo "---- collector log (head) ----"; head -n 120 world_en/collect.log || true
+              echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
+            else
+              echo "collector own log not found (world_en/collect.log)"
+            fi
             echo "=== Collect end ==="
           } 2>&1 | tee world_en/collect.wrap.log
 
@@ -104,12 +91,6 @@ jobs:
             echo "Error: world_en/daily.json is missing — collector failed."
             echo "---- wrapper log (head) ----"; head -n 200 world_en/collect.wrap.log || true
             echo "---- wrapper log (tail) ----"; tail -n 200 world_en/collect.wrap.log || true
-            if [ -f world_en/collect.log ]; then
-              echo "---- collector own log (head) ----"; head -n 200 world_en/collect.log || true
-              echo "---- collector own log (tail) ----"; tail -n 200 world_en/collect.log || true
-            else
-              echo "collector own log not found (world_en/collect.log)"
-            fi
             exit 1
           fi
 
@@ -165,8 +146,8 @@ jobs:
           set -euo pipefail
           mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
           print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
+          t=d.get("NATURE_TITLE","Nature Break"); s=d.get("NATURE_SNIPPET","60 seconds of calm"); \
+          print(f"🌊 <b>{t}</b>\n<i>{s}</i>")')
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
@@ -202,8 +183,8 @@ jobs:
           set -euo pipefail
           mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
           print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
+          t=d.get("NATURE_TITLE","Nature Break"); s=d.get("NATURE_SNIPPET","60 seconds of calm"); \
+          print(f"🌊 <b>{t}</b>\n<i>{s}</i>")')
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
