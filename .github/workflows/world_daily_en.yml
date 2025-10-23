@@ -2,7 +2,7 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 06,16 * * *"   # два раза в сутки (UTC); подстрой если нужно
+    - cron: "15 06,16 * * *"     # два раза в сутки (UTC)
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -36,8 +36,15 @@ jobs:
           pip list | sed -n '1,120p'
           ls -la world_en || true
 
-      # --- Сбор данных (обёртка) ---
-      - name: Collect daily (wrapped; keeps full log)
+      - name: Show env presence (not failing)
+        run: |
+          for v in YT_API_KEY YT_CHANNEL_ID YOUTUBE_PLAYLIST_IDS FALLBACK_NATURE_LIST OWM_KEY AIRVISUAL_KEY TOMORROW_KEY OPENAI_API_KEY GROQ_API_KEY GEMINI_API_KEY TELEGRAM_BOT_TOKEN_EN TELEGRAM_CHAT_ID_EN TELEGRAM_TOKEN_TEST CHANNEL_ID_TEST; do
+            eval 'val="${'$v':-}"'
+            if [ -n "$val" ]; then echo "OK $v=SET"; else echo "WARN $v=EMPTY"; fi
+          done
+
+      # ---------- СБОР ----------
+      - name: Collect daily (capture full log)
         env:
           YT_API_KEY:           ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:        ${{ secrets.YT_CHANNEL_ID }}
@@ -52,24 +59,20 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p world_en
-          echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ===" | tee world_en/collect.wrap.log
+          echo "=== Collect start UTC: $(date -u '+%F %T') ===" | tee world_en/collect.wrap.log
           echo "PWD: $(pwd)" | tee -a world_en/collect.wrap.log
           echo "Python: $(python -V 2>&1)" | tee -a world_en/collect.wrap.log
           echo "---- world_en dir (before) ----" | tee -a world_en/collect.wrap.log
           ls -la world_en | tee -a world_en/collect.wrap.log
           echo "-- running collector --" | tee -a world_en/collect.wrap.log
 
-          # Запуск твоего сборщика
-          if python world_en/world_collect.py >> world_en/collect.wrap.log 2>&1; then
-            echo "collector exit code: 0" | tee -a world_en/collect.wrap.log
-          else
-            echo "collector FAILED" | tee -a world_en/collect.wrap.log
-          fi
+          # ВАЖНО: пишем stdout/stderr в отдельный лог
+          python -u world_en/world_collect.py 2>&1 | tee world_en/collect.log
 
           echo "---- поиск daily.json ----" | tee -a world_en/collect.wrap.log
           find . -maxdepth 3 -type f -name 'daily.json' -ls | tee -a world_en/collect.wrap.log || true
 
-          # если daily.json появился не в world_en — копируем
+          # Если json создан не в world_en — перенесём
           if [ ! -s world_en/daily.json ]; then
             F="$(find . -maxdepth 3 -type f -name 'daily.json' -print | head -n1 || true)"
             if [ -n "$F" ] && [ "$F" != "world_en/daily.json" ]; then cp -f "$F" world_en/daily.json; fi
@@ -79,34 +82,28 @@ jobs:
           ls -la world_en | tee -a world_en/collect.wrap.log
           echo "=== Collect end ===" | tee -a world_en/collect.wrap.log
 
-      - name: Ensure daily.json exists (MUST exist)
-        run: |
-          set -Eeuo pipefail
-          if [ ! -s world_en/daily.json ]; then
-            echo "Error: world_en/daily.json is missing — collector failed."
-            echo "---- wrapper log (tail) ----"
-            tail -n 200 world_en/collect.wrap.log || true
-            exit 1
-          fi
-
+      # ---------- РЕНДЕР (только если есть json) ----------
       - name: Render message
+        if: ${{ hashFiles('world_en/daily.json') != '' }}
         run: |
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           test -s world_en/message.txt
 
+      # ---------- АРТЕФАКТЫ — ВСЕГДА ----------
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: world-daily-en-artifacts
           path: |
+            world_en/collect.log
             world_en/collect.wrap.log
             world_en/daily.json
             world_en/message.txt
 
-      # -------- MAIN ----------
+      # ---------- ОТПРАВКА ----------
       - name: Send text (MAIN)
-        if: ${{ inputs.send_to_test != true }}
+        if: ${{ inputs.send_to_test != true && hashFiles('world_en/message.txt') != '' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -115,9 +112,8 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      # -------- TEST ----------
       - name: Send text (TEST)
-        if: ${{ inputs.send_to_test == true }}
+        if: ${{ inputs.send_to_test == true && hashFiles('world_en/message.txt') != '' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
@@ -126,3 +122,13 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
+
+      # ---------- ФИНАЛЬНЫЙ ФЕЙЛ, если json так и нет ----------
+      - name: Hard fail if daily.json missing
+        run: |
+          if [ ! -s world_en/daily.json ]; then
+            echo "Error: world_en/daily.json is missing — collector failed."
+            echo "---- collect.log (tail) ----"; tail -n 120 world_en/collect.log || true
+            echo "---- collect.wrap.log (tail) ----"; tail -n 120 world_en/collect.wrap.log || true
+            exit 1
+          fi
