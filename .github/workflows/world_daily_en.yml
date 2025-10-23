@@ -1,20 +1,13 @@
 name: world-daily-en
 
 on:
-  schedule:
-    - cron: "15 7 * * *" # 07:15 UTC
   workflow_dispatch:
     inputs:
-      send_to_test:
-        type: boolean
-        description: "Send to TEST channel instead of main"
-        default: false
-  push:
-    branches: [ "main" ]
-    paths:
-      - ".github/workflows/world_daily_en.yml"
-      - "world_en/**"
-      - "requirements.txt"
+      send_to:
+        description: "Куда отправлять сообщение"
+        type: choice
+        options: [MAIN, TEST, NONE]
+        default: MAIN
 
 jobs:
   run:
@@ -24,23 +17,22 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
 
     steps:
-      - name: Checkout
+      - name: Set up job
+        run: echo "Start $GITHUB_WORKFLOW on $GITHUB_REF"
+
+      - name: Run actions/checkout@v4
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Run actions/setup-python@v5
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
-          set -Eeuo pipefail
           python -V
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install jinja2
+          python -m pip install -U pip wheel
+          python -m pip install -U requests pandas jinja2 astral pendulum
 
       - name: Show versions
         run: |
@@ -52,6 +44,23 @@ jobs:
               print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
           PY
 
+      # Показываем, какие секреты заданы (значения не печатаем).
+      - name: Preflight (secrets)
+        env:
+          YT_API_KEY:            ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS:  ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
+          TG_TOKEN:              ${{ secrets.TG_TOKEN }}
+          TG_CHAT_MAIN:          ${{ secrets.TG_CHAT_MAIN }}
+          TG_CHAT_TEST:          ${{ secrets.TG_CHAT_TEST }}
+        run: |
+          set -Eeuo pipefail
+          for v in YT_API_KEY YT_CHANNEL_ID YOUTUBE_PLAYLIST_IDS FALLBACK_NATURE_LIST TG_TOKEN TG_CHAT_MAIN TG_CHAT_TEST; do
+            if [ -n "${!v:-}" ]; then echo "$v=SET"; else echo "$v=MISSING"; fi
+          done
+
+      # Обёртка вокруг сборщика: всегда пишет подробный лог и НЕ роняет шаг.
       - name: Collect daily (capture full log; do not fail step)
         id: collect
         env:
@@ -61,14 +70,30 @@ jobs:
           FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
           PYTHONUNBUFFERED: "1"
         run: |
-          set -Eeuo pipefail
+          set -uo pipefail
           mkdir -p world_en
-          # ведём полный лог и сохраняем код возврата python
-          ( python -u world_en/world_collect.py |& tee world_en/collect.log ); code=$?
-          echo "=== world_en dir ==="; ls -la world_en || true
-          echo "=== collector log (head) ==="; head -n 120 world_en/collect.log || true
-          exit $code
+          {
+            echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
+            echo "PWD: $(pwd)"
+            echo "Python: $(python -V)"
+            echo "---- world_en dir (before) ----"; ls -la world_en || true
+            echo "-- running collector --"
+            # Лог самого сборщика:
+            python -u world_en/world_collect.py |& tee world_en/collect.log
+            code=${PIPESTATUS[0]}
+            echo "collector exit code: $code"
+            echo "---- world_en dir (after) ----"; ls -la world_en || true
+            if [ -s world_en/daily.json ]; then
+              echo "daily.json exists and is non-empty."
+            else
+              echo "NO daily.json produced."
+            fi
+            echo "=== Collect end ==="
+          } |& tee world_en/collect.wrap.log
+          # Не роняем шаг: проверка будет отдельным шагом
+          true
 
+      # Если daily.json отсутствует — падаем и печатаем оба лога.
       - name: Validate daily.json (MUST exist)
         id: validate
         run: |
@@ -80,107 +105,65 @@ jobs:
             echo "Error: world_en/daily.json is missing — collector failed."
             echo "---- collector log (head) ----"; head -n 200 world_en/collect.log || true
             echo "---- collector log (tail) ----"; tail -n 200 world_en/collect.log || true
+            echo "---- wrapper log (head) ----";  head -n 200 world_en/collect.wrap.log || true
+            echo "---- wrapper log (tail) ----";  tail -n 200 world_en/collect.wrap.log || true
             exit 1
           fi
 
+      # Рендер сообщения из шаблона и daily.json
       - name: Render from template
         run: |
           set -Eeuo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           test -s world_en/message.txt
 
+      # Решаем, куда отправлять: MAIN / TEST / NONE
       - name: Decide target channel (MAIN/TEST)
-        id: target
+        id: decide
         run: |
-          set -Eeuo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.send_to_test }}" = "true" ]; then
-            echo "to_test=true"  >> "$GITHUB_OUTPUT"
-          else
-            echo "to_test=false" >> "$GITHUB_OUTPUT"
-          fi
+          case "${{ github.event.inputs.send_to }}" in
+            TEST) echo "to=TEST"  >> "$GITHUB_OUTPUT" ;;
+            NONE) echo "to=NONE"  >> "$GITHUB_OUTPUT" ;;
+            *)    echo "to=MAIN"  >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "Chosen: $(cat $GITHUB_OUTPUT)"
 
+      # На всякий — выкладываем артефакты (логи + результат)
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: world-daily-en-artifacts
           path: |
+            world_en/collect.wrap.log
             world_en/collect.log
             world_en/daily.json
             world_en/message.txt
           if-no-files-found: warn
           retention-days: 7
 
-      # ===== MAIN channel =====
+      # Отправка в канал MAIN
       - name: Send text (MAIN)
-        if: steps.target.outputs.to_test == 'false'
+        if: steps.decide.outputs.to == 'MAIN'
         env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT:  ${{ secrets.TG_CHAT_MAIN }}
         run: |
           set -Eeuo pipefail
+          test -n "$TG_TOKEN" && test -n "$TG_CHAT"
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      - name: Send Nature card (MAIN, only if real daily.json)
-        if: steps.target.outputs.to_test == 'false' && steps.validate.outputs.ok == 'true'
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
-        run: |
-          set -Eeuo pipefail
-          mapfile -t L < <(python -c 'import json,sys; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
-          THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
-          if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-              -F chat_id="${TG_CHAT}" -F photo="${THUMB}" \
-              -F parse_mode="HTML" -F caption="$CAPTION" \
-              -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-          elif [ -n "$URL" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
-          else
-            echo "No nature URL — skipping card."
-          fi
-
-      # ===== TEST channel =====
+      # Отправка в канал TEST
       - name: Send text (TEST)
-        if: steps.target.outputs.to_test == 'true'
+        if: steps.decide.outputs.to == 'TEST'
         env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
-          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT:  ${{ secrets.TG_CHAT_TEST }}
         run: |
           set -Eeuo pipefail
-          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
+          test -n "$TG_TOKEN" && test -n "$TG_CHAT"
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
-
-      - name: Send Nature card (TEST, only if real daily.json)
-        if: steps.target.outputs.to_test == 'true' && steps.validate.outputs.ok == 'true'
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
-          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
-        run: |
-          set -Eeuo pipefail
-          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
-          mapfile -t L < <(python -c 'import json,sys; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")')
-          THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
-          if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-              -F chat_id="${TG_CHAT}" -F photo="${THUMB}" \
-              -F parse_mode="HTML" -F caption="$CAPTION" \
-              -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-          elif [ -n "$URL" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
-          else
-            echo "No nature URL — skipping card."
-          fi
