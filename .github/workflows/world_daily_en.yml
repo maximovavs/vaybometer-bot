@@ -2,7 +2,7 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "0 16 * * *"        # каждый день 16:00 UTC
+    - cron: "0 16 * * *"           # каждый день 16:00 UTC
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -51,6 +51,14 @@ jobs:
           YT_CHANNEL_ID:          ${{ secrets.YT_CHANNEL_ID }}
           YOUTUBE_PLAYLIST_IDS:   ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
           FALLBACK_NATURE_LIST:   ${{ secrets.FALLBACK_NATURE_LIST }}
+          # Доп. ключи, если твой коллектор их использует:
+          AIRVISUAL_KEY:          ${{ secrets.AIRVISUAL_KEY }}
+          OWM_KEY:                ${{ secrets.OWM_KEY }}
+          TOMORROW_KEY:           ${{ secrets.TOMORROW_KEY }}
+          OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY:           ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
+          PYTHONUNBUFFERED:       "1"
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -61,8 +69,8 @@ jobs:
           ls -al world_en | tee -a world_en/collect.wrap.log
 
           echo "-- running collector --" | tee -a world_en/collect.wrap.log
-          # не падаем тут — проверим наличие файла ниже
-          python world_en/world_collect.py > world_en/collect.log 2>&1 || true
+          # stdout/stderr процесса пишем отдельно, чтобы не мешать собственному collect.log скрипта
+          python world_en/world_collect.py > world_en/collect.run.log 2>&1 || true
 
           echo "---- search daily.json ----" | tee -a world_en/collect.wrap.log
           ls -al world_en | tee -a world_en/collect.wrap.log
@@ -76,8 +84,9 @@ jobs:
             echo "daily.json found"
           else
             echo "Error: world_en/daily.json is missing — collector failed."
+            echo "---- collect.log (tail) ----";      tail -n 200 world_en/collect.log       || true
+            echo "---- collect.run.log (tail) ----"; tail -n 200 world_en/collect.run.log   || true
             echo "---- collect.wrap.log (tail) ----"; tail -n 200 world_en/collect.wrap.log || true
-            echo "---- collect.log (tail) ----";      tail -n 200 world_en/collect.log      || true
             exit 1
           fi
 
@@ -90,12 +99,13 @@ jobs:
           name: world-daily-en-artifacts
           path: |
             world_en/collect.wrap.log
+            world_en/collect.run.log
             world_en/collect.log
             world_en/daily.json
             world_en/message.txt
           retention-days: 7
 
-      # ===== MAIN channel =====
+      # ========= MAIN channel =========
       - name: Send text (MAIN)
         if: ${{ inputs.send_to_test != true }}
         env:
@@ -106,7 +116,7 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      # ===== TEST channel =====
+      # ========= TEST channel =========
       - name: Send text (TEST)
         if: ${{ inputs.send_to_test == true }}
         env:
