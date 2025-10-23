@@ -60,33 +60,33 @@ jobs:
             # и тщательно логируем окружение и результаты.
             set +e
             python - <<'PY' > world_en/collect.log 2>&1
-import os, sys, runpy, traceback, pathlib, json
-import faulthandler; faulthandler.enable()
-
-print("ENV sanity:",
-      {k: bool(os.getenv(k)) for k in ("YT_API_KEY","YT_CHANNEL_ID","YOUTUBE_PLAYLIST_IDS","FALLBACK_NATURE_LIST")},
-      flush=True)
-
-# Более подробные предупреждения
-os.environ.setdefault("PYTHONWARNINGS","default")
-
-try:
-    print(">>> run world_en/world_collect.py via runpy.run_path", flush=True)
-    runpy.run_path("world_en/world_collect.py", run_name="__main__")
-    print("<<< collector finished (no exception)", flush=True)
-except SystemExit as e:
-    print(f"SystemExit: {e.code}", flush=True)
-except Exception:
-    print("Collector raised exception:", flush=True)
-    traceback.print_exc()
-
-p = pathlib.Path("world_en/daily.json")
-print("daily.json exists:", p.exists(), "size:", (p.stat().st_size if p.exists() else 0), flush=True)
-print("List *.json nearby:",
-      [str(x) for x in pathlib.Path(".").glob("**/daily.json")][:5],
-      flush=True)
-PY
-            EC=$?
+            import os, sys, runpy, traceback, pathlib, json
+            import faulthandler; faulthandler.enable()
+            
+            print("ENV sanity:",
+                  {k: bool(os.getenv(k)) for k in ("YT_API_KEY","YT_CHANNEL_ID","YOUTUBE_PLAYLIST_IDS","FALLBACK_NATURE_LIST")},
+                  flush=True)
+            
+            # Более подробные предупреждения
+            os.environ.setdefault("PYTHONWARNINGS","default")
+            
+            try:
+                print(">>> run world_en/world_collect.py via runpy.run_path", flush=True)
+                runpy.run_path("world_en/world_collect.py", run_name="__main__")
+                print("<<< collector finished (no exception)", flush=True)
+            except SystemExit as e:
+                print(f"SystemExit: {e.code}", flush=True)
+            except Exception:
+                print("Collector raised exception:", flush=True)
+                traceback.print_exc()
+            
+            p = pathlib.Path("world_en/daily.json")
+            print("daily.json exists:", p.exists(), "size:", (p.stat().st_size if p.exists() else 0), flush=True)
+            print("List *.json nearby:",
+                  [str(x) for x in pathlib.Path(".").glob("**/daily.json")][:5],
+                  flush=True)
+            PY
+                        EC=$?
             set -e
 
             echo "collector exit code captured by wrapper: $EC"
