@@ -53,27 +53,32 @@ jobs:
             echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
             echo "PWD: $PWD"
             echo "Python: $(python -V)"
-            # сам сборщик
-            python -u -m world_en.world_collect || true
+            # --- запускаем сборщик и записываем ПОЛНЫЙ лог в world_en/collect.log ---
+            set +e
+            ( python -u world_en/world_collect.py || python -u -m world_en.world_collect ) > world_en/collect.log 2>&1
             EC=$?
+            set -e
             echo "collector exit code: $EC"
             echo "---- world_en dir ----"
             ls -la world_en || true
-            # иногда json пишется не туда — ищем и переносим
+
+            # Иногда daily.json пишется не в world_en — ищем и переносим.
             FOUND="$(find . -maxdepth 3 -type f -name 'daily.json' -print | head -n1 || true)"
             if [ -n "$FOUND" ] && [ "$FOUND" != "./world_en/daily.json" ]; then
               echo "Found stray daily.json at: $FOUND"
               cp -f "$FOUND" world_en/daily.json || true
             fi
+
             if [ -s world_en/daily.json ]; then
               echo "daily.json size: $(stat -c%s world_en/daily.json) bytes"
             else
               echo "NO daily.json produced."
             fi
-            # собственный лог коллектора (если он его пишет)
+
+            # Вставим head/tail лога сборщика в обёрточный лог
             if [ -f world_en/collect.log ]; then
-              echo "---- collector log (head) ----"; head -n 120 world_en/collect.log || true
-              echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
+              echo "---- collector log (head) ----"; head -n 200 world_en/collect.log || true
+              echo "---- collector log (tail) ----"; tail -n 200 world_en/collect.log || true
             else
               echo "collector own log not found (world_en/collect.log)"
             fi
