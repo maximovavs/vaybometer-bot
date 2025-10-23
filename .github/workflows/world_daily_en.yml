@@ -35,9 +35,14 @@ jobs:
       - name: Show versions
         run: |
           set -euo pipefail
-          python -c "import pkgutil; mods=('pendulum','jinja2','requests','pandas','astral'); print('\n'.join(f'{m}: ' + ('OK' if pkgutil.find_loader(m) else 'MISSING') for m in mods))"
+          python - <<'PY'
+          import pkgutil
+          mods=('pendulum','jinja2','requests','pandas','astral')
+          for m in mods:
+              print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
+          PY
 
-      - name: Collect daily (capture full log; do not fail step)
+      - name: Collect daily (capture logs; do not fail step)
         id: collect
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
@@ -49,12 +54,13 @@ jobs:
           set -Eeuo pipefail
           mkdir -p world_en
 
-          {  # ВАЖНО: 2>&1 перед pipe — чтобы stderr тоже попал в tee/collect.log
+          # ВНИМАНИЕ: пишем stdout/stderr в ОТДЕЛЬНЫЙ лог,
+          # чтобы не конфликтовать с world_en/collect.log из самого скрипта.
+          {
             echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
             echo "PWD: $PWD"
             echo "Python: $(python -V)"
 
-            # Пытаемся запустить как модуль, если не выйдет — по пути к файлу
             if python -u -m world_en.world_collect; then
               EC=0
             else
@@ -73,8 +79,7 @@ jobs:
             fi
 
             echo "=== Collect end ==="
-          } 2>&1 | tee world_en/collect.log
-          # step не падает — валидируем отдельно
+          } 2>&1 | tee world_en/collect.wrap.log
 
       - name: Validate daily.json (MUST exist)
         id: validate
@@ -85,8 +90,13 @@ jobs:
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "Error: world_en/daily.json is missing — collector failed."
-            echo "---- collector log (head) ----"; head -n 120 world_en/collect.log || true
-            echo "---- collector log (tail) ----"; tail -n 120 world_en/collect.log || true
+            echo "---- wrapper log (head) ----"; head -n 200 world_en/collect.wrap.log || true
+            if [ -f world_en/collect.log ]; then
+              echo "---- collector own log (head) ----"; head -n 200 world_en/collect.log || true
+              echo "---- collector own log (tail) ----"; tail -n 200 world_en/collect.log || true
+            else
+              echo "collector own log not found (world_en/collect.log)"
+            fi
             exit 1
           fi
 
@@ -102,6 +112,7 @@ jobs:
           echo "Chosen target (to_test): ${TO_TEST}"
 
       - name: Render from template
+        if: ${{ steps.validate.outputs.ok == 'true' }}
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
@@ -113,6 +124,7 @@ jobs:
         with:
           name: world-daily-en-artifacts
           path: |
+            world_en/collect.wrap.log
             world_en/collect.log
             world_en/daily.json
             world_en/message.txt
@@ -121,7 +133,7 @@ jobs:
 
       # ===== MAIN channel =====
       - name: Send text (MAIN)
-        if: ${{ steps.target.outputs.to_test != 'true' }}
+        if: ${{ steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test != 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -132,7 +144,7 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN, only if real daily.json)
-        if: ${{ steps.target.outputs.to_test != 'true' }}
+        if: ${{ steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test != 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -157,7 +169,7 @@ jobs:
 
       # ===== TEST channel =====
       - name: Send text (TEST)
-        if: ${{ steps.target.outputs.to_test == 'true' }}
+        if: ${{ steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test == 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
@@ -169,7 +181,7 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST, only if real daily.json)
-        if: ${{ steps.target.outputs.to_test == 'true' }}
+        if: ${{ steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test == 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
