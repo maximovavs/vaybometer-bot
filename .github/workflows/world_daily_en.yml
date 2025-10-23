@@ -20,34 +20,32 @@ jobs:
       - name: Set up job
         run: echo "Start $GITHUB_WORKFLOW on $GITHUB_REF"
 
-      - name: Run actions/checkout@v4
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run actions/setup-python@v5
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
+          set -Eeuo pipefail
           python -V
           python -m pip install -U pip wheel
-          # БАЗОВЫЕ ЗАВИСИМОСТИ КОЛЛЕКТОРА
           python -m pip install -U requests pandas jinja2 astral pendulum
-          # ВОТ ЭТОГо РАНЬШЕ НЕ ХВАТАЛО:
           python -m pip install -U "python-telegram-bot>=20,<22"
 
       - name: Show versions
         run: |
-          set -Eeuo pipefail
           python - <<'PY'
           import pkgutil
-          mods = ('pendulum','jinja2','requests','pandas','astral','telegram')
-          for m in mods:
-              print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
+          for m in ('pendulum','jinja2','requests','pandas','astral','telegram'):
+              print(f"{m:12s}:", "OK" if pkgutil.find_loader(m) else "MISSING")
           PY
 
-      - name: Preflight (secrets)
+      # 1) Явная проверка секретов. Если чего-то критичного нет — падаем с понятной причиной.
+      - name: Preflight secrets (hard fail if missing)
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
@@ -58,10 +56,27 @@ jobs:
           TG_CHAT_TEST:          ${{ secrets.TG_CHAT_TEST }}
         run: |
           set -Eeuo pipefail
-          for v in YT_API_KEY YT_CHANNEL_ID YOUTUBE_PLAYLIST_IDS FALLBACK_NATURE_LIST TG_TOKEN TG_CHAT_MAIN TG_CHAT_TEST; do
-            if [ -n "${!v:-}" ]; then echo "$v=SET"; else echo "$v=MISSING"; fi
+          missing=0
+          need=(YT_API_KEY YT_CHANNEL_ID YOUTUBE_PLAYLIST_IDS TG_TOKEN TG_CHAT_MAIN TG_CHAT_TEST)
+          for v in "${need[@]}"; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::$v is MISSING"
+              missing=1
+            else
+              echo "$v=SET"
+            fi
           done
+          # если что-то отсутствует — сразу выходим, чтобы не гонять немой коллектор
+          [ "$missing" -eq 0 ]
 
+      # 2) Выводим заголовок файла коллектора — чтобы видеть main/аргументы/путь выходного файла
+      - name: Show collector header
+        run: |
+          set -Eeuo pipefail
+          echo "----- world_en/world_collect.py (head 120) -----"
+          sed -n '1,120p' world_en/world_collect.py || true
+
+      # 3) Запуск коллектора с полным обрамлением логов
       - name: Collect daily (capture full log; do not fail step)
         id: collect
         env:
@@ -79,7 +94,8 @@ jobs:
             echo "Python: $(python -V)"
             echo "---- world_en dir (before) ----"; ls -la world_en || true
             echo "-- running collector --"
-            python -u world_en/world_collect.py |& tee world_en/collect.log
+            # Включаем максимально подробный stdout/stderr
+            python -X dev -u world_en/world_collect.py |& tee world_en/collect.log
             code=${PIPESTATUS[0]}
             echo "collector exit code: $code"
             echo "---- world_en dir (after) ----"; ls -la world_en || true
@@ -92,6 +108,7 @@ jobs:
           } |& tee world_en/collect.wrap.log
           true
 
+      # 4) Если нет файла — печатаем ПРИЧИНЫ: “grep daily.json” в коде и большой хвост лога
       - name: Validate daily.json (MUST exist)
         id: validate
         run: |
@@ -100,11 +117,12 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "Error: world_en/daily.json is missing — collector failed."
-            echo "---- collector log (head) ----"; head -n 200 world_en/collect.log || true
-            echo "---- collector log (tail) ----"; tail -n 200 world_en/collect.log || true
-            echo "---- wrapper log (head) ----";  head -n 200 world_en/collect.wrap.log || true
-            echo "---- wrapper log (tail) ----";  tail -n 200 world_en/collect.wrap.log || true
+            echo "::error::world_en/daily.json is missing — collector failed."
+            echo "----- grep 'daily.json' in collector -----"
+            grep -n "daily\.json" -n world_en/world_collect.py || true
+            echo "----- collector log (head) -----";  head -n 200 world_en/collect.log || true
+            echo "----- collector log (tail) -----";  tail -n 400 world_en/collect.log || true
+            echo "----- wrapper log (tail) -----";   tail -n 400 world_en/collect.wrap.log || true
             exit 1
           fi
 
