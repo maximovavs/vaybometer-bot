@@ -32,19 +32,21 @@ jobs:
         run: |
           python -V
           python -m pip install -U pip wheel
+          # БАЗОВЫЕ ЗАВИСИМОСТИ КОЛЛЕКТОРА
           python -m pip install -U requests pandas jinja2 astral pendulum
+          # ВОТ ЭТОГо РАНЬШЕ НЕ ХВАТАЛО:
+          python -m pip install -U "python-telegram-bot>=20,<22"
 
       - name: Show versions
         run: |
           set -Eeuo pipefail
           python - <<'PY'
           import pkgutil
-          mods = ('pendulum','jinja2','requests','pandas','astral')
+          mods = ('pendulum','jinja2','requests','pandas','astral','telegram')
           for m in mods:
               print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
           PY
 
-      # Показываем, какие секреты заданы (значения не печатаем).
       - name: Preflight (secrets)
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
@@ -60,7 +62,6 @@ jobs:
             if [ -n "${!v:-}" ]; then echo "$v=SET"; else echo "$v=MISSING"; fi
           done
 
-      # Обёртка вокруг сборщика: всегда пишет подробный лог и НЕ роняет шаг.
       - name: Collect daily (capture full log; do not fail step)
         id: collect
         env:
@@ -78,7 +79,6 @@ jobs:
             echo "Python: $(python -V)"
             echo "---- world_en dir (before) ----"; ls -la world_en || true
             echo "-- running collector --"
-            # Лог самого сборщика:
             python -u world_en/world_collect.py |& tee world_en/collect.log
             code=${PIPESTATUS[0]}
             echo "collector exit code: $code"
@@ -90,10 +90,8 @@ jobs:
             fi
             echo "=== Collect end ==="
           } |& tee world_en/collect.wrap.log
-          # Не роняем шаг: проверка будет отдельным шагом
           true
 
-      # Если daily.json отсутствует — падаем и печатаем оба лога.
       - name: Validate daily.json (MUST exist)
         id: validate
         run: |
@@ -110,14 +108,12 @@ jobs:
             exit 1
           fi
 
-      # Рендер сообщения из шаблона и daily.json
       - name: Render from template
         run: |
           set -Eeuo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           test -s world_en/message.txt
 
-      # Решаем, куда отправлять: MAIN / TEST / NONE
       - name: Decide target channel (MAIN/TEST)
         id: decide
         run: |
@@ -126,9 +122,7 @@ jobs:
             NONE) echo "to=NONE"  >> "$GITHUB_OUTPUT" ;;
             *)    echo "to=MAIN"  >> "$GITHUB_OUTPUT" ;;
           esac
-          echo "Chosen: $(cat $GITHUB_OUTPUT)"
 
-      # На всякий — выкладываем артефакты (логи + результат)
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -142,7 +136,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # Отправка в канал MAIN
       - name: Send text (MAIN)
         if: steps.decide.outputs.to == 'MAIN'
         env:
@@ -155,7 +148,6 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      # Отправка в канал TEST
       - name: Send text (TEST)
         if: steps.decide.outputs.to == 'TEST'
         env:
