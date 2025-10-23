@@ -2,7 +2,7 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 06,16 * * *"    # пример расписания (UTC)
+    - cron: "15 06,16 * * *"   # два раза в сутки (UTC); подстрой если нужно
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -22,53 +22,22 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with:
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -V
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install requests jinja2 pandas astral pendulum pytz python-telegram-bot
 
-      # Просто показываем, какие секреты доступны (без значений).
-      - name: Preflight secrets (show SET/MISSING)
+      - name: Show versions
         run: |
-          set -Eeuo pipefail
-          check(){ [ -n "${!1:-}" ] && echo "$1=SET" || { echo "MISSING: $1"; EXIT=1; }; }
-          EXIT=0
-          check YT_API_KEY
-          check YT_CHANNEL_ID
-          check YOUTUBE_PLAYLIST_IDS
-          check FALLBACK_NATURE_LIST
-          check OWM_KEY
-          check AIRVISUAL_KEY
-          check TOMORROW_KEY
-          check OPENAI_API_KEY
-          check GROQ_API_KEY
-          check GEMINI_API_KEY
-          # эти нужны только на шагах отправки, здесь просто отображаем
-          check TELEGRAM_BOT_TOKEN_EN || true
-          check TELEGRAM_CHAT_ID_EN  || true
-          check TELEGRAM_TOKEN_TEST  || true
-          check CHANNEL_ID_TEST      || true
-          exit 0
-        env:
-          YT_API_KEY:           ${{ secrets.YT_API_KEY }}
-          YT_CHANNEL_ID:        ${{ secrets.YT_CHANNEL_ID }}
-          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
-          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
-          OWM_KEY:              ${{ secrets.OWM_KEY }}
-          AIRVISUAL_KEY:        ${{ secrets.AIRVISUAL_KEY }}
-          TOMORROW_KEY:         ${{ secrets.TOMORROW_KEY }}
-          OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
-          GROQ_API_KEY:         ${{ secrets.GROQ_API_KEY }}
-          GEMINI_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN_EN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          TELEGRAM_CHAT_ID_EN:   ${{ secrets.TELEGRAM_CHAT_ID_EN }}
-          TELEGRAM_TOKEN_TEST:   ${{ secrets.TELEGRAM_TOKEN_TEST }}
-          CHANNEL_ID_TEST:       ${{ secrets.CHANNEL_ID_TEST }}
+          pip list | sed -n '1,120p'
+          ls -la world_en || true
 
-      - name: Collect daily (wrapped, full log)
+      # --- Сбор данных (обёртка) ---
+      - name: Collect daily (wrapped; keeps full log)
         env:
           YT_API_KEY:           ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:        ${{ secrets.YT_CHANNEL_ID }}
@@ -83,43 +52,47 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p world_en
-          {
-            echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
-            echo "PWD: $(pwd)"
-            python - <<'PY'
-import os, sys
-print("Python:", sys.version)
-print("---- world_en dir (before) ----"); os.system("ls -la world_en")
-print("-- running collector --")
-RC = os.system("python world_en/world_collect.py")
-print("collector exit code:", RC)
-print("---- search daily.json anywhere ----")
-os.system("find . -maxdepth 3 -type f -name 'daily.json' -ls")
-print("---- world_en dir (after) ----"); os.system("ls -la world_en")
-PY
-          } | tee world_en/collect.wrap.log
+          echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ===" | tee world_en/collect.wrap.log
+          echo "PWD: $(pwd)" | tee -a world_en/collect.wrap.log
+          echo "Python: $(python -V 2>&1)" | tee -a world_en/collect.wrap.log
+          echo "---- world_en dir (before) ----" | tee -a world_en/collect.wrap.log
+          ls -la world_en | tee -a world_en/collect.wrap.log
+          echo "-- running collector --" | tee -a world_en/collect.wrap.log
 
-          # если daily.json появился где-то не в world_en — копируем
-          if [ ! -s world_en/daily.json ]; then
-            FOUND="$(find . -maxdepth 3 -type f -name 'daily.json' -print | head -n1 || true)"
-            if [ -n "$FOUND" ] && [ "$FOUND" != "world_en/daily.json" ]; then
-              cp -f "$FOUND" world_en/daily.json
-            fi
+          # Запуск твоего сборщика
+          if python world_en/world_collect.py >> world_en/collect.wrap.log 2>&1; then
+            echo "collector exit code: 0" | tee -a world_en/collect.wrap.log
+          else
+            echo "collector FAILED" | tee -a world_en/collect.wrap.log
           fi
 
-      - name: Render message
-        run: |
-          python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
+          echo "---- поиск daily.json ----" | tee -a world_en/collect.wrap.log
+          find . -maxdepth 3 -type f -name 'daily.json' -ls | tee -a world_en/collect.wrap.log || true
+
+          # если daily.json появился не в world_en — копируем
+          if [ ! -s world_en/daily.json ]; then
+            F="$(find . -maxdepth 3 -type f -name 'daily.json' -print | head -n1 || true)"
+            if [ -n "$F" ] && [ "$F" != "world_en/daily.json" ]; then cp -f "$F" world_en/daily.json; fi
+          fi
+
+          echo "---- world_en dir (after) ----" | tee -a world_en/collect.wrap.log
+          ls -la world_en | tee -a world_en/collect.wrap.log
+          echo "=== Collect end ===" | tee -a world_en/collect.wrap.log
 
       - name: Ensure daily.json exists (MUST exist)
         run: |
           set -Eeuo pipefail
           if [ ! -s world_en/daily.json ]; then
             echo "Error: world_en/daily.json is missing — collector failed."
-            echo "---- wrapper log (head) ----"; head -n 200 world_en/collect.wrap.log || true
-            echo "---- wrapper log (tail) ----"; tail -n 200 world_en/collect.wrap.log || true
+            echo "---- wrapper log (tail) ----"
+            tail -n 200 world_en/collect.wrap.log || true
             exit 1
           fi
+
+      - name: Render message
+        run: |
+          python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
+          test -s world_en/message.txt
 
       - name: Upload artifacts
         if: always()
@@ -131,7 +104,7 @@ PY
             world_en/daily.json
             world_en/message.txt
 
-      # ========= MAIN =========
+      # -------- MAIN ----------
       - name: Send text (MAIN)
         if: ${{ inputs.send_to_test != true }}
         env:
@@ -142,7 +115,7 @@ PY
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      # ========= TEST =========
+      # -------- TEST ----------
       - name: Send text (TEST)
         if: ${{ inputs.send_to_test == true }}
         env:
