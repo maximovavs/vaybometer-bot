@@ -48,23 +48,33 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p world_en
-          : > world_en/collect.log
-          {
+
+          {  # ВАЖНО: 2>&1 перед pipe — чтобы stderr тоже попал в tee/collect.log
             echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
             echo "PWD: $PWD"
             echo "Python: $(python -V)"
-            python -u -m world_en.world_collect || python -u world_en/world_collect.py
-            EC=$?
+
+            # Пытаемся запустить как модуль, если не выйдет — по пути к файлу
+            if python -u -m world_en.world_collect; then
+              EC=0
+            else
+              python -u world_en/world_collect.py || true
+              EC=$?
+            fi
             echo "collector exit code: $EC"
-            echo "---- world_en dir ----"; ls -la world_en || true
+
+            echo "---- world_en dir ----"
+            ls -la world_en || true
+
             if [ -s world_en/daily.json ]; then
               echo "daily.json size: $(stat -c%s world_en/daily.json) bytes"
             else
               echo "NO daily.json produced."
             fi
+
             echo "=== Collect end ==="
-            exit 0
-          } | tee -a world_en/collect.log
+          } 2>&1 | tee world_en/collect.log
+          # step не падает — валидируем отдельно
 
       - name: Validate daily.json (MUST exist)
         id: validate
