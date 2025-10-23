@@ -35,12 +35,7 @@ jobs:
       - name: Show versions
         run: |
           set -euo pipefail
-          python - <<'PY'
-import pkgutil
-mods = ('pendulum','jinja2','requests','pandas','astral')
-for m in mods:
-    print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
-PY
+          python -c "import pkgutil; mods=('pendulum','jinja2','requests','pandas','astral'); print('\n'.join(f'{m}: ' + ('OK' if pkgutil.find_loader(m) else 'MISSING') for m in mods))"
 
       - name: Collect daily (capture full log; do not fail step)
         id: collect
@@ -58,7 +53,6 @@ PY
             echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
             echo "PWD: $PWD"
             echo "Python: $(python -V)"
-            # запускаем как модуль (если пакетируется), иначе как скрипт
             python -u -m world_en.world_collect || python -u world_en/world_collect.py
             EC=$?
             echo "collector exit code: $EC"
@@ -69,7 +63,7 @@ PY
               echo "NO daily.json produced."
             fi
             echo "=== Collect end ==="
-            exit $EC
+            exit 0
           } | tee -a world_en/collect.log
 
       - name: Validate daily.json (MUST exist)
