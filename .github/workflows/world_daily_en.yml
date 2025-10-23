@@ -2,7 +2,7 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "0 16 * * *"   # каждый день 16:00 UTC
+    - cron: "0 16 * * *"        # каждый день 16:00 UTC (можно поменять)
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -18,82 +18,68 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install requests jinja2 pytz astral
+          python -m pip install --upgrade pip
+          pip install pendulum requests jinja2 pytz astral pandas
 
       - name: Show versions
         run: |
           python -V
-          pip list | grep -E 'requests|jinja2|pytz|astral' || true
+          pip -V
+          python - <<'PY'
+          import pkgutil
+          mods = ("pendulum","requests","jinja2","pytz","astral","pandas")
+          for m in mods:
+              print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
+          PY
 
-      # ---------- Сбор данных с подробным логом ----------
-      - name: Collect daily (debug)
+      - name: Collect daily (capture full log; do not fail step)
         env:
-          YT_API_KEY:           ${{ secrets.YT_API_KEY }}
-          YT_CHANNEL_ID:        ${{ secrets.YT_CHANNEL_ID }}
-          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
-          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
-          OWM_KEY:              ${{ secrets.OWM_KEY }}
-          AIRVISUAL_KEY:        ${{ secrets.AIRVISUAL_KEY }}
-          TOMORROW_KEY:         ${{ secrets.TOMORROW_KEY }}
-          OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
-          GROQ_API_KEY:         ${{ secrets.GROQ_API_KEY }}
-          GEMINI_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
+          YT_API_KEY:             ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID:          ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS:   ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST:   ${{ secrets.FALLBACK_NATURE_LIST }}
+        shell: bash
         run: |
           set -Eeuo pipefail
-          mkdir -p world_en
-          {
-            echo "=== Collect start UTC: $(date -u '+%F %T') ==="
-            echo "PWD: $(pwd)"
-            echo "Python: $(python -V)"
-            echo "---- world_en dir (before) ----"
-            ls -la world_en || true
+          echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ===" | tee world_en/collect.wrap.log
+          echo "PWD: $(pwd)" | tee -a world_en/collect.wrap.log
+          echo "Python: $(python -V)" | tee -a world_en/collect.wrap.log
+          echo "---- world_en dir (before) ----" | tee -a world_en/collect.wrap.log
+          ls -al world_en | tee -a world_en/collect.wrap.log
 
-            echo "-- running collector --"
-            # если в world_collect.py есть собственный лог, он появится как world_en/collect.log
-            python world_en/world_collect.py || true
+          echo "-- running collector --" | tee -a world_en/collect.wrap.log
+          # Запускаем сборщик; ошибки не валят шаг — проверим артефакт ниже
+          python world_en/world_collect.py > world_en/collect.log 2>&1 || true
 
-            echo "---- search daily.json ----"
-            find world_en -maxdepth 1 -type f -name "daily.json" -print || true
-
-            echo "---- world_en dir (after) ----"
-            ls -la world_en || true
-            echo "=== Collect end ==="
-          } 2>&1 | tee world_en/collect.wrap.log
+          echo "---- search daily.json ----" | tee -a world_en/collect.wrap.log
+          ls -al world_en | tee -a world_en/collect.wrap.log
+          echo "=== Collect end ===" | tee -a world_en/collect.wrap.log
 
       - name: Validate daily.json (MUST exist)
+        shell: bash
         run: |
           set -Eeuo pipefail
           if [ -s world_en/daily.json ]; then
-            echo "daily.json present"
+            echo "daily.json found"
           else
             echo "Error: world_en/daily.json is missing — collector failed."
-            echo "---- collect.wrap.log (tail) ----"
-            tail -n 200 world_en/collect.wrap.log || true
-            echo "---- collect.log (tail) ----"
-            tail -n 200 world_en/collect.log || true
+            echo "---- collect.wrap.log (tail) ----"; tail -n 200 world_en/collect.wrap.log || true
+            echo "---- collect.log (tail) ----";      tail -n 200 world_en/collect.log      || true
             exit 1
           fi
 
       - name: Render from template
-        run: |
-          python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
+        run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
 
-      - name: Ensure message exists
-        run: test -s world_en/message.txt
-
-      # Загружаем артефакты ВСЕГДА, даже при провале предыдущих шагов
       - name: Upload artifacts
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: world-daily-en-artifacts
@@ -102,10 +88,9 @@ jobs:
             world_en/collect.log
             world_en/daily.json
             world_en/message.txt
-          if-no-files-found: warn
           retention-days: 7
 
-      # ---------- Отправка в Telegram ----------
+      # ===== MAIN channel =====
       - name: Send text (MAIN)
         if: ${{ inputs.send_to_test != true }}
         env:
@@ -116,6 +101,7 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
+      # ===== TEST channel =====
       - name: Send text (TEST)
         if: ${{ inputs.send_to_test == true }}
         env:
