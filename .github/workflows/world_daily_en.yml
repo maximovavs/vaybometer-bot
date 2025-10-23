@@ -2,13 +2,19 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC
+    - cron: "15 7 * * *" # 07:15 UTC
   workflow_dispatch:
     inputs:
       send_to_test:
         type: boolean
         description: "Send to TEST channel instead of main"
         default: false
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/world_daily_en.yml"
+      - "world_en/**"
+      - "requirements.txt"
 
 jobs:
   run:
@@ -30,15 +36,32 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
+          # jinja2 нужно для рендера, а в requirements его может не быть
           pip install -r requirements.txt jinja2
 
       - name: Show versions
         run: |
           set -euo pipefail
-          python -c "import pkgutil; mods=('pendulum','jinja2','requests','pandas','astral'); \
-          print('\n'.join(f'{m}: ' + ('OK' if pkgutil.find_loader(m) else 'MISSING') for m in mods))"
+          python - <<'PY'
+import pkgutil
+mods = ('pendulum','jinja2','requests','pandas','astral')
+for m in mods:
+    print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
+PY
 
-            - name: Collect daily (capture full log; do not fail step)
+      - name: Verify secrets presence (not failing)
+        env:
+          YT_API_KEY:           ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID:        ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
+        run: |
+          set -euo pipefail
+          for v in YT_API_KEY YT_CHANNEL_ID YOUTUBE_PLAYLIST_IDS FALLBACK_NATURE_LIST; do
+            if [ -n "${!v:-}" ]; then echo "$v=SET"; else echo "$v=EMPTY"; fi
+          done
+
+      - name: Collect daily (capture full log; do not fail step)
         id: collect
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
@@ -46,98 +69,33 @@ jobs:
           YOUTUBE_PLAYLIST_IDS:  ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
           FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
           PYTHONUNBUFFERED: "1"
-          PYTHONFAULTHANDLER: "1"
-        run: |
-          set -Eeuo pipefail
-          mkdir -p world_en
-          {
-            echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
-            echo "PWD: $PWD"
-            echo "Python: $(python -V)"
-            echo "---- world_en dir before ----"; ls -la world_en || true
-
-            # Не полагаемся на вывод самого скрипта: запускаем через runpy
-            # и тщательно логируем окружение и результаты.
-            set +e
-            python - <<'PY' > world_en/collect.log 2>&1
-            import os, sys, runpy, traceback, pathlib, json
-            import faulthandler; faulthandler.enable()
-            
-            print("ENV sanity:",
-                  {k: bool(os.getenv(k)) for k in ("YT_API_KEY","YT_CHANNEL_ID","YOUTUBE_PLAYLIST_IDS","FALLBACK_NATURE_LIST")},
-                  flush=True)
-            
-            # Более подробные предупреждения
-            os.environ.setdefault("PYTHONWARNINGS","default")
-            
-            try:
-                print(">>> run world_en/world_collect.py via runpy.run_path", flush=True)
-                runpy.run_path("world_en/world_collect.py", run_name="__main__")
-                print("<<< collector finished (no exception)", flush=True)
-            except SystemExit as e:
-                print(f"SystemExit: {e.code}", flush=True)
-            except Exception:
-                print("Collector raised exception:", flush=True)
-                traceback.print_exc()
-            
-            p = pathlib.Path("world_en/daily.json")
-            print("daily.json exists:", p.exists(), "size:", (p.stat().st_size if p.exists() else 0), flush=True)
-            print("List *.json nearby:",
-                  [str(x) for x in pathlib.Path(".").glob("**/daily.json")][:5],
-                  flush=True)
-            PY
-                        EC=$?
-            set -e
-
-            echo "collector exit code captured by wrapper: $EC"
-            echo "---- world_en dir after ----"; ls -la world_en || true
-
-            # Если daily.json оказался не в world_en — найдём и перенесём
-            FOUND="$(find . -maxdepth 3 -type f -name 'daily.json' -print | head -n1 || true)"
-            if [ -n "$FOUND" ] && [ "$FOUND" != "./world_en/daily.json" ]; then
-              echo "Found stray daily.json at: $FOUND"
-              cp -f "$FOUND" world_en/daily.json || true
-            fi
-
-            if [ -s world_en/daily.json ]; then
-              echo "daily.json size: $(stat -c%s world_en/daily.json) bytes"
-            else
-              echo "NO daily.json produced."
-            fi
-
-            echo "---- collector log (head) ----"; head -n 200 world_en/collect.log || true
-            echo "---- collector log (tail) ----"; tail -n 200 world_en/collect.log || true
-            echo "=== Collect end ==="
-          } 2>&1 | tee world_en/collect.wrap.log
-
-
-      - name: Validate daily.json (MUST exist)
-        id: validate
         run: |
           set -euo pipefail
-          if [ -s world_en/daily.json ]; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "Error: world_en/daily.json is missing — collector failed."
-            echo "---- wrapper log (head) ----"; head -n 200 world_en/collect.wrap.log || true
-            echo "---- wrapper log (tail) ----"; tail -n 200 world_en/collect.wrap.log || true
+          ( python -u world_en/world_collect.py ) > world_en/collect.log 2>&1 || true
+          echo "---- world_en dir ----"; ls -la world_en || true
+          echo "---- collector log head ----"; head -n 120 world_en/collect.log || true
+          echo "---- collector log tail ----"; tail -n 200 world_en/collect.log || true
+
+      - name: Validate daily.json (MUST exist)
+        run: |
+          set -euo pipefail
+          if [ ! -s world_en/daily.json ]; then
+            echo "world_en/daily.json is missing — collector failed."
             exit 1
           fi
 
       - name: Decide target channel (MAIN/TEST)
-        id: target
+        id: decide
         run: |
           set -euo pipefail
-          TO_TEST=false
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.send_to_test }}" = "true" ]; then
-            TO_TEST=true
+            echo "to_test=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "to_test=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "to_test=${TO_TEST}" >> "$GITHUB_OUTPUT"
-          echo "Chosen target (to_test): ${TO_TEST}"
+          echo "Chosen target (to_test): ${{ steps.decide.outputs.to_test || '' }}"
 
       - name: Render from template
-        if: ${{ steps.validate.outputs.ok == 'true' }}
         run: |
           set -euo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
@@ -149,7 +107,6 @@ jobs:
         with:
           name: world-daily-en-artifacts
           path: |
-            world_en/collect.wrap.log
             world_en/collect.log
             world_en/daily.json
             world_en/message.txt
@@ -158,7 +115,7 @@ jobs:
 
       # ===== MAIN channel =====
       - name: Send text (MAIN)
-        if: ${{ steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test != 'true' }}
+        if: ${{ steps.decide.outputs.to_test != 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -169,16 +126,20 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (MAIN, only if real daily.json)
-        if: ${{ steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test != 'true' }}
+        if: ${{ steps.decide.outputs.to_test != 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          t=d.get("NATURE_TITLE","Nature Break"); s=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{t}</b>\n<i>{s}</i>")')
+          mapfile -t L < <(python - <<'PY'
+import json
+d=json.load(open("world_en/daily.json",encoding="utf-8"))
+print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL",""))
+title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm")
+print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+PY
+)
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
@@ -194,30 +155,34 @@ jobs:
 
       # ===== TEST channel =====
       - name: Send text (TEST)
-        if: ${{ steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test == 'true' }}
+        if: ${{ steps.decide.outputs.to_test == 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
-          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
+          [ -n "${TG_CHAT}" ] || { echo "TEST chat id is empty"; exit 1; }
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send Nature card (TEST, only if real daily.json)
-        if: ${{ steps.validate.outputs.ok == 'true' && steps.target.outputs.to_test == 'true' }}
+        if: ${{ steps.decide.outputs.to_test == 'true' }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -euo pipefail
-          mapfile -t L < <(python -c 'import json; d=json.load(open("world_en/daily.json",encoding="utf-8")); \
-          print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL","")); \
-          t=d.get("NATURE_TITLE","Nature Break"); s=d.get("NATURE_SNIPPET","60 seconds of calm"); \
-          print(f"🌊 <b>{t}</b>\n<i>{s}</i>")')
+          mapfile -t L < <(python - <<'PY'
+import json
+d=json.load(open("world_en/daily.json",encoding="utf-8"))
+print(d.get("NATURE_THUMB","")); print(d.get("NATURE_URL",""))
+title=d.get("NATURE_TITLE","Nature Break"); snip=d.get("NATURE_SNIPPET","60 seconds of calm")
+print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+PY
+)
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
-          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
+          [ -n "${TG_CHAT}" ] || { echo "TEST chat id is empty"; exit 1; }
           if [ -n "$THUMB" ] && [ -n "$URL" ]; then
             curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
               -F chat_id="${TG_CHAT}" -F photo="${THUMB}" \
