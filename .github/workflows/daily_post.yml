@@ -1,215 +1,174 @@
-name: Daily VayboMeter (Cyprus)
+name: world-daily-en
 
 on:
-  schedule:
-    # Утренний пост: ~08:30 на Кипре летом / ~07:30 зимой (UTC only)
-    - cron: '30 5 * * *'
-    # Вечерний пост: 14:00 UTC (≈17:00 на Кипре летом / 16:00 зимой)
-    - cron: '0 14 * * *'
-    # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
-    - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
-      run_morning:
-        description: "Запустить утренний пост"
-        type: boolean
-        default: false
-        required: false
-      run_evening:
-        description: "Запустить вечерний пост"
-        type: boolean
-        default: true
-        required: false
-      run_noon_fx:
-        description: "Запустить пост только с курсами"
-        type: boolean
-        default: false
-        required: false
-      work_date:
-        description: "Переопределить дату (YYYY-MM-DD)"
-        required: false
-      to_test:
-        description: "Публиковать в тестовый канал?"
-        type: boolean
-        default: false
-        required: false
-      channel_override:
-        description: "Явный chat_id канала (перебивает параметры выше)"
-        required: false
-
-permissions:
-  contents: read
-
-concurrency:
-  group: daily-post-cy
-  cancel-in-progress: false
-
-# общие переменные окружения
-env:
-  TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-  CHANNEL_ID:          ${{ secrets.CHANNEL_ID }}
-  CHANNEL_ID_TEST:     ${{ secrets.CHANNEL_ID_TEST }}
-  CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
-  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-  GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
-  GEN_SKIP_SHORT: "1"
-  DISABLE_LLM_DAILY: "0"
-  DISABLE_SCHUMANN: "1"
-  TZ: Asia/Nicosia
-  WORK_DATE: ${{ github.event.inputs.work_date }}
-  TO_TEST:   ${{ github.event.inputs.to_test }}
+      send_to:
+        description: "Куда отправлять сообщение"
+        type: choice
+        options: [MAIN, TEST, NONE]
+        default: NONE
 
 jobs:
-  morning:
-    name: Morning post (for today)
+  run:
     runs-on: ubuntu-latest
-    if: >
-      (github.event_name == 'schedule' && github.event.schedule == '30 5 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.run_morning == true || github.event.inputs.run_morning == 'true'))
+    env:
+      TZ: UTC
+      PYTHONPATH: ${{ github.workspace }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Time debug
-        run: |
-          echo "UTC:   $(date -u)"
-          echo "Local: $(date)"
-          echo "MSK:   $(TZ=Europe/Moscow date)"
-
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          set -Eeuo pipefail
+          python -V
+          python -m pip install -U pip wheel
+          python -m pip install -U requests pandas jinja2 astral pendulum
+          python -m pip install -U "python-telegram-bot>=20,<22"
 
-      - name: Post morning (for today)
-        shell: bash
+      - name: Show versions
         run: |
-          python <<'PY'
-          import os, runpy, sys, pendulum
-          wd = os.getenv("WORK_DATE")
-          if wd:
-              def _fake_today(tz=None):
-                  dt = pendulum.parse(wd)
-                  return dt.in_tz(tz) if tz else dt
-              pendulum.today = _fake_today
-
-          args = ["post_cy.py", "--mode", "morning"]
-          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
-          if chat_override:
-              args += ["--chat-id", chat_override]
-          else:
-              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
-              if to_test:
-                  args.append("--to-test")
-
-          sys.argv = args
-          runpy.run_path("post_cy.py", run_name="__main__")
+          python - <<'PY'
+          import pkgutil
+          for m in ('pendulum','jinja2','requests','pandas','astral','telegram'):
+              print(f"{m:12s}:", "OK" if pkgutil.find_loader(m) else "MISSING")
           PY
 
-  evening:
-    name: Evening post (for tomorrow)
-    runs-on: ubuntu-latest
-    if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 14 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.run_evening == true || github.event.inputs.run_evening == 'true' || !github.event.inputs.run_evening))
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Time debug
+      # Решаем цель сразу, чтобы знать какие секреты требовать
+      - name: Decide target channel (MAIN/TEST/NONE)
+        id: decide
         run: |
-          echo "UTC:   $(date -u)"
-          echo "Local: $(date)"
-          echo "MSK:   $(TZ=Europe/Moscow date)"
+          case "${{ github.event.inputs.send_to }}" in
+            TEST) echo "to=TEST"  >> "$GITHUB_OUTPUT" ;;
+            NONE) echo "to=NONE"  >> "$GITHUB_OUTPUT" ;;
+            *)    echo "to=MAIN"  >> "$GITHUB_OUTPUT" ;;
+          esac
 
-      - uses: actions/setup-python@v5
+      # Проверяем только то, что реально нужно
+      - name: Preflight secrets (hard fail if missing)
+        env:
+          TO:                   ${{ steps.decide.outputs.to }}
+          YT_API_KEY:           ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID:        ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
+          TG_TOKEN:             ${{ secrets.TG_TOKEN }}
+          TG_CHAT_MAIN:         ${{ secrets.TG_CHAT_MAIN }}
+          TG_CHAT_TEST:         ${{ secrets.TG_CHAT_TEST }}
+        run: |
+          set -Eeuo pipefail
+          miss=0
+          # для коллектора нужны только YouTube-секреты
+          for v in YT_API_KEY YT_CHANNEL_ID YOUTUBE_PLAYLIST_IDS; do
+            if [ -z "${!v:-}" ]; then echo "::error::$v is MISSING"; miss=1; else echo "$v=SET"; fi
+          done
+          # Telegram требуем только если реально отправляем
+          if [ "${TO}" = "MAIN" ]; then
+            for v in TG_TOKEN TG_CHAT_MAIN; do
+              if [ -z "${!v:-}" ]; then echo "::error::$v is MISSING"; miss=1; else echo "$v=SET"; fi
+            done
+          elif [ "${TO}" = "TEST" ]; then
+            for v in TG_TOKEN TG_CHAT_TEST; do
+              if [ -z "${!v:-}" ]; then echo "::error::$v is MISSING"; miss=1; else echo "$v=SET"; fi
+            done
+          else
+            echo "Telegram secrets not required (TO=NONE)"
+          fi
+          [ "$miss" -eq 0 ]
+
+      - name: Show collector header
+        run: |
+          echo "----- world_en/world_collect.py (head 120) -----"
+          sed -n '1,120p' world_en/world_collect.py || true
+
+      - name: Collect daily (capture full log; do not fail step)
+        env:
+          YT_API_KEY:           ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID:        ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -uo pipefail
+          mkdir -p world_en
+          {
+            echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
+            echo "PWD: $(pwd)"
+            echo "Python: $(python -V)"
+            echo "---- world_en dir (before) ----"; ls -la world_en || true
+            echo "-- running collector --"
+            python -X dev -u world_en/world_collect.py |& tee world_en/collect.log
+            code=${PIPESTATUS[0]}
+            echo "collector exit code: $code"
+            echo "---- world_en dir (after) ----"; ls -la world_en || true
+            if [ -s world_en/daily.json ]; then
+              echo "daily.json exists and is non-empty."
+            else
+              echo "NO daily.json produced."
+            fi
+            echo "=== Collect end ==="
+          } |& tee world_en/collect.wrap.log
+          true
+
+      - name: Validate daily.json (MUST exist)
+        run: |
+          set -Eeuo pipefail
+          if [ -s world_en/daily.json ]; then
+            echo "daily.json OK"
+          else
+            echo "::error::world_en/daily.json is missing — collector failed."
+            echo "----- grep 'daily.json' in collector -----"
+            grep -n "daily\.json" world_en/world_collect.py || true
+            echo "----- collector log (head) -----";  head -n 200 world_en/collect.log || true
+            echo "----- collector log (tail) -----";  tail -n 400 world_en/collect.log || true
+            echo "----- wrapper log (tail) -----";   tail -n 400 world_en/collect.wrap.log || true
+            exit 1
+          fi
+
+      - name: Render from template
+        run: |
+          set -Eeuo pipefail
+          python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
+          test -s world_en/message.txt
+
+      - name: Send text (MAIN)
+        if: steps.decide.outputs.to == 'MAIN'
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT:  ${{ secrets.TG_CHAT_MAIN }}
+        run: |
+          set -Eeuo pipefail
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
+            --data-urlencode text@"world_en/message.txt"
+
+      - name: Send text (TEST)
+        if: steps.decide.outputs.to == 'TEST'
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT:  ${{ secrets.TG_CHAT_TEST }}
+        run: |
+          set -Eeuo pipefail
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
+            --data-urlencode text@"world_en/message.txt"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Post evening (announce tomorrow)
-        shell: bash
-        run: |
-          python <<'PY'
-          import os, runpy, sys, pendulum
-          wd = os.getenv("WORK_DATE")
-          if wd:
-              def _fake_today(tz=None):
-                  dt = pendulum.parse(wd)
-                  return dt.in_tz(tz) if tz else dt
-              pendulum.today = _fake_today
-
-          args = ["post_cy.py", "--mode", "evening"]
-          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
-          if chat_override:
-              args += ["--chat-id", chat_override]
-          else:
-              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
-              if to_test:
-                  args.append("--to-test")
-
-          sys.argv = args
-          runpy.run_path("post_cy.py", run_name="__main__")
-          PY
-
-  noon_fx:
-    name: Noon FX only (12:00 MSK)
-    runs-on: ubuntu-latest
-    if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.run_noon_fx == true || github.event.inputs.run_noon_fx == 'true'))
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Time debug
-        run: |
-          echo "UTC:   $(date -u)"
-          echo "Local: $(date)"
-          echo "MSK:   $(TZ=Europe/Moscow date)"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Post FX only (12:00 MSK)
-        shell: bash
-        run: |
-          python <<'PY'
-          import os, runpy, sys, pendulum
-          wd = os.getenv("WORK_DATE")
-          if wd:
-              def _fake_today(tz=None):
-                  dt = pendulum.parse(wd)
-                  return dt.in_tz(tz) if tz else dt
-              pendulum.today = _fake_today
-
-          args = ["post_cy.py", "--fx-only"]
-          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
-          if chat_override:
-              args += ["--chat-id", chat_override]
-          else:
-              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
-              if to_test:
-                  args.append("--to-test")
-
-          sys.argv = args
-          runpy.run_path("post_cy.py", run_name="__main__")
-          PY
+          name: world-daily-en-artifacts
+          path: |
+            world_en/collect.wrap.log
+            world_en/collect.log
+            world_en/daily.json
+            world_en/message.txt
+          if-no-files-found: warn
+          retention-days: 7
