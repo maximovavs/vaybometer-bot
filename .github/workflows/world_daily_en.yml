@@ -54,23 +54,35 @@ jobs:
           set -Eeuo pipefail
           mkdir -p world_en
 
-          # ВНИМАНИЕ: пишем stdout/stderr в ОТДЕЛЬНЫЙ лог,
-          # чтобы не конфликтовать с world_en/collect.log из самого скрипта.
           {
             echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
             echo "PWD: $PWD"
             echo "Python: $(python -V)"
 
-            if python -u -m world_en.world_collect; then
-              EC=0
-            else
-              python -u world_en/world_collect.py || true
-              EC=$?
-            fi
+            # Запускаем модуль через runpy, чтобы получить traceback при исключениях
+            python -u - <<'PY'
+            import runpy, sys, os
+            try:
+                runpy.run_module("world_en.world_collect", run_name="__main__")
+                sys.exit(0)
+            except SystemExit as e:
+                sys.exit(e.code if isinstance(e.code, int) else 0)
+            except Exception:
+                import traceback; traceback.print_exc()
+                sys.exit(1)
+            PY
+            EC=$?
             echo "collector exit code: $EC"
 
             echo "---- world_en dir ----"
             ls -la world_en || true
+
+            echo "---- search for daily.json anywhere (maxdepth 3) ----"
+            FOUND="$(find . -maxdepth 3 -type f -name 'daily.json' -print | sed -n '1p' || true)"
+            if [ -n "$FOUND" ] && [ "$FOUND" != "./world_en/daily.json" ]; then
+              echo "Found stray daily.json at: $FOUND"
+              cp -f "$FOUND" world_en/daily.json || true
+            fi
 
             if [ -s world_en/daily.json ]; then
               echo "daily.json size: $(stat -c%s world_en/daily.json) bytes"
@@ -91,6 +103,7 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "Error: world_en/daily.json is missing — collector failed."
             echo "---- wrapper log (head) ----"; head -n 200 world_en/collect.wrap.log || true
+            echo "---- wrapper log (tail) ----"; tail -n 200 world_en/collect.wrap.log || true
             if [ -f world_en/collect.log ]; then
               echo "---- collector own log (head) ----"; head -n 200 world_en/collect.log || true
               echo "---- collector own log (tail) ----"; tail -n 200 world_en/collect.log || true
