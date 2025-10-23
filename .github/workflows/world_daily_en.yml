@@ -1,13 +1,15 @@
 name: world-daily-en
 
 on:
+  # пример расписания (подстрой под себя либо убери вовсе)
+  schedule:
+    - cron: "15 06,16 * * *"   # 06:15 и 16:15 UTC каждый день
   workflow_dispatch:
     inputs:
-      send_to:
-        description: "Куда отправлять сообщение"
-        type: choice
-        options: [MAIN, TEST, NONE]
-        default: MAIN
+      send_to_test:
+        type: boolean
+        description: "Send to TEST channel instead of main"
+        default: false
 
 jobs:
   run:
@@ -17,129 +19,34 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
 
     steps:
-      - name: Set up job
-        run: echo "Start $GITHUB_WORKFLOW on $GITHUB_REF"
+      - uses: actions/checkout@v4
 
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          set -Eeuo pipefail
           python -V
-          python -m pip install -U pip wheel
-          python -m pip install -U requests pandas jinja2 astral pendulum
-          python -m pip install -U "python-telegram-bot>=20,<22"
+          pip install --upgrade pip
+          pip install requests jinja2 pandas astral pendulum pytz python-telegram-bot
 
-      - name: Show versions
-        run: |
-          python - <<'PY'
-          import pkgutil
-          for m in ('pendulum','jinja2','requests','pandas','astral','telegram'):
-              print(f"{m:12s}:", "OK" if pkgutil.find_loader(m) else "MISSING")
-          PY
-
-      # 1) Явная проверка секретов. Если чего-то критичного нет — падаем с понятной причиной.
-      - name: Preflight secrets (hard fail if missing)
+      - name: Collect daily
         env:
-          YT_API_KEY:            ${{ secrets.YT_API_KEY }}
-          YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
-          YOUTUBE_PLAYLIST_IDS:  ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
-          FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
-          TG_TOKEN:              ${{ secrets.TG_TOKEN }}
-          TG_CHAT_MAIN:          ${{ secrets.TG_CHAT_MAIN }}
-          TG_CHAT_TEST:          ${{ secrets.TG_CHAT_TEST }}
+          YT_API_KEY:           ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID:        ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS: ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST: ${{ secrets.FALLBACK_NATURE_LIST }}
         run: |
-          set -Eeuo pipefail
-          missing=0
-          need=(YT_API_KEY YT_CHANNEL_ID YOUTUBE_PLAYLIST_IDS TG_TOKEN TG_CHAT_MAIN TG_CHAT_TEST)
-          for v in "${need[@]}"; do
-            if [ -z "${!v:-}" ]; then
-              echo "::error::$v is MISSING"
-              missing=1
-            else
-              echo "$v=SET"
-            fi
-          done
-          # если что-то отсутствует — сразу выходим, чтобы не гонять немой коллектор
-          [ "$missing" -eq 0 ]
+          python world_en/world_collect.py
 
-      # 2) Выводим заголовок файла коллектора — чтобы видеть main/аргументы/путь выходного файла
-      - name: Show collector header
+      - name: Render message
         run: |
-          set -Eeuo pipefail
-          echo "----- world_en/world_collect.py (head 120) -----"
-          sed -n '1,120p' world_en/world_collect.py || true
-
-      # 3) Запуск коллектора с полным обрамлением логов
-      - name: Collect daily (capture full log; do not fail step)
-        id: collect
-        env:
-          YT_API_KEY:            ${{ secrets.YT_API_KEY }}
-          YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
-          YOUTUBE_PLAYLIST_IDS:  ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
-          FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
-          PYTHONUNBUFFERED: "1"
-        run: |
-          set -uo pipefail
-          mkdir -p world_en
-          {
-            echo "=== Collect start UTC: $(date -u '+%Y-%m-%d %H:%M:%S') ==="
-            echo "PWD: $(pwd)"
-            echo "Python: $(python -V)"
-            echo "---- world_en dir (before) ----"; ls -la world_en || true
-            echo "-- running collector --"
-            # Включаем максимально подробный stdout/stderr
-            python -X dev -u world_en/world_collect.py |& tee world_en/collect.log
-            code=${PIPESTATUS[0]}
-            echo "collector exit code: $code"
-            echo "---- world_en dir (after) ----"; ls -la world_en || true
-            if [ -s world_en/daily.json ]; then
-              echo "daily.json exists and is non-empty."
-            else
-              echo "NO daily.json produced."
-            fi
-            echo "=== Collect end ==="
-          } |& tee world_en/collect.wrap.log
-          true
-
-      # 4) Если нет файла — печатаем ПРИЧИНЫ: “grep daily.json” в коде и большой хвост лога
-      - name: Validate daily.json (MUST exist)
-        id: validate
-        run: |
-          set -Eeuo pipefail
-          if [ -s world_en/daily.json ]; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "::error::world_en/daily.json is missing — collector failed."
-            echo "----- grep 'daily.json' in collector -----"
-            grep -n "daily\.json" -n world_en/world_collect.py || true
-            echo "----- collector log (head) -----";  head -n 200 world_en/collect.log || true
-            echo "----- collector log (tail) -----";  tail -n 400 world_en/collect.log || true
-            echo "----- wrapper log (tail) -----";   tail -n 400 world_en/collect.wrap.log || true
-            exit 1
-          fi
-
-      - name: Render from template
-        run: |
-          set -Eeuo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
-          test -s world_en/message.txt
 
-      - name: Decide target channel (MAIN/TEST)
-        id: decide
+      - name: Ensure daily.json exists
         run: |
-          case "${{ github.event.inputs.send_to }}" in
-            TEST) echo "to=TEST"  >> "$GITHUB_OUTPUT" ;;
-            NONE) echo "to=NONE"  >> "$GITHUB_OUTPUT" ;;
-            *)    echo "to=MAIN"  >> "$GITHUB_OUTPUT" ;;
-          esac
+          test -s world_en/daily.json || { echo "daily.json missing"; exit 1; }
 
       - name: Upload artifacts
         if: always()
@@ -147,33 +54,28 @@ jobs:
         with:
           name: world-daily-en-artifacts
           path: |
-            world_en/collect.wrap.log
-            world_en/collect.log
             world_en/daily.json
             world_en/message.txt
-          if-no-files-found: warn
-          retention-days: 7
 
+      # ========= MAIN channel =========
       - name: Send text (MAIN)
-        if: steps.decide.outputs.to == 'MAIN'
+        if: ${{ inputs.send_to_test != true }}
         env:
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_CHAT:  ${{ secrets.TG_CHAT_MAIN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
-          set -Eeuo pipefail
-          test -n "$TG_TOKEN" && test -n "$TG_CHAT"
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
+      # ========= TEST channel =========
       - name: Send text (TEST)
-        if: steps.decide.outputs.to == 'TEST'
+        if: ${{ inputs.send_to_test == true }}
         env:
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_CHAT:  ${{ secrets.TG_CHAT_TEST }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
+          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
-          set -Eeuo pipefail
-          test -n "$TG_TOKEN" && test -n "$TG_CHAT"
+          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
