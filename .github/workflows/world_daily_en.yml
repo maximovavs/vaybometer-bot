@@ -141,9 +141,10 @@ jobs:
           set -Eeuo pipefail
           if [ ! -s world_en/daily.json ]; then
             echo "Fallback: creating minimal world_en/daily.json"
-            python - <<'PY' > world_en/daily.json
-import json, datetime
-utc = datetime.datetime.utcnow()
+            python - <<'PY'
+from datetime import datetime
+import json
+utc = datetime.utcnow()
 d = {
   "WEEKDAY": utc.strftime("%A"),
   "DATE": utc.strftime("%Y-%m-%d"),
@@ -173,7 +174,8 @@ d = {
   "TIP_SEC": "",
   "AURORA_HINT": ""
 }
-print(json.dumps(d, ensure_ascii=False, indent=2))
+with open("world_en/daily.json","w",encoding="utf-8") as f:
+    json.dump(d, f, ensure_ascii=False, indent=2)
 PY
           fi
 
