@@ -2,7 +2,7 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC, каждый день
+    - cron: "15 7 * * *"   # 07:15 UTC daily
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -40,7 +40,7 @@ jobs:
           print("sys.path[0]:", sys.path[0])
           PY
 
-      - name: Collect daily (try module / runpy, log everything)
+      - name: Collect daily (import/runpy with logs)
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
@@ -68,13 +68,11 @@ jobs:
 
           set +e
           python -X faulthandler -u - <<'PY' 2>&1 | tee -a world_en/collect.run.log
-          import runpy, importlib, sys, traceback, pathlib, json
+          import runpy, importlib, sys, traceback, pathlib, json, inspect
           out = pathlib.Path('world_en/daily.json')
+          def out_ok(): return out.exists() and out.stat().st_size > 0
 
-          def out_ok():
-              return out.exists() and out.stat().st_size > 0
-
-          # 1) как модуль-скрипт
+          # try as script
           try:
               print("Wrapper: run world_en/world_collect.py via runpy", flush=True)
               runpy.run_path('world_en/world_collect.py', run_name='__main__')
@@ -84,7 +82,7 @@ jobs:
           except Exception:
               traceback.print_exc()
 
-          # 2) импортируем и ищем функции-генераторы
+          # import & probe functions
           if not out_ok():
               try:
                   m = importlib.import_module('world_en.world_collect')
@@ -93,13 +91,9 @@ jobs:
                   traceback.print_exc()
                   sys.exit(1)
 
-              import inspect
-              tried = []
-
               def try_call(name, *args):
                   f = getattr(m, name, None)
                   if callable(f):
-                      tried.append((name, args))
                       try:
                           f(*args)
                       except TypeError as e:
@@ -109,21 +103,18 @@ jobs:
                       except Exception:
                           traceback.print_exc()
 
-              # самые вероятные имена
               for nm in ("collect_daily","main","build_daily","run","collect"):
                   for args in (("world_en/daily.json",), tuple()):
                       try_call(nm, *args)
                       if out_ok(): break
                   if out_ok(): break
 
-              # общий перебор имён с ключевыми словами
               if not out_ok():
                   for nm, fn in inspect.getmembers(m, inspect.isfunction):
                       if any(k in nm.lower() for k in ("daily","collect","build","make","generate")):
                           try_call(nm)
                           if out_ok(): break
 
-              # если вдруг в модуле уже есть словарь данных, сохраним
               if not out_ok():
                   for key in ("DATA","daily","context","CTX"):
                       d = getattr(m, key, None)
@@ -143,7 +134,6 @@ jobs:
             ls -al world_en || true
             echo "=== Collect end ==="
           } >> world_en/collect.wrap.log
-          # НЕ падаем здесь — дадим шанс fallback-генератору
 
       - name: Fallback: create minimal daily.json if missing
         shell: bash
@@ -197,7 +187,7 @@ jobs:
           if [ -s world_en/daily.json ]; then
             echo "daily.json found"
           else
-            echo "Error: world_en/daily.json is missing — collector failed."
+            echo "Error: world_en/daily.json is missing"
             echo "---- collect.log (tail) ----";        tail -n 200 world_en/collect.log         || echo "(no collect.log)"
             echo "---- collect.run.log (tail) ----";   tail -n 200 world_en/collect.run.log     || echo "(no collect.run.log)"
             echo "---- collect.wrap.log (tail) ----";  tail -n 200 world_en/collect.wrap.log    || echo "(no collect.wrap.log)"
@@ -224,7 +214,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # ========= MAIN =========
       - name: Send text (MAIN)
         if: ${{ inputs.send_to_test != true }}
         env:
@@ -236,7 +225,6 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      # ========= TEST =========
       - name: Send text (TEST)
         if: ${{ inputs.send_to_test == true }}
         env:
