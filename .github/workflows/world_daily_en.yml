@@ -141,43 +141,46 @@ jobs:
           set -Eeuo pipefail
           if [ ! -s world_en/daily.json ]; then
             echo "Fallback: creating minimal world_en/daily.json"
+            sudo apt-get update -y >/dev/null 2>&1 || true
+            sudo apt-get install -y jq >/dev/null 2>&1 || true
             WEEKDAY=$(date -u +%A)
             DATESTR=$(date -u +%Y-%m-%d)
-            cat > world_en/daily.json <<JSON
-{
-  "WEEKDAY": "${WEEKDAY}",
-  "DATE": "${DATESTR}",
-  "KP_SHORT": "-",
-  "KP_TREND_EMOJI": "·",
-  "KP_NOTE": "-",
-  "SCHUMANN_STATUS": "-",
-  "SCHUMANN_AMP": "-",
-  "SOLAR_WIND_SPEED": "-",
-  "SOLAR_WIND_DENSITY": "-",
-  "SOLAR_NOTE": "-",
-  "HOTTEST_PLACE": "-",
-  "HOTTEST_TEMP": "-",
-  "COLDEST_PLACE": "-",
-  "COLDEST_TEMP": "-",
-  "QUAKE_MAG": "-",
-  "QUAKE_REGION": "-",
-  "QUAKE_DEPTH": "-",
-  "QUAKE_TIME": "-",
-  "SUN_TIDBIT_LABEL": "-",
-  "SUN_TIDBIT_PLACE": "-",
-  "SUN_TIDBIT_TIME": "-",
-  "fx_line": "",
-  "VIBE_EMOJI": "🌍",
-  "TIP_TEXT": "—",
-  "TIP_SECS": "",
-  "TIP_SEC": "",
-  "AURORA_HINT": "",
-  "NATURE_THUMB": "",
-  "NATURE_URL": "",
-  "NATURE_TITLE": "Nature Break",
-  "NATURE_SNIPPET": "60 seconds of calm"
-}
-JSON
+            jq -n \
+              --arg WEEKDAY "$WEEKDAY" \
+              --arg DATE "$DATESTR" \
+              '{
+                WEEKDAY: $WEEKDAY,
+                DATE: $DATE,
+                KP_SHORT: "-",
+                KP_TREND_EMOJI: "·",
+                KP_NOTE: "-",
+                SCHUMANN_STATUS: "-",
+                SCHUMANN_AMP: "-",
+                SOLAR_WIND_SPEED: "-",
+                SOLAR_WIND_DENSITY: "-",
+                SOLAR_NOTE: "-",
+                HOTTEST_PLACE: "-",
+                HOTTEST_TEMP: "-",
+                COLDEST_PLACE: "-",
+                COLDEST_TEMP: "-",
+                QUAKE_MAG: "-",
+                QUAKE_REGION: "-",
+                QUAKE_DEPTH: "-",
+                QUAKE_TIME: "-",
+                SUN_TIDBIT_LABEL: "-",
+                SUN_TIDBIT_PLACE: "-",
+                SUN_TIDBIT_TIME: "-",
+                fx_line: "",
+                VIBE_EMOJI: "🌍",
+                TIP_TEXT: "—",
+                TIP_SECS: "",
+                TIP_SEC: "",
+                AURORA_HINT: "",
+                NATURE_THUMB: "",
+                NATURE_URL: "",
+                NATURE_TITLE: "Nature Break",
+                NATURE_SNIPPET: "60 seconds of calm"
+              }' > world_en/daily.json
           fi
 
       - name: Validate daily.json (MUST exist)
