@@ -141,13 +141,12 @@ jobs:
           set -Eeuo pipefail
           if [ ! -s world_en/daily.json ]; then
             echo "Fallback: creating minimal world_en/daily.json"
-            python - <<'PY'
-from datetime import datetime
-import json
-utc = datetime.utcnow()
-d = {
-  "WEEKDAY": utc.strftime("%A"),
-  "DATE": utc.strftime("%Y-%m-%d"),
+            WEEKDAY=$(date -u +%A)
+            DATESTR=$(date -u +%Y-%m-%d)
+            cat > world_en/daily.json <<JSON
+{
+  "WEEKDAY": "${WEEKDAY}",
+  "DATE": "${DATESTR}",
   "KP_SHORT": "-",
   "KP_TREND_EMOJI": "·",
   "KP_NOTE": "-",
@@ -172,11 +171,13 @@ d = {
   "TIP_TEXT": "—",
   "TIP_SECS": "",
   "TIP_SEC": "",
-  "AURORA_HINT": ""
+  "AURORA_HINT": "",
+  "NATURE_THUMB": "",
+  "NATURE_URL": "",
+  "NATURE_TITLE": "Nature Break",
+  "NATURE_SNIPPET": "60 seconds of calm"
 }
-with open("world_en/daily.json","w",encoding="utf-8") as f:
-    json.dump(d, f, ensure_ascii=False, indent=2)
-PY
+JSON
           fi
 
       - name: Validate daily.json (MUST exist)
