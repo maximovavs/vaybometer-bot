@@ -14,7 +14,7 @@ Money, quick glance
 {{ fx_line }}
 
 Vibe Tip {{VIBE_EMOJI}} (Kp {{KP_SHORT}} • {{TIP_SECS}} sec)
-{{TIP_TEXT}}
+{{ TIP_SECS | default(TIP_SEC, true) }}
 {% if AURORA_HINT %}
 ⚡️ {{AURORA_HINT}}
 {% endif %}
