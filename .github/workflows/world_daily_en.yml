@@ -135,7 +135,7 @@ jobs:
             echo "=== Collect end ==="
           } >> world_en/collect.wrap.log
 
-      - name: Fallback: create minimal daily.json if missing
+      - name: "Fallback: create minimal daily.json if missing"
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -169,8 +169,8 @@ jobs:
               "fx_line": "",
               "VIBE_EMOJI": "🌍",
               "TIP_TEXT": "—",
-              "TIP_SECS": "",   # <-- fixed key
-              "TIP_SEC": "",    # backward-compat
+              "TIP_SECS": "",
+              "TIP_SEC": "",
               "AURORA_HINT": "",
               "NATURE_THUMB": "",
               "NATURE_URL": "",
