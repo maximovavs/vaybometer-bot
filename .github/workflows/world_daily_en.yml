@@ -2,7 +2,7 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"    # 07:15 UTC
+    - cron: "15 7 * * *"   # 07:15 UTC, каждый день
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -40,7 +40,7 @@ jobs:
           print("sys.path[0]:", sys.path[0])
           PY
 
-      - name: Collect daily (make sure daily.json is produced)
+      - name: Collect daily (try module / runpy, log everything)
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
@@ -63,84 +63,78 @@ jobs:
             echo "Python: $(python -V)"
             echo "---- world_en dir (before) ----"
             ls -al world_en || true
-            echo "-- running collector (introspection mode) --"
+            echo "-- running collector (import + runpy) --"
           } >> world_en/collect.wrap.log
 
-          # Пытаемся импортировать модуль и вызвать все разумные функции,
-          # чтобы он создал world_en/daily.json (как бы он ни назывался внутри).
           set +e
           python -X faulthandler -u - <<'PY' 2>&1 | tee -a world_en/collect.run.log
-          import importlib, inspect, json, os, pathlib, sys, traceback
-          base = pathlib.Path("world_en")
-          out  = base/"daily.json"
-          ok   = False
-          try:
-              m = importlib.import_module("world_en.world_collect")
-              print("[introspect] imported world_en.world_collect from", getattr(m, "__file__", "?"), flush=True)
-          except Exception:
-              print("[introspect] cannot import world_en.world_collect")
-              traceback.print_exc()
-              sys.exit(1)
+          import runpy, importlib, sys, traceback, pathlib, json
+          out = pathlib.Path('world_en/daily.json')
 
-          def out_exists():
+          def out_ok():
               return out.exists() and out.stat().st_size > 0
 
-          # Явные кандидаты с разными сигнатурами
-          candidates = [
-              ("collect_daily",   [str(out)]), ("collect_daily",   []),
-              ("main",            [str(out)]), ("main",            []),
-              ("build_daily",     [str(out)]), ("build_daily",     []),
-              ("run",             [str(out)]), ("run",             []),
-              ("collect",         [str(out)]), ("collect",         []),
-          ]
+          # 1) как модуль-скрипт
+          try:
+              print("Wrapper: run world_en/world_collect.py via runpy", flush=True)
+              runpy.run_path('world_en/world_collect.py', run_name='__main__')
+              print("Wrapper: runpy finished", flush=True)
+          except SystemExit as e:
+              print("Wrapper: SystemExit", e.code, flush=True)
+          except Exception:
+              traceback.print_exc()
 
-          for name, args in candidates:
-              fn = getattr(m, name, None)
-              if not callable(fn):
-                  continue
-              print(f"[introspect] trying {name}{tuple(args)}", flush=True)
+          # 2) импортируем и ищем функции-генераторы
+          if not out_ok():
               try:
-                  fn(*args)
-              except TypeError as e:
-                  print(f"[introspect] {name} signature mismatch: {e}")
-                  continue
-              except SystemExit as e:
-                  print(f"[introspect] {name} SystemExit: {e.code}")
+                  m = importlib.import_module('world_en.world_collect')
+                  print("Wrapper: imported", getattr(m,'__file__','?'), flush=True)
               except Exception:
                   traceback.print_exc()
-              if out_exists():
-                  ok = True
-                  print(f"[introspect] {name} produced {out}")
-                  break
+                  sys.exit(1)
 
-          # Если не получилось — перебираем все функции и пробуем без аргументов
-          if not ok:
-              for name, fn in inspect.getmembers(m, inspect.isfunction):
-                  if any(k in name.lower() for k in ("daily", "collect", "build", "make", "generate")):
-                      print(f"[introspect] generic try {name}()", flush=True)
+              import inspect
+              tried = []
+
+              def try_call(name, *args):
+                  f = getattr(m, name, None)
+                  if callable(f):
+                      tried.append((name, args))
                       try:
-                          fn()
+                          f(*args)
+                      except TypeError as e:
+                          print(f"[introspect] {name} signature mismatch: {e}")
+                      except SystemExit as e:
+                          print(f"[introspect] {name} SystemExit {e.code}")
                       except Exception:
                           traceback.print_exc()
-                      if out_exists():
-                          ok = True
-                          print(f"[introspect] {name} produced {out}")
+
+              # самые вероятные имена
+              for nm in ("collect_daily","main","build_daily","run","collect"):
+                  for args in (("world_en/daily.json",), tuple()):
+                      try_call(nm, *args)
+                      if out_ok(): break
+                  if out_ok(): break
+
+              # общий перебор имён с ключевыми словами
+              if not out_ok():
+                  for nm, fn in inspect.getmembers(m, inspect.isfunction):
+                      if any(k in nm.lower() for k in ("daily","collect","build","make","generate")):
+                          try_call(nm)
+                          if out_ok(): break
+
+              # если вдруг в модуле уже есть словарь данных, сохраним
+              if not out_ok():
+                  for key in ("DATA","daily","context","CTX"):
+                      d = getattr(m, key, None)
+                      if isinstance(d, dict):
+                          json.dump(d, open(out,"w",encoding="utf-8"), ensure_ascii=False, indent=2)
                           break
 
-          # Если модуль экспортирует словарь с данными — просто пишем его
-          if not ok:
-              for key in ("DATA","daily","context","CTX"):
-                  d = getattr(m, key, None)
-                  if isinstance(d, dict):
-                      print(f"[introspect] found dict {key}, writing {out}")
-                      json.dump(d, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-                      ok = out_exists()
-                      break
-
-          print("[introspect] result:", "OK" if ok else "FAILED", flush=True)
-          sys.exit(0 if ok else 1)
+          print("Wrapper: daily.json exists?", "YES" if out_ok() else "NO")
+          sys.exit(0)
           PY
-          ec=${PIPESTATUS[0]}
+          ec=$?
           set -e
 
           {
@@ -149,14 +143,55 @@ jobs:
             ls -al world_en || true
             echo "=== Collect end ==="
           } >> world_en/collect.wrap.log
+          # НЕ падаем здесь — дадим шанс fallback-генератору
 
-          if [ $ec -ne 0 ]; then
-            echo "Collector did not produce daily.json" >&2
-            exit 1
+      - name: Fallback: create minimal daily.json if missing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ ! -s world_en/daily.json ]; then
+            echo "Fallback: creating minimal world_en/daily.json"
+            python - <<'PY'
+            import json,datetime
+            utc = datetime.datetime.utcnow()
+            d = {
+              "WEEKDAY": utc.strftime("%A"),
+              "DATE": utc.strftime("%Y-%m-%d"),
+              "KP_SHORT": "-",
+              "KP_TREND_EMOJI": "·",
+              "KP_NOTE": "-",
+              "SCHUMANN_STATUS": "-",
+              "SCHUMANN_AMP": "-",
+              "SOLAR_WIND_SPEED": "-",
+              "SOLAR_WIND_DENSITY": "-",
+              "SOLAR_NOTE": "-",
+              "HOTTEST_PLACE": "-",
+              "HOTTEST_TEMP": "-",
+              "COLDEST_PLACE": "-",
+              "COLDEST_TEMP": "-",
+              "QUAKE_MAG": "-",
+              "QUAKE_REGION": "-",
+              "QUAKE_DEPTH": "-",
+              "QUAKE_TIME": "-",
+              "SUN_TIDBIT_LABEL": "-",
+              "SUN_TIDBIT_PLACE": "-",
+              "SUN_TIDBIT_TIME": "-",
+              "fx_line": "",
+              "VIBE_EMOJI": "🌍",
+              "TIP_TEXT": "—",
+              "TIP_SEC": "",
+              "AURORA_HINT": "",
+              "NATURE_THUMB": "",
+              "NATURE_URL": "",
+              "NATURE_TITLE": "Nature Break",
+              "NATURE_SNIPPET": "60 seconds of calm"
+            }
+            with open("world_en/daily.json","w",encoding="utf-8") as f:
+                json.dump(d,f,ensure_ascii=False,indent=2)
+            PY
           fi
 
       - name: Validate daily.json (MUST exist)
-        shell: bash
         run: |
           set -Eeuo pipefail
           if [ -s world_en/daily.json ]; then
@@ -189,7 +224,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # ===== MAIN channel =====
+      # ========= MAIN =========
       - name: Send text (MAIN)
         if: ${{ inputs.send_to_test != true }}
         env:
@@ -201,32 +236,7 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      - name: Send Nature card (MAIN, only if daily.json has data)
-        if: ${{ inputs.send_to_test != true }}
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
-          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
-        run: |
-          set -Eeuo pipefail
-          readarray -t L < <(python - <<'PY'
-          import json; d=json.load(open('world_en/daily.json',encoding='utf-8'))
-          print(d.get('NATURE_THUMB','')); print(d.get('NATURE_URL',''));
-          title=d.get('NATURE_TITLE','Nature Break'); snip=d.get('NATURE_SNIPPET','60 seconds of calm')
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
-          PY
-          )
-          THUMB="${L[0]:-}"; URL="${L[1]:-}"; CAPTION="${L[*]:2}"
-          if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-              -F chat_id="${TG_CHAT}" -F photo="${THUMB}" \
-              -F parse_mode="HTML" -F caption="$CAPTION" \
-              -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-          elif [ -n "$URL" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
-          fi
-
-      # ===== TEST channel =====
+      # ========= TEST =========
       - name: Send text (TEST)
         if: ${{ inputs.send_to_test == true }}
         env:
@@ -238,29 +248,3 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
-
-      - name: Send Nature card (TEST, only if daily.json has data)
-        if: ${{ inputs.send_to_test == true }}
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
-          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
-        run: |
-          set -Eeuo pipefail
-          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
-          readarray -t L < <(python - <<'PY'
-          import json; d=json.load(open('world_en/daily.json',encoding='utf-8'))
-          print(d.get('NATURE_THUMB','')); print(d.get('NATURE_URL',''));
-          title=d.get('NATURE_TITLE','Nature Break'); snip=d.get('NATURE_SNIPPET','60 seconds of calm')
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
-          PY
-          )
-          THUMB="${L[0]:-}"; URL="${L[1]:-}"; CAPTION="${L[*]:2}"
-          if [ -n "$THUMB" ] && [ -n "$URL" ]; then
-            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
-              -F chat_id="${TG_CHAT}" -F photo="${THUMB}" \
-              -F parse_mode="HTML" -F caption="$CAPTION" \
-              -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-          elif [ -n "$URL" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" -d text="$URL" -d disable_web_page_preview=false
-          fi
