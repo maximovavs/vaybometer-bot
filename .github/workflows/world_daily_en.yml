@@ -2,7 +2,7 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC
+    - cron: "15 7 * * *"    # 07:15 UTC
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -28,19 +28,19 @@ jobs:
         run: |
           set -Eeuo pipefail
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
-          pip install pendulum requests jinja2 pytz astral pandas "python-telegram-bot>=20,<21"
+          pip install pendulum requests jinja2 pytz astral pandas "python-telegram-bot>=20,<21" || true
 
       - name: Show versions
         run: |
           python - <<'PY'
-          import pkgutil
+          import pkgutil, sys
           mods = ("pendulum","requests","jinja2","pytz","astral","pandas","telegram")
           for m in mods:
               print(f"{m}: {'OK' if pkgutil.find_loader(m) else 'MISSING'}")
+          print("sys.path[0]:", sys.path[0])
           PY
 
-      - name: Collect daily (with strong logging)
+      - name: Collect daily (make sure daily.json is produced)
         env:
           YT_API_KEY:            ${{ secrets.YT_API_KEY }}
           YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
@@ -63,22 +63,82 @@ jobs:
             echo "Python: $(python -V)"
             echo "---- world_en dir (before) ----"
             ls -al world_en || true
-            echo "-- running collector --"
+            echo "-- running collector (introspection mode) --"
           } >> world_en/collect.wrap.log
 
+          # Пытаемся импортировать модуль и вызвать все разумные функции,
+          # чтобы он создал world_en/daily.json (как бы он ни назывался внутри).
           set +e
           python -X faulthandler -u - <<'PY' 2>&1 | tee -a world_en/collect.run.log
-          import runpy, sys, traceback
-          print("Wrapper: running world_en/world_collect.py via runpy", flush=True)
+          import importlib, inspect, json, os, pathlib, sys, traceback
+          base = pathlib.Path("world_en")
+          out  = base/"daily.json"
+          ok   = False
           try:
-              runpy.run_path('world_en/world_collect.py', run_name='__main__')
-              print("Wrapper: runpy finished OK", flush=True)
-          except SystemExit as e:
-              print("Wrapper: SystemExit", e.code, flush=True)
-              sys.exit(e.code or 0)
+              m = importlib.import_module("world_en.world_collect")
+              print("[introspect] imported world_en.world_collect from", getattr(m, "__file__", "?"), flush=True)
           except Exception:
+              print("[introspect] cannot import world_en.world_collect")
               traceback.print_exc()
               sys.exit(1)
+
+          def out_exists():
+              return out.exists() and out.stat().st_size > 0
+
+          # Явные кандидаты с разными сигнатурами
+          candidates = [
+              ("collect_daily",   [str(out)]), ("collect_daily",   []),
+              ("main",            [str(out)]), ("main",            []),
+              ("build_daily",     [str(out)]), ("build_daily",     []),
+              ("run",             [str(out)]), ("run",             []),
+              ("collect",         [str(out)]), ("collect",         []),
+          ]
+
+          for name, args in candidates:
+              fn = getattr(m, name, None)
+              if not callable(fn):
+                  continue
+              print(f"[introspect] trying {name}{tuple(args)}", flush=True)
+              try:
+                  fn(*args)
+              except TypeError as e:
+                  print(f"[introspect] {name} signature mismatch: {e}")
+                  continue
+              except SystemExit as e:
+                  print(f"[introspect] {name} SystemExit: {e.code}")
+              except Exception:
+                  traceback.print_exc()
+              if out_exists():
+                  ok = True
+                  print(f"[introspect] {name} produced {out}")
+                  break
+
+          # Если не получилось — перебираем все функции и пробуем без аргументов
+          if not ok:
+              for name, fn in inspect.getmembers(m, inspect.isfunction):
+                  if any(k in name.lower() for k in ("daily", "collect", "build", "make", "generate")):
+                      print(f"[introspect] generic try {name}()", flush=True)
+                      try:
+                          fn()
+                      except Exception:
+                          traceback.print_exc()
+                      if out_exists():
+                          ok = True
+                          print(f"[introspect] {name} produced {out}")
+                          break
+
+          # Если модуль экспортирует словарь с данными — просто пишем его
+          if not ok:
+              for key in ("DATA","daily","context","CTX"):
+                  d = getattr(m, key, None)
+                  if isinstance(d, dict):
+                      print(f"[introspect] found dict {key}, writing {out}")
+                      json.dump(d, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+                      ok = out_exists()
+                      break
+
+          print("[introspect] result:", "OK" if ok else "FAILED", flush=True)
+          sys.exit(0 if ok else 1)
           PY
           ec=${PIPESTATUS[0]}
           set -e
@@ -90,6 +150,11 @@ jobs:
             echo "=== Collect end ==="
           } >> world_en/collect.wrap.log
 
+          if [ $ec -ne 0 ]; then
+            echo "Collector did not produce daily.json" >&2
+            exit 1
+          fi
+
       - name: Validate daily.json (MUST exist)
         shell: bash
         run: |
@@ -98,9 +163,9 @@ jobs:
             echo "daily.json found"
           else
             echo "Error: world_en/daily.json is missing — collector failed."
-            echo "---- collect.log (tail) ----";      tail -n 200 world_en/collect.log       || echo "(no collect.log)"
-            echo "---- collect.run.log (tail) ----"; tail -n 200 world_en/collect.run.log   || echo "(no collect.run.log)"
-            echo "---- collect.wrap.log (tail) ----"; tail -n 200 world_en/collect.wrap.log || echo "(no collect.wrap.log)"
+            echo "---- collect.log (tail) ----";        tail -n 200 world_en/collect.log         || echo "(no collect.log)"
+            echo "---- collect.run.log (tail) ----";   tail -n 200 world_en/collect.run.log     || echo "(no collect.run.log)"
+            echo "---- collect.wrap.log (tail) ----";  tail -n 200 world_en/collect.wrap.log    || echo "(no collect.wrap.log)"
             exit 1
           fi
 
@@ -146,7 +211,7 @@ jobs:
           readarray -t L < <(python - <<'PY'
           import json; d=json.load(open('world_en/daily.json',encoding='utf-8'))
           print(d.get('NATURE_THUMB','')); print(d.get('NATURE_URL',''));
-          title=d.get('NATURE_TITLE','Nature Break'); snip=d.get('NATURE_SNIPPET','60 seconds of calm');
+          title=d.get('NATURE_TITLE','Nature Break'); snip=d.get('NATURE_SNIPPET','60 seconds of calm')
           print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
           PY
           )
@@ -185,7 +250,7 @@ jobs:
           readarray -t L < <(python - <<'PY'
           import json; d=json.load(open('world_en/daily.json',encoding='utf-8'))
           print(d.get('NATURE_THUMB','')); print(d.get('NATURE_URL',''));
-          title=d.get('NATURE_TITLE','Nature Break'); snip=d.get('NATURE_SNIPPET','60 seconds of calm');
+          title=d.get('NATURE_TITLE','Nature Break'); snip=d.get('NATURE_SNIPPET','60 seconds of calm')
           print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
           PY
           )
