@@ -2,7 +2,7 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC daily
+    - cron: "15 7 * * *" # 07:15 UTC daily
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -169,7 +169,8 @@ jobs:
               "fx_line": "",
               "VIBE_EMOJI": "🌍",
               "TIP_TEXT": "—",
-              "TIP_SEC": "",
+              "TIP_SECS": "",   # <-- fixed key
+              "TIP_SEC": "",    # backward-compat
               "AURORA_HINT": "",
               "NATURE_THUMB": "",
               "NATURE_URL": "",
@@ -194,6 +195,24 @@ jobs:
             exit 1
           fi
 
+      - name: Normalize daily.json keys
+        run: |
+          python - <<'PY'
+          import json
+          p="world_en/daily.json"
+          d=json.load(open(p,encoding="utf-8"))
+          if "TIP_SECS" not in d and "TIP_SEC" in d:
+              d["TIP_SECS"]=d["TIP_SEC"]
+          for k in ["WEEKDAY","DATE","KP_SHORT","KP_TREND_EMOJI","KP_NOTE","SCHUMANN_STATUS",
+                    "SCHUMANN_AMP","SOLAR_WIND_SPEED","SOLAR_WIND_DENSITY","SOLAR_NOTE",
+                    "HOTTEST_PLACE","HOTTEST_TEMP","COLDEST_PLACE","COLDEST_TEMP",
+                    "QUAKE_MAG","QUAKE_REGION","QUAKE_DEPTH","QUAKE_TIME",
+                    "SUN_TIDBIT_LABEL","SUN_TIDBIT_PLACE","SUN_TIDBIT_TIME",
+                    "fx_line","VIBE_EMOJI","TIP_SECS","AURORA_HINT"]:
+              d.setdefault(k, "—" if k!="fx_line" else "")
+          json.dump(d, open(p,"w",encoding="utf-8"), ensure_ascii=False, indent=2)
+          PY
+
       - name: Render
         run: |
           set -Eeuo pipefail
@@ -215,7 +234,7 @@ jobs:
           retention-days: 7
 
       - name: Send text (MAIN)
-        if: ${{ inputs.send_to_test != true }}
+        if: ${{ github.event_name != 'workflow_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.send_to_test != true) }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -226,13 +245,12 @@ jobs:
             --data-urlencode text@"world_en/message.txt"
 
       - name: Send text (TEST)
-        if: ${{ inputs.send_to_test == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_to_test == true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
           set -Eeuo pipefail
-          if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
