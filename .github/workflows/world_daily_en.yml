@@ -94,6 +94,78 @@ jobs:
             echo "No nature URL in daily.json — skipping card."
           fi
 
+      # ===== Facebook cross-post (MAIN only) =====
+      - name: Build Facebook-safe message
+        if: ${{ inputs.send_to_test != true }}
+        env:
+          TG_URL: ${{ secrets.TELEGRAM_CHANNEL_URL }}
+        run: |
+          python - <<'PY'
+          import re, html, pathlib, os
+          p = pathlib.Path('world_en/message.txt').read_text('utf-8')
+
+          # remove HTML tags and decode entities
+          plain = re.sub(r'<[^>]+>', '', p)
+          plain = html.unescape(plain)
+          # tidy whitespace
+          plain = re.sub(r'[ \t]+\n', '\n', plain)
+          plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
+
+          # Facebook limit ~63k; оставим компактно (до 2500 символов)
+          if len(plain) > 2500:
+            plain = plain[:2490].rsplit('\n',1)[0] + '\n…'
+
+          link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
+          out  = f"{plain}\n\nFollow daily on Telegram: {link}"
+          pathlib.Path('world_en/facebook_message.txt').write_text(out, 'utf-8')
+          print('FB text length:', len(out))
+          PY
+
+      - name: Post to Facebook Page (main message)
+        if: ${{ inputs.send_to_test != true }}
+        env:
+          FB_PAGE_ID:     ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_TOKEN:  ${{ secrets.FB_PAGE_TOKEN }}
+          TG_URL:         ${{ secrets.TELEGRAM_CHANNEL_URL }}
+        run: |
+          set -euo pipefail
+          MSG="$(cat world_en/facebook_message.txt)"
+          curl -s -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/feed" \
+            --data-urlencode "message=$MSG" \
+            --data-urlencode "link=${TG_URL:-https://t.me/WorldVibeMeter}" \
+            --data-urlencode "access_token=${FB_PAGE_TOKEN}" \
+            > world_en/fb_response.json
+          echo "Facebook response:"; cat world_en/fb_response.json
+          grep -q '"id":' world_en/fb_response.json || { echo "Facebook post failed"; exit 1; }
+
+      - name: Post to Facebook Page (Nature / YouTube link)
+        if: ${{ inputs.send_to_test != true }}
+        env:
+          FB_PAGE_ID:     ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_TOKEN:  ${{ secrets.FB_PAGE_TOKEN }}
+        run: |
+          set -euo pipefail
+          readarray -t L < <(python - <<'PY'
+          import json
+          d=json.load(open('world_en/daily.json','r',encoding='utf-8'))
+          print(d.get('NATURE_URL',''))
+          title=d.get('NATURE_TITLE','Nature Break')
+          snip=d.get('NATURE_SNIPPET','60 seconds of calm')
+          print(f"🌊 {title}\n{snip}")
+          PY
+          )
+          URL="${L[0]}"; CAP="${L[*]:1}"
+          if [ -n "$URL" ]; then
+            curl -s -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/feed" \
+              --data-urlencode "message=$CAP" \
+              --data-urlencode "link=$URL" \
+              --data-urlencode "access_token=${FB_PAGE_TOKEN}" \
+              > world_en/fb_nature_response.json
+            echo "Facebook nature response:"; cat world_en/fb_nature_response.json
+          else
+            echo "No NATURE_URL — skipping FB nature post."
+          fi
+
       # ========== TEST channel ==========
       - name: Send text (TEST)
         if: ${{ inputs.send_to_test == true }}
