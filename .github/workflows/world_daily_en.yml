@@ -2,12 +2,24 @@ name: world-daily-en
 
 on:
   schedule:
-    - cron: "15 7 * * *"   # 07:15 UTC
+    - cron: "15 7 * * *"   # 07:15 UTC каждый день
   workflow_dispatch:
     inputs:
+      # Новый удобный выбор направления публикации
+      publish_to:
+        description: "Куда публиковать?"
+        type: choice
+        required: false
+        default: both
+        options:
+          - both       # Телеграм + Facebook
+          - telegram   # только основной Телеграм
+          - facebook   # только Facebook-страница
+          - test       # тестовый Телеграм
+      # Для обратной совместимости: если true — публикуем в тестовый канал
       send_to_test:
         type: boolean
-        description: "Send to TEST channel instead of main"
+        description: "(deprecated) Send to TEST channel instead of main"
         default: false
 
 jobs:
@@ -45,9 +57,12 @@ jobs:
       - name: Ensure daily.json exists
         run: test -f world_en/daily.json || { echo "daily.json missing"; exit 1; }
 
-      # ========== MAIN channel ==========
-      - name: Send text (MAIN)
-        if: ${{ inputs.send_to_test != true }}
+      # -------------------- TELEGRAM (MAIN) --------------------
+      - name: Send text (MAIN TG)
+        if: ${{ github.event_name == 'schedule'
+                || inputs.publish_to == 'both'
+                || inputs.publish_to == 'telegram'
+                || (inputs.publish_to == '' && inputs.send_to_test != 'true') }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -57,8 +72,11 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      - name: Send Nature card (MAIN)
-        if: ${{ inputs.send_to_test != true }}
+      - name: Send Nature card (MAIN TG)
+        if: ${{ github.event_name == 'schedule'
+                || inputs.publish_to == 'both'
+                || inputs.publish_to == 'telegram'
+                || (inputs.publish_to == '' && inputs.send_to_test != 'true') }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -85,7 +103,6 @@ jobs:
               -F caption="$CAPTION" \
               -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
           elif [ -n "$URL" ]; then
-            # Fallback: just send link and let Telegram build the preview
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               -d chat_id="${TG_CHAT}" \
               -d text="$URL" \
@@ -94,9 +111,12 @@ jobs:
             echo "No nature URL in daily.json — skipping card."
           fi
 
-      # ===== Facebook cross-post (MAIN only) =====
+      # -------------------- FACEBOOK --------------------
       - name: Build Facebook-safe message
-        if: ${{ inputs.send_to_test != true }}
+        if: ${{ (github.event_name == 'schedule'
+                 || inputs.publish_to == 'both'
+                 || inputs.publish_to == 'facebook')
+                && secrets.FB_PAGE_ID != '' && secrets.FB_PAGE_TOKEN != '' }}
         env:
           TG_URL: ${{ secrets.TELEGRAM_CHANNEL_URL }}
         run: |
@@ -111,7 +131,7 @@ jobs:
           plain = re.sub(r'[ \t]+\n', '\n', plain)
           plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
 
-          # Facebook limit ~63k; оставим компактно (до 2500 символов)
+          # Facebook limit ~63k; ограничим до 2500 символов
           if len(plain) > 2500:
             plain = plain[:2490].rsplit('\n',1)[0] + '\n…'
 
@@ -122,7 +142,10 @@ jobs:
           PY
 
       - name: Post to Facebook Page (main message)
-        if: ${{ inputs.send_to_test != true }}
+        if: ${{ (github.event_name == 'schedule'
+                 || inputs.publish_to == 'both'
+                 || inputs.publish_to == 'facebook')
+                && secrets.FB_PAGE_ID != '' && secrets.FB_PAGE_TOKEN != '' }}
         env:
           FB_PAGE_ID:     ${{ secrets.FB_PAGE_ID }}
           FB_PAGE_TOKEN:  ${{ secrets.FB_PAGE_TOKEN }}
@@ -139,7 +162,10 @@ jobs:
           grep -q '"id":' world_en/fb_response.json || { echo "Facebook post failed"; exit 1; }
 
       - name: Post to Facebook Page (Nature / YouTube link)
-        if: ${{ inputs.send_to_test != true }}
+        if: ${{ (github.event_name == 'schedule'
+                 || inputs.publish_to == 'both'
+                 || inputs.publish_to == 'facebook')
+                && secrets.FB_PAGE_ID != '' && secrets.FB_PAGE_TOKEN != '' }}
         env:
           FB_PAGE_ID:     ${{ secrets.FB_PAGE_ID }}
           FB_PAGE_TOKEN:  ${{ secrets.FB_PAGE_TOKEN }}
@@ -166,9 +192,10 @@ jobs:
             echo "No NATURE_URL — skipping FB nature post."
           fi
 
-      # ========== TEST channel ==========
-      - name: Send text (TEST)
-        if: ${{ inputs.send_to_test == true }}
+      # -------------------- TELEGRAM (TEST) --------------------
+      - name: Send text (TEST TG)
+        if: ${{ inputs.publish_to == 'test'
+                || (inputs.publish_to == '' && inputs.send_to_test == 'true') }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
@@ -179,8 +206,9 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
-      - name: Send Nature card (TEST)
-        if: ${{ inputs.send_to_test == true }}
+      - name: Send Nature card (TEST TG)
+        if: ${{ inputs.publish_to == 'test'
+                || (inputs.publish_to == '' && inputs.send_to_test == 'true') }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
