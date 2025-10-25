@@ -5,19 +5,9 @@ on:
     - cron: "0 16 * * 0"   # Sun 16:00 UTC
   workflow_dispatch:
     inputs:
-      publish_to:
-        description: "Куда публиковать?"
-        type: choice
-        required: false
-        default: both
-        options:
-          - both       # Телеграм + Facebook
-          - telegram   # только основной Телеграм
-          - facebook   # только Facebook-страница
-          - test       # тестовый Телеграм
       send_to_test:
         type: boolean
-        description: "(deprecated) Send to TEST channel instead of main"
+        description: "Send to TEST channel instead of main"
         default: false
 
 jobs:
@@ -26,10 +16,6 @@ jobs:
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
-      # вынесем fb-секреты в окружение, чтобы можно было проверять в if:
-      FB_PAGE_ID: ${{ secrets.FB_PAGE_ID || '' }}
-      FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN || '' }}
-      TG_URL: ${{ secrets.TELEGRAM_CHANNEL_URL || 'https://t.me/WorldVibeMeter' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -43,55 +29,41 @@ jobs:
 
       - name: Collect weekly
         env:
-          YT_API_KEY:            ${{ secrets.YT_API_KEY }}
-          YT_CHANNEL_ID:         ${{ secrets.YT_CHANNEL_ID }}
-          YOUTUBE_PLAYLIST_IDS:  ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
-          FALLBACK_NATURE_LIST:  ${{ secrets.FALLBACK_NATURE_LIST }}
-        run: |
-          set -euo pipefail
-          python world_en/world_weekly_collect.py
-          echo "---- ls world_en"; ls -l world_en || true
-          echo "---- head weekly.json"; head -c 600 world_en/weekly.json || true
+          YT_API_KEY:               ${{ secrets.YT_API_KEY }}
+          YT_CHANNEL_ID:            ${{ secrets.YT_CHANNEL_ID }}
+          YOUTUBE_PLAYLIST_IDS:     ${{ secrets.YOUTUBE_PLAYLIST_IDS }}
+          FALLBACK_NATURE_LIST:     ${{ secrets.FALLBACK_NATURE_LIST }}
+        run: python world_en/world_weekly_collect.py
+
+      - name: Render
+        run: python world_en/render.py world_en/templates/weekly_en.j2 world_en/weekly.json > world_en/weekly_msg.txt
 
       - name: Ensure weekly.json exists
         run: test -f world_en/weekly.json || { echo "weekly.json missing"; exit 1; }
 
-      - name: Render message
-        run: python world_en/render.py world_en/templates/weekly_en.j2 world_en/weekly.json > world_en/weekly_msg.txt
-
-      # ===================== TELEGRAM (MAIN) =====================
+      # ========= MAIN TG =========
       - name: Send text (MAIN TG)
-        if: ${{ github.event_name == 'schedule'
-                || inputs.publish_to == 'both'
-                || inputs.publish_to == 'telegram'
-                || (inputs.publish_to == '' && inputs.send_to_test != true) }}
+        if: ${{ inputs.send_to_test != true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
-          set -euo pipefail
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/weekly_msg.txt"
 
       - name: Send Nature card (MAIN TG)
-        if: ${{ github.event_name == 'schedule'
-                || inputs.publish_to == 'both'
-                || inputs.publish_to == 'telegram'
-                || (inputs.publish_to == '' && inputs.send_to_test != true) }}
+        if: ${{ inputs.send_to_test != true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
         run: |
-          set -euo pipefail
           readarray -t L < <(python - <<'PY'
           import json
           d=json.load(open('world_en/weekly.json',encoding='utf-8'))
           print(d.get('TOP_NATURE_THUMB',''))
           print(d.get('TOP_NATURE_URL',''))
-          title=d.get('TOP_NATURE_TITLE','Nature Break')
-          snip =d.get('TOP_NATURE_SNIPPET','Short calm from Miss Relax')
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+          print(f"🌊 <b>{d.get('TOP_NATURE_TITLE','Nature Break')}</b>\n<i>{d.get('TOP_NATURE_SNIPPET','Short calm from Miss Relax')}</i>")
           PY
           )
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
@@ -102,110 +74,99 @@ jobs:
               -F parse_mode="HTML" \
               -F caption="$CAPTION" \
               -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-          elif [ -n "$URL" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" \
-              -d text="$URL" \
-              -d disable_web_page_preview=false
-          else
-            echo "No weekly TOP_NATURE_URL — skipping TG card."
           fi
 
-      # ===================== FACEBOOK =====================
-      - name: Build Facebook-safe weekly text
-        if: ${{ (github.event_name == 'schedule'
-                 || inputs.publish_to == 'both'
-                 || inputs.publish_to == 'facebook')
-                && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
+      # ========= FACEBOOK (MAIN) =========
+      # Готовим текст и добавляем попытку тега
+      - name: Build Facebook weekly message (with tag)
+        if: ${{ inputs.send_to_test != true && secrets.FB_PAGE_ID != '' && secrets.FB_PAGE_TOKEN != '' }}
+        env:
+          FB_TAG_PAGE_ID: ${{ secrets.FB_TAG_PAGE_ID }}   # 842249998972347
+          TG_URL:         ${{ secrets.TELEGRAM_CHANNEL_URL }}
         run: |
           python - <<'PY'
-          import re, html, pathlib, os
-          p = pathlib.Path('world_en/weekly_msg.txt').read_text('utf-8', errors='ignore')
-          plain = re.sub(r'<[^>]+>', '', p)
+          import os, re, html, pathlib
+          raw = pathlib.Path('world_en/weekly_msg.txt').read_text('utf-8')
+          # убрать HTML, привести пробелы
+          plain = re.sub(r'<[^>]+>', '', raw)
           plain = html.unescape(plain)
           plain = re.sub(r'[ \t]+\n', '\n', plain)
           plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
-          if len(plain) > 2500:
-            plain = plain[:2490].rsplit('\n',1)[0] + '\n…'
-          link = os.getenv('TG_URL', 'https://t.me/WorldVibeMeter')
-          out  = f"{plain}\n\nFollow daily on Telegram: {link}"
+
+          tail = "\n\nFollow daily on Telegram: " + (os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter')
+
+          # Пытаемся сделать упоминание через @[PAGE_ID]
+          tag_id = (os.getenv('FB_TAG_PAGE_ID') or '').strip()
+          tag_line = f"\n\nFeaturing @[ {tag_id} ]" if tag_id else ""  # пробелы уберём ниже
+          out = (plain + tag_line + tail).replace('@[ ', '@[')
+
+          # ограничим длину для надёжности
+          if len(out) > 2500:
+            out = out[:2490].rsplit('\n',1)[0] + '\n…'
+
           pathlib.Path('world_en/weekly_fb_msg.txt').write_text(out, 'utf-8')
-          print('FB text length:', len(out))
+          print("FB message chars:", len(out))
           PY
 
-      - name: Post weekly to Facebook Page
-        if: ${{ (github.event_name == 'schedule'
-                 || inputs.publish_to == 'both'
-                 || inputs.publish_to == 'facebook')
-                && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
+      - name: Post to Facebook Page (weekly + tag)
+        if: ${{ inputs.send_to_test != true && secrets.FB_PAGE_ID != '' && secrets.FB_PAGE_TOKEN != '' }}
+        env:
+          FB_PAGE_ID:     ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_TOKEN:  ${{ secrets.FB_PAGE_TOKEN }}
+          FB_TAG_PAGE_ID: ${{ secrets.FB_TAG_PAGE_ID }}
         run: |
           set -euo pipefail
           MSG="$(cat world_en/weekly_fb_msg.txt)"
+
+          # 1) публикуем пост
           curl -s -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/feed" \
             --data-urlencode "message=$MSG" \
             --data-urlencode "access_token=${FB_PAGE_TOKEN}" \
-            > world_en/fb_weekly_response.json
-          echo "Facebook response:"; cat world_en/fb_weekly_response.json
-          grep -q '"id":' world_en/fb_weekly_response.json || { echo "Facebook post failed"; exit 1; }
+            > world_en/fb_weekly_post.json
 
-      - name: Post weekly Nature link to Facebook
-        if: ${{ (github.event_name == 'schedule'
-                 || inputs.publish_to == 'both'
-                 || inputs.publish_to == 'facebook')
-                && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
-        run: |
-          set -euo pipefail
-          readarray -t L < <(python - <<'PY'
-          import json
-          d=json.load(open('world_en/weekly.json','r',encoding='utf-8'))
-          print(d.get('TOP_NATURE_URL',''))
-          title=d.get('TOP_NATURE_TITLE','Nature Break')
-          snip=d.get('TOP_NATURE_SNIPPET','Short calm from Miss Relax')
-          print(f"🌊 {title}\n{snip}")
+          echo "FB post response:"; cat world_en/fb_weekly_post.json
+
+          # 2) пытаемся добавить тег к уже созданному посту
+          POST_ID="$(python - <<'PY'
+          import json; print(json.load(open('world_en/fb_weekly_post.json')).get('id',''))
           PY
-          )
-          URL="${L[0]}"; CAP="${L[*]:1}"
-          if [ -n "$URL" ]; then
-            curl -s -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/feed" \
-              --data-urlencode "message=$CAP" \
-              --data-urlencode "link=$URL" \
-              --data-urlencode "access_token=${FB_PAGE_TOKEN}" \
-              > world_en/fb_weekly_nature_response.json
-            echo "Facebook nature response:"; cat world_en/fb_weekly_nature_response.json
+          )"
+
+          if [ -n "${POST_ID}" ] && [ -n "${FB_TAG_PAGE_ID:-}" ]; then
+            # Попытка через with_tags (если доступно на типе поста и у токена есть права)
+            curl -s -X POST "https://graph.facebook.com/v19.0/${POST_ID}/with_tags" \
+              -F "tags=[{\"tag_uid\":\"${FB_TAG_PAGE_ID}\"}]" \
+              -F "access_token=${FB_PAGE_TOKEN}" \
+              > world_en/fb_weekly_tag.json || true
+            echo "Tag response:"; cat world_en/fb_weekly_tag.json || true
           else
-            echo "No weekly TOP_NATURE_URL — skipping FB nature post."
+            echo "Post id or FB_TAG_PAGE_ID is empty — skip tagging."
           fi
 
-      # ===================== TELEGRAM (TEST) =====================
+      # ========= TEST TG =========
       - name: Send text (TEST TG)
-        if: ${{ inputs.publish_to == 'test'
-                || (inputs.publish_to == '' && inputs.send_to_test == true) }}
+        if: ${{ inputs.send_to_test == true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
-          set -euo pipefail
           if [ -z "${TG_CHAT}" ]; then echo "TEST chat id is empty"; exit 1; fi
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/weekly_msg.txt"
 
       - name: Send Nature card (TEST TG)
-        if: ${{ inputs.publish_to == 'test'
-                || (inputs.publish_to == '' && inputs.send_to_test == true) }}
+        if: ${{ inputs.send_to_test == true }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
         run: |
-          set -euo pipefail
           readarray -t L < <(python - <<'PY'
           import json
           d=json.load(open('world_en/weekly.json',encoding='utf-8'))
           print(d.get('TOP_NATURE_THUMB',''))
           print(d.get('TOP_NATURE_URL',''))
-          title=d.get('TOP_NATURE_TITLE','Nature Break')
-          snip =d.get('TOP_NATURE_SNIPPET','Short calm from Miss Relax')
-          print(f"🌊 <b>{title}</b>\n<i>{snip}</i>")
+          print(f"🌊 <b>{d.get('TOP_NATURE_TITLE','Nature Break')}</b>\n<i>{d.get('TOP_NATURE_SNIPPET','Short calm from Miss Relax')}</i>")
           PY
           )
           THUMB="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
@@ -217,11 +178,4 @@ jobs:
               -F parse_mode="HTML" \
               -F caption="$CAPTION" \
               -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
-          elif [ -n "$URL" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT}" \
-              -d text="$URL" \
-              -d disable_web_page_preview=false
-          else
-            echo "No weekly TOP_NATURE_URL — skipping TG test card."
           fi
