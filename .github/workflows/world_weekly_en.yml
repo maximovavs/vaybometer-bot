@@ -2,7 +2,7 @@ name: world-weekly-en
 
 on:
   schedule:
-    - cron: "0 16 * * 0"   # Sun 16:00 UTC
+    - cron: "0 16 * * 0"     # Sun 16:00 UTC
   workflow_dispatch:
     inputs:
       send_to_test:
@@ -41,7 +41,7 @@ jobs:
       - name: Ensure weekly.json exists
         run: test -f world_en/weekly.json || { echo "weekly.json missing"; exit 1; }
 
-      # ========= MAIN TG =========
+      # ========= MAIN Telegram =========
       - name: Send text (MAIN TG)
         if: ${{ inputs.send_to_test != true }}
         env:
@@ -76,10 +76,9 @@ jobs:
               -F reply_markup='{"inline_keyboard":[[{"text":"▶️ Watch on YouTube","url":"'"$URL"'"}]]}'
           fi
 
-      # ========= FACEBOOK (MAIN) =========
-      # Готовим текст и добавляем попытку тега
+      # ========= Facebook (MAIN) =========
       - name: Build Facebook weekly message (with tag)
-        if: ${{ inputs.send_to_test != true && secrets.FB_PAGE_ID != '' && secrets.FB_PAGE_TOKEN != '' }}
+        if: ${{ inputs.send_to_test != true }}
         env:
           FB_TAG_PAGE_ID: ${{ secrets.FB_TAG_PAGE_ID }}   # 842249998972347
           TG_URL:         ${{ secrets.TELEGRAM_CHANNEL_URL }}
@@ -87,7 +86,7 @@ jobs:
           python - <<'PY'
           import os, re, html, pathlib
           raw = pathlib.Path('world_en/weekly_msg.txt').read_text('utf-8')
-          # убрать HTML, привести пробелы
+          # strip HTML & normalize whitespace
           plain = re.sub(r'<[^>]+>', '', raw)
           plain = html.unescape(plain)
           plain = re.sub(r'[ \t]+\n', '\n', plain)
@@ -95,12 +94,10 @@ jobs:
 
           tail = "\n\nFollow daily on Telegram: " + (os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter')
 
-          # Пытаемся сделать упоминание через @[PAGE_ID]
           tag_id = (os.getenv('FB_TAG_PAGE_ID') or '').strip()
-          tag_line = f"\n\nFeaturing @[ {tag_id} ]" if tag_id else ""  # пробелы уберём ниже
+          tag_line = f"\n\nFeaturing @[ {tag_id} ]" if tag_id else ""
           out = (plain + tag_line + tail).replace('@[ ', '@[')
 
-          # ограничим длину для надёжности
           if len(out) > 2500:
             out = out[:2490].rsplit('\n',1)[0] + '\n…'
 
@@ -108,17 +105,22 @@ jobs:
           print("FB message chars:", len(out))
           PY
 
-      - name: Post to Facebook Page (weekly + tag)
-        if: ${{ inputs.send_to_test != true && secrets.FB_PAGE_ID != '' && secrets.FB_PAGE_TOKEN != '' }}
+      - name: Post to Facebook Page (weekly + attempt tag)
+        if: ${{ inputs.send_to_test != true }}
         env:
           FB_PAGE_ID:     ${{ secrets.FB_PAGE_ID }}
           FB_PAGE_TOKEN:  ${{ secrets.FB_PAGE_TOKEN }}
           FB_TAG_PAGE_ID: ${{ secrets.FB_TAG_PAGE_ID }}
         run: |
           set -euo pipefail
+          # если секретов нет — тихо скипаем без ошибки
+          if [ -z "${FB_PAGE_ID:-}" ] || [ -z "${FB_PAGE_TOKEN:-}" ]; then
+            echo "FB secrets missing -> skip FB posting"; exit 0
+          fi
+
           MSG="$(cat world_en/weekly_fb_msg.txt)"
 
-          # 1) публикуем пост
+          # 1) publish post
           curl -s -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/feed" \
             --data-urlencode "message=$MSG" \
             --data-urlencode "access_token=${FB_PAGE_TOKEN}" \
@@ -126,24 +128,23 @@ jobs:
 
           echo "FB post response:"; cat world_en/fb_weekly_post.json
 
-          # 2) пытаемся добавить тег к уже созданному посту
           POST_ID="$(python - <<'PY'
           import json; print(json.load(open('world_en/fb_weekly_post.json')).get('id',''))
           PY
           )"
 
+          # 2) try tagging (best effort)
           if [ -n "${POST_ID}" ] && [ -n "${FB_TAG_PAGE_ID:-}" ]; then
-            # Попытка через with_tags (если доступно на типе поста и у токена есть права)
             curl -s -X POST "https://graph.facebook.com/v19.0/${POST_ID}/with_tags" \
               -F "tags=[{\"tag_uid\":\"${FB_TAG_PAGE_ID}\"}]" \
               -F "access_token=${FB_PAGE_TOKEN}" \
               > world_en/fb_weekly_tag.json || true
             echo "Tag response:"; cat world_en/fb_weekly_tag.json || true
           else
-            echo "Post id or FB_TAG_PAGE_ID is empty — skip tagging."
+            echo "Skip tagging (post id or tag id empty)"
           fi
 
-      # ========= TEST TG =========
+      # ========= TEST Telegram =========
       - name: Send text (TEST TG)
         if: ${{ inputs.send_to_test == true }}
         env:
