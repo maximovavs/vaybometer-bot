@@ -141,46 +141,43 @@ jobs:
           set -Eeuo pipefail
           if [ ! -s world_en/daily.json ]; then
             echo "Fallback: creating minimal world_en/daily.json"
-            sudo apt-get update -y >/dev/null 2>&1 || true
-            sudo apt-get install -y jq >/dev/null 2>&1 || true
             WEEKDAY=$(date -u +%A)
             DATESTR=$(date -u +%Y-%m-%d)
-            jq -n \
-              --arg WEEKDAY "$WEEKDAY" \
-              --arg DATE "$DATESTR" \
-              '{
-                WEEKDAY: $WEEKDAY,
-                DATE: $DATE,
-                KP_SHORT: "-",
-                KP_TREND_EMOJI: "·",
-                KP_NOTE: "-",
-                SCHUMANN_STATUS: "-",
-                SCHUMANN_AMP: "-",
-                SOLAR_WIND_SPEED: "-",
-                SOLAR_WIND_DENSITY: "-",
-                SOLAR_NOTE: "-",
-                HOTTEST_PLACE: "-",
-                HOTTEST_TEMP: "-",
-                COLDEST_PLACE: "-",
-                COLDEST_TEMP: "-",
-                QUAKE_MAG: "-",
-                QUAKE_REGION: "-",
-                QUAKE_DEPTH: "-",
-                QUAKE_TIME: "-",
-                SUN_TIDBIT_LABEL: "-",
-                SUN_TIDBIT_PLACE: "-",
-                SUN_TIDBIT_TIME: "-",
-                fx_line: "",
-                VIBE_EMOJI: "🌍",
-                TIP_TEXT: "—",
-                TIP_SECS: "",
-                TIP_SEC: "",
-                AURORA_HINT: "",
-                NATURE_THUMB: "",
-                NATURE_URL: "",
-                NATURE_TITLE: "Nature Break",
-                NATURE_SNIPPET: "60 seconds of calm"
-              }' > world_en/daily.json
+            cat > world_en/daily.json <<JSON
+{
+  "WEEKDAY": "${WEEKDAY}",
+  "DATE": "${DATESTR}",
+  "KP_SHORT": "-",
+  "KP_TREND_EMOJI": "·",
+  "KP_NOTE": "-",
+  "SCHUMANN_STATUS": "-",
+  "SCHUMANN_AMP": "-",
+  "SOLAR_WIND_SPEED": "-",
+  "SOLAR_WIND_DENSITY": "-",
+  "SOLAR_NOTE": "-",
+  "HOTTEST_PLACE": "-",
+  "HOTTEST_TEMP": "-",
+  "COLDEST_PLACE": "-",
+  "COLDEST_TEMP": "-",
+  "QUAKE_MAG": "-",
+  "QUAKE_REGION": "-",
+  "QUAKE_DEPTH": "-",
+  "QUAKE_TIME": "-",
+  "SUN_TIDBIT_LABEL": "-",
+  "SUN_TIDBIT_PLACE": "-",
+  "SUN_TIDBIT_TIME": "-",
+  "fx_line": "",
+  "VIBE_EMOJI": "🌍",
+  "TIP_TEXT": "—",
+  "TIP_SECS": "",
+  "TIP_SEC": "",
+  "AURORA_HINT": "",
+  "NATURE_THUMB": "",
+  "NATURE_URL": "",
+  "NATURE_TITLE": "Nature Break",
+  "NATURE_SNIPPET": "60 seconds of calm"
+}
+JSON
           fi
 
       - name: Validate daily.json (MUST exist)
@@ -196,29 +193,30 @@ jobs:
             exit 1
           fi
 
-      - name: Normalize daily.json keys
-        run: |
-          python - <<'PY'
-          import json
-          p="world_en/daily.json"
-          d=json.load(open(p,encoding="utf-8"))
-          if "TIP_SECS" not in d and "TIP_SEC" in d:
-              d["TIP_SECS"]=d["TIP_SEC"]
-          for k in ["WEEKDAY","DATE","KP_SHORT","KP_TREND_EMOJI","KP_NOTE","SCHUMANN_STATUS",
-                    "SCHUMANN_AMP","SOLAR_WIND_SPEED","SOLAR_WIND_DENSITY","SOLAR_NOTE",
-                    "HOTTEST_PLACE","HOTTEST_TEMP","COLDEST_PLACE","COLDEST_TEMP",
-                    "QUAKE_MAG","QUAKE_REGION","QUAKE_DEPTH","QUAKE_TIME",
-                    "SUN_TIDBIT_LABEL","SUN_TIDBIT_PLACE","SUN_TIDBIT_TIME",
-                    "fx_line","VIBE_EMOJI","TIP_SECS","AURORA_HINT"]:
-              d.setdefault(k, "—" if k!="fx_line" else "")
-          json.dump(d, open(p,"w",encoding="utf-8"), ensure_ascii=False, indent=2)
-          PY
-
       - name: Render
         run: |
           set -Eeuo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           test -s world_en/message.txt
+
+      # ---------- NEW: build text for YouTube card ----------
+      - name: Build YouTube card text
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          import json, sys, pathlib
+          d = json.load(open("world_en/daily.json", encoding="utf-8"))
+          url = (d.get("NATURE_URL") or "").strip()
+          if not url:
+              print("no NATURE_URL -> skip")
+              sys.exit(0)
+          title   = d.get("NATURE_TITLE")   or "Nature Break"
+          snippet = d.get("NATURE_SNIPPET") or "60 seconds of calm"
+          txt = f"🌊🌊 {title}\n\n{snippet}\n\n{url}\n"
+          pathlib.Path("world_en/nature.txt").write_text(txt, encoding="utf-8")
+          print("wrote world_en/nature.txt")
+          PY
 
       - name: Upload artifacts
         if: always()
@@ -231,6 +229,7 @@ jobs:
             world_en/collect.wrap.log
             world_en/daily.json
             world_en/message.txt
+            world_en/nature.txt
           if-no-files-found: ignore
           retention-days: 7
 
@@ -245,6 +244,21 @@ jobs:
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
 
+      - name: Send YouTube card (MAIN)
+        if: ${{ github.event_name != 'workflow_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.send_to_test != true) }}
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
+          TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+        run: |
+          set -Eeuo pipefail
+          if [ -s world_en/nature.txt ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
+              --data-urlencode text@"world_en/nature.txt"
+          else
+            echo "no nature card to send"
+          fi
+
       - name: Send text (TEST)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_to_test == true }}
         env:
@@ -255,3 +269,18 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
+
+      - name: Send YouTube card (TEST)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_to_test == true }}
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
+          TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
+        run: |
+          set -Eeuo pipefail
+          if [ -s world_en/nature.txt ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
+              --data-urlencode text@"world_en/nature.txt"
+          else
+            echo "no nature card to send"
+          fi
