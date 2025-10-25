@@ -31,6 +31,7 @@ jobs:
           pip install pendulum requests jinja2 pytz astral pandas "python-telegram-bot>=20,<21" || true
 
       - name: Show versions
+        shell: bash
         run: |
           python - <<'PY'
           import pkgutil, sys
@@ -72,7 +73,6 @@ jobs:
           out = pathlib.Path('world_en/daily.json')
           def out_ok(): return out.exists() and out.stat().st_size > 0
 
-          # try as script
           try:
               print("Wrapper: run world_en/world_collect.py via runpy", flush=True)
               runpy.run_path('world_en/world_collect.py', run_name='__main__')
@@ -82,7 +82,6 @@ jobs:
           except Exception:
               traceback.print_exc()
 
-          # import & probe functions
           if not out_ok():
               try:
                   m = importlib.import_module('world_en.world_collect')
@@ -135,21 +134,17 @@ jobs:
             echo "=== Collect end ==="
           } >> world_en/collect.wrap.log
 
-      # ⚠️ Без heredoc: пишем JSON питоном, чтобы YAML не падал
       - name: Fallback: create minimal daily.json if missing
+        shell: bash
         run: |
           python - <<'PY'
-          import json,datetime,os,sys
-          p="world_en/daily.json"
-          try:
-              s=os.stat(p).st_size
-          except FileNotFoundError:
-              s=0
-          if s>0:
-              print("daily.json already exists")
-              sys.exit(0)
-          utc=datetime.datetime.utcnow()
-          d={
+          import json, datetime as dt, os, pathlib, sys
+          p = "world_en/daily.json"
+          if os.path.exists(p) and os.path.getsize(p) > 0:
+              print("daily.json already exists"); sys.exit(0)
+          pathlib.Path("world_en").mkdir(parents=True, exist_ok=True)
+          utc = dt.datetime.utcnow()
+          d = {
             "WEEKDAY": utc.strftime("%A"),
             "DATE": utc.strftime("%Y-%m-%d"),
             "KP_SHORT": "-",
@@ -182,38 +177,37 @@ jobs:
             "NATURE_TITLE": "Nature Break",
             "NATURE_SNIPPET": "60 seconds of calm"
           }
-          import pathlib
-          pathlib.Path("world_en").mkdir(exist_ok=True,parents=True)
-          with open(p,"w",encoding="utf-8") as f:
-              json.dump(d,f,ensure_ascii=False,indent=2)
+          with open(p, "w", encoding="utf-8") as f:
+              json.dump(d, f, ensure_ascii=False, indent=2)
           print("fallback daily.json created")
           PY
 
       - name: Validate daily.json (MUST exist)
+        shell: bash
         run: |
-          set -Eeuo pipefail
           test -s world_en/daily.json && echo "daily.json found" || (echo "missing daily.json" && exit 1)
 
       - name: Render
+        shell: bash
         run: |
           set -Eeuo pipefail
           python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
           test -s world_en/message.txt
 
-      # ---------- YouTube card: готовим текст ----------
       - name: Build YouTube card text
+        shell: bash
         run: |
           python - <<'PY'
           import json, pathlib
-          d=json.load(open("world_en/daily.json",encoding="utf-8"))
-          url=(d.get("NATURE_URL") or "").strip()
+          d = json.load(open("world_en/daily.json", encoding="utf-8"))
+          url = (d.get("NATURE_URL") or "").strip()
           if not url:
               print("no NATURE_URL -> skip")
           else:
-              title=d.get("NATURE_TITLE") or "Nature Break"
-              snip=d.get("NATURE_SNIPPET") or "60 seconds of calm"
-              txt=f"🌊🌊 {title}\n\n{snip}\n\n{url}\n"
-              pathlib.Path("world_en/nature.txt").write_text(txt,encoding="utf-8")
+              title = d.get("NATURE_TITLE") or "Nature Break"
+              snip  = d.get("NATURE_SNIPPET") or "60 seconds of calm"
+              txt = f"🌊🌊 {title}\n\n{snip}\n\n{url}\n"
+              pathlib.Path("world_en/nature.txt").write_text(txt, encoding="utf-8")
               print("wrote world_en/nature.txt")
           PY
 
@@ -237,8 +231,8 @@ jobs:
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+        shell: bash
         run: |
-          set -Eeuo pipefail
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
@@ -248,8 +242,8 @@ jobs:
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
+        shell: bash
         run: |
-          set -Eeuo pipefail
           if [ -s world_en/nature.txt ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
@@ -263,8 +257,8 @@ jobs:
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
+        shell: bash
         run: |
-          set -Eeuo pipefail
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
             --data-urlencode text@"world_en/message.txt"
@@ -274,8 +268,8 @@ jobs:
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST }}
+        shell: bash
         run: |
-          set -Eeuo pipefail
           if [ -s world_en/nature.txt ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               -d chat_id="${TG_CHAT}" -d parse_mode="HTML" \
