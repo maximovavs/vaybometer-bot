@@ -134,15 +134,16 @@ jobs:
             echo "=== Collect end ==="
           } >> world_en/collect.wrap.log
 
-      - name: Fallback: create minimal daily.json if missing
-        shell: bash
-        run: |
+            - name: Fallback: create minimal daily.json if missing
+          shell: bash
+          run: |
+          set -Eeuo pipefail
           python - <<'PY'
           import json, datetime as dt, os, pathlib, sys
-          p = "world_en/daily.json"
-          if os.path.exists(p) and os.path.getsize(p) > 0:
+          p = pathlib.Path("world_en/daily.json")
+          if p.exists() and p.stat().st_size > 0:
               print("daily.json already exists"); sys.exit(0)
-          pathlib.Path("world_en").mkdir(parents=True, exist_ok=True)
+          p.parent.mkdir(parents=True, exist_ok=True)
           utc = dt.datetime.utcnow()
           d = {
             "WEEKDAY": utc.strftime("%A"),
@@ -177,8 +178,7 @@ jobs:
             "NATURE_TITLE": "Nature Break",
             "NATURE_SNIPPET": "60 seconds of calm"
           }
-          with open(p, "w", encoding="utf-8") as f:
-              json.dump(d, f, ensure_ascii=False, indent=2)
+          p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
           print("fallback daily.json created")
           PY
 
