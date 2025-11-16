@@ -46,7 +46,7 @@ jobs:
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
       - name: Ensure daily.json exists
         run: test -f world_en/daily.json || { echo "daily.json missing"; exit 1; }
-     # ===================== X (TWITTER) =====================
+ # ===================== X (TWITTER) =====================
       - name: Build X-safe message
         if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
         run: |
