@@ -57,7 +57,7 @@ jobs:
           plain = html.unescape(plain)
           plain = re.sub(r'[ \t]+\n', '\n', plain)
           plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
-          if len(plain) > 280:
+          if len(plain) > 270:
             plain = plain[:270].rsplit(' ',1)[0] + '…'
           link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
           out = f"{plain}\n\nFrom: {link} #SchumannResonance #EcologyVibes"
