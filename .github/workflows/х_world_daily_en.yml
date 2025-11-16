@@ -47,86 +47,86 @@ jobs:
       - name: Ensure daily.json exists
         run: test -f world_en/daily.json || { echo "daily.json missing"; exit 1; }
      # ===================== X (TWITTER) =====================
-- name: Build X-safe message
-  if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
-  run: |
-    python - <<'PY'
-    import re, html, pathlib, os
-    p = pathlib.Path('world_en/message.txt').read_text('utf-8')
-    plain = re.sub(r'<[^>]+>', '', p)
-    plain = html.unescape(plain)
-    plain = re.sub(r'[ \t]+\n', '\n', plain)
-    plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
-    if len(plain) > 280:
-      plain = plain[:270].rsplit(' ',1)[0] + '…'
-    link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
-    out = f"{plain}\n\nFrom: {link} #SchumannResonance #EcologyVibes"
-    pathlib.Path('world_en/x_message.txt').write_text(out, 'utf-8')
-    print('X text length:', len(out))
-    PY
-- name: Post to X (main message)
-  if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
-  run: |
-    set -euo pipefail
-    python - <<'PY'
-    import tweepy, pathlib
-    client = tweepy.Client(
-        consumer_key='${X_API_KEY}',
-        consumer_secret='${X_API_SECRET}',
-        access_token='${X_ACCESS_TOKEN}',
-        access_token_secret='${X_ACCESS_SECRET}',
-        wait_on_rate_limit=True
-    )
-    text = pathlib.Path('world_en/x_message.txt').read_text('utf-8')
-    response = client.create_tweet(text=text)
-    print(f"Posted to X: {response.data['id']}")
-    PY
-- name: Post to X (Nature card)
-  if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
-  run: |
-    set -euo pipefail
-    readarray -t L < <(python - <<'PY'
-    import json, urllib.request, tempfile
-    d = json.load(open('world_en/daily.json', 'r', encoding='utf-8'))
-    thumb_url = d.get('NATURE_THUMB', '')
-    if thumb_url:
-        with urllib.request.urlopen(thumb_url) as response, tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp.write(response.read())
-        print(tmp.name)
-    print(d.get('NATURE_URL', ''))
-    title = d.get('NATURE_TITLE', 'Nature Break')
-    snip = d.get('NATURE_SNIPPET', '60 seconds of calm')
-    print(f"🌊 {title}\n{snip}\nWatch: " + d.get('NATURE_URL', ''))
-    PY
-    )
-    MEDIA_PATH="$$ {L[0]}"; URL=" $${L[1]}"; CAPTION="${L[*]:2}"
-    if [ -n "$MEDIA_PATH" ] && [ -n "$URL" ]; then
-      python - <<'PY'
-      import tweepy, pathlib
-      client = tweepy.Client(
-          consumer_key='${X_API_KEY}',
-          consumer_secret='${X_API_SECRET}',
-          access_token='${X_ACCESS_TOKEN}',
-          access_token_secret='${X_ACCESS_SECRET}',
-          wait_on_rate_limit=True
-      )
-      media = client.media_upload(filename='${MEDIA_PATH}')
-      response = client.create_tweet(text='${CAPTION}', media_ids=[media.media_id])
-      print(f"Posted nature to X: {response.data['id']}")
-      PY
-    elif [ -n "$URL" ]; then
-      python - <<'PY'
-      import tweepy
-      client = tweepy.Client(
-          consumer_key='${X_API_KEY}',
-          consumer_secret='${X_API_SECRET}',
-          access_token='${X_ACCESS_TOKEN}',
-          access_token_secret='${X_ACCESS_SECRET}',
-          wait_on_rate_limit=True
-      )
-      response = client.create_tweet(text='${CAPTION}')
-      print(f"Posted nature URL to X: {response.data['id']}")
-      PY
-    else
-      echo "No nature URL/thumb — skipping X nature post."
-    fi
+      - name: Build X-safe message
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
+        run: |
+          python - <<'PY'
+          import re, html, pathlib, os
+          p = pathlib.Path('world_en/message.txt').read_text('utf-8')
+          plain = re.sub(r'<[^>]+>', '', p)
+          plain = html.unescape(plain)
+          plain = re.sub(r'[ \t]+\n', '\n', plain)
+          plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
+          if len(plain) > 280:
+            plain = plain[:270].rsplit(' ',1)[0] + '…'
+          link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
+          out = f"{plain}\n\nFrom: {link} #SchumannResonance #EcologyVibes"
+          pathlib.Path('world_en/x_message.txt').write_text(out, 'utf-8')
+          print('X text length:', len(out))
+          PY
+      - name: Post to X (main message)
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tweepy, pathlib
+          client = tweepy.Client(
+              consumer_key='${X_API_KEY}',
+              consumer_secret='${X_API_SECRET}',
+              access_token='${X_ACCESS_TOKEN}',
+              access_token_secret='${X_ACCESS_SECRET}',
+              wait_on_rate_limit=True
+          )
+          text = pathlib.Path('world_en/x_message.txt').read_text('utf-8')
+          response = client.create_tweet(text=text)
+          print(f"Posted to X: {response.data['id']}")
+          PY
+      - name: Post to X (Nature card)
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
+        run: |
+          set -euo pipefail
+          readarray -t L < <(python - <<'PY'
+          import json, urllib.request, tempfile
+          d = json.load(open('world_en/daily.json', 'r', encoding='utf-8'))
+          thumb_url = d.get('NATURE_THUMB', '')
+          if thumb_url:
+              with urllib.request.urlopen(thumb_url) as response, tempfile.NamedTemporaryFile(delete=False) as tmp:
+                  tmp.write(response.read())
+              print(tmp.name)
+          print(d.get('NATURE_URL', ''))
+          title = d.get('NATURE_TITLE', 'Nature Break')
+          snip = d.get('NATURE_SNIPPET', '60 seconds of calm')
+          print(f"🌊 {title}\n{snip}\nWatch: " + d.get('NATURE_URL', ''))
+          PY
+          )
+          MEDIA_PATH="$$ {L[0]}"; URL=" $${L[1]}"; CAPTION="${L[*]:2}"
+          if [ -n "$MEDIA_PATH" ] && [ -n "$URL" ]; then
+            python - <<'PY'
+            import tweepy, pathlib
+            client = tweepy.Client(
+                consumer_key='${X_API_KEY}',
+                consumer_secret='${X_API_SECRET}',
+                access_token='${X_ACCESS_TOKEN}',
+                access_token_secret='${X_ACCESS_SECRET}',
+                wait_on_rate_limit=True
+            )
+            media = client.media_upload(filename='${MEDIA_PATH}')
+            response = client.create_tweet(text='${CAPTION}', media_ids=[media.media_id])
+            print(f"Posted nature to X: {response.data['id']}")
+            PY
+          elif [ -n "$URL" ]; then
+            python - <<'PY'
+            import tweepy
+            client = tweepy.Client(
+                consumer_key='${X_API_KEY}',
+                consumer_secret='${X_API_SECRET}',
+                access_token='${X_ACCESS_TOKEN}',
+                access_token_secret='${X_ACCESS_SECRET}',
+                wait_on_rate_limit=True
+            )
+            response = client.create_tweet(text='${CAPTION}')
+            print(f"Posted nature URL to X: {response.data['id']}")
+            PY
+          else
+            echo "No nature URL/thumb — skipping X nature post."
+          fi
