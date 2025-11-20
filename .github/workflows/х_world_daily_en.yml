@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install deps
-        run: pip install requests jinja2 pytz astral tweepy  # Добавили tweepy для X
+        run: pip install requests jinja2 pytz astral tweepy # Добавили tweepy для X
       - name: Collect daily
         env:
           YT_API_KEY: ${{ secrets.YT_API_KEY }}
@@ -46,9 +46,38 @@ jobs:
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
       - name: Ensure daily.json exists
         run: test -f world_en/daily.json || { echo "daily.json missing"; exit 1; }
-           # ===================== X (TWITTER) =====================
+      - name: Debug env
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') }}
+        run: |
+          set -euo pipefail
+          if [ -z "$X_API_KEY" ]; then
+            echo "X_API_KEY is empty or not set"
+          else
+            echo "X_API_KEY is set (length: ${#X_API_KEY})"
+          fi
+          if [ -z "$X_API_SECRET" ]; then
+            echo "X_API_SECRET is empty or not set"
+          else
+            echo "X_API_SECRET is set (length: ${#X_API_SECRET})"
+          fi
+          if [ -z "$X_ACCESS_TOKEN" ]; then
+            echo "X_ACCESS_TOKEN is empty or not set"
+          else
+            echo "X_ACCESS_TOKEN is set (length: ${#X_ACCESS_TOKEN})"
+          fi
+          if [ -z "$X_ACCESS_SECRET" ]; then
+            echo "X_ACCESS_SECRET is empty or not set"
+          else
+            echo "X_ACCESS_SECRET is set (length: ${#X_ACCESS_SECRET})"
+          fi
+          if [ -z "$X_BEARER_TOKEN" ]; then
+            echo "X_BEARER_TOKEN is empty or not set"
+          else
+            echo "X_BEARER_TOKEN is set (length: ${#X_BEARER_TOKEN})"
+          fi
+      # ===================== X (TWITTER) =====================
       - name: Build X-safe message
-        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_BEARER_TOKEN != '' }}
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
         run: |
           python - <<'PY'
           import re, html, pathlib, os
@@ -65,18 +94,24 @@ jobs:
           print('X text length:', len(out))
           PY
       - name: Post to X (main message)
-        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_BEARER_TOKEN != '' }}
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
         run: |
           set -euo pipefail
           python - <<'PY'
           import tweepy, pathlib
-          client = tweepy.Client(bearer_token='${X_BEARER_TOKEN}', wait_on_rate_limit=True)
+          client = tweepy.Client(
+              consumer_key='${X_API_KEY}',
+              consumer_secret='${X_API_SECRET}',
+              access_token='${X_ACCESS_TOKEN}',
+              access_token_secret='${X_ACCESS_SECRET}',
+              wait_on_rate_limit=True
+          )
           text = pathlib.Path('world_en/x_message.txt').read_text('utf-8')
           response = client.create_tweet(text=text)
           print(f"Posted to X: {response.data['id']}")
           PY
       - name: Post to X (Nature card)
-        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_BEARER_TOKEN != '' }}
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
         run: |
           set -euo pipefail
           readarray -t L < <(python - <<'PY'
@@ -93,11 +128,17 @@ jobs:
           print(f"🌊 {title}\n{snip}\nWatch: " + d.get('NATURE_URL', ''))
           PY
           )
-          MEDIA_PATH="$$ {L[0]}"; URL=" $${L[1]}"; CAPTION="${L[*]:2}"
+          MEDIA_PATH="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
           if [ -n "$MEDIA_PATH" ] && [ -n "$URL" ]; then
             python - <<'PY'
             import tweepy, pathlib
-            client = tweepy.Client(bearer_token='${X_BEARER_TOKEN}', wait_on_rate_limit=True)
+            client = tweepy.Client(
+                consumer_key='${X_API_KEY}',
+                consumer_secret='${X_API_SECRET}',
+                access_token='${X_ACCESS_TOKEN}',
+                access_token_secret='${X_ACCESS_SECRET}',
+                wait_on_rate_limit=True
+            )
             media = client.media_upload(filename='${MEDIA_PATH}')
             response = client.create_tweet(text='${CAPTION}', media_ids=[media.media_id])
             print(f"Posted nature to X: {response.data['id']}")
@@ -105,7 +146,13 @@ jobs:
           elif [ -n "$URL" ]; then
             python - <<'PY'
             import tweepy
-            client = tweepy.Client(bearer_token='${X_BEARER_TOKEN}', wait_on_rate_limit=True)
+            client = tweepy.Client(
+                consumer_key='${X_API_KEY}',
+                consumer_secret='${X_API_SECRET}',
+                access_token='${X_ACCESS_TOKEN}',
+                access_token_secret='${X_ACCESS_SECRET}',
+                wait_on_rate_limit=True
+            )
             response = client.create_tweet(text='${CAPTION}')
             print(f"Posted nature URL to X: {response.data['id']}")
             PY
