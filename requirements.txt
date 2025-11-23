@@ -15,4 +15,4 @@ python-telegram-bot>=20,<21
 openai>=1.6,<2
 google-generativeai>=0.7.2
 groq>=0.9.0
-tweepy>=1.0,<2
+tweepy>=4.14,<5
