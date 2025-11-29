@@ -1,169 +1,188 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
-import re
 import time
 import base64
 import logging
 from datetime import datetime
-
+from typing import Optional
 import requests
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-# Директория для сохранения изображений: world_en/astro_img
-ASTRO_IMG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "astro_img"))
+# Директория для сохранения изображений: <repo_root>/astro_img
+ASTRO_IMG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "astro_img"))
 os.makedirs(ASTRO_IMG_DIR, exist_ok=True)
 
-POLLINATIONS_BASE = "https://image.pollinations.ai/prompt"
-HORDE_BASE = "https://stablehorde.net/api/v2"
+# Настройки Stable Horde
+STABLE_HORDE_API = "https://stablehorde.net/api/v2"
+STABLE_HORDE_API_KEY = os.getenv("STABLE_HORDE_API_KEY", "0000000000")  # анонимный ключ допустим
+STABLE_HORDE_TIMEOUT_SEC = int(os.getenv("STABLE_HORDE_TIMEOUT_SEC", "90"))
 
-# Вежливый Client-Agent для Stable Horde (рекомендуется)
-CLIENT_AGENT = os.getenv(
-    "HORDE_CLIENT_AGENT",
-    "VayboMeter/1.0 (github.com/maximovavs/vaybometer-bot)"
-)
-HORDE_API_KEY = os.getenv("HORDE_API_KEY", "")  # можно пустым — будет аноним
+# Общие HTTP-заголовки
+COMMON_HEADERS = {
+    "User-Agent": "WorldVibeMeterBot/1.0 (+https://github.com/)",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
 
-def _safe_slug(s: str, max_len: int = 64) -> str:
-    s = s.strip()
-    s = re.sub(r"\s+", "_", s)
-    s = re.sub(r"[^a-zA-Z0-9_\-\.]+", "", s)
-    return s[:max_len] if s else "img"
-
-def _save_image(image_bytes: bytes, date_str: str) -> str:
-    # Имя файла — по дате; дата безопасна, но всё равно нормализуем
-    safe = _safe_slug(date_str or datetime.utcnow().isoformat()[:10])
-    filename = f"astro_{safe}.jpg"
+def _save_image_bytes(image_bytes: bytes, date_str: str) -> str:
+    filename = f"astro_{date_str}.jpg"
     path = os.path.join(ASTRO_IMG_DIR, filename)
     with open(path, "wb") as f:
         f.write(image_bytes)
-    return os.path.abspath(path)
+    logger.info("[imagegen] saved %s (%d bytes)", path, len(image_bytes))
+    return path
 
 def _make_prompt(moon_phase: str, moon_sign: str) -> tuple[str, str]:
     phase = (moon_phase or "Moon").strip()
-    sign = (moon_sign or "Sky").strip()
+    sign = (moon_sign or "").strip()
     prompt = (
-        f"{phase} moon in the sky of {sign}, atmospheric, dreamy, cinematic, "
-        f"soft colors, volumetric light, shallow depth of field, high detail, 4k"
-    )
-    negative = "ugly, blurry, distorted, text, watermark, logo"
+        f"{phase} in {sign} sky, atmospheric dreamy night, moonglow, clouds, "
+        f"cinematic composition, high detail, 4k, soft color grading"
+    ).strip()
+    negative = "ugly, blurry, deformed, distorted, text, watermark, lowres"
     return prompt, negative
 
-def _try_pollinations(prompt: str, width: int = 768, height: int = 432) -> bytes | None:
+# ---------------- Pollinations (без ключа; быстрый фолбэк) ----------------
+
+def _try_pollinations(prompt: str, width: int = 1024, height: int = 576) -> Optional[bytes]:
     """
-    Pollinations прямой байтовый эндпоинт: https://image.pollinations.ai/prompt/{prompt}
+    Корректный эндпоинт: https://image.pollinations.ai/prompt/{prompt}
+    Параметры через query: ?n=1&width=...&height=...
     """
     try:
-        url = f"{POLLINATIONS_BASE}/{requests.utils.quote(prompt)}?width={width}&height={height}&nologo=true"
-        resp = requests.get(url, timeout=30)
-        if resp.status_code == 200 and resp.headers.get("Content-Type", "").startswith("image/"):
-            return resp.content
-        logger.warning(f"Pollinations non-image or bad status: {resp.status_code} {resp.headers.get('Content-Type')}")
+        url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(prompt)}"
+        params = {"n": 1, "width": width, "height": height}
+        headers = dict(COMMON_HEADERS)
+        headers["Accept"] = "image/*"
+        r = requests.get(url, params=params, headers=headers, timeout=25)
+        if r.status_code == 200 and r.content:
+            # Иногда сервис возвращает HTML при перегрузке — проверим сигнатуру JPEG/PNG
+            b = r.content
+            if b.startswith(b"\xff\xd8") or b.startswith(b"\x89PNG"):
+                return b
+            logger.warning("[imagegen] Pollinations returned non-image payload (%d bytes)", len(b))
+        else:
+            logger.warning("[imagegen] Pollinations HTTP %s", r.status_code)
     except Exception as e:
-        logger.warning(f"Pollinations failed: {e}")
+        logger.warning("[imagegen] Pollinations failed: %s", e)
     return None
 
-def _try_stable_horde(prompt: str, negative_prompt: str, width: int = 768, height: int = 432) -> bytes | None:
+# ---------------- Stable Horde (бесплатно, но может быть очередь) ----------------
+
+def _decode_horde_image(img_field: str) -> Optional[bytes]:
     """
-    Stable Horde async API. Возвращает base64 в generations[0].img.
+    В ответах бывает либо полный URL, либо data:image/...;base64,....
+    """
+    if not img_field:
+        return None
+    if img_field.startswith("data:"):
+        try:
+            b64 = img_field.split(",", 1)[1]
+            return base64.b64decode(b64)
+        except Exception:
+            return None
+    # Иначе считаем, что это URL
+    try:
+        r = requests.get(img_field, headers=COMMON_HEADERS, timeout=30)
+        if r.status_code == 200 and r.content:
+            return r.content
+    except Exception:
+        return None
+    return None
+
+def _try_stable_horde(prompt: str, negative_prompt: str,
+                      width: int = 768, height: int = 512) -> Optional[bytes]:
+    """
+    Асинхронный запрос генерации и опрос статуса.
     """
     try:
+        headers = dict(COMMON_HEADERS)
+        headers["Content-Type"] = "application/json"
+        headers["apikey"] = STABLE_HORDE_API_KEY
+
         payload = {
             "prompt": prompt,
             "params": {
-                "sampler_name": "k_euler_a",
-                "cfg_scale": 7,
-                "steps": 20,
                 "width": width,
                 "height": height,
-                "karras": True,
-                "clip_skip": 1,
-                "post_processing": [],
-                "n": 1,
-                "use_nsfw_censor": True,
-                "denoising_strength": None,
+                "steps": 28,
+                "cfg_scale": 7.0,
+                "sampler_name": "k_euler",
                 "seed": None,
-                "image_is_control": False,
-                "tiling": False,
+                "karras": True,
                 "hires_fix": False,
+                "post_processing": [],
+                "tiling": False,
+                "denoising_strength": None,
+                "facefixer_strength": None,
+                "clip_skip": None,
+                "lora": [],
                 "negative_prompt": negative_prompt,
             },
             "nsfw": False,
             "censor_nsfw": True,
-            # модель укажем более распространённую; fallback на бэкенд
-            "models": ["Deliberate"],
-            # r2 ускоряет выдачу CDN-ссылок; но нам достаточно base64
-            "r2": False,
+            "trusted_workers": False,
+            "models": ["stable_diffusion"],
+            "r2": True,
+            "shared": False,
+            "slow_workers": True,
         }
-        headers = {
-            "Content-Type": "application/json",
-            "Client-Agent": CLIENT_AGENT,
-        }
-        if HORDE_API_KEY:
-            headers["apikey"] = HORDE_API_KEY
 
-        # Старт задачи
-        start = requests.post(f"{HORDE_BASE}/generate/async", json=payload, headers=headers, timeout=40)
-        if start.status_code != 202:
-            logger.warning(f"Horde start failed: {start.status_code} {start.text[:200]}")
+        submit = requests.post(
+            f"{STABLE_HORDE_API}/generate/async",
+            json=payload, headers=headers, timeout=30
+        )
+        if submit.status_code != 202:
+            logger.warning("[imagegen] Horde submit HTTP %s: %s", submit.status_code, submit.text)
             return None
-
-        job_id = start.json().get("id")
+        job_id = submit.json().get("id")
         if not job_id:
-            logger.warning("Horde: no job id in response")
             return None
 
-        # Опрос статуса
-        max_wait_s = int(os.getenv("HORDE_MAX_WAIT", "120"))
-        deadline = time.monotonic() + max_wait_s
-        while time.monotonic() < deadline:
-            time.sleep(2)
-            st = requests.get(f"{HORDE_BASE}/generate/status/{job_id}", headers={"Client-Agent": CLIENT_AGENT}, timeout=30)
+        deadline = time.time() + STABLE_HORDE_TIMEOUT_SEC
+        while time.time() < deadline:
+            time.sleep(2.5)
+            st = requests.get(f"{STABLE_HORDE_API}/generate/status/{job_id}",
+                              headers=COMMON_HEADERS, timeout=20)
             if st.status_code != 200:
                 continue
-            data = st.json()
-            if data.get("done") and data.get("generations"):
-                gen = data["generations"][0]
-                img_b64 = gen.get("img")
-                if not img_b64:
-                    logger.warning("Horde: empty img field")
-                    return None
-                # Может приходить в виде data:image/png;base64,xxxx
-                if img_b64.startswith("data:"):
-                    img_b64 = img_b64.split(",", 1)[-1]
-                try:
-                    return base64.b64decode(img_b64)
-                except Exception as e:
-                    logger.warning(f"Horde base64 decode error: {e}")
-                    return None
-        logger.warning("Horde timed out waiting for result")
+            data = st.json() or {}
+            # В разных ответах бывает "done" или "finished"
+            if data.get("done") is True or data.get("finished") is True:
+                gens = data.get("generations") or []
+                if gens:
+                    img_bytes = _decode_horde_image(gens[0].get("img", ""))
+                    if img_bytes:
+                        return img_bytes
+                break
+        logger.warning("[imagegen] Horde timeout or no generations")
     except Exception as e:
-        logger.warning(f"Stable Horde failed: {e}")
+        logger.warning("[imagegen] Horde failed: %s", e)
     return None
 
-def generate_astro_image(moon_phase: str, moon_sign: str, date_str: str | None = None) -> str | None:
-    """
-    Генерация изображения на основе астроданных. Возвращает абсолютный путь к файлу или None.
-    Порядок источников: Stable Horde -> Pollinations.
-    """
-    if not date_str:
-        date_str = datetime.utcnow().strftime("%Y-%m-%d")
+# ---------------- Public API ----------------
 
-    prompt, negative_prompt = _make_prompt(moon_phase, moon_sign)
+def generate_astro_image(moon_phase: str, moon_sign: str, date_str: Optional[str] = None) -> Optional[str]:
+    """
+    Возвращает путь к сохранённому изображению (str) либо None.
+    Приоритет: Stable Horde → Pollinations.
+    """
+    date_str = date_str or datetime.utcnow().strftime("%Y-%m-%d")
+    prompt, negative = _make_prompt(moon_phase, moon_sign)
 
-    # 1) Stable Horde (бесплатно, но очередь/паузы возможны)
-    img = _try_stable_horde(prompt, negative_prompt)
+    # 1) Stable Horde
+    img = _try_stable_horde(prompt, negative)
     if not img:
-        # 2) Pollinations (бесплатно; иногда отдаёт не-изображение — проверяем Content-Type)
+        # 2) Pollinations (быстро и без ключей)
         img = _try_pollinations(prompt)
 
     if img:
-        try:
-            path = _save_image(img, date_str)
-            logger.info(f"[imagegen] saved: {path}")
-            return path
-        except Exception as e:
-            logger.error(f"Save failed: {e}")
+        return _save_image_bytes(img, date_str)
 
-    logger.error("All image generation methods failed.")
+    logger.error("[imagegen] All image generation methods failed.")
     return None
