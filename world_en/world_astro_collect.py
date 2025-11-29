@@ -11,6 +11,7 @@ import traceback
 from typing import Optional, Tuple
 from pytz import UTC
 import os
+from datetime import date as _date  # вверху файла уже есть dt; можно без этого импорта, см. ниже
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(__file__).parent / "astro.json"
@@ -236,7 +237,9 @@ def main():
 
     try:
         from imagegen import generate_astro_image
-        img_path = generate_astro_image(phase_en, sign_en, energy_line)
+        img_path = generate_astro_image(phase_en, sign_en, date_str=dt.date.today().isoformat())
+        if img_path:
+            out["ASTRO_IMAGE_PATH"] = str(img_path)
         out["ASTRO_IMAGE_PATH"] = str(img_path)
     except Exception as e:
         print(f"[astro] Image generation failed: {e}")
