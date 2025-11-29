@@ -11,26 +11,30 @@ on:
         default: x
         options:
           - x # только X
+
 jobs:
   run:
     runs-on: ubuntu-latest
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
-      # Поднимаем секреты в env для X
+      # Поднимаем секреты в env для X (без Bearer Token - он не нужен!)
       X_API_KEY: ${{ secrets.X_API_KEY || '' }}
       X_API_SECRET: ${{ secrets.X_API_SECRET || '' }}
       X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN || '' }}
       X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET || '' }}
-      X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN || '' }}
       TG_URL: ${{ secrets.TELEGRAM_CHANNEL_URL || 'https://t.me/WorldVibeMeter' }}
+    
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      
       - name: Install deps
-        run: pip install requests jinja2 pytz astral tweepy # Добавили tweepy для X
+        run: pip install requests jinja2 pytz astral tweepy
+      
       - name: Collect daily
         env:
           YT_API_KEY: ${{ secrets.YT_API_KEY }}
@@ -40,122 +44,161 @@ jobs:
         run: |
           set -euo pipefail
           python world_en/world_collect.py
-          echo "---- ls world_en ----"; ls -la world_en || true
           test -f world_en/daily.json || { echo "ERROR: world_en/daily.json missing"; exit 1; }
+      
       - name: Render
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
-      - name: Ensure daily.json exists
-        run: test -f world_en/daily.json || { echo "daily.json missing"; exit 1; }
-      - name: Debug env
-        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') }}
-        run: |
-          set -euo pipefail
-          if [ -z "$X_API_KEY" ]; then
-            echo "X_API_KEY is empty or not set"
-          else
-            echo "X_API_KEY is set (length: ${#X_API_KEY})"
-          fi
-          if [ -z "$X_API_SECRET" ]; then
-            echo "X_API_SECRET is empty or not set"
-          else
-            echo "X_API_SECRET is set (length: ${#X_API_SECRET})"
-          fi
-          if [ -z "$X_ACCESS_TOKEN" ]; then
-            echo "X_ACCESS_TOKEN is empty or not set"
-          else
-            echo "X_ACCESS_TOKEN is set (length: ${#X_ACCESS_TOKEN})"
-          fi
-          if [ -z "$X_ACCESS_SECRET" ]; then
-            echo "X_ACCESS_SECRET is empty or not set"
-          else
-            echo "X_ACCESS_SECRET is set (length: ${#X_ACCESS_SECRET})"
-          fi
-          if [ -z "$X_BEARER_TOKEN" ]; then
-            echo "X_BEARER_TOKEN is empty or not set"
-          else
-            echo "X_BEARER_TOKEN is set (length: ${#X_BEARER_TOKEN})"
-          fi
+      
       # ===================== X (TWITTER) =====================
+      
+      - name: Test X API Authentication
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' }}
+        run: |
+          python - <<'PY'
+          import tweepy
+          import os
+          
+          required = ['X_API_KEY', 'X_API_SECRET', 'X_ACCESS_TOKEN', 'X_ACCESS_SECRET']
+          missing = [v for v in required if not os.getenv(v, '').strip()]
+          
+          if missing:
+              print(f"❌ Missing secrets: {', '.join(missing)}")
+              exit(1)
+          
+          try:
+              client = tweepy.Client(
+                  consumer_key=os.getenv('X_API_KEY'),
+                  consumer_secret=os.getenv('X_API_SECRET'),
+                  access_token=os.getenv('X_ACCESS_TOKEN'),
+                  access_token_secret=os.getenv('X_ACCESS_SECRET')
+              )
+              me = client.get_me()
+              print(f"✅ Authenticated as: @{me.data.username}")
+          except tweepy.Unauthorized as e:
+              print("❌ 401 Unauthorized - проверьте:")
+              print("  1. App permissions = 'Read and Write' в developer.x.com")
+              print("  2. Токены ПЕРЕСОЗДАНЫ после изменения permissions")
+              print("  3. OAuth 1.0a включен")
+              print(f"  Error: {e}")
+              exit(1)
+          except Exception as e:
+              print(f"❌ Ошибка: {e}")
+              exit(1)
+          PY
+      
       - name: Build X-safe message
-        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' }}
         run: |
           python - <<'PY'
           import re, html, pathlib, os
+          
           p = pathlib.Path('world_en/message.txt').read_text('utf-8')
           plain = re.sub(r'<[^>]+>', '', p)
           plain = html.unescape(plain)
           plain = re.sub(r'[ \t]+\n', '\n', plain)
           plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
+          
           if len(plain) > 270:
-            plain = plain[:270].rsplit(' ',1)[0] + '…'
+              plain = plain[:270].rsplit(' ', 1)[0] + '…'
+          
           link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
           out = f"{plain}\n\nFrom: {link} #SchumannResonance #EcologyVibes"
+          
           pathlib.Path('world_en/x_message.txt').write_text(out, 'utf-8')
-          print('X text length:', len(out))
+          print(f'✅ X text prepared ({len(out)} chars)')
           PY
+      
       - name: Post to X (main message)
-        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' }}
         run: |
-          set -euo pipefail
           python - <<'PY'
-          import tweepy, pathlib
+          import tweepy
+          import pathlib
+          import os
+          
           client = tweepy.Client(
-              consumer_key='${X_API_KEY}',
-              consumer_secret='${X_API_SECRET}',
-              access_token='${X_ACCESS_TOKEN}',
-              access_token_secret='${X_ACCESS_SECRET}',
+              consumer_key=os.getenv('X_API_KEY'),
+              consumer_secret=os.getenv('X_API_SECRET'),
+              access_token=os.getenv('X_ACCESS_TOKEN'),
+              access_token_secret=os.getenv('X_ACCESS_SECRET'),
               wait_on_rate_limit=True
           )
+          
           text = pathlib.Path('world_en/x_message.txt').read_text('utf-8')
           response = client.create_tweet(text=text)
-          print(f"Posted to X: {response.data['id']}")
+          print(f"✅ Posted to X: https://x.com/i/web/status/{response.data['id']}")
           PY
-      - name: Post to X (Nature card)
-        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
+      
+      - name: Post to X (Nature card with media)
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' }}
         run: |
-          set -euo pipefail
-          readarray -t L < <(python - <<'PY'
-          import json, urllib.request, tempfile
-          d = json.load(open('world_en/daily.json', 'r', encoding='utf-8'))
-          thumb_url = d.get('NATURE_THUMB', '')
-          if thumb_url:
-              with urllib.request.urlopen(thumb_url) as response, tempfile.NamedTemporaryFile(delete=False) as tmp:
-                  tmp.write(response.read())
-              print(tmp.name)
-          print(d.get('NATURE_URL', ''))
-          title = d.get('NATURE_TITLE', 'Nature Break')
-          snip = d.get('NATURE_SNIPPET', '60 seconds of calm')
-          print(f"🌊 {title}\n{snip}\nWatch: " + d.get('NATURE_URL', ''))
-          PY
+          python - <<'PY'
+          import json
+          import urllib.request
+          import tempfile
+          import os
+          import tweepy
+          
+          # Загружаем данные
+          with open('world_en/daily.json', 'r', encoding='utf-8') as f:
+              data = json.load(f)
+          
+          nature_url = data.get('NATURE_URL', '')
+          nature_thumb = data.get('NATURE_THUMB', '')
+          nature_title = data.get('NATURE_TITLE', 'Nature Break')
+          nature_snippet = data.get('NATURE_SNIPPET', '60 seconds of calm')
+          
+          if not nature_url:
+              print("⚠️  No nature URL — skipping")
+              exit(0)
+          
+          # Создаем текст поста
+          caption = f"🌊 {nature_title}\n{nature_snippet}\nWatch: {nature_url}"
+          
+          # OAuth 1.0a для загрузки медиа (v1.1 API)
+          auth = tweepy.OAuth1UserHandler(
+              consumer_key=os.getenv('X_API_KEY'),
+              consumer_secret=os.getenv('X_API_SECRET'),
+              access_token=os.getenv('X_ACCESS_TOKEN'),
+              access_token_secret=os.getenv('X_ACCESS_SECRET')
           )
-          MEDIA_PATH="${L[0]}"; URL="${L[1]}"; CAPTION="${L[*]:2}"
-          if [ -n "$MEDIA_PATH" ] && [ -n "$URL" ]; then
-            python - <<'PY'
-            import tweepy, pathlib
-            client = tweepy.Client(
-                consumer_key='${X_API_KEY}',
-                consumer_secret='${X_API_SECRET}',
-                access_token='${X_ACCESS_TOKEN}',
-                access_token_secret='${X_ACCESS_SECRET}',
-                wait_on_rate_limit=True
-            )
-            media = client.media_upload(filename='${MEDIA_PATH}')
-            response = client.create_tweet(text='${CAPTION}', media_ids=[media.media_id])
-            print(f"Posted nature to X: {response.data['id']}")
-            PY
-          elif [ -n "$URL" ]; then
-            python - <<'PY'
-            import tweepy
-            client = tweepy.Client(
-                consumer_key='${X_API_KEY}',
-                consumer_secret='${X_API_SECRET}',
-                access_token='${X_ACCESS_TOKEN}',
-                access_token_secret='${X_ACCESS_SECRET}',
-                wait_on_rate_limit=True
-            )
-            response = client.create_tweet(text='${CAPTION}')
-            print(f"Posted nature URL to X: {response.data['id']}")
-            PY
-          else
-            echo "No nature URL/thumb — skipping X nature post."
-          fi
+          api_v1 = tweepy.API(auth)
+          
+          # Client для постинга (v2 API)
+          client = tweepy.Client(
+              consumer_key=os.getenv('X_API_KEY'),
+              consumer_secret=os.getenv('X_API_SECRET'),
+              access_token=os.getenv('X_ACCESS_TOKEN'),
+              access_token_secret=os.getenv('X_ACCESS_SECRET'),
+              wait_on_rate_limit=True
+          )
+          
+          # Если есть thumbnail - загружаем и постим с изображением
+          if nature_thumb:
+              try:
+                  # Скачиваем изображение
+                  with urllib.request.urlopen(nature_thumb) as response:
+                      with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
+                          tmp.write(response.read())
+                          tmp_path = tmp.name
+                  
+                  # Загружаем медиа через v1.1 API
+                  media = api_v1.media_upload(filename=tmp_path)
+                  
+                  # Постим с медиа через v2 API
+                  response = client.create_tweet(text=caption, media_ids=[media.media_id])
+                  
+                  # Удаляем временный файл
+                  os.unlink(tmp_path)
+                  
+                  print(f"✅ Posted nature with image to X: https://x.com/i/web/status/{response.data['id']}")
+              except Exception as e:
+                  print(f"⚠️  Failed to upload image, posting without: {e}")
+                  # Постим без изображения если не получилось
+                  response = client.create_tweet(text=caption)
+                  print(f"✅ Posted nature (no image) to X: https://x.com/i/web/status/{response.data['id']}")
+          else:
+              # Постим без изображения
+              response = client.create_tweet(text=caption)
+              print(f"✅ Posted nature to X: https://x.com/i/web/status/{response.data['id']}")
+          PY
