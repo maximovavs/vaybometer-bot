@@ -250,22 +250,35 @@ def main():
         "ADVICE_LINE": advice_line,
     }
 
-    # Подключение генерации изображения
+# --- optional image generation ---
+try:
+    from world_en.imagegen import generate_astro_image  # явный импорт по пакету
+except Exception:
     try:
-        from world_en.imagegen import generate_astro_image
-        img_path = generate_astro_image(phase_en, sign_en, date_str=today.isoformat())
-        if img_path:
-            out["ASTRO_IMAGE_PATH"] = str(Path(img_path).resolve())
-            # относительный путь на всякий случай (для постера)
+        from imagegen import generate_astro_image
+    except Exception:
+        generate_astro_image = None
+
+if generate_astro_image:
+    try:
+        img_path = generate_astro_image(phase_en or phase_name, sign_en or "", date_str=today.isoformat())
+        if img_path and os.path.exists(img_path):
+            out["ASTRO_IMAGE_PATH"] = os.path.abspath(img_path)
+            # относительный путь от корня репозитория (для curl @file)
+            repo_root = str(Path(__file__).resolve().parents[1])
             try:
-                out["ASTRO_IMAGE_PATH_REL"] = str(Path(img_path).resolve().relative_to(ROOT))
+                rel = os.path.relpath(img_path, start=repo_root)
             except Exception:
-                out["ASTRO_IMAGE_PATH_REL"] = str(Path(img_path).name)
-            print(f"[astro] image: {out['ASTRO_IMAGE_PATH_REL']}")
+                rel = img_path
+            out["ASTRO_IMAGE_PATH_REL"] = rel
+            print(f"[astro] image: {rel}")
         else:
             print("[astro] image: not generated")
     except Exception as e:
         print(f"[astro] image generation failed: {e}")
+else:
+    print("[astro] imagegen not available")
+
 
     write_json_safe(OUT, out)
 
