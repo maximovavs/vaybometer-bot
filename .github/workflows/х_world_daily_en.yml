@@ -10,7 +10,7 @@ on:
         required: false
         default: x
         options:
-          - x # только X
+          - x
 
 jobs:
   run:
@@ -18,7 +18,6 @@ jobs:
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
-      # Поднимаем секреты в env для X (без Bearer Token - он не нужен!)
       X_API_KEY: ${{ secrets.X_API_KEY || '' }}
       X_API_SECRET: ${{ secrets.X_API_SECRET || '' }}
       X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN || '' }}
@@ -49,7 +48,7 @@ jobs:
       - name: Render
         run: python world_en/render.py world_en/templates/daily_en.j2 world_en/daily.json > world_en/message.txt
       
-      # ===================== X (TWITTER) =====================
+      # ===================== X (TWITTER) - FREE TIER =====================
       
       - name: Test X API Authentication
         if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' }}
@@ -58,27 +57,22 @@ jobs:
           import tweepy
           import os
           
-          required = ['X_API_KEY', 'X_API_SECRET', 'X_ACCESS_TOKEN', 'X_ACCESS_SECRET']
-          missing = [v for v in required if not os.getenv(v, '').strip()]
-          
-          if missing:
-              print(f"❌ Missing secrets: {', '.join(missing)}")
-              exit(1)
-          
           try:
-              client = tweepy.Client(
+              # Используем API v1.1 для бесплатного плана
+              auth = tweepy.OAuth1UserHandler(
                   consumer_key=os.getenv('X_API_KEY'),
                   consumer_secret=os.getenv('X_API_SECRET'),
                   access_token=os.getenv('X_ACCESS_TOKEN'),
                   access_token_secret=os.getenv('X_ACCESS_SECRET')
               )
-              me = client.get_me()
-              print(f"✅ Authenticated as: @{me.data.username}")
-          except tweepy.Unauthorized as e:
-              print("❌ 401 Unauthorized - проверьте:")
-              print("  1. App permissions = 'Read and Write' в developer.x.com")
-              print("  2. Токены ПЕРЕСОЗДАНЫ после изменения permissions")
-              print("  3. OAuth 1.0a включен")
+              api = tweepy.API(auth)
+              me = api.verify_credentials()
+              print(f"✅ Authenticated as: @{me.screen_name}")
+              print(f"✅ User ID: {me.id}")
+          except tweepy.Forbidden as e:
+              print("❌ 403 Forbidden - проверьте:")
+              print("  1. App permissions = 'Read and Write'")
+              print("  2. Токены пересозданы после изменения permissions")
               print(f"  Error: {e}")
               exit(1)
           except Exception as e:
@@ -98,17 +92,25 @@ jobs:
           plain = re.sub(r'[ \t]+\n', '\n', plain)
           plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
           
-          if len(plain) > 270:
-              plain = plain[:270].rsplit(' ', 1)[0] + '…'
+          # X имеет лимит 280 символов
+          if len(plain) > 250:
+              plain = plain[:250].rsplit(' ', 1)[0] + '…'
           
           link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
-          out = f"{plain}\n\nFrom: {link} #SchumannResonance #EcologyVibes"
+          out = f"{plain}\n\n{link}\n#SchumannResonance #EcologyVibes"
+          
+          # Проверка финального лимита
+          if len(out) > 280:
+              # Уменьшаем основной текст еще больше
+              diff = len(out) - 280
+              plain = plain[:-(diff + 10)].rsplit(' ', 1)[0] + '…'
+              out = f"{plain}\n\n{link}\n#SchumannResonance #EcologyVibes"
           
           pathlib.Path('world_en/x_message.txt').write_text(out, 'utf-8')
-          print(f'✅ X text prepared ({len(out)} chars)')
+          print(f'✅ X text prepared ({len(out)}/280 chars)')
           PY
       
-      - name: Post to X (main message)
+      - name: Post to X (main message) - API v1.1
         if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' }}
         run: |
           python - <<'PY'
@@ -116,20 +118,27 @@ jobs:
           import pathlib
           import os
           
-          client = tweepy.Client(
+          # API v1.1 для бесплатного плана!
+          auth = tweepy.OAuth1UserHandler(
               consumer_key=os.getenv('X_API_KEY'),
               consumer_secret=os.getenv('X_API_SECRET'),
               access_token=os.getenv('X_ACCESS_TOKEN'),
-              access_token_secret=os.getenv('X_ACCESS_SECRET'),
-              wait_on_rate_limit=True
+              access_token_secret=os.getenv('X_ACCESS_SECRET')
           )
+          api = tweepy.API(auth)
           
           text = pathlib.Path('world_en/x_message.txt').read_text('utf-8')
-          response = client.create_tweet(text=text)
-          print(f"✅ Posted to X: https://x.com/i/web/status/{response.data['id']}")
+          
+          try:
+              # Постим через v1.1 API (update_status)
+              status = api.update_status(status=text)
+              print(f"✅ Posted to X: https://x.com/{status.user.screen_name}/status/{status.id}")
+          except tweepy.TweepyException as e:
+              print(f"❌ Failed to post: {e}")
+              exit(1)
           PY
       
-      - name: Post to X (Nature card with media)
+      - name: Post to X (Nature card) - API v1.1
         if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' }}
         run: |
           python - <<'PY'
@@ -152,28 +161,24 @@ jobs:
               print("⚠️  No nature URL — skipping")
               exit(0)
           
-          # Создаем текст поста
-          caption = f"🌊 {nature_title}\n{nature_snippet}\nWatch: {nature_url}"
+          # Создаем текст поста (не более 280 символов!)
+          caption = f"🌊 {nature_title}\n{nature_snippet}\n{nature_url}"
+          if len(caption) > 280:
+              # Урезаем snippet если не влезает
+              max_snippet = 280 - len(f"🌊 {nature_title}\n\n{nature_url}") - 5
+              nature_snippet = nature_snippet[:max_snippet] + '…'
+              caption = f"🌊 {nature_title}\n{nature_snippet}\n{nature_url}"
           
-          # OAuth 1.0a для загрузки медиа (v1.1 API)
+          # API v1.1 для бесплатного плана
           auth = tweepy.OAuth1UserHandler(
               consumer_key=os.getenv('X_API_KEY'),
               consumer_secret=os.getenv('X_API_SECRET'),
               access_token=os.getenv('X_ACCESS_TOKEN'),
               access_token_secret=os.getenv('X_ACCESS_SECRET')
           )
-          api_v1 = tweepy.API(auth)
+          api = tweepy.API(auth)
           
-          # Client для постинга (v2 API)
-          client = tweepy.Client(
-              consumer_key=os.getenv('X_API_KEY'),
-              consumer_secret=os.getenv('X_API_SECRET'),
-              access_token=os.getenv('X_ACCESS_TOKEN'),
-              access_token_secret=os.getenv('X_ACCESS_SECRET'),
-              wait_on_rate_limit=True
-          )
-          
-          # Если есть thumbnail - загружаем и постим с изображением
+          # Если есть thumbnail - постим с изображением
           if nature_thumb:
               try:
                   # Скачиваем изображение
@@ -182,23 +187,23 @@ jobs:
                           tmp.write(response.read())
                           tmp_path = tmp.name
                   
-                  # Загружаем медиа через v1.1 API
-                  media = api_v1.media_upload(filename=tmp_path)
-                  
-                  # Постим с медиа через v2 API
-                  response = client.create_tweet(text=caption, media_ids=[media.media_id])
+                  # Постим с медиа через v1.1 API
+                  status = api.update_status_with_media(
+                      filename=tmp_path,
+                      status=caption
+                  )
                   
                   # Удаляем временный файл
                   os.unlink(tmp_path)
                   
-                  print(f"✅ Posted nature with image to X: https://x.com/i/web/status/{response.data['id']}")
+                  print(f"✅ Posted nature with image: https://x.com/{status.user.screen_name}/status/{status.id}")
               except Exception as e:
                   print(f"⚠️  Failed to upload image, posting without: {e}")
-                  # Постим без изображения если не получилось
-                  response = client.create_tweet(text=caption)
-                  print(f"✅ Posted nature (no image) to X: https://x.com/i/web/status/{response.data['id']}")
+                  # Постим без изображения
+                  status = api.update_status(status=caption)
+                  print(f"✅ Posted nature (no image): https://x.com/{status.user.screen_name}/status/{status.id}")
           else:
               # Постим без изображения
-              response = client.create_tweet(text=caption)
-              print(f"✅ Posted nature to X: https://x.com/i/web/status/{response.data['id']}")
+              status = api.update_status(status=caption)
+              print(f"✅ Posted nature: https://x.com/{status.user.screen_name}/status/{status.id}")
           PY
