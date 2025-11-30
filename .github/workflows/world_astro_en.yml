@@ -76,33 +76,33 @@ jobs:
           set -euo pipefail
 
           IMG_PATH="$(python - <<'PY'
-import json, os, pathlib, sys
+          import json, os, pathlib, sys
 
-root = pathlib.Path('.').resolve()
-astro_path = root / 'world_en' / 'astro.json'
+          root = pathlib.Path('.').resolve()
+          astro_path = root / 'world_en' / 'astro.json'
 
-try:
-    data = json.loads(astro_path.read_text('utf-8'))
-except Exception as e:
-    print(f"[world_astro_en] failed to read astro.json: {e}", file=sys.stderr)
-    sys.exit(0)
+          try:
+              data = json.loads(astro_path.read_text('utf-8'))
+          except Exception as e:
+              print(f"[world_astro_en] failed to read astro.json: {e}", file=sys.stderr)
+              sys.exit(0)
 
-cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
-if not cand:
-    print("[world_astro_en] ASTRO_IMAGE_PATH is missing in astro.json", file=sys.stderr)
-    sys.exit(0)
+          cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
+          if not cand:
+              print("[world_astro_en] ASTRO_IMAGE_PATH is missing in astro.json", file=sys.stderr)
+              sys.exit(0)
 
-if os.path.isabs(cand):
-    img_path = pathlib.Path(cand)
-else:
-    img_path = (root / cand).resolve()
+          if os.path.isabs(cand):
+              img_path = pathlib.Path(cand)
+          else:
+              img_path = (root / cand).resolve()
 
-if img_path.is_file():
-    print(str(img_path))
-else:
-    print(f"[world_astro_en] image file not found at {img_path}", file=sys.stderr)
-PY
-)"
+          if img_path.is_file():
+              print(str(img_path))
+          else:
+              print(f"[world_astro_en] image file not found at {img_path}", file=sys.stderr)
+          PY
+          )"
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
             CAPTION="$(head -c 1000 world_en/astro_msg.txt)"
@@ -164,33 +164,33 @@ PY
           test -n "${TG_CHAT}"  || { echo "ERROR: TG_CHAT is empty"; exit 1; }
 
           IMG_PATH="$(python - <<'PY'
-import json, os, pathlib, sys
+          import json, os, pathlib, sys
 
-root = pathlib.Path('.').resolve()
-astro_path = root / 'world_en' / 'astro.json'
+          root = pathlib.Path('.').resolve()
+          astro_path = root / 'world_en' / 'astro.json'
 
-try:
-    data = json.loads(astro_path.read_text('utf-8'))
-except Exception as e:
-    print(f"[world_astro_en] failed to read astro.json: {e}", file=sys.stderr)
-    sys.exit(0)
+          try:
+              data = json.loads(astro_path.read_text('utf-8'))
+          except Exception as e:
+              print(f"[world_astro_en] failed to read astro.json: {e}", file=sys.stderr)
+              sys.exit(0)
 
-cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
-if not cand:
-    print("[world_astro_en] ASTRO_IMAGE_PATH is missing in astro.json", file=sys.stderr)
-    sys.exit(0)
+          cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
+          if not cand:
+              print("[world_astro_en] ASTRO_IMAGE_PATH is missing in astro.json", file=sys.stderr)
+              sys.exit(0)
 
-if os.path.isabs(cand):
-    img_path = pathlib.Path(cand)
-else:
-    img_path = (root / cand).resolve()
+          if os.path.isabs(cand):
+              img_path = pathlib.Path(cand)
+          else:
+              img_path = (root / cand).resolve()
 
-if img_path.is_file():
-    print(str(img_path))
-else:
-    print(f"[world_astro_en] image file not found at {img_path}", file=sys.stderr)
-PY
-)"
+          if img_path.is_file():
+              print(str(img_path))
+          else:
+              print(f"[world_astro_en] image file not found at {img_path}", file=sys.stderr)
+          PY
+          )"
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
             CAPTION="$(head -c 1000 world_en/astro_msg.txt)"
