@@ -362,6 +362,36 @@ def scene_for_sign(sign_en: str) -> str:
         return "calm water surface with reflections of the moon and distant shoreline"
     return "a soft abstract landscape with gentle hills and sky"
 
+# ---------------- phase visual for image ----------------
+
+def phase_shape_phrase(phase_en: str) -> str:
+    """
+    Описывает форму Луны для картинки в соответствии с фазой,
+    чтобы модель реже рисовала полную Луну, когда это не нужно.
+    """
+    s = (phase_en or "").lower()
+    if "new moon" in s:
+        return "a very subtle new moon, almost invisible, just a faint dark disc in the sky, not bright"
+    if "waxing crescent" in s or ("crescent" in s and "waxing" in s):
+        return "a thin waxing crescent moon, a delicate curve of light, clearly not a full circle"
+    if "first quarter" in s:
+        return "a half-lit first quarter moon, a clear semicircle with only half of the disc glowing, not a full moon"
+    if "waxing gibbous" in s:
+        return "an almost full waxing gibbous moon, bright but with a visible dark edge, not a perfect full circle"
+    if "full moon" in s:
+        return "a big bright full moon, complete glowing circle"
+    if "waning gibbous" in s:
+        return "an almost full waning gibbous moon with a soft shadow on one side, not a perfect full circle"
+    if "last quarter" in s:
+        return "a half-lit last quarter moon, a clear semicircle with only half of the disc glowing, not a full moon"
+    if "waning crescent" in s:
+        return "a thin waning crescent moon, fading curve of light, clearly not a full circle"
+    if "waning" in s:
+        return "a softly waning moon with part of the disc in shadow, not fully round"
+    if "waxing" in s:
+        return "a softly waxing moon with part of the disc glowing and part in shadow, not fully round"
+    return "a glowing moon in the sky"
+
 # ---------------- safe writer ----------------
 
 
@@ -429,18 +459,14 @@ def main():
 
     if generate_astro_image is not None:
         try:
-            # Сцена: фаза + знак
-            if phase_en:
-                scene_core = f"{phase_en} Moon"
-            else:
-                scene_core = "Moon"
+            # Описание формы Луны по фазе
+            moon_phrase = phase_shape_phrase(phase_en)
 
-            if sign_en and sign_en != "—":
-                scene_core = f"{scene_core} in {sign_en}"
-
+            # Сцена по знаку
             scene_visual = scene_for_sign(sign_en)
-
-            scene_sentence = f"Dreamy {scene_core} above {scene_visual}."
+            scene_sentence = f"Dreamy scene with {moon_phrase} above {scene_visual}."
+            if sign_en and sign_en != "—":
+                scene_sentence += f" This reflects {sign_en} energy."
 
             # Эмоция: по ENERGY_LINE / VOC_TEXT
             energy_lower = (energy_line or "").lower()
