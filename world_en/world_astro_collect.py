@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3 
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
@@ -250,36 +250,53 @@ def main():
         "ADVICE_LINE": advice_line,
     }
 
-# --- optional image generation ---
-try:
-    from world_en.imagegen import generate_astro_image  # явный импорт по пакету
-except Exception:
+    # --- optional image generation ---
+    generate_astro_image = None
     try:
-        from imagegen import generate_astro_image
+        from world_en.imagegen import generate_astro_image  # явный импорт по пакету
     except Exception:
-        generate_astro_image = None
+        try:
+            from imagegen import generate_astro_image
+        except Exception:
+            generate_astro_image = None
 
-if generate_astro_image:
-    try:
-        img_path = generate_astro_image(phase_en or phase_name, sign_en or "", date_str=today.isoformat())
-        if img_path and os.path.exists(img_path):
-            out["ASTRO_IMAGE_PATH"] = os.path.abspath(img_path)
-            # относительный путь от корня репозитория (для curl @file)
-            repo_root = str(Path(__file__).resolve().parents[1])
-            try:
-                rel = os.path.relpath(img_path, start=repo_root)
-            except Exception:
-                rel = img_path
-            out["ASTRO_IMAGE_PATH_REL"] = rel
-            print(f"[astro] image: {rel}")
-        else:
-            print("[astro] image: not generated")
-    except Exception as e:
-        print(f"[astro] image generation failed: {e}")
-else:
-    print("[astro] imagegen not available")
+    if generate_astro_image is not None:
+        try:
+            # Собираем промпт из фазы, знака и энергетической строки
+            parts = []
+            if phase_en:
+                parts.append(f"Moon phase: {phase_en}")
+            if sign_en:
+                parts.append(f"in {sign_en}")
+            if energy_line:
+                parts.append(f"Mood: {energy_line}")
+            base = " ".join(parts).strip() or "Daily astro vibes for well-being and mood"
+            prompt = (
+                base
+                + ". Atmospheric minimalist illustration, soft gradients, pastel colors, "
+                + "abstract sky and moon, subtle texture, 1:1 aspect ratio, suitable as Telegram post thumbnail."
+            )
 
+            rel_img_path = f"astro_img/astro_{today.isoformat()}.jpg"
+            abs_img_path = ROOT / rel_img_path
 
+            img_path = generate_astro_image(prompt, str(abs_img_path))
+            if img_path and os.path.exists(img_path):
+                # сохраняем относительный путь от корня репо
+                try:
+                    rel = os.path.relpath(img_path, start=str(ROOT))
+                except Exception:
+                    rel = rel_img_path
+                out["ASTRO_IMAGE_PATH"] = rel
+                print(f"[astro] image: {rel}")
+            else:
+                print("[astro] image: not generated")
+        except Exception as e:
+            print(f"[astro] image generation failed: {e}")
+    else:
+        print("[astro] imagegen not available")
+
+    # Финальная запись world_en/astro.json
     write_json_safe(OUT, out)
 
 if __name__ == "__main__":
