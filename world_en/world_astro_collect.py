@@ -1,19 +1,23 @@
-# world_en/world_astro_collect.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
+from __future__ import annotations
 
 from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+import os
 import datetime as dt
 import json
 import traceback
 from typing import Optional, Tuple
 from pytz import UTC
+import hashlib
+import random
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT  = Path(__file__).parent / "astro.json"
+OUT = Path(__file__).parent / "astro.json"
 
 # ---------------- sign mapping ----------------
 
@@ -32,18 +36,35 @@ _EN_SIGNS = {
     "aquarius": ("Aquarius", "♒"), "pisces": ("Pisces", "♓"),
 }
 
-# в world_en/world_astro_collect.py (вверху файла)
-import os
+
+def energy_icon_for_phase(phase_label: str) -> str:
+    s = (phase_label or "").lower()
+    if "new moon" in s or "новолуние" in s:
+        return "🌑"
+    if "full moon" in s or "полнолуние" in s:
+        return "🌕"
+    if "first quarter" in s or "первая четверть" in s:
+        return "🌓"
+    if "last quarter" in s or "последняя четверть" in s:
+        return "🌗"
+    if "waxing" in s or "растущ" in s:
+        return "🌔"
+    if "waning" in s or "убыва" in s:
+        return "🌘"
+    return "🔆"
+
 
 def energy_icon_pick(mode: str, phase_en: str, voc_len_min):
-    mode = (mode or "phase").lower()          # phase | voc | static
+    mode = (mode or "phase").lower()  # phase | voc | static
     if mode == "voc":
-        if voc_len_min is None: return "💡"
+        if voc_len_min is None:
+            return "💡"
         return "🟢" if voc_len_min < 60 else ("🟡" if voc_len_min < 120 else "🟠")
     if mode == "static":
         return "💡"
     # phase (по умолчанию)
     return energy_icon_for_phase(phase_en)
+
 
 def _sign_en_emoji(sign_raw: Optional[str]) -> Tuple[str, str]:
     s = (sign_raw or "").strip()
@@ -61,28 +82,29 @@ def _sign_en_emoji(sign_raw: Optional[str]) -> Tuple[str, str]:
 
 _PHASE_LC_MAP = {
     # RU
-    "новолуние":            ("New Moon", "🌑"),
-    "растущий серп":        ("Waxing Crescent", "🌒"),
-    "первая четверть":      ("First Quarter", "🌓"),
-    "растущая луна":        ("Waxing Moon", "🌔"),
-    "растущая":             ("Waxing Moon", "🌔"),
-    "полнолуние":           ("Full Moon", "🌕"),
-    "убывающая луна":       ("Waning Moon", "🌖"),
-    "убывающая":            ("Waning Moon", "🌖"),
-    "последняя четверть":   ("Last Quarter", "🌗"),
-    "убывающий серп":       ("Waning Crescent", "🌘"),
+    "новолуние": ("New Moon", "🌑"),
+    "растущий серп": ("Waxing Crescent", "🌒"),
+    "первая четверть": ("First Quarter", "🌓"),
+    "растущая луна": ("Waxing Moon", "🌔"),
+    "растущая": ("Waxing Moon", "🌔"),
+    "полнолуние": ("Full Moon", "🌕"),
+    "убывающая луна": ("Waning Moon", "🌖"),
+    "убывающая": ("Waning Moon", "🌖"),
+    "последняя четверть": ("Last Quarter", "🌗"),
+    "убывающий серп": ("Waning Crescent", "🌘"),
     # EN
-    "new moon":             ("New Moon", "🌑"),
-    "waxing crescent":      ("Waxing Crescent", "🌒"),
-    "first quarter":        ("First Quarter", "🌓"),
-    "waxing gibbous":       ("Waxing Gibbous", "🌔"),
-    "waxing":               ("Waxing Moon", "🌔"),
-    "full moon":            ("Full Moon", "🌕"),
-    "waning gibbous":       ("Waning Gibbous", "🌖"),
-    "last quarter":         ("Last Quarter", "🌗"),
-    "waning crescent":      ("Waning Crescent", "🌘"),
-    "waning":               ("Waning Moon", "🌖"),
+    "new moon": ("New Moon", "🌑"),
+    "waxing crescent": ("Waxing Crescent", "🌒"),
+    "first quarter": ("First Quarter", "🌓"),
+    "waxing gibbous": ("Waxing Gibbous", "🌔"),
+    "waxing": ("Waxing Moon", "🌔"),
+    "full moon": ("Full Moon", "🌕"),
+    "waning gibbous": ("Waning Gibbous", "🌖"),
+    "last quarter": ("Last Quarter", "🌗"),
+    "waning crescent": ("Waning Crescent", "🌘"),
+    "waning": ("Waning Moon", "🌖"),
 }
+
 
 def _phase_en_emoji(phase_name: Optional[str]) -> Tuple[str, str]:
     if not phase_name:
@@ -95,17 +117,8 @@ def _phase_en_emoji(phase_name: Optional[str]) -> Tuple[str, str]:
             return val
     return phase_name, ""
 
-def energy_icon_for_phase(phase_label: str) -> str:
-    s = (phase_label or "").lower()
-    if "new moon" in s or "новолуние" in s:        return "🌑"
-    if "full moon" in s or "полнолуние" in s:      return "🌕"
-    if "first quarter" in s or "первая четверть" in s:  return "🌓"
-    if "last quarter" in s or "последняя четверть" in s: return "🌗"
-    if "waxing" in s or "растущ" in s:             return "🌔"
-    if "waning" in s or "убыва" in s:              return "🌘"
-    return "🔆"
-
 # ---------------- helpers ----------------
+
 
 def fmt_percent_or_none(x) -> Optional[int]:
     try:
@@ -114,9 +127,11 @@ def fmt_percent_or_none(x) -> Optional[int]:
         return None
     return p if 0 < p < 100 else None
 
+
 def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> Tuple[Optional[dt.datetime], Optional[dt.datetime]]:
     if not start_s or not end_s:
         return None, None
+
     def _parse_one(s: str) -> dt.datetime:
         s = s.strip()
         today = dt.datetime.utcnow().date()
@@ -127,22 +142,33 @@ def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> Tuple[Optiona
             return dt.datetime(today.year, m, d, hh, mm, tzinfo=UTC)
         hh, mm = map(int, s.split(":"))
         return dt.datetime(today.year, today.month, today.day, hh, mm, tzinfo=UTC)
+
     try:
         return _parse_one(start_s), _parse_one(end_s)
     except Exception:
         return None, None
 
-def pretty_duration(mins: int) -> str:
+
+def pretty_duration(mins: Optional[int]) -> str:
+    if mins is None:
+        return ""
     h, m = mins // 60, mins % 60
-    if h and m: return f"≈{h}h {m:02d}m"
-    if h:       return f"≈{h}h"
+    if h and m:
+        return f"≈{h}h {m:02d}m"
+    if h:
+        return f"≈{h}h"
     return f"≈{m}m"
 
-def voc_badge_by_len(minutes: int) -> str:
-    if minutes is None: return ""
-    if minutes >= 120:  return "🟠"
-    if minutes >= 60:   return "🟡"
+
+def voc_badge_by_len(minutes: Optional[int]) -> str:
+    if minutes is None:
+        return ""
+    if minutes >= 120:
+        return "🟠"
+    if minutes >= 60:
+        return "🟡"
     return "🟢"
+
 
 def voc_text_status(start_utc: Optional[dt.datetime],
                     end_utc: Optional[dt.datetime]) -> Tuple[str, str, Optional[int]]:
@@ -160,6 +186,7 @@ def voc_text_status(start_utc: Optional[dt.datetime],
 
 # ---------------- calendar IO ----------------
 
+
 def read_calendar_today():
     cal_path = ROOT / "lunar_calendar.json"
     if not cal_path.exists():
@@ -170,6 +197,7 @@ def read_calendar_today():
     return days.get(today)
 
 # ---------------- energy ----------------
+
 
 def base_energy_tip(phase_name_ru: str, percent: int) -> tuple[str, str]:
     pn = (phase_name_ru or "").lower()
@@ -187,21 +215,185 @@ def base_energy_tip(phase_name_ru: str, percent: int) -> tuple[str, str]:
         return ("Slow down; restore energy.", "Light tasks, gentle body care.")
     return ("Keep plans light; tune into your body.", "Focus on what matters.")
 
+
 def energy_and_tip(phase_name_ru: str, percent: int, voc_minutes: Optional[int]) -> tuple[str, str]:
     energy, tip = base_energy_tip(phase_name_ru, percent)
     if voc_minutes is None:
         return energy, tip
     if voc_minutes >= 180:
-        return ("Long VoC — keep schedule very light; avoid launches.",
-                "Routine, journaling, cleanup; move decisions after VoC.")
+        return (
+            "Long VoC — keep schedule very light; avoid launches.",
+            "Routine, journaling, cleanup; move decisions after VoC.",
+        )
     if voc_minutes >= 120:
-        return ("VoC — avoid launches; favor routine.",
-                "Safe tasks: maintenance, drafts, reading, rest.")
+        return (
+            "VoC — avoid launches; favor routine.",
+            "Safe tasks: maintenance, drafts, reading, rest.",
+        )
     if voc_minutes >= 60:
         return ("Short VoC — keep tasks flexible.", tip)
     return energy, tip
 
+# ---------------- image style presets ----------------
+
+_STYLE_PRESETS = {
+    "pastel_mist": (
+        "dreamy pastel landscape with soft distant hills and a gentle glowing moon, "
+        "soft gradients, pastel blues and pinks, subtle grain"
+    ),
+    "starry_night": (
+        "night sky full of tiny stars, a glowing moon near the horizon, "
+        "deep blues and purples, cinematic lighting, light haze"
+    ),
+    "sunset_sea": (
+        "calm sea at golden hour, moon rising above the horizon, "
+        "warm oranges and pinks blending into cool blues, watercolor-like gradients"
+    ),
+    "aurora_sky": (
+        "abstract sky with aurora-like light ribbons and a glowing moon, "
+        "smooth gradients of turquoise and violet, ethereal atmosphere"
+    ),
+    "minimal_moon": (
+        "ultra-minimal composition with a large moon disc over a simple horizon line, "
+        "clean shapes, very simple gradients, quiet empty space"
+    ),
+    "human_silhouette": (
+        "calm landscape and a small silhouette of a person peacefully watching the moon "
+        "from a balcony or hill, focus on mood not details, soft edges"
+    ),
+}
+
+
+def pick_style_for_date(date: dt.date) -> tuple[str, str]:
+    """
+    Возвращает (style_block, style_name) для конкретной даты.
+    style_name пишем в astro.json, style_block — в промпт.
+    """
+    keys = sorted(_STYLE_PRESETS.keys())
+    if not keys:
+        return "", ""
+    seed = int(hashlib.sha1(date.isoformat().encode("utf-8")).hexdigest(), 16)
+    rng = random.Random(seed)
+    key = rng.choice(keys)
+    return _STYLE_PRESETS[key], key
+
+# ---------------- sign scenes for image ----------------
+
+_FIRE_SIGNS = {"Aries", "Leo", "Sagittarius"}
+_EARTH_SIGNS = {"Taurus", "Virgo", "Capricorn"}
+_AIR_SIGNS = {"Gemini", "Libra", "Aquarius"}
+_WATER_SIGNS = {"Cancer", "Scorpio", "Pisces"}
+
+_SIGN_SCENES = {
+    # Fire
+    "Aries": (
+        "rugged warm cliffs and glowing sparks in the sky, colors of sunset fire"
+    ),
+    "Leo": (
+        "soft golden hills and a warm sky, hints of sun-like lion energy"
+    ),
+    "Sagittarius": (
+        "wide open sky above distant mountains and a path leading forward"
+    ),
+    # Earth
+    "Taurus": (
+        "calm fields and gentle rolling hills, earthy greens and soft browns"
+    ),
+    "Virgo": (
+        "orderly fields and gardens, neat lines and soft morning light"
+    ),
+    "Capricorn": (
+        "high mountains and rocky slopes, cool clear air and distant peaks"
+    ),
+    # Air
+    "Gemini": (
+        "light clouds and twin paths or roads, playful breeze in the air"
+    ),
+    "Libra": (
+        "balanced composition of sky and water, reflections and symmetry"
+    ),
+    "Aquarius": (
+        "futuristic skyline and bridges, flowing light patterns in the sky"
+    ),
+    # Water
+    "Cancer": (
+        "a cozy bay or quiet seaside town, a few warm lights near the water"
+    ),
+    "Scorpio": (
+        "deep dark water and a dramatic sky, subtle fog and bright stars"
+    ),
+    "Pisces": (
+        "calm ocean and soft pastel waves, faraway mountains in the haze"
+    ),
+}
+
+
+def _element_for_sign(sign_en: str) -> str:
+    if sign_en in _FIRE_SIGNS:
+        return "fire"
+    if sign_en in _EARTH_SIGNS:
+        return "earth"
+    if sign_en in _AIR_SIGNS:
+        return "air"
+    if sign_en in _WATER_SIGNS:
+        return "water"
+    return "unknown"
+
+
+def scene_for_sign(sign_en: str) -> str:
+    """
+    Возвращает текст описания ландшафта для данного знака.
+    """
+    sign_en = (sign_en or "").strip()
+    if not sign_en or sign_en == "—":
+        return "a soft abstract landscape with gentle hills and sky"
+
+    if sign_en in _SIGN_SCENES:
+        return _SIGN_SCENES[sign_en]
+
+    elem = _element_for_sign(sign_en)
+    if elem == "fire":
+        return "warm glowing cliffs and sky with hints of fire-like energy"
+    if elem == "earth":
+        return "quiet fields, stones and hills with grounded earthy tones"
+    if elem == "air":
+        return "open sky with moving clouds and light wind, abstract city or bridges"
+    if elem == "water":
+        return "calm water surface with reflections of the moon and distant shoreline"
+    return "a soft abstract landscape with gentle hills and sky"
+
+# ---------------- phase visual for image ----------------
+
+def phase_shape_phrase(phase_en: str) -> str:
+    """
+    Описывает форму Луны для картинки в соответствии с фазой,
+    чтобы модель реже рисовала полную Луну, когда это не нужно.
+    """
+    s = (phase_en or "").lower()
+    if "new moon" in s:
+        return "a very subtle new moon, almost invisible, just a faint dark disc in the sky, not bright"
+    if "waxing crescent" in s or ("crescent" in s and "waxing" in s):
+        return "a thin waxing crescent moon, a delicate curve of light, clearly not a full circle"
+    if "first quarter" in s:
+        return "a half-lit first quarter moon, a clear semicircle with only half of the disc glowing, not a full moon"
+    if "waxing gibbous" in s:
+        return "an almost full waxing gibbous moon, bright but with a visible dark edge, not a perfect full circle"
+    if "full moon" in s:
+        return "a big bright full moon, complete glowing circle"
+    if "waning gibbous" in s:
+        return "an almost full waning gibbous moon with a soft shadow on one side, not a perfect full circle"
+    if "last quarter" in s:
+        return "a half-lit last quarter moon, a clear semicircle with only half of the disc glowing, not a full moon"
+    if "waning crescent" in s:
+        return "a thin waning crescent moon, fading curve of light, clearly not a full circle"
+    if "waning" in s:
+        return "a softly waning moon with part of the disc in shadow, not fully round"
+    if "waxing" in s:
+        return "a softly waxing moon with part of the disc glowing and part in shadow, not fully round"
+    return "a glowing moon in the sky"
+
 # ---------------- safe writer ----------------
+
 
 def write_json_safe(path: Path, payload: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +402,7 @@ def write_json_safe(path: Path, payload: dict):
 
 # ---------------- main ----------------
 
+
 def main():
     today = dt.date.today()
     weekday = dt.datetime.utcnow().strftime("%a")
@@ -217,24 +410,22 @@ def main():
     item = read_calendar_today() or {}
 
     phase_name = item.get("phase_name") or ""
-    phase_pct  = item.get("percent")
-    sign_raw   = item.get("sign") or ""
-    voc_block  = item.get("void_of_course") or {}
+    phase_pct = item.get("percent")
+    sign_raw = item.get("sign") or ""
+    voc_block = item.get("void_of_course") or {}
 
     voc_start_str = (voc_block or {}).get("start")
-    voc_end_str   = (voc_block or {}).get("end")
+    voc_end_str = (voc_block or {}).get("end")
     start_utc, end_utc = parse_voc_utc(voc_start_str, voc_end_str)
     VOC_TEXT, VOC_BADGE_SMART, VOC_LEN_MIN = voc_text_status(start_utc, end_utc)
-    VOC_LEN_PRETTY = pretty_duration(VOC_LEN_MIN) if isinstance(VOC_LEN_MIN, int) else ""
+    VOC_LEN_PRETTY = pretty_duration(VOC_LEN_MIN)
 
-    sign_en, sign_emoji   = _sign_en_emoji(sign_raw)
+    sign_en, sign_emoji = _sign_en_emoji(sign_raw)
     phase_en, phase_emoji = _phase_en_emoji(phase_name)
-    energy_icon = energy_icon_pick(os.getenv("ENERGY_ICON_MODE","phase"), phase_en, VOC_LEN_MIN)
-
-    energy_icon = energy_icon_for_phase(phase_en or phase_name)
+    energy_icon = energy_icon_pick(os.getenv("ENERGY_ICON_MODE", "phase"), phase_en, VOC_LEN_MIN)
     energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), VOC_LEN_MIN)
 
-    out = {
+    out: dict = {
         "DATE": today.isoformat(),
         "WEEKDAY": weekday,
         "MOON_PHASE": phase_name or "—",
@@ -252,13 +443,85 @@ def main():
         "ADVICE_LINE": advice_line,
     }
 
+    # Выбор стиля картинки (случайный, но детерминированный по дате)
+    style_block, style_name = pick_style_for_date(today)
+    out["ASTRO_IMAGE_STYLE"] = style_name or "default"
+
+    # --- optional image generation ---
+    generate_astro_image = None
+    try:
+        from world_en.imagegen import generate_astro_image  # явный импорт по пакету
+    except Exception:
+        try:
+            from imagegen import generate_astro_image
+        except Exception:
+            generate_astro_image = None
+
+    if generate_astro_image is not None:
+        try:
+            # Описание формы Луны по фазе
+            moon_phrase = phase_shape_phrase(phase_en)
+
+            # Сцена по знаку
+            scene_visual = scene_for_sign(sign_en)
+            scene_sentence = f"Dreamy scene with {moon_phrase} above {scene_visual}."
+            if sign_en and sign_en != "—":
+                scene_sentence += f" This reflects {sign_en} energy."
+
+            # Эмоция: по ENERGY_LINE / VOC_TEXT
+            energy_lower = (energy_line or "").lower()
+            voc_lower = (VOC_TEXT or "").lower()
+
+            if "voc" in voc_lower or "void of course" in voc_lower:
+                emotion_sentence = (
+                    "The world feels slightly on pause, time is slow and gentle, perfect for rest and reflection"
+                )
+            elif "step forward" in energy_lower or "momentum" in energy_lower or "build" in energy_lower:
+                emotion_sentence = (
+                    "The air feels focused and clear, a day for small confident steps and gentle progress"
+                )
+            elif "slow down" in energy_lower or "restore" in energy_lower:
+                emotion_sentence = (
+                    "Soft, restorative mood, a day to move carefully, listen to your body and protect your energy"
+                )
+            else:
+                emotion_sentence = (
+                    "Balanced, thoughtful mood, a good day for quiet progress and honest check-ins with yourself"
+                )
+
+            base_style = (
+                f"{style_block}, minimalist dreamy illustration, subtle texture, "
+                f"square format, no text, digital art"
+            ).strip()
+
+            prompt = f"{scene_sentence} {emotion_sentence}. {base_style}"
+
+            rel_img_path = f"astro_img/astro_{today.isoformat()}.jpg"
+            abs_img_path = ROOT / rel_img_path
+
+            img_path = generate_astro_image(prompt, str(abs_img_path))
+            if img_path and os.path.exists(img_path):
+                try:
+                    rel = os.path.relpath(img_path, start=str(ROOT))
+                except Exception:
+                    rel = rel_img_path
+                out["ASTRO_IMAGE_PATH"] = rel
+                print(f"[astro] image style: {style_name}, path: {rel}")
+            else:
+                print("[astro] image: not generated")
+        except Exception as e:
+            print(f"[astro] image generation failed: {e}")
+    else:
+        print("[astro] imagegen not available")
+
+    # Финальная запись world_en/astro.json
     write_json_safe(OUT, out)
+
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # Фолбэк, чтобы не ронять пайплайн
         fb = {
             "DATE": dt.date.today().isoformat(),
             "WEEKDAY": dt.datetime.utcnow().strftime("%a"),

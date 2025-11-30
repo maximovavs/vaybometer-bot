@@ -5,15 +5,19 @@ world_en/imagegen.py
 
 Приоритет:
 1. Pollinations (без ключей) — быстрый бесплатный endpoint.
-2. Stable Horde (анонимный доступ) как фолбэк.
+2. Stable Horde (анонимный доступ через "0000000000") как фолбэк.
 
-ФАЙЛ НИКОГДА НЕ ЛОГИРУЕТ КЛЮЧИ (они и не используются).
-Все параметры конфигурируются через переменные окружения:
+ФАЙЛ НИКОГДА НЕ ЛОГИРУЕТ КЛЮЧИ (они и не нужны, кроме HORDE_API_KEY).
+
+Переменные окружения (опционально):
 
 - POLLINATIONS_BASE_URL (по умолчанию "https://image.pollinations.ai/prompt/")
 - POLLINATIONS_TIMEOUT (по умолчанию 20 секунд)
-- HORDE_BASE_URL (по умолчанию "https://stablehorde.net/api/v2")
-- HORDE_TIMEOUT (по умолчанию 90 секунд)
+- HORDE_BASE_URL       (по умолчанию "https://stablehorde.net/api/v2")
+- HORDE_TIMEOUT        (по умолчанию 90 секунд)
+- STABLE_HORDE_API_KEY (секрет с API-ключом Horde; приоритетный)
+- HORDE_API_KEY        (альтернативное имя переменной)
+  если оба не заданы, используется "0000000000" — анонимный бесплатный ключ.
 
 ОГРАНИЧЕНИЯ / ДОПУЩЕНИЯ:
 - Предполагается, что Pollinations принимает GET:
@@ -58,6 +62,17 @@ HORDE_BASE_URL = os.environ.get(
     "https://stablehorde.net/api/v2",
 )
 HORDE_TIMEOUT = float(os.environ.get("HORDE_TIMEOUT", "90"))
+
+# ВАЖНО: Stable Horde требует apikey даже для анонимного доступа.
+# Приоритет:
+#   1) STABLE_HORDE_API_KEY (секрет из GitHub Actions),
+#   2) HORDE_API_KEY,
+#   3) "0000000000" — стандартный анонимный ключ.
+HORDE_API_KEY = (
+    os.environ.get("STABLE_HORDE_API_KEY")
+    or os.environ.get("HORDE_API_KEY")
+    or "0000000000"
+)
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -128,13 +143,13 @@ def _fetch_from_horde(
     """
     Фолбэк: генерация через Stable Horde.
 
-    Используется анонимный доступ (без api key).
+    Используется HORDE_API_KEY (см. описание выше).
     Допущения по протоколу см. в модульном docstring.
     """
     headers = {
         "User-Agent": "WorldVibeMeterBot/1.0 (+https://t.me/worldvibemeter)",
         "Content-Type": "application/json",
-        # "apikey": "0000000000",  # можно включить анонимный ключ при необходимости
+        "apikey": HORDE_API_KEY,  # REQUIRED: иначе 400 "Missing required parameter"
     }
 
     payload = {
