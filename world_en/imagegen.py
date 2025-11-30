@@ -5,15 +5,17 @@ world_en/imagegen.py
 
 Приоритет:
 1. Pollinations (без ключей) — быстрый бесплатный endpoint.
-2. Stable Horde (анонимный доступ) как фолбэк.
+2. Stable Horde (анонимный доступ через "0000000000") как фолбэк.
 
-ФАЙЛ НИКОГДА НЕ ЛОГИРУЕТ КЛЮЧИ (они и не используются).
-Все параметры конфигурируются через переменные окружения:
+ФАЙЛ НИКОГДА НЕ ЛОГИРУЕТ КЛЮЧИ (они и не нужны, кроме HORDE_API_KEY).
+
+Переменные окружения (опционально):
 
 - POLLINATIONS_BASE_URL (по умолчанию "https://image.pollinations.ai/prompt/")
 - POLLINATIONS_TIMEOUT (по умолчанию 20 секунд)
-- HORDE_BASE_URL (по умолчанию "https://stablehorde.net/api/v2")
-- HORDE_TIMEOUT (по умолчанию 90 секунд)
+- HORDE_BASE_URL       (по умолчанию "https://stablehorde.net/api/v2")
+- HORDE_TIMEOUT        (по умолчанию 90 секунд)
+- HORDE_API_KEY        (по умолчанию "0000000000" — анонимный бесплатный ключ)
 
 ОГРАНИЧЕНИЯ / ДОПУЩЕНИЯ:
 - Предполагается, что Pollinations принимает GET:
@@ -58,6 +60,10 @@ HORDE_BASE_URL = os.environ.get(
     "https://stablehorde.net/api/v2",
 )
 HORDE_TIMEOUT = float(os.environ.get("HORDE_TIMEOUT", "90"))
+
+# ВАЖНО: Stable Horde требует apikey даже для анонимного доступа.
+# "0000000000" — стандартный анонимный ключ, не привязанный к аккаунту.
+HORDE_API_KEY = os.environ.get("HORDE_API_KEY", "0000000000")
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -128,13 +134,13 @@ def _fetch_from_horde(
     """
     Фолбэк: генерация через Stable Horde.
 
-    Используется анонимный доступ (без api key).
+    Используется анонимный доступ (HORDE_API_KEY, по умолчанию "0000000000").
     Допущения по протоколу см. в модульном docstring.
     """
     headers = {
         "User-Agent": "WorldVibeMeterBot/1.0 (+https://t.me/worldvibemeter)",
         "Content-Type": "application/json",
-        # "apikey": "0000000000",  # можно включить анонимный ключ при необходимости
+        "apikey": HORDE_API_KEY,  # REQUIRED: иначе 400 "Missing required parameter"
     }
 
     payload = {
