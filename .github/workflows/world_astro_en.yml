@@ -26,7 +26,7 @@ jobs:
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
-      # поднимем секреты в env (так безопаснее использовать их в if:)
+      # поднимем секреты в env (так безопаснее использовать их in if:)
       FB_PAGE_ID: ${{ secrets.FB_PAGE_ID || '' }}
       FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN || '' }}
       TG_URL: ${{ secrets.TELEGRAM_CHANNEL_URL || 'https://t.me/WorldVibeMeter' }}
@@ -60,6 +60,7 @@ jobs:
       - name: Verify astro.json exists
         run: |
           test -f world_en/astro.json || { echo "ERROR: world_en/astro.json was not created"; exit 1; }
+          echo "[astro] wrote: world_en/astro.json"
 
       # 3) Рендер сообщения
       - name: Render
@@ -75,15 +76,31 @@ jobs:
           set -euo pipefail
 
           IMG_PATH="$(python - <<'PY'
-import json, os, pathlib
-p='world_en/astro.json'
+import json, os, pathlib, sys
+
+root = pathlib.Path('.').resolve()
+astro_path = root / 'world_en' / 'astro.json'
+
 try:
-    data=json.loads(pathlib.Path(p).read_text('utf-8'))
-    cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
-    if cand and os.path.exists(cand):
-        print(cand)
-except Exception:
-    pass
+    data = json.loads(astro_path.read_text('utf-8'))
+except Exception as e:
+    print(f"[world_astro_en] failed to read astro.json: {e}", file=sys.stderr)
+    sys.exit(0)
+
+cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
+if not cand:
+    print("[world_astro_en] ASTRO_IMAGE_PATH is missing in astro.json", file=sys.stderr)
+    sys.exit(0)
+
+if os.path.isabs(cand):
+    img_path = pathlib.Path(cand)
+else:
+    img_path = (root / cand).resolve()
+
+if img_path.is_file():
+    print(str(img_path))
+else:
+    print(f"[world_astro_en] image file not found at {img_path}", file=sys.stderr)
 PY
 )"
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
@@ -147,15 +164,31 @@ PY
           test -n "${TG_CHAT}"  || { echo "ERROR: TG_CHAT is empty"; exit 1; }
 
           IMG_PATH="$(python - <<'PY'
-import json, os, pathlib
-p='world_en/astro.json'
+import json, os, pathlib, sys
+
+root = pathlib.Path('.').resolve()
+astro_path = root / 'world_en' / 'astro.json'
+
 try:
-    data=json.loads(pathlib.Path(p).read_text('utf-8'))
-    cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
-    if cand and os.path.exists(cand):
-        print(cand)
-except Exception:
-    pass
+    data = json.loads(astro_path.read_text('utf-8'))
+except Exception as e:
+    print(f"[world_astro_en] failed to read astro.json: {e}", file=sys.stderr)
+    sys.exit(0)
+
+cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
+if not cand:
+    print("[world_astro_en] ASTRO_IMAGE_PATH is missing in astro.json", file=sys.stderr)
+    sys.exit(0)
+
+if os.path.isabs(cand):
+    img_path = pathlib.Path(cand)
+else:
+    img_path = (root / cand).resolve()
+
+if img_path.is_file():
+    print(str(img_path))
+else:
+    print(f"[world_astro_en] image file not found at {img_path}", file=sys.stderr)
 PY
 )"
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
