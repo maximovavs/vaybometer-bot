@@ -15,7 +15,9 @@ world_en/imagegen.py
 - POLLINATIONS_TIMEOUT (по умолчанию 20 секунд)
 - HORDE_BASE_URL       (по умолчанию "https://stablehorde.net/api/v2")
 - HORDE_TIMEOUT        (по умолчанию 90 секунд)
-- HORDE_API_KEY        (по умолчанию "0000000000" — анонимный бесплатный ключ)
+- STABLE_HORDE_API_KEY (секрет с API-ключом Horde; приоритетный)
+- HORDE_API_KEY        (альтернативное имя переменной)
+  если оба не заданы, используется "0000000000" — анонимный бесплатный ключ.
 
 ОГРАНИЧЕНИЯ / ДОПУЩЕНИЯ:
 - Предполагается, что Pollinations принимает GET:
@@ -62,8 +64,15 @@ HORDE_BASE_URL = os.environ.get(
 HORDE_TIMEOUT = float(os.environ.get("HORDE_TIMEOUT", "90"))
 
 # ВАЖНО: Stable Horde требует apikey даже для анонимного доступа.
-# "0000000000" — стандартный анонимный ключ, не привязанный к аккаунту.
-HORDE_API_KEY = os.environ.get("HORDE_API_KEY", "0000000000")
+# Приоритет:
+#   1) STABLE_HORDE_API_KEY (секрет из GitHub Actions),
+#   2) HORDE_API_KEY,
+#   3) "0000000000" — стандартный анонимный ключ.
+HORDE_API_KEY = (
+    os.environ.get("STABLE_HORDE_API_KEY")
+    or os.environ.get("HORDE_API_KEY")
+    or "0000000000"
+)
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -134,7 +143,7 @@ def _fetch_from_horde(
     """
     Фолбэк: генерация через Stable Horde.
 
-    Используется анонимный доступ (HORDE_API_KEY, по умолчанию "0000000000").
+    Используется HORDE_API_KEY (см. описание выше).
     Допущения по протоколу см. в модульном docstring.
     """
     headers = {
