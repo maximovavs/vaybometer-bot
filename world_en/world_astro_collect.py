@@ -381,8 +381,12 @@ def scene_for_sign(sign_en: str) -> str:
 def phase_shape_phrase(phase_en: str, percent: Optional[int]) -> str:
     """
     Описывает форму Луны для картинки в соответствии с фазой,
-    чтобы модель реже рисовала полную Луну, когда это не Full Moon.
-    Для всех неполных фаз подчёркиваем 'not a perfect full circle'.
+    чтобы модель реже рисовала полную Луну, когда это не Full Moon,
+    и не рисовала тонкий серп, когда освещённость близка к 70–80%.
+
+    Для всех неполных фаз подчёркиваем:
+    - это НЕ идеальный полный круг;
+    - это НЕ тонкий узкий серп (когда нужно gibbous/half).
     """
     s = (phase_en or "").lower()
     p = percent if isinstance(percent, int) else None
@@ -402,38 +406,50 @@ def phase_shape_phrase(phase_en: str, percent: Optional[int]) -> str:
     if "first quarter" in s or "last quarter" in s:
         return (
             "a half moon, a clean semicircle where exactly one half of the disc glows "
-            "and the other half is dark, clearly not a full circle"
+            "and the other half is dark, clearly not a full circle and not a thin crescent"
         )
 
-    # Crescents
+    # Crescents (по-настоящему тонкий месяц)
     if "crescent" in s:
         return (
-            "a thin crescent moon, a delicate curved slice of light, most of the disc is dark, "
-            "definitely not full"
+            "a thin crescent moon, a delicate narrow curved slice of light, most of the disc is dark, "
+            "clearly not full"
         )
 
-    # Gibbous / generic waxing/waning
+    # Gibbous / generic waxing/waning (сюда попадает Waxing Moon, Waning Moon и т.п.)
     if "gibbous" in s or "waxing" in s or "waning" in s:
-        if p is not None and p < 60:
-            return (
-                "a bright half-to-three-quarter moon with a large dark bite on one side, "
-                "so it does not look full at all"
-            )
-        if p is not None and p >= 90:
-            return (
-                "an almost full moon but with a clearly visible dark slice on one side, "
-                "so it is not a perfect full circle"
-            )
+        if p is not None:
+            # ~до 45% — ближе к половине
+            if p <= 45:
+                return (
+                    "a clear half-to-more-than-half moon, with one side bright and the other side in shadow, "
+                    "not a thin crescent and not a full circle"
+                )
+            # 45–85% — классический gibbous (как твои 78%)
+            if 45 < p < 85:
+                return (
+                    "a thick three-quarter gibbous moon, more than half of the disc bright with only a small "
+                    "dark slice on one side, not a thin crescent and not a perfect full circle"
+                )
+            # 85%+ — почти полная, но с тенью
+            if p >= 85:
+                return (
+                    "an almost full moon, but with a clearly visible narrow dark slice on one side, "
+                    "so it is not a perfect full circle"
+                )
+
+        # если процента нет, но фаза всё равно “waxing/waning”
         return (
-            "a three-quarter moon with a clearly visible dark slice on one side, "
-            "not a perfect full circle"
+            "a gibbous moon, more than half of the disc bright and the rest in shadow, "
+            "not a thin crescent and not a full circle"
         )
 
     # Fallback для любых других неполных фаз
     return (
         "a partial moon with a visible shadow on one side, "
-        "clearly not a perfect full circle"
+        "clearly not a perfect full circle and not a very thin crescent"
     )
+
 
 # ---------------- safe writer ----------------
 
