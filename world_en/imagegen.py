@@ -1,335 +1,575 @@
-"""
-world_en/imagegen.py
-
-Генерация картинок для астрологических постов.
-
-Приоритет:
-1. Pollinations (без ключей) — быстрый бесплатный endpoint.
-2. Stable Horde (анонимный доступ через "0000000000") как фолбэк.
-
-ФАЙЛ НИКОГДА НЕ ЛОГИРУЕТ КЛЮЧИ (они и не нужны, кроме HORDE_API_KEY).
-
-Переменные окружения (опционально):
-
-- POLLINATIONS_BASE_URL (по умолчанию "https://image.pollinations.ai/prompt/")
-- POLLINATIONS_TIMEOUT (по умолчанию 20 секунд)
-- HORDE_BASE_URL       (по умолчанию "https://stablehorde.net/api/v2")
-- HORDE_TIMEOUT        (по умолчанию 90 секунд)
-- STABLE_HORDE_API_KEY (секрет с API-ключом Horde; приоритетный)
-- HORDE_API_KEY        (альтернативное имя переменной)
-  если оба не заданы, используется "0000000000" — анонимный бесплатный ключ.
-
-ОГРАНИЧЕНИЯ / ДОПУЩЕНИЯ:
-- Предполагается, что Pollinations принимает GET:
-    {POLLINATIONS_BASE_URL}/{urlencoded_prompt}?width=512&height=512
-  и отдаёт непосредственно изображение (PNG/JPEG).
-- Предполагается, что Stable Horde v2:
-  * POST /generate/async -> {"id": "<job-id>", ...}
-  * GET  /generate/check/{id} -> JSON с полем done / finished / state
-  * GET  /generate/status/{id} -> {"generations": [{"img": "<base64>"}]}
-"""
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 from __future__ import annotations
 
-import base64
-import logging
-import os
-import time
-import uuid
 from pathlib import Path
+import sys
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import os
+import datetime as dt
+import json
+import traceback
 from typing import Optional, Tuple
-from urllib.parse import quote_plus
+from pytz import UTC
+import hashlib
+import random
 
-import requests
+ROOT = Path(__file__).resolve().parents[1]
+OUT = Path(__file__).parent / "astro.json"
 
-# Базовый логгер для всех сообщений этого модуля.
-logger = logging.getLogger("imagegen")
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("[imagegen] %(levelname)s: %(message)s")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+# ---------------- sign mapping ----------------
 
-POLLINATIONS_BASE_URL = os.environ.get(
-    "POLLINATIONS_BASE_URL",
-    "https://image.pollinations.ai/prompt/",
-)
-POLLINATIONS_TIMEOUT = float(os.environ.get("POLLINATIONS_TIMEOUT", "20"))
-
-HORDE_BASE_URL = os.environ.get(
-    "HORDE_BASE_URL",
-    "https://stablehorde.net/api/v2",
-)
-HORDE_TIMEOUT = float(os.environ.get("HORDE_TIMEOUT", "90"))
-
-# ВАЖНО: Stable Horde требует apikey даже для анонимного доступа.
-# Приоритет:
-#   1) STABLE_HORDE_API_KEY (секрет из GitHub Actions),
-#   2) HORDE_API_KEY,
-#   3) "0000000000" — стандартный анонимный ключ.
-HORDE_API_KEY = (
-    os.environ.get("STABLE_HORDE_API_KEY")
-    or os.environ.get("HORDE_API_KEY")
-    or "0000000000"
-)
+_RU2EN_SIGNS = {
+    "овен": "Aries", "телец": "Taurus", "близнецы": "Gemini",
+    "рак": "Cancer", "лев": "Leo", "дева": "Virgo",
+    "весы": "Libra", "скорпион": "Scorpio", "стрелец": "Sagittarius",
+    "козерог": "Capricorn", "водолей": "Aquarius", "рыбы": "Pisces",
+}
+_EN_SIGNS = {
+    "aries": ("Aries", "♈"), "taurus": ("Taurus", "♉"),
+    "gemini": ("Gemini", "♊"), "cancer": ("Cancer", "♋"),
+    "leo": ("Leo", "♌"), "virgo": ("Virgo", "♍"),
+    "libra": ("Libra", "♎"), "scorpio": ("Scorpio", "♏"),
+    "sagittarius": ("Sagittarius", "♐"), "capricorn": ("Capricorn", "♑"),
+    "aquarius": ("Aquarius", "♒"), "pisces": ("Pisces", "♓"),
+}
 
 
-def _ensure_parent_dir(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def energy_icon_for_phase(phase_label: str) -> str:
+    s = (phase_label or "").lower()
+    if "new moon" in s or "новолуние" in s:
+        return "🌑"
+    if "full moon" in s or "полнолуние" in s:
+        return "🌕"
+    if "first quarter" in s or "первая четверть" in s:
+        return "🌓"
+    if "last quarter" in s or "последняя четверть" in s:
+        return "🌗"
+    if "waxing" in s or "растущ" in s:
+        return "🌔"
+    if "waning" in s or "убыва" in s:
+        return "🌘"
+    return "🔆"
 
 
-def _fetch_from_pollinations(
-    prompt: str,
-    out_path: Path,
-    size: Tuple[int, int] = (512, 512),
-) -> Optional[Path]:
-    """
-    Попытка получить картинку через Pollinations.
+def energy_icon_pick(mode: str, phase_en: str, voc_len_min):
+    mode = (mode or "phase").lower()  # phase | voc | static
+    if mode == "voc":
+        if voc_len_min is None:
+            return "💡"
+        return "🟢" if voc_len_min < 60 else ("🟡" if voc_len_min < 120 else "🟠")
+    if mode == "static":
+        return "💡"
+    # phase (по умолчанию)
+    return energy_icon_for_phase(phase_en)
 
-    Без ключей, только GET-запрос. Для борьбы с кэшем к prompt
-    добавляется случайный UUID.
-    """
-    prompt_with_uuid = f"{prompt} :: {uuid.uuid4().hex}"
-    query = quote_plus(prompt_with_uuid)
 
-    # Допущение: width/height работают для управления размером изображения.
-    url = (
-        POLLINATIONS_BASE_URL.rstrip("/")
-        + "/"
-        + query
-        + f"?width={size[0]}&height={size[1]}"
-    )
+def _sign_en_emoji(sign_raw: Optional[str]) -> Tuple[str, str]:
+    s = (sign_raw or "").strip()
+    if not s:
+        return "—", ""
+    low = s.lower()
+    if low in _RU2EN_SIGNS:
+        en = _RU2EN_SIGNS[low]
+        return en, _EN_SIGNS[en.lower()][1]
+    if low in _EN_SIGNS:
+        return _EN_SIGNS[low]
+    return s, ""
 
-    logger.info("Pollinations request: %s", url)
-    headers = {
-        "User-Agent": "WorldVibeMeterBot/1.0 (+https://t.me/worldvibemeter)",
-    }
+# ---------------- phase mapping ----------------
+
+_PHASE_LC_MAP = {
+    # RU
+    "новолуние": ("New Moon", "🌑"),
+    "растущий серп": ("Waxing Crescent", "🌒"),
+    "первая четверть": ("First Quarter", "🌓"),
+    "растущая луна": ("Waxing Moon", "🌔"),
+    "растущая": ("Waxing Moon", "🌔"),
+    "полнолуние": ("Full Moon", "🌕"),
+    "убывающая луна": ("Waning Moon", "🌖"),
+    "убывающая": ("Waning Moon", "🌖"),
+    "последняя четверть": ("Last Quarter", "🌗"),
+    "убывающий серп": ("Waning Crescent", "🌘"),
+    # EN
+    "new moon": ("New Moon", "🌑"),
+    "waxing crescent": ("Waxing Crescent", "🌒"),
+    "first quarter": ("First Quarter", "🌓"),
+    "waxing gibbous": ("Waxing Gibbous", "🌔"),
+    "waxing": ("Waxing Moon", "🌔"),
+    "full moon": ("Full Moon", "🌕"),
+    "waning gibbous": ("Waning Gibbous", "🌖"),
+    "last quarter": ("Last Quarter", "🌗"),
+    "waning crescent": ("Waning Crescent", "🌘"),
+    "waning": ("Waning Moon", "🌖"),
+}
+
+
+def _phase_en_emoji(phase_name: Optional[str]) -> Tuple[str, str]:
+    if not phase_name:
+        return "—", ""
+    low = phase_name.strip().lower()
+    if low in _PHASE_LC_MAP:
+        return _PHASE_LC_MAP[low]
+    for key, val in _PHASE_LC_MAP.items():
+        if key in low:
+            return val
+    return phase_name, ""
+
+# ---------------- helpers ----------------
+
+
+def fmt_percent_or_none(x) -> Optional[int]:
+    try:
+        p = int(round(float(x)))
+    except Exception:
+        return None
+    return p if 0 < p < 100 else None
+
+
+def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> Tuple[Optional[dt.datetime], Optional[dt.datetime]]:
+    if not start_s or not end_s:
+        return None, None
+
+    def _parse_one(s: str) -> dt.datetime:
+        s = s.strip()
+        today = dt.datetime.utcnow().date()
+        if " " in s:  # 'DD.MM HH:MM'
+            dpart, tpart = s.split()
+            d, m = map(int, dpart.split("."))
+            hh, mm = map(int, tpart.split(":"))
+            return dt.datetime(today.year, m, d, hh, mm, tzinfo=UTC)
+        hh, mm = map(int, s.split(":"))
+        return dt.datetime(today.year, today.month, today.day, hh, mm, tzinfo=UTC)
 
     try:
-        resp = requests.get(url, headers=headers, timeout=POLLINATIONS_TIMEOUT)
-    except Exception as exc:
-        logger.warning("Pollinations error: %s", exc)
-        return None
+        return _parse_one(start_s), _parse_one(end_s)
+    except Exception:
+        return None, None
 
-    if resp.status_code != 200:
-        logger.warning(
-            "Pollinations non-200: %s, body preview=%s",
-            resp.status_code,
-            resp.text[:200],
+
+def pretty_duration(mins: Optional[int]) -> str:
+    if mins is None:
+        return ""
+    h, m = mins // 60, mins % 60
+    if h and m:
+        return f"≈{h}h {m:02d}m"
+    if h:
+        return f"≈{h}h"
+    return f"≈{m}m"
+
+
+def voc_badge_by_len(minutes: Optional[int]) -> str:
+    if minutes is None:
+        return ""
+    if minutes >= 120:
+        return "🟠"
+    if minutes >= 60:
+        return "🟡"
+    return "🟢"
+
+
+def voc_text_status(start_utc: Optional[dt.datetime],
+                    end_utc: Optional[dt.datetime]) -> Tuple[str, str, Optional[int]]:
+    if not start_utc or not end_utc:
+        return "No VoC today UTC", "", None
+    total_min = max(0, int((end_utc - start_utc).total_seconds() // 60))
+    pretty = pretty_duration(total_min)
+    rng = f"{start_utc.strftime('%H:%M')}–{end_utc.strftime('%H:%M')} UTC"
+    now = dt.datetime.utcnow().replace(tzinfo=UTC)
+    if now < start_utc:
+        return f"VoC later today — {rng} ({pretty})", voc_badge_by_len(total_min), total_min
+    if start_utc <= now <= end_utc:
+        return f"VoC now — {rng} ({pretty})", voc_badge_by_len(total_min), total_min
+    return f"VoC earlier today — {rng} ({pretty})", "", total_min
+
+# ---------------- calendar IO ----------------
+
+
+def read_calendar_today():
+    cal_path = ROOT / "lunar_calendar.json"
+    if not cal_path.exists():
+        return None
+    data = json.loads(cal_path.read_text(encoding="utf-8"))
+    days = data.get("days") or {}
+    today = dt.date.today().isoformat()
+    return days.get(today)
+
+# ---------------- energy ----------------
+
+
+def base_energy_tip(phase_name_ru: str, percent: int) -> tuple[str, str]:
+    pn = (phase_name_ru or "").lower()
+    if "новолуние" in pn or "new moon" in pn:
+        return ("Set intentions; keep schedule light.", "Rest, plan, one gentle start.")
+    if "первая четверть" in pn or "first quarter" in pn:
+        return ("Take a clear step forward.", "One priority; short focused block.")
+    if "растущ" in pn or "waxing" in pn:
+        return ("Build momentum; refine work.", "Polish & iterate for 20–40 min.")
+    if "полнолуние" in pn or "full moon" in pn:
+        return ("Emotions peak; seek balance.", "Grounding + gratitude; avoid big decisions.")
+    if "последняя четверть" in pn or "last quarter" in pn:
+        return ("Wrap up & declutter.", "Finish, review, release extras.")
+    if "убыва" in pn or "waning" in pn:
+        return ("Slow down; restore energy.", "Light tasks, gentle body care.")
+    return ("Keep plans light; tune into your body.", "Focus on what matters.")
+
+
+def energy_and_tip(phase_name_ru: str, percent: int, voc_minutes: Optional[int]) -> tuple[str, str]:
+    energy, tip = base_energy_tip(phase_name_ru, percent)
+    if voc_minutes is None:
+        return energy, tip
+    if voc_minutes >= 180:
+        return (
+            "Long VoC — keep schedule very light; avoid launches.",
+            "Routine, journaling, cleanup; move decisions after VoC.",
         )
-        return None
+    if voc_minutes >= 120:
+        return (
+            "VoC — avoid launches; favor routine.",
+            "Safe tasks: maintenance, drafts, reading, rest.",
+        )
+    if voc_minutes >= 60:
+        return ("Short VoC — keep tasks flexible.", tip)
+    return energy, tip
 
-    if not resp.content:
-        logger.warning("Pollinations returned empty content")
-        return None
+# ---------------- image style presets ----------------
 
-    _ensure_parent_dir(out_path)
-    out_path.write_bytes(resp.content)
-    logger.info(
-        "Pollinations image saved to %s (%d bytes)",
-        out_path,
-        out_path.stat().st_size,
-    )
-    return out_path
+_STYLE_PRESETS = {
+    "pastel_mist": (
+        "dreamy pastel landscape with soft distant hills and a gentle glowing moon, "
+        "soft gradients, pastel blues and pinks, subtle grain"
+    ),
+    "starry_night": (
+        "night sky full of tiny stars, a glowing moon near the horizon, "
+        "deep blues and purples, cinematic lighting, light haze"
+    ),
+    "sunset_sea": (
+        "calm sea at golden hour, moon rising above the horizon, "
+        "warm oranges and pinks blending into cool blues, watercolor-like gradients"
+    ),
+    "aurora_sky": (
+        "abstract sky with aurora-like light ribbons and a glowing moon, "
+        "smooth gradients of turquoise and violet, ethereal atmosphere"
+    ),
+    "minimal_moon": (
+        "ultra-minimal composition with a large moon disc over a simple horizon line, "
+        "clean shapes, very simple gradients, quiet empty space"
+    ),
+    "human_silhouette": (
+        "calm landscape and a small silhouette of a person peacefully watching the moon "
+        "from a balcony or hill, focus on mood not details, soft edges"
+    ),
+}
 
 
-def _fetch_from_horde(
-    prompt: str,
-    out_path: Path,
-    size: Tuple[int, int] = (512, 512),
-    timeout: float = HORDE_TIMEOUT,
-) -> Optional[Path]:
+def pick_style_for_date(date: dt.date) -> tuple[str, str]:
     """
-    Фолбэк: генерация через Stable Horde.
-
-    Используется HORDE_API_KEY (см. описание выше).
-    Допущения по протоколу см. в модульном docstring.
+    Возвращает (style_block, style_name) для конкретной даты.
+    style_name пишем в astro.json, style_block — в промпт.
     """
-    headers = {
-        "User-Agent": "WorldVibeMeterBot/1.0 (+https://t.me/worldvibemeter)",
-        "Content-Type": "application/json",
-        "apikey": HORDE_API_KEY,  # REQUIRED: иначе 400 "Missing required parameter"
-    }
+    keys = sorted(_STYLE_PRESETS.keys())
+    if not keys:
+        return "", ""
+    seed = int(hashlib.sha1(date.isoformat().encode("utf-8")).hexdigest(), 16)
+    rng = random.Random(seed)
+    key = rng.choice(keys)
+    return _STYLE_PRESETS[key], key
 
-    payload = {
-        "prompt": prompt,
-        "params": {
-            "width": size[0],
-            "height": size[1],
-            "steps": 25,
-            "n": 1,
-            "cfg_scale": 7,
-            "sampler_name": "k_euler",
-        },
-        "nsfw": False,
-        "censor_nsfw": True,
-        "trusted_workers": False,
-        "shared": True,
-    }
+# ---------------- sign scenes for image ----------------
 
-    import json as _json
+_FIRE_SIGNS = {"Aries", "Leo", "Sagittarius"}
+_EARTH_SIGNS = {"Taurus", "Virgo", "Capricorn"}
+_AIR_SIGNS = {"Gemini", "Libra", "Aquarius"}
+_WATER_SIGNS = {"Cancer", "Scorpio", "Pisces"}
 
-    try:
-        logger.info("Stable Horde async request")
-        resp = requests.post(
-            f"{HORDE_BASE_URL}/generate/async",
-            headers=headers,
-            json=payload,
-            timeout=15,
+_SIGN_SCENES = {
+    # Fire
+    "Aries": (
+        "rugged warm cliffs and glowing sparks in the sky, colors of sunset fire"
+    ),
+    "Leo": (
+        "soft golden hills and a warm sky, hints of sun-like lion energy"
+    ),
+    "Sagittarius": (
+        "wide open sky above distant mountains and a path leading forward"
+    ),
+    # Earth
+    "Taurus": (
+        "calm fields and gentle rolling hills, earthy greens and soft browns"
+    ),
+    "Virgo": (
+        "orderly fields and gardens, neat lines and soft morning light"
+    ),
+    "Capricorn": (
+        "high mountains and rocky slopes, cool clear air and distant peaks"
+    ),
+    # Air
+    "Gemini": (
+        "light clouds and twin paths or roads, playful breeze in the air"
+    ),
+    "Libra": (
+        "balanced composition of sky and water, reflections and symmetry"
+    ),
+    "Aquarius": (
+        "futuristic skyline and bridges, flowing light patterns in the sky"
+    ),
+    # Water
+    "Cancer": (
+        "a cozy bay or quiet seaside town, a few warm lights near the water"
+    ),
+    "Scorpio": (
+        "deep dark water and a dramatic sky, subtle fog and bright stars"
+    ),
+    "Pisces": (
+        "calm ocean and soft pastel waves, faraway mountains in the haze"
+    ),
+}
+
+
+def _element_for_sign(sign_en: str) -> str:
+    if sign_en in _FIRE_SIGNS:
+        return "fire"
+    if sign_en in _EARTH_SIGNS:
+        return "earth"
+    if sign_en in _AIR_SIGNS:
+        return "air"
+    if sign_en in _WATER_SIGNS:
+        return "water"
+    return "unknown"
+
+
+def scene_for_sign(sign_en: str) -> str:
+    """
+    Возвращает текст описания ландшафта для данного знака.
+    """
+    sign_en = (sign_en or "").strip()
+    if not sign_en or sign_en == "—":
+        return "a soft abstract landscape with gentle hills and sky"
+
+    if sign_en in _SIGN_SCENES:
+        return _SIGN_SCENES[sign_en]
+
+    elem = _element_for_sign(sign_en)
+    if elem == "fire":
+        return "warm glowing cliffs and sky with hints of fire-like energy"
+    if elem == "earth":
+        return "quiet fields, stones and hills with grounded earthy tones"
+    if elem == "air":
+        return "open sky with moving clouds and light wind, abstract city or bridges"
+    if elem == "water":
+        return "calm water surface with reflections of the moon and distant shoreline"
+    return "a soft abstract landscape with gentle hills and sky"
+
+# ---------------- phase visual for image ----------------
+
+def phase_shape_phrase(phase_en: str, percent: Optional[int]) -> str:
+    """
+    Описывает форму Луны для картинки в соответствии с фазой,
+    чтобы модель реже рисовала полную Луну, когда это не Full Moon.
+    Практически для всех неполных фаз добавляем формулировку
+    'not a perfect full circle'.
+    """
+    s = (phase_en or "").lower()
+    p = percent if isinstance(percent, int) else None
+
+    # Full Moon — единственный случай, когда просим идеальный круг
+    if "full moon" in s:
+        return "a big bright full moon, a complete glowing circle in the sky"
+
+    # New Moon
+    if "new moon" in s:
+        return (
+            "a very subtle new moon, almost invisible dark disc with just a faint rim of light, "
+            "definitely not a full circle"
         )
-    except Exception as exc:
-        logger.warning("Horde async error: %s", exc)
-        return None
 
-    if resp.status_code not in (200, 202):
-        logger.warning(
-            "Horde async non-2xx: %s, body preview=%s",
-            resp.status_code,
-            resp.text[:200],
+    # Quarters
+    if "first quarter" in s or "last quarter" in s:
+        return (
+            "a half moon, a clean semicircle where exactly one half of the disc glows "
+            "and the other half is dark, clearly not a full circle"
         )
-        return None
 
-    try:
-        data = resp.json()
-    except Exception as exc:
-        logger.warning("Horde async JSON error: %s, body=%r", exc, resp.text[:200])
-        return None
+    # Crescents
+    if "crescent" in s:
+        return (
+            "a thin crescent moon, a delicate curved slice of light, most of the disc is dark, "
+            "definitely not full"
+        )
 
-    job_id = data.get("id")
-    if not job_id:
-        logger.warning("Horde async response missing id: %s", _json.dumps(data)[:200])
-        return None
-
-    logger.info("Horde job id: %s", job_id)
-
-    # Опрос статуса до HORDE_TIMEOUT.
-    start = time.time()
-    status_url = f"{HORDE_BASE_URL}/generate/check/{job_id}"
-    done = False
-
-    while time.time() - start < timeout:
-        try:
-            check_resp = requests.get(status_url, headers=headers, timeout=10)
-        except Exception as exc:
-            logger.warning("Horde check error: %s", exc)
-            time.sleep(5)
-            continue
-
-        if check_resp.status_code != 200:
-            logger.warning(
-                "Horde check non-200: %s, body preview=%s",
-                check_resp.status_code,
-                check_resp.text[:200],
+    # Gibbous / generic waxing/waning
+    if "gibbous" in s or "waxing" in s or "waning" in s:
+        if p is not None and p < 60:
+            return (
+                "a bright half-to-three-quarter moon with a large dark bite on one side, "
+                "so it does not look full at all"
             )
-            time.sleep(5)
-            continue
-
-        try:
-            check = check_resp.json()
-        except Exception as exc:
-            logger.warning("Horde check JSON error: %s", exc)
-            time.sleep(5)
-            continue
-
-        # ВАЖНО: формат статуса может меняться.
-        # Здесь мы поддерживаем несколько вариантов:
-        if check.get("done") or check.get("finished") or check.get("state") == "done":
-            done = True
-            break
-
-        logger.info(
-            "Horde still running: %s",
-            {k: check.get(k) for k in ("queue_position", "waiting", "processing", "done")},
+        if p is not None and p >= 90:
+            return (
+                "an almost full moon but with a clearly visible dark slice on one side, "
+                "so it is not a perfect full circle"
+            )
+        return (
+            "a three-quarter moon with a clearly visible dark slice on one side, "
+            "not a perfect full circle"
         )
-        time.sleep(5)
 
-    if not done:
-        logger.warning("Horde timeout after %.1fs", time.time() - start)
-        return None
-
-    # Получаем результат
-    try:
-        gen_resp = requests.get(
-            f"{HORDE_BASE_URL}/generate/status/{job_id}",
-            headers=headers,
-            timeout=20,
-        )
-    except Exception as exc:
-        logger.warning("Horde status error: %s", exc)
-        return None
-
-    if gen_resp.status_code != 200:
-        logger.warning(
-            "Horde status non-200: %s, body preview=%s",
-            gen_resp.status_code,
-            gen_resp.text[:200],
-        )
-        return None
-
-    try:
-        gen_data = gen_resp.json()
-    except Exception as exc:
-        logger.warning("Horde status JSON error: %s", exc)
-        return None
-
-    generations = gen_data.get("generations") or []
-    if not generations:
-        logger.warning("Horde returned no generations: %s", str(gen_data)[:200])
-        return None
-
-    first = generations[0]
-    b64_img = first.get("img")
-    if not b64_img:
-        logger.warning("Horde generation missing 'img' field: %s", str(first)[:200])
-        return None
-
-    try:
-        img_bytes = base64.b64decode(b64_img)
-    except Exception as exc:
-        logger.warning("Horde base64 decode error: %s", exc)
-        return None
-
-    _ensure_parent_dir(out_path)
-    out_path.write_bytes(img_bytes)
-    logger.info(
-        "Horde image saved to %s (%d bytes)",
-        out_path,
-        out_path.stat().st_size,
+    # Fallback для любых других неполных фаз
+    return (
+        "a partial moon with a visible shadow on one side, "
+        "clearly not a perfect full circle"
     )
-    return out_path
+
+# ---------------- safe writer ----------------
 
 
-def generate_astro_image(
-    prompt: str,
-    out_path: str,
-    size: Tuple[int, int] = (512, 512),
-) -> Optional[str]:
-    """
-    Основная точка входа.
+def write_json_safe(path: Path, payload: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[astro] wrote: {path}")
 
-    :param prompt: текстовый промпт (ENG), который ты передаёшь из world_astro_collect.
-    :param out_path: путь к файлу (строка); директории будут созданы при необходимости.
-    :param size: размер картинки (ширина, высота), сейчас используется как hint.
-    :return: строка пути к файлу или None, если все бэкенды упали.
-    """
-    out = Path(out_path)
-    logger.info("Requested astro image at %s", out)
-
-    # 1. Pollinations
-    img = _fetch_from_pollinations(prompt, out, size=size)
-    if img is not None:
-        logger.info("Using Pollinations backend")
-        return str(img)
-
-    # 2. Stable Horde
-    img = _fetch_from_horde(prompt, out, size=size)
-    if img is not None:
-        logger.info("Using Stable Horde backend")
-        return str(img)
-
-    logger.error("All image backends failed for prompt: %r", prompt)
-    return None
+# ---------------- main ----------------
 
 
-__all__ = ["generate_astro_image"]
+def main():
+    today = dt.date.today()
+    weekday = dt.datetime.utcnow().strftime("%a")
+
+    item = read_calendar_today() or {}
+
+    phase_name = item.get("phase_name") or ""
+    phase_pct = item.get("percent")
+    sign_raw = item.get("sign") or ""
+    voc_block = item.get("void_of_course") or {}
+
+    voc_start_str = (voc_block or {}).get("start")
+    voc_end_str = (voc_block or {}).get("end")
+    start_utc, end_utc = parse_voc_utc(voc_start_str, voc_end_str)
+    VOC_TEXT, VOC_BADGE_SMART, VOC_LEN_MIN = voc_text_status(start_utc, end_utc)
+    VOC_LEN_PRETTY = pretty_duration(VOC_LEN_MIN)
+
+    sign_en, sign_emoji = _sign_en_emoji(sign_raw)
+    phase_en, phase_emoji = _phase_en_emoji(phase_name)
+    moon_percent = fmt_percent_or_none(phase_pct)
+    energy_icon = energy_icon_pick(os.getenv("ENERGY_ICON_MODE", "phase"), phase_en, VOC_LEN_MIN)
+    energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), VOC_LEN_MIN)
+
+    out: dict = {
+        "DATE": today.isoformat(),
+        "WEEKDAY": weekday,
+        "MOON_PHASE": phase_name or "—",
+        "PHASE_EN": phase_en,
+        "PHASE_EMOJI": phase_emoji,
+        "MOON_PERCENT": moon_percent,
+        "MOON_SIGN": sign_en,
+        "MOON_SIGN_EMOJI": sign_emoji,
+        "VOC": VOC_TEXT,
+        "VOC_TEXT": VOC_TEXT,
+        "VOC_LEN": VOC_LEN_PRETTY,
+        "VOC_BADGE": VOC_BADGE_SMART,
+        "ENERGY_LINE": energy_line,
+        "ENERGY_ICON": energy_icon,
+        "ADVICE_LINE": advice_line,
+    }
+
+    # Выбор стиля картинки (случайный, но детерминированный по дате)
+    style_block, style_name = pick_style_for_date(today)
+    out["ASTRO_IMAGE_STYLE"] = style_name or "default"
+
+    # --- optional image generation ---
+    generate_astro_image = None
+    try:
+        from world_en.imagegen import generate_astro_image  # явный импорт по пакету
+    except Exception:
+        try:
+            from imagegen import generate_astro_image
+        except Exception:
+            generate_astro_image = None
+
+    if generate_astro_image is not None:
+        try:
+            # Описание формы Луны по фазе и проценту
+            moon_phrase = phase_shape_phrase(phase_en, moon_percent)
+
+            # Сцена по знаку
+            scene_visual = scene_for_sign(sign_en)
+            scene_sentence = f"Dreamy scene with {moon_phrase} above {scene_visual}."
+            if sign_en and sign_en != "—":
+                scene_sentence += f" This reflects {sign_en} energy."
+
+            # Эмоция: по ENERGY_LINE / VOC_TEXT
+            energy_lower = (energy_line or "").lower()
+            voc_lower = (VOC_TEXT or "").lower()
+
+            if "voc" in voc_lower or "void of course" in voc_lower:
+                emotion_sentence = (
+                    "The world feels slightly on pause, time is slow and gentle, perfect for rest and reflection"
+                )
+            elif "step forward" in energy_lower or "momentum" in energy_lower or "build" in energy_lower:
+                emotion_sentence = (
+                    "The air feels focused and clear, a day for small confident steps and gentle progress"
+                )
+            elif "slow down" in energy_lower or "restore" in energy_lower:
+                emotion_sentence = (
+                    "Soft, restorative mood, a day to move carefully, listen to your body and protect your energy"
+                )
+            else:
+                emotion_sentence = (
+                    "Balanced, thoughtful mood, a good day for quiet progress and honest check-ins with yourself"
+                )
+
+            base_style = (
+                f"{style_block}, minimalist dreamy illustration, subtle texture, "
+                f"square format, no text, digital art"
+            ).strip()
+
+            prompt = f"{scene_sentence} {emotion_sentence}. {base_style}"
+
+            rel_img_path = f"astro_img/astro_{today.isoformat()}.jpg"
+            abs_img_path = ROOT / rel_img_path
+
+            img_path = generate_astro_image(prompt, str(abs_img_path))
+            if img_path and os.path.exists(img_path):
+                try:
+                    rel = os.path.relpath(img_path, start=str(ROOT))
+                except Exception:
+                    rel = rel_img_path
+                out["ASTRO_IMAGE_PATH"] = rel
+                print(f"[astro] image style: {style_name}, path: {rel}")
+            else:
+                print("[astro] image: not generated")
+        except Exception as e:
+            print(f"[astro] image generation failed: {e}")
+    else:
+        print("[astro] imagegen not available")
+
+    # Финальная запись world_en/astro.json
+    write_json_safe(OUT, out)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        fb = {
+            "DATE": dt.date.today().isoformat(),
+            "WEEKDAY": dt.datetime.utcnow().strftime("%a"),
+            "MOON_PHASE": "—",
+            "PHASE_EN": "—",
+            "PHASE_EMOJI": "",
+            "MOON_PERCENT": None,
+            "MOON_SIGN": "—",
+            "MOON_SIGN_EMOJI": "",
+            "VOC": "No VoC today UTC",
+            "VOC_TEXT": "No VoC today UTC",
+            "VOC_LEN": "",
+            "VOC_BADGE": "",
+            "ENERGY_LINE": "Keep plans light; tune into your body.",
+            "ENERGY_ICON": "🔆",
+            "ADVICE_LINE": "Focus on what matters.",
+            "_error": f"{type(e).__name__}: {e}",
+        }
+        print("[astro] ERROR during collect:\n" + "".join(traceback.format_exc()))
+        write_json_safe(OUT, fb)
