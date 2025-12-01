@@ -19,6 +19,20 @@ import random
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(__file__).parent / "astro.json"
 
+# ---------------- optional imagegen import (глобально) ----------------
+
+try:
+    from world_en.imagegen import generate_astro_image  # type: ignore
+    print("[astro] imagegen import: world_en.imagegen OK")
+except Exception as e:
+    print(f"[astro] world_en.imagegen import failed: {e}")
+    try:
+        from imagegen import generate_astro_image  # type: ignore
+        print("[astro] imagegen import: local imagegen OK")
+    except Exception as e2:
+        print(f"[astro] imagegen import fallback failed: {e2}")
+        generate_astro_image = None  # type: ignore
+
 # ---------------- sign mapping ----------------
 
 _RU2EN_SIGNS = {
@@ -364,33 +378,62 @@ def scene_for_sign(sign_en: str) -> str:
 
 # ---------------- phase visual for image ----------------
 
-def phase_shape_phrase(phase_en: str) -> str:
+def phase_shape_phrase(phase_en: str, percent: Optional[int]) -> str:
     """
     Описывает форму Луны для картинки в соответствии с фазой,
-    чтобы модель реже рисовала полную Луну, когда это не нужно.
+    чтобы модель реже рисовала полную Луну, когда это не Full Moon.
+    Для всех неполных фаз подчёркиваем 'not a perfect full circle'.
     """
     s = (phase_en or "").lower()
-    if "new moon" in s:
-        return "a very subtle new moon, almost invisible, just a faint dark disc in the sky, not bright"
-    if "waxing crescent" in s or ("crescent" in s and "waxing" in s):
-        return "a thin waxing crescent moon, a delicate curve of light, clearly not a full circle"
-    if "first quarter" in s:
-        return "a half-lit first quarter moon, a clear semicircle with only half of the disc glowing, not a full moon"
-    if "waxing gibbous" in s:
-        return "an almost full waxing gibbous moon, bright but with a visible dark edge, not a perfect full circle"
+    p = percent if isinstance(percent, int) else None
+
+    # Full Moon — единственный случай, когда просим идеальный круг
     if "full moon" in s:
-        return "a big bright full moon, complete glowing circle"
-    if "waning gibbous" in s:
-        return "an almost full waning gibbous moon with a soft shadow on one side, not a perfect full circle"
-    if "last quarter" in s:
-        return "a half-lit last quarter moon, a clear semicircle with only half of the disc glowing, not a full moon"
-    if "waning crescent" in s:
-        return "a thin waning crescent moon, fading curve of light, clearly not a full circle"
-    if "waning" in s:
-        return "a softly waning moon with part of the disc in shadow, not fully round"
-    if "waxing" in s:
-        return "a softly waxing moon with part of the disc glowing and part in shadow, not fully round"
-    return "a glowing moon in the sky"
+        return "a big bright full moon, a complete glowing circle in the sky"
+
+    # New Moon
+    if "new moon" in s:
+        return (
+            "a very subtle new moon, almost invisible dark disc with just a faint rim of light, "
+            "definitely not a full circle"
+        )
+
+    # Quarters
+    if "first quarter" in s or "last quarter" in s:
+        return (
+            "a half moon, a clean semicircle where exactly one half of the disc glows "
+            "and the other half is dark, clearly not a full circle"
+        )
+
+    # Crescents
+    if "crescent" in s:
+        return (
+            "a thin crescent moon, a delicate curved slice of light, most of the disc is dark, "
+            "definitely not full"
+        )
+
+    # Gibbous / generic waxing/waning
+    if "gibbous" in s or "waxing" in s or "waning" in s:
+        if p is not None and p < 60:
+            return (
+                "a bright half-to-three-quarter moon with a large dark bite on one side, "
+                "so it does not look full at all"
+            )
+        if p is not None and p >= 90:
+            return (
+                "an almost full moon but with a clearly visible dark slice on one side, "
+                "so it is not a perfect full circle"
+            )
+        return (
+            "a three-quarter moon with a clearly visible dark slice on one side, "
+            "not a perfect full circle"
+        )
+
+    # Fallback для любых других неполных фаз
+    return (
+        "a partial moon with a visible shadow on one side, "
+        "clearly not a perfect full circle"
+    )
 
 # ---------------- safe writer ----------------
 
@@ -422,6 +465,7 @@ def main():
 
     sign_en, sign_emoji = _sign_en_emoji(sign_raw)
     phase_en, phase_emoji = _phase_en_emoji(phase_name)
+    moon_percent = fmt_percent_or_none(phase_pct)
     energy_icon = energy_icon_pick(os.getenv("ENERGY_ICON_MODE", "phase"), phase_en, VOC_LEN_MIN)
     energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), VOC_LEN_MIN)
 
@@ -431,7 +475,7 @@ def main():
         "MOON_PHASE": phase_name or "—",
         "PHASE_EN": phase_en,
         "PHASE_EMOJI": phase_emoji,
-        "MOON_PERCENT": fmt_percent_or_none(phase_pct),
+        "MOON_PERCENT": moon_percent,
         "MOON_SIGN": sign_en,
         "MOON_SIGN_EMOJI": sign_emoji,
         "VOC": VOC_TEXT,
@@ -447,20 +491,11 @@ def main():
     style_block, style_name = pick_style_for_date(today)
     out["ASTRO_IMAGE_STYLE"] = style_name or "default"
 
-    # --- optional image generation ---
-    generate_astro_image = None
-    try:
-        from world_en.imagegen import generate_astro_image  # явный импорт по пакету
-    except Exception:
+    # --- optional image generation (используем глобальный generate_astro_image) ---
+    if "generate_astro_image" in globals() and generate_astro_image is not None:  # type: ignore[name-defined]
         try:
-            from imagegen import generate_astro_image
-        except Exception:
-            generate_astro_image = None
-
-    if generate_astro_image is not None:
-        try:
-            # Описание формы Луны по фазе
-            moon_phrase = phase_shape_phrase(phase_en)
+            # Описание формы Луны по фазе и проценту
+            moon_phrase = phase_shape_phrase(phase_en, moon_percent)
 
             # Сцена по знаку
             scene_visual = scene_for_sign(sign_en)
@@ -499,7 +534,7 @@ def main():
             rel_img_path = f"astro_img/astro_{today.isoformat()}.jpg"
             abs_img_path = ROOT / rel_img_path
 
-            img_path = generate_astro_image(prompt, str(abs_img_path))
+            img_path = generate_astro_image(prompt, str(abs_img_path))  # type: ignore[call-arg]
             if img_path and os.path.exists(img_path):
                 try:
                     rel = os.path.relpath(img_path, start=str(ROOT))
