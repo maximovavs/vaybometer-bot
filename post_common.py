@@ -1,737 +1,682 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Общий код формирования постов по регионам (Кипр, мир и т.п.).
 
-Содержит:
-- модели городов и показателей;
-- форматирование строк, эмодзи и тэгов;
-- функции сборки сообщений;
-- общую корутину отправки постов в Telegram.
+"""
+post_common.py
+
+Общий модуль формирования и отправки ежедневных постов
+для Кипра, Калининграда и др. регионов.
+
+Задачи:
+- собрать данные (погода, море, "космопогода", пыльца, радиация);
+- сформировать текст поста;
+- отправить его в Telegram (и при необходимости в другие каналы).
+
+Модуль не привязан к конкретному региону — всё настраивается
+через аргументы main_common().
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import html
+import dataclasses
 import json
 import logging
-import math
 import os
-import re
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-import pendulum
-from dateutil.relativedelta import relativedelta
-from telegram import Bot, constants
+import pytz
+from aiogram import Bot
+from aiogram.enums import ParseMode
 
-# Попытка импортировать общий генератор картинок
-try:
-    from world_en.imagegen import generate_astro_image  # type: ignore
-except Exception:
-    try:
-        from imagegen import generate_astro_image  # type: ignore
-    except Exception:
-        generate_astro_image = None  # type: ignore
+import fx
+import pollen
+import radiation
+import safe_cast as safecast
+import schumann
+import settings_cy
+import settings_world_en
+import utils
+import weather
+
+# ---------------------------------------------------------------------------
+# ЛОГИРОВАНИЕ
+# ---------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+if not logger.handlers:
+    h = logging.StreamHandler()
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    h.setFormatter(fmt)
+    logger.addHandler(h)
+logger.setLevel(logging.INFO)
 
-ROOT_DIR = Path(__file__).resolve().parent
-DATA_DIR = ROOT_DIR / "data"
-
-# Если захочется включать/выключать мировую Kp
-USE_WORLD_KP = True
-
-# Настройки для вечернего изображения по Кипру
-CY_IMAGE_ENABLED = (
-    os.getenv("CY_IMAGE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
-)
-CY_IMAGE_DIR = Path(os.getenv("CY_IMAGE_DIR", "cy_img"))
+ROOT = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
-# Общие утилиты
-# ---------------------------------------------------------------------------
-
-
-def load_json(path: Union[str, Path], default: Any = None) -> Any:
-    """Безопасная загрузка JSON (с возвратом default при ошибке)."""
-    p = Path(path)
-    if not p.exists():
-        return default
-    try:
-        return json.loads(p.read_text("utf-8"))
-    except Exception:
-        logger.exception("Failed to load JSON from %s", p)
-        return default
-
-
-def save_json(path: Union[str, Path], data: Any) -> None:
-    """Безопасная запись JSON."""
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-
-
-def _as_tz(tz: Union[pendulum.Timezone, str, None]) -> pendulum.Timezone:
-    """Унификация таймзоны."""
-    if tz is None:
-        return pendulum.timezone("UTC")
-    if isinstance(tz, pendulum.Timezone):
-        return tz
-    try:
-        return pendulum.timezone(tz)
-    except Exception:
-        return pendulum.timezone("UTC")
-
-
-def round_half_up(x: float, ndigits: int = 0) -> float:
-    """
-    Округление "от половинки вверх", ближе к понятному человеку.
-
-    1.25 -> 1.3 (при ndigits=1), 2.5 -> 3.0 (при ndigits=0) и т.п.
-    """
-    factor = 10**ndigits
-    return math.floor(x * factor + 0.5) / factor
-
-
-def fmt_temp(v: Optional[float]) -> str:
-    """Форматирование температуры."""
-    if v is None:
-        return "—"
-    return f"{int(round(v))} °C"
-
-
-def fmt_pressure(hpa: Optional[float]) -> str:
-    """Форматирование давления."""
-    if hpa is None:
-        return "— гПа"
-    return f"{int(round(hpa))} гПа"
-
-
-def fmt_speed(ms: Optional[float]) -> str:
-    """Форматирование скорости ветра в м/с."""
-    if ms is None:
-        return "— м/с"
-    return f"{round_half_up(ms, 1)} м/с"
-
-
-def arrow_trend(prev: Optional[float], curr: Optional[float], eps: float = 0.4) -> str:
-    """
-    Стрелочка тренда давления:
-    ↑ если выросло, ↓ если упало, → если почти не изменилось.
-    """
-    if prev is None or curr is None:
-        return ""
-    if curr - prev > eps:
-        return "↑"
-    if prev - curr > eps:
-        return "↓"
-    return "→"
-
-
-def wind_dir_to_text(deg: Optional[float]) -> str:
-    """
-    Конвертация направления ветра в текст (8 румбов).
-    0/360 — север, 90 — восток, etc.
-    """
-    if deg is None:
-        return "—"
-    dirs = ["С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ"]
-    ix = int((deg % 360) / 45 + 0.5) % 8
-    return dirs[ix]
-
-
-def uv_index_to_emoji(uv: Optional[float]) -> str:
-    if uv is None:
-        return ""
-    if uv < 3:
-        return "🟢"
-    if uv < 6:
-        return "🟡"
-    if uv < 8:
-        return "🟠"
-    if uv < 11:
-        return "🔴"
-    return "🟣"
-
-
-def make_sunrise_sunset_line(dt_obj: pendulum.DateTime, tz: pendulum.Timezone) -> str:
-    """
-    Читабельная строка про рассвет/закат для конкретной даты и TZ.
-    """
-    from lunar import get_sun_times  # локальный модуль
-
-    sun = get_sun_times(dt_obj.date(), tz)
-    if not sun:
-        return ""
-
-    sunrise = sun.get("sunrise")
-    sunset = sun.get("sunset")
-    if not (sunrise and sunset):
-        return ""
-
-    sunrise_local = pendulum.instance(sunrise).in_timezone(tz)
-    sunset_local = pendulum.instance(sunset).in_timezone(tz)
-
-    return f"🌅 Рассвет завтра: {sunrise_local.strftime('%H:%M')} • 🌇 Закат: {sunset_local.strftime('%H:%M')}"
-
-
-# ---------------------------------------------------------------------------
-# Данные по городам / погоде / морю
+# ОБЩИЕ ДАТА-КЛАССЫ
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class CityWeather:
     name: str
-    temp_max: Optional[float] = None
+    lat: float
+    lon: float
     temp_min: Optional[float] = None
-    descr: str = ""
+    temp_max: Optional[float] = None
+    code: Optional[int] = None
+    code_emoji: str = ""
     wind_speed: Optional[float] = None
     wind_gusts: Optional[float] = None
-    wind_dir_deg: Optional[float] = None
+    wind_dir_short: str = ""
     pressure: Optional[float] = None
-    pressure_prev: Optional[float] = None
+    pressure_trend: str = ""
     water_temp: Optional[float] = None
-    uv_index: Optional[float] = None
-    extra_emoji: str = ""
-    rec_text: str = ""
-
-    def is_warm(self, threshold: float = 20.0) -> bool:
-        """Простейшая классификация: тёплый / холодный город."""
-        if self.temp_max is None:
-            return False
-        return self.temp_max >= threshold
+    water_comment: str = ""
+    sup_comment: str = ""
 
 
 # ---------------------------------------------------------------------------
-# Загрузка данных по регионам
+# ВРЕМЯ / ДАТА
 # ---------------------------------------------------------------------------
 
 
-def load_weather_for_region(region_key: str) -> Dict[str, Any]:
-    """Загрузка погодных данных для конкретного региона."""
-    path = DATA_DIR / f"{region_key}_weather.json"
-    data = load_json(path, default={}) or {}
-    return data
+def local_today(tz_name: str) -> date:
+    tz = pytz.timezone(tz_name)
+    now = datetime.now(tz)
+    return now.date()
 
 
-def load_marine_for_region(region_key: str) -> Dict[str, Any]:
-    """Загрузка морских данных для региона."""
-    path = DATA_DIR / f"{region_key}_marine.json"
-    data = load_json(path, default={}) or {}
-    return data
+def local_now(tz_name: str) -> datetime:
+    tz = pytz.timezone(tz_name)
+    return datetime.now(tz)
 
 
-def load_uv_for_region(region_key: str) -> Dict[str, Any]:
-    """Загрузка UV-индекса."""
-    path = DATA_DIR / f"{region_key}_uv.json"
-    data = load_json(path, default={}) or {}
-    return data
-
-
-def load_kp_index() -> Dict[str, Any]:
-    """
-    Загрузка глобальных данных Kp-индекса.
-    """
-    path = DATA_DIR / "kp_index.json"
-    return load_json(path, default={}) or {}
+def fmt_date_human(d: date, tz_name: str) -> str:
+    # d уже локальная дата, tz_name — только для красоты
+    # Пока не используем локализацию месяца
+    return d.strftime("%d.%m.%Y")
 
 
 # ---------------------------------------------------------------------------
-# Формирование строк для городов
+# УТИЛИТЫ ДЛЯ ПОГОДЫ
 # ---------------------------------------------------------------------------
 
 
-def build_city_line(city: CityWeather) -> str:
+def _iter_city_pairs(
+    cities: Mapping[str, Tuple[float, float]]
+) -> Iterable[Tuple[str, Tuple[float, float]]]:
     """
-    Строка для города в морском/континентальном блоке.
+    Унифицированный итератор по словарю городов:
+    { "Limassol": (lat, lon), ... } -> итерируемся по (name, (lat, lon)).
+    """
+    for name, ll in cities.items():
+        yield name, ll
 
-    Пример:
-    "😎 Ларнака: 27/18 °C • ☀ ясно • 💨 3.5 м/с (СВ) • порывы 7 • 1013 гПа ↑ • 🌊 24"
+
+def _coerce_city_list(
+    cities_source: Sequence[Tuple[str, Tuple[float, float]]]
+) -> List[CityWeather]:
     """
-    temp = f"{fmt_temp(city.temp_max)}/{fmt_temp(city.temp_min)}"
-    wind = fmt_speed(city.wind_speed)
-    gusts = f"{int(round(city.wind_gusts))}" if city.wind_gusts is not None else "—"
-    wdir = wind_dir_to_text(city.wind_dir_deg)
-    pressure = fmt_pressure(city.pressure)
-    trend = arrow_trend(city.pressure_prev, city.pressure)
-    water = f"{int(round(city.water_temp))}" if city.water_temp is not None else "—"
-    uv_emoji = uv_index_to_emoji(city.uv_index)
+    Приводим список (name, (lat, lon)) к списку CityWeather.
+    """
+    result: List[CityWeather] = []
+    for name, (lat, lon) in cities_source:
+        result.append(CityWeather(name=name, lat=lat, lon=lon))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# ФОРМАТИРОВАНИЕ ТЕМПЕРАТУРЫ, ВЕТРА, ДАВЛЕНИЯ
+# ---------------------------------------------------------------------------
+
+def fmt_temp(v: Optional[float]) -> str:
+    if v is None:
+        return "—"
+    return f"{round(v):d}"
+
+
+def fmt_wind_speed(v: Optional[float]) -> str:
+    if v is None:
+        return "—"
+    return f"{v:.1f}"
+
+
+def fmt_pressure(v: Optional[float]) -> str:
+    if v is None:
+        return "—"
+    return f"{int(round(v))}"
+
+
+def trend_arrow(trend: float) -> str:
+    if trend > 0.5:
+        return "↑"
+    if trend < -0.5:
+        return "↓"
+    return "→"
+
+
+# ---------------------------------------------------------------------------
+# ЗАГРУЗКА ДАННЫХ
+# ---------------------------------------------------------------------------
+
+
+def load_json(path: Path) -> Any:
+    if not path.exists():
+        logger.warning("JSON not found: %s", path)
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.error("Failed to read JSON %s: %s", path, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# СБОР ПОГОДЫ ДЛЯ ГОРОДОВ
+# ---------------------------------------------------------------------------
+
+
+def enrich_weather_for_city_list(
+    city_list: List[CityWeather],
+    weather_data: Mapping[str, Any],
+    water_data: Optional[Mapping[str, Any]] = None,
+    sup_map: Optional[Mapping[str, str]] = None,
+) -> None:
+    """
+    Мутатирующая функция: заполняем объекты CityWeather данными из
+    заранее собранных структур weather_data / water_data.
+    """
+    for city in city_list:
+        wd = weather_data.get(city.name) or {}
+        city.temp_min = wd.get("temp_min")
+        city.temp_max = wd.get("temp_max")
+        city.code = wd.get("code")
+        city.code_emoji = wd.get("code_emoji", "")
+        city.wind_speed = wd.get("wind_speed")
+        city.wind_gusts = wd.get("wind_gusts")
+        city.wind_dir_short = wd.get("wind_dir_short", "")
+        city.pressure = wd.get("pressure")
+        city.pressure_trend = wd.get("pressure_trend", "")
+
+        if water_data:
+            w = water_data.get(city.name) or {}
+            city.water_temp = w.get("water_temp")
+            city.water_comment = w.get("water_comment", "")
+
+        if sup_map:
+            city.sup_comment = sup_map.get(city.name, "")
+
+
+# ---------------------------------------------------------------------------
+# ТЕКСТОВЫЕ БЛОКИ ДЛЯ ПОГОДЫ
+# ---------------------------------------------------------------------------
+
+
+def build_city_weather_line(city: CityWeather, is_sea: bool = False) -> str:
+    """
+    Формирует основную строку по городу:
+    "😎 Лимассол: 21/13 °C • 🌥 пасм • 💨 3.3 м/с (ЮВ) • порывы 8 • 1010 гПа ↓ • 🌊 24"
+    """
+    temp_str = f"{fmt_temp(city.temp_max)}/{fmt_temp(city.temp_min)} °C"
+
+    wind_str = f"💨 {fmt_wind_speed(city.wind_speed)} м/с"
+    if city.wind_dir_short:
+        wind_str += f" ({city.wind_dir_short})"
+    if city.wind_gusts is not None:
+        wind_str += f" • порывы {int(round(city.wind_gusts))}"
+
+    press_str = ""
+    if city.pressure is not None:
+        arrow = city.pressure_trend or ""
+        if not arrow:
+            arrow = "→"
+        press_str = f" • {fmt_pressure(city.pressure)} гПа {arrow}"
+
+    icon = city.code_emoji or "🌡"
 
     parts = [
-        f"{city.extra_emoji or '😌'} {city.name}:",
-        f"{temp}",
-        f"• {city.descr or '—'}",
-        f"• 💨 {wind} ({wdir})",
-        f"• порывы {gusts}",
-        f"• {pressure} {trend}",
+        f"{icon} {city.name}: {temp_str}",
+        f"{wind_str}{press_str}",
     ]
-    if city.water_temp is not None:
-        parts.append(f"• 🌊 {water}")
-    if uv_emoji:
-        parts.append(f"• UV {uv_emoji}")
 
-    return " ".join(parts)
+    if is_sea and city.water_temp is not None:
+        parts.append(f"• 🌊 {fmt_temp(city.water_temp)}")
+
+    return " • ".join(parts)
 
 
-def build_city_recommendation_line(city: CityWeather) -> str:
+def build_sea_extra_line(city: CityWeather) -> Optional[str]:
     """
-    Дополнительная строка с мини-рекомендацией по активности.
-
-    Пример:
-    "   🧜‍♂️ Отлично: SUP (NE/cross)"
+    Дополнительная линия для морских городов:
+    "🧜‍♂️ Отлично: SUP (NE/cross)"
     """
-    if not city.rec_text:
-        return ""
-    base_emoji = "🧜‍♂️"
-    return f"   {base_emoji} {city.rec_text}"
+    msg_parts: List[str] = []
+
+    if city.water_comment:
+        msg_parts.append(city.water_comment)
+
+    if city.sup_comment:
+        msg_parts.append(city.sup_comment)
+
+    if not msg_parts:
+        return None
+
+    return "   🧜‍♂️ " + " ".join(msg_parts)
 
 
 # ---------------------------------------------------------------------------
-# Сборка блоков по группам городов
+# ГРУППОВЫЕ БЛОКИ (SEA / CONTINENTAL)
 # ---------------------------------------------------------------------------
 
 
-def build_group_block(label: str, cities: Iterable[CityWeather]) -> str:
-    lines: List[str] = []
-    label = label.strip()
-    if label:
-        lines.append(label)
-
-    for city in cities:
-        lines.append(build_city_line(city))
-        rec = build_city_recommendation_line(city)
-        if rec:
-            lines.append(rec)
-
-    return "\n".join(lines)
-
-
-def split_cities_by_temp(
-    cities: Iterable[CityWeather], warm_threshold: float = 20.0
-) -> Tuple[List[CityWeather], List[CityWeather]]:
-    """
-    Делит города на тёплые и холодные по максимальной температуре.
-
-    Возвращает (warm, cold).
-    """
-    warm, cold = [], []
-    for c in cities:
-        if c.is_warm(warm_threshold):
-            warm.append(c)
-        else:
-            cold.append(c)
-    return warm, cold
-
-
-def build_continental_block(
-    label: str, cities: Iterable[CityWeather], warm_threshold: float = 20.0
+def build_city_block(
+    title: str,
+    cities: Sequence[CityWeather],
+    sea_mode: bool = False,
+    warm_split_temp: Optional[float] = None,
 ) -> str:
     """
-    Формирует блок по континентальным городам, разделяя на "Тёплые" / "Холодные".
+    Формирует текстовый блок по списку городов.
+
+    Если warm_split_temp задан, делим на "тёплые" и "прохладные" города.
     """
-    all_cities = list(cities)
-    warm, cold = split_cities_by_temp(all_cities, warm_threshold=warm_threshold)
-
-    lines: List[str] = []
-    if label.strip():
-        lines.append(label)
-
-    if warm:
-        lines.append("Тёплые города:")
-        for c in warm:
-            lines.append(build_city_line(c))
-            rec = build_city_recommendation_line(c)
-            if rec:
-                lines.append(rec)
-
-    if cold:
-        lines.append("Холодные города:")
-        for c in cold:
-            lines.append(build_city_line(c))
-            rec = build_city_recommendation_line(c)
-            if rec:
-                lines.append(rec)
-
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Kp-индекс, космопогода, факты дня
-# ---------------------------------------------------------------------------
-
-
-def kp_level_to_emoji(kp: Optional[float]) -> str:
-    if kp is None:
-        return "❔"
-    if kp < 3:
-        return "🟢"
-    if kp < 5:
-        return "🟡"
-    if kp < 7:
-        return "🟠"
-    return "🔴"
-
-
-def build_kp_block(kp_data: Dict[str, Any]) -> str:
-    """
-    Строит блок по геомагнитной обстановке.
-    """
-    curr = kp_data.get("current")
-    emoji = kp_level_to_emoji(curr)
-    if curr is None:
-        return f"🧲 Геомагнитка: {emoji} данных нет"
-    return f"🧲 Геомагнитка: {emoji} Kp≈{curr}"
-
-
-def load_fact_of_day(region_key: str, date: pendulum.DateTime) -> str:
-    """
-    Загружает факт дня для конкретного региона (если есть).
-    """
-    path = DATA_DIR / f"{region_key}_facts.json"
-    data = load_json(path, default={}) or {}
-    key = date.to_date_string()
-    fact = data.get(key) or data.get("default") or ""
-    return str(fact).strip()
-
-
-# ---------------------------------------------------------------------------
-# Сборка итогового сообщения
-# ---------------------------------------------------------------------------
-
-
-def header_line(region_name: str, date: pendulum.DateTime) -> str:
-    """
-    Формирует заголовок поста, напр.:
-    "Кипр: погода на завтра (03.12.2025)"
-    """
-    return f"{region_name}: погода на завтра ({date.format('DD.MM.YYYY')})"
-
-
-def astro_hint_block(
-    region_key: str, date: pendulum.DateTime, tz: pendulum.Timezone
-) -> str:
-    """
-    Небольшой астроблок (если хотим подсветить какое-то астрособытие).
-    Сейчас использует lunar_calendar.json.
-    """
-    path = ROOT_DIR / "lunar_calendar.json"
-    data = load_json(path, default={}) or {}
-    days = data.get("days") or {}
-    today = date.date().isoformat()
-    info = days.get(today) or {}
-
-    phase = info.get("phase_name") or ""
-    sign = info.get("sign") or ""
-
-    if not phase and not sign:
+    if not cities:
         return ""
 
-    parts = []
-    if phase:
-        parts.append(phase)
-    if sign:
-        parts.append(f"в {sign}")
+    lines: List[str] = [title]
 
-    base = " ".join(parts).strip()
-    if not base:
-        return ""
+    if warm_split_temp is not None:
+        warm: List[CityWeather] = []
+        cold: List[CityWeather] = []
+        for c in cities:
+            if c.temp_max is None:
+                cold.append(c)
+            elif c.temp_max >= warm_split_temp:
+                warm.append(c)
+            else:
+                cold.append(c)
 
-    return (
-        f"🌕 {base} — земля под ногами прочна, а аппетит к жизни растёт.\n"
-        f"💰 Время ценить то, что уже есть, и приумножать: вложения и отношения крепнут без суеты."
-    )
+        if warm:
+            lines.append("Тёплые города:")
+            for c in warm:
+                lines.append(build_city_weather_line(c, is_sea=sea_mode))
+                extra = build_sea_extra_line(c)
+                if extra:
+                    lines.append(extra)
 
+        if cold:
+            if warm:
+                lines.append("Холоднее:")
+            for c in cold:
+                lines.append(build_city_weather_line(c, is_sea=sea_mode))
+                extra = build_sea_extra_line(c)
+                if extra:
+                    lines.append(extra)
 
-def hashtags_line(region_key: str) -> str:
-    """
-    Формирует строку с хэштегами для региона.
-    """
-    if region_key == "cy":
-        return "#Кипр #погода #здоровье #Лимассол #Тродос"
-    if region_key == "world":
-        return "#WorldVibeMeter #weather #mood #health"
-    return "#погода #здоровье"
-
-
-def _is_cyprus_region(region_name: str) -> bool:
-    s = (region_name or "").lower()
-    return "кипр" in s or "cyprus" in s
-
-
-def _pick_cyprus_style_prompt(
-    region_name: str,
-    tz: Union[pendulum.Timezone, str, None],
-    mode: Optional[str],
-) -> Optional[Tuple[str, str, str]]:
-    """Выбор стиля и промпта для вечернего поста по Кипру.
-
-    Возвращает (style_name, prompt, date_str) или None, если картинку
-    генерировать не нужно (утро / другой регион / фича выключена).
-    """
-    if not CY_IMAGE_ENABLED:
-        return None
-
-    mode_lc = (mode or "").lower()
-    if mode_lc not in ("evening", "tomorrow"):
-        return None
-
-    if not _is_cyprus_region(region_name):
-        return None
-
-    tz_obj = _as_tz(tz)
-    now = pendulum.now(tz_obj)
-    date_str = now.to_date_string()
-
-    # Детерминированный выбор стиля на день, чтобы при повторах дня
-    # получался один и тот же вариант.
-    key = f"cy-image-style|{region_name}|{mode_lc}|{date_str}"
-    digest = hashlib.sha256(key.encode("utf-8")).digest()
-    idx = digest[0] % 3  # 0..2
-
-    if idx == 0:
-        style_name = "sea-sunrise"
-        scene = (
-            "Soft Mediterranean evening over Cyprus coast, gentle waves, distant "
-            "hills, subtle city lights along the shore"
-        )
-    elif idx == 1:
-        style_name = "harbor-lights"
-        scene = (
-            "Warm evening in Cyprus by the sea, harbor silhouettes, boats and "
-            "reflections on the water"
-        )
     else:
-        style_name = "balcony-human"
-        scene = (
-            "Person standing on a hill or balcony in Cyprus, looking at the sea "
-            "and sky, city lights glowing in the distance"
-        )
+        for c in cities:
+            lines.append(build_city_weather_line(c, is_sea=sea_mode))
+            extra = build_sea_extra_line(c)
+            if extra:
+                lines.append(extra)
 
-    base_style = (
-        "dreamy minimalist illustration, pastel colors, subtle gradients, soft "
-        "light, digital art, square format, no text"
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# ПЫЛЬЦА, РАДИАЦИЯ, ШУМАН, SAFecast
+# ---------------------------------------------------------------------------
+
+
+def build_pollen_block(pollen_info: Optional[Dict[str, Any]]) -> str:
+    if not pollen_info:
+        return "Пыльца: данных нет."
+    return pollen.format_pollen_block(pollen_info)
+
+
+def build_radiation_block(rad_info: Optional[Dict[str, Any]]) -> str:
+    if not rad_info:
+        return "Радиация: данных нет."
+    return radiation.format_radiation_block(rad_info)
+
+
+def build_schumann_block(sch_info: Optional[Dict[str, Any]]) -> str:
+    if not sch_info:
+        return "Шумановский резонанс: данных нет."
+    return schumann.format_schumann_block(sch_info)
+
+
+def build_safecast_block(safe_info: Optional[Dict[str, Any]]) -> str:
+    if not safe_info:
+        return "Safecast: нет свежих измерений."
+    return safecast.format_safecast_block(safe_info)
+
+
+# ---------------------------------------------------------------------------
+# ASTRO / FX / ДРУГОЕ
+# ---------------------------------------------------------------------------
+
+
+def build_fx_block(fx_info: Optional[Dict[str, Any]]) -> str:
+    if not fx_info:
+        return "Валюты: данных нет."
+    return fx.format_fx_block(fx_info)
+
+
+def build_astro_block(
+    astro_today: Optional[Dict[str, Any]],
+    tz_name: str,
+) -> str:
+    """
+    Строим небольшой блок "Астрособытия" для конца сообщения.
+    """
+    if not astro_today:
+        return "Астрособытия: данных нет."
+
+    # здесь используется логика из astro.py / lunar_calendar.json
+    line = astro_today.get("line") or ""
+    if not line:
+        return "Астрособытия: данных нет."
+
+    return line
+
+
+# ---------------------------------------------------------------------------
+# СБОР ВСЕХ ДАННЫХ ДЛЯ ДНЯ
+# ---------------------------------------------------------------------------
+
+
+def collect_all_data_for_region(
+    *,
+    today: date,
+    tz_name: str,
+    sea_cities_pairs: Sequence[Tuple[str, Tuple[float, float]]],
+    other_cities_pairs: Sequence[Tuple[str, Tuple[float, float]]],
+    warm_split_temp: Optional[float] = None,
+    region_settings: Any,
+) -> Dict[str, Any]:
+    """
+    Собираем всю информацию по региону в один словарь.
+    """
+
+    # Погода (воздух и море)
+    logger.info("Collecting weather for region...")
+    sea_weather = weather.collect_weather_block(
+        today=today,
+        tz_name=tz_name,
+        cities_pairs=sea_cities_pairs,
+        settings=region_settings,
+    )
+    other_weather = weather.collect_weather_block(
+        today=today,
+        tz_name=tz_name,
+        cities_pairs=other_cities_pairs,
+        settings=region_settings,
     )
 
-    prompt = f"{scene}. {base_style}"
-    return style_name, prompt, date_str
+    # Вода (только для морских городов)
+    sea_names = [name for name, _ll in sea_cities_pairs]
+    water_data = weather.collect_water_temps(
+        today=today,
+        tz_name=tz_name,
+        sea_cities=sea_names,
+        settings=region_settings,
+    )
+
+    # SUP и прочие комментарии по морю
+    sup_map = weather.collect_sup_recommendations(
+        today=today,
+        tz_name=tz_name,
+        sea_cities=sea_names,
+        settings=region_settings,
+    )
+
+    # Пыльца
+    pollen_info = pollen.collect_pollen(today=today, tz_name=tz_name)
+
+    # Радиация
+    rad_info = radiation.collect_radiation(today=today, tz_name=tz_name)
+
+    # Шумановский резонанс
+    sch_info = schumann.collect_schumann(today=today, tz_name=tz_name)
+
+    # Safecast
+    safe_info = safecast.collect_safecast(today=today, tz_name=tz_name)
+
+    # FX
+    fx_info = fx.collect_fx(today=today, tz_name=tz_name)
+
+    # Астро (для блока в конце)
+    astro_info = weather.collect_astro_summary(today=today, tz_name=tz_name)
+
+    return {
+        "sea_weather": sea_weather,
+        "other_weather": other_weather,
+        "water_data": water_data,
+        "sup_map": sup_map,
+        "pollen": pollen_info,
+        "radiation": rad_info,
+        "schumann": sch_info,
+        "safecast": safe_info,
+        "fx": fx_info,
+        "astro": astro_info,
+        "warm_split_temp": warm_split_temp,
+    }
 
 
-def _maybe_generate_cyprus_image(
-    region_name: str,
-    tz: Union[pendulum.Timezone, str, None],
-    mode: Optional[str],
-) -> Tuple[Optional[str], Optional[str]]:
-    """Синхронно пытается сгенерировать картинку для вечернего Кипра.
-
-    Возвращает (image_path, style_name) или (None, None).
-    """
-    if not CY_IMAGE_ENABLED:
-        return None, None
-
-    if generate_astro_image is None:
-        logger.info("CY image: imagegen backend not available")
-        return None, None
-
-    try:
-        picked = _pick_cyprus_style_prompt(region_name, tz, mode)
-        if not picked:
-            return None, None
-        style_name, prompt, date_str = picked
-        out_path = CY_IMAGE_DIR / f"cy_{date_str}.jpg"
-        img_path = generate_astro_image(prompt, str(out_path))
-        if img_path and os.path.exists(img_path):
-            logger.info("CY image generated: %s (style=%s)", img_path, style_name)
-            return img_path, style_name
-        logger.warning("CY image generation returned no file")
-        return None, None
-    except Exception as exc:
-        logger.warning("CY image generation failed: %s", exc)
-        return None, None
+# ---------------------------------------------------------------------------
+# СБОРКА СООБЩЕНИЯ
+# ---------------------------------------------------------------------------
 
 
 def build_message(
-    region_name: str,
+    *,
+    region_title: str,
+    today: date,
+    tz_name: str,
     sea_label: str,
-    sea_cities: Iterable[CityWeather],
+    sea_cities_pairs: Sequence[Tuple[str, Tuple[float, float]]],
     other_label: str,
-    other_cities: Iterable[CityWeather],
-    tz: Union[pendulum.Timezone, str],
-    mode: Optional[str] = None,
+    other_cities_pairs: Sequence[Tuple[str, Tuple[float, float]]],
+    data: Dict[str, Any],
 ) -> str:
     """
-    Основная функция, собирающая итоговый текст поста.
+    Формирует итоговый текст сообщения для региона.
     """
-    tz_obj = _as_tz(tz)
-    now = pendulum.now(tz_obj)
-    tomorrow = now.add(days=1)
 
-    header = header_line(region_name, tomorrow)
+    lines: List[str] = []
 
-    sea_block = build_group_block(sea_label, sea_cities)
-    other_block = build_continental_block(other_label, other_cities)
+    date_str = fmt_date_human(today, tz_name)
+    lines.append(f"{region_title}: погода на завтра ({date_str})")
 
-    sunset_line = make_sunrise_sunset_line(tomorrow, tz_obj)
+    # Морские города
+    sea_city_list = _coerce_city_list(sea_cities_pairs)
+    enrich_weather_for_city_list(
+        sea_city_list,
+        data["sea_weather"],
+        data["water_data"],
+        data["sup_map"],
+    )
+    sea_block = build_city_block(sea_label, sea_city_list, sea_mode=True)
+    lines.append(sea_block)
+    lines.append("———")
 
-    kp_block = ""
-    if USE_WORLD_KP:
-        kp_data = load_kp_index()
-        kp_block = build_kp_block(kp_data)
+    # Континентальные города
+    other_city_list = _coerce_city_list(other_cities_pairs)
+    enrich_weather_for_city_list(
+        other_city_list,
+        data["other_weather"],
+        data["water_data"],
+        data["sup_map"],
+    )
+    warm_split_temp = data.get("warm_split_temp")
+    other_block = build_city_block(
+        other_label,
+        other_city_list,
+        sea_mode=False,
+        warm_split_temp=warm_split_temp,
+    )
+    lines.append(other_block)
+    lines.append("———")
 
-    is_cy = _is_cyprus_region(region_name)
-    astro_block = astro_hint_block("cy", tomorrow, tz_obj) if is_cy else ""
-    fact = load_fact_of_day("cy", tomorrow) if is_cy else ""
+    # Астрономические события / рассвет / пр.
+    astro_block = build_astro_block(data.get("astro"), tz_name)
+    lines.append("🌌 Астрособытия")
+    lines.append(astro_block)
 
-    tags = hashtags_line("cy" if is_cy else "world")
+    # Пыльца / воздух / радиация / шуман / safecast
+    lines.append("———")
+    lines.append(build_pollen_block(data.get("pollen")))
+    lines.append(build_radiation_block(data.get("radiation")))
+    lines.append(build_schumann_block(data.get("schumann")))
+    lines.append(build_safecast_block(data.get("safecast")))
+    lines.append(build_fx_block(data.get("fx")))
 
-    parts: List[str] = []
-    parts.append(header)
-    parts.append("🏖 Морские города")
-    parts.append(sea_block)
-    parts.append("———")
-    parts.append("🏞 Континентальные города")
-    parts.append(other_block)
-    if sunset_line:
-        parts.append("———")
-        parts.append(sunset_line)
-    if kp_block:
-        parts.append("———")
-        parts.append(kp_block)
-    if astro_block:
-        parts.append("🌌 Астрособытия")
-        parts.append(astro_block)
-    if fact:
-        parts.append("🧠 Факт дня")
-        parts.append(fact)
-    parts.append(tags)
-
-    return "\n".join(p for p in parts if p.strip())
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Отправка поста
+# ОТПРАВКА В TELEGRAM
 # ---------------------------------------------------------------------------
 
 
 async def send_common_post(
+    *,
     bot: Bot,
-    chat_id: int,
-    region_name: str,
-    sea_label: str,
-    sea_cities,
-    other_label: str,
-    other_cities,
-    tz: Union[pendulum.Timezone, str],
-    mode: Optional[str] = None,
+    chat_id: str,
+    text: str,
+    parse_mode: str = "HTML",
 ) -> None:
-    """Собирает текст и отправляет пост в канал.
-
-    Для вечернего поста по Кипру дополнительно пытается сгенерировать
-    картинку и отправить sendPhoto. В остальных случаях остаётся
-    прежнее поведение — sendMessage только с текстом.
     """
-    msg = build_message(
-        region_name=region_name,
-        sea_label=sea_label,
-        sea_cities=sea_cities,
-        other_label=other_label,
-        other_cities=other_cities,
-        tz=tz,
-        mode=mode,
-    )
-
-    img_path: Optional[str] = None
-    style_name: Optional[str] = None
-
-    try:
-        img_path, style_name = _maybe_generate_cyprus_image(
-            region_name=region_name,
-            tz=tz,
-            mode=mode,
-        )
-    except Exception as exc:
-        logger.warning("CY image helper failed: %s", exc)
-        img_path, style_name = None, None
-
-    if img_path and os.path.exists(img_path):
-        logger.info(
-            "Sending Cyprus image post with photo: %s (style=%s)",
-            img_path,
-            style_name or "?",
-        )
-        try:
-            with open(img_path, "rb") as f:
-                await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=f,
-                    caption=msg,
-                    parse_mode=constants.ParseMode.HTML,
-                )
-            return
-        except Exception as exc:
-            logger.warning(
-                "send_common_post: send_photo failed, fallback to text: %s",
-                exc,
-            )
-
+    Универсальная отправка сообщения в Телеграм.
+    """
+    logger.info("Sending message to chat_id=%s", chat_id)
     await bot.send_message(
         chat_id=chat_id,
-        text=msg,
-        parse_mode=constants.ParseMode.HTML,
+        text=text,
+        parse_mode=parse_mode,
         disable_web_page_preview=True,
     )
+    logger.info("Message sent.")
+
+
+# ---------------------------------------------------------------------------
+# MAIN_... ДЛЯ РЕГИОНОВ
+# ---------------------------------------------------------------------------
 
 
 async def main_common(
     *,
-    # старый стиль: готовый bot
-    bot: Optional[Bot] = None,
-    # новый стиль: токен для создания бота внутри
-    token: Optional[str] = None,
-    chat_id: Optional[int] = None,
-    region_name: str = "",
-    sea_label: str = "",
-    sea_cities=None,
-    other_label: str = "",
-    other_cities=None,
-    tz: Union[pendulum.Timezone, str] = "UTC",
-    mode: Optional[str] = None,
+    bot: Bot,
+    chat_id: str,
+    region_title: str,
+    tz_name: str,
+    sea_label: str,
+    sea_cities: Mapping[str, Tuple[float, float]],
+    other_label: str,
+    other_cities: Mapping[str, Tuple[float, float]],
+    warm_split_temp: Optional[float],
+    region_settings: Any,
 ) -> None:
     """
-    Создаёт Bot (если нужно) и отправляет общий пост.
+    Общая «точка входа» для ежедневного поста по региону.
 
-    Обратная совместимость:
-    - старый вызов: main_common(bot=bot, chat_id=..., region_name=..., ...)
-    - новый вызов: main_common(token=TOKEN, chat_id=..., region_name=..., ...)
+    Все конкретные скрипты (post_cy.py, post_kld.py и т.п.) просто собирают
+    нужные аргументы и вызывают main_common().
     """
-    if bot is None:
-        if not token:
-            raise ValueError("main_common: either `bot` or `token` must be provided")
-        bot = Bot(token=token)
 
-    if chat_id is None:
-        raise ValueError("main_common: `chat_id` is required")
+    today = local_today(tz_name)
+    logger.info("Дата зафиксирована как %s (TZ %s)", today, tz_name)
+
+    sea_pairs = list(_iter_city_pairs(sea_cities))
+    other_pairs = list(_iter_city_pairs(other_cities))
+
+    data = collect_all_data_for_region(
+        today=today,
+        tz_name=tz_name,
+        sea_cities_pairs=sea_pairs,
+        other_cities_pairs=other_pairs,
+        warm_split_temp=warm_split_temp,
+        region_settings=region_settings,
+    )
+
+    msg = build_message(
+        region_title=region_title,
+        today=today,
+        tz_name=tz_name,
+        sea_label=sea_label,
+        sea_cities_pairs=sea_pairs,
+        other_label=other_label,
+        other_cities_pairs=other_pairs,
+        data=data,
+    )
 
     await send_common_post(
         bot=bot,
         chat_id=chat_id,
-        region_name=region_name,
-        sea_label=sea_label,
-        sea_cities=sea_cities,
-        other_label=other_label,
-        other_cities=other_cities,
-        tz=tz,
-        mode=mode,
+        text=msg,
+        parse_mode=ParseMode.HTML,
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI / ОТЛАДКА
+# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":
-    print(
-        "Этот модуль предполагается использовать как импортируемый "
-        "(post_common.main_common / send_common_post)."
+    # Пример локального запуска (для отладки: выведет только текст).
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--region", choices=["cy", "world_en"], default="cy")
+    args = parser.parse_args()
+
+    if args.region == "cy":
+        settings = settings_cy
+        tz_name = settings.TIMEZONE
+        sea_cities = settings.SEA_CITIES
+        other_cities = settings.OTHER_CITIES
+        warm_split = 20.0
+        region_title = "Кипр"
+        sea_label = "🏖 Морские города"
+        other_label = "🏞 Континентальные города"
+    else:
+        settings = settings_world_en
+        tz_name = settings.TIMEZONE
+        sea_cities = settings.SEA_CITIES
+        other_cities = settings.OTHER_CITIES
+        warm_split = None
+        region_title = "World"
+        sea_label = "Coastal cities"
+        other_label = "Inland cities"
+
+    today = local_today(tz_name)
+    sea_pairs = list(_iter_city_pairs(sea_cities))
+    other_pairs = list(_iter_city_pairs(other_cities))
+
+    data = collect_all_data_for_region(
+        today=today,
+        tz_name=tz_name,
+        sea_cities_pairs=sea_pairs,
+        other_cities_pairs=other_pairs,
+        warm_split_temp=warm_split,
+        region_settings=settings,
     )
+
+    msg = build_message(
+        region_title=region_title,
+        today=today,
+        tz_name=tz_name,
+        sea_label=sea_label,
+        sea_cities_pairs=sea_pairs,
+        other_label=other_label,
+        other_cities_pairs=other_pairs,
+        data=data,
+    )
+    print(msg)
