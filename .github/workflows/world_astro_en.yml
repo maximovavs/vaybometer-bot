@@ -77,17 +77,18 @@ jobs:
           set -euo pipefail
 
           IMG_PATH="$(python - <<'PY'
-import json, os, pathlib
-p = 'world_en/astro.json'
-try:
-    data = json.loads(pathlib.Path(p).read_text('utf-8'))
-    cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
-    if cand and os.path.exists(cand):
-        print(cand, end='')
-except Exception:
-    pass
-PY
+          import json, os, pathlib
+          p = 'world_en/astro.json'
+          try:
+              data = json.loads(pathlib.Path(p).read_text('utf-8'))
+              cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
+              if cand and os.path.exists(cand):
+                  print(cand, end='')
+          except Exception:
+              pass
+          PY
           )"
+
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
             CAPTION="$(head -c 1000 world_en/astro_msg.txt)"
@@ -109,21 +110,21 @@ PY
         if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'both' || inputs.publish_to == 'facebook') && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
         run: |
           python - <<'PY'
-import re, html, pathlib, os
-p = pathlib.Path('world_en/astro_msg.txt').read_text('utf-8', errors='ignore')
-# уберём HTML, экранирование и подчистим пустые строки
-plain = re.sub(r'<[^>]+>', '', p)
-plain = html.unescape(plain)
-plain = re.sub(r'[ \t]+\n', '\n', plain)
-plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
-# компактный лимит для FB-поста
-if len(plain) > 2500:
-    plain = plain[:2490].rsplit('\n', 1)[0] + '\n…'
-link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
-out  = f"{plain}\n\nFollow daily on Telegram: {link}"
-pathlib.Path('world_en/astro_fb_msg.txt').write_text(out, 'utf-8')
-print('FB text length:', len(out))
-PY
+          import re, html, pathlib, os
+          p = pathlib.Path('world_en/astro_msg.txt').read_text('utf-8', errors='ignore')
+          # уберём HTML, экранирование и подчистим пустые строки
+          plain = re.sub(r'<[^>]+>', '', p)
+          plain = html.unescape(plain)
+          plain = re.sub(r'[ \t]+\n', '\n', plain)
+          plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
+          # компактный лимит для FB-поста
+          if len(plain) > 2500:
+              plain = plain[:2490].rsplit('\n', 1)[0] + '\n…'
+          link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
+          out  = f"{plain}\n\nFollow daily on Telegram: {link}"
+          pathlib.Path('world_en/astro_fb_msg.txt').write_text(out, 'utf-8')
+          print('FB text length:', len(out))
+          PY
 
       - name: Post to Facebook Page
         if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'both' || inputs.publish_to == 'facebook') && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
@@ -131,16 +132,16 @@ PY
           set -euo pipefail
 
           IMG_PATH="$(python - <<'PY'
-import json, os, pathlib
-p = pathlib.Path('world_en/astro.json')
-try:
-    data = json.loads(p.read_text('utf-8'))
-    cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
-    if cand and os.path.exists(cand):
-        print(cand, end='')
-except Exception:
-    pass
-PY
+          import json, os, pathlib
+          p = pathlib.Path('world_en/astro.json')
+          try:
+              data = json.loads(p.read_text('utf-8'))
+              cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
+              if cand and os.path.exists(cand):
+                  print(cand, end='')
+          except Exception:
+              pass
+          PY
           )"
 
           MSG="$(cat world_en/astro_fb_msg.txt)"
@@ -175,17 +176,18 @@ PY
           test -n "${TG_CHAT}"  || { echo "ERROR: TG_CHAT is empty"; exit 1; }
 
           IMG_PATH="$(python - <<'PY'
-import json, os, pathlib
-p = 'world_en/astro.json'
-try:
-    data = json.loads(pathlib.Path(p).read_text('utf-8'))
-    cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
-    if cand and os.path.exists(cand):
-        print(cand, end='')
-except Exception:
-    pass
-PY
+          import json, os, pathlib
+          p = 'world_en/astro.json'
+          try:
+              data = json.loads(pathlib.Path(p).read_text('utf-8'))
+              cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
+              if cand and os.path.exists(cand):
+                  print(cand, end='')
+          except Exception:
+              pass
+          PY
           )"
+
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
             CAPTION="$(head -c 1000 world_en/astro_msg.txt)"
