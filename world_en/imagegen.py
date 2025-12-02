@@ -3,9 +3,10 @@ world_en/imagegen.py
 
 Генерация картинок для астрологических постов.
 
-Приоритет:
+Приоритет бэкендов внутри одной попытки:
 1. Pollinations (без ключей) — быстрый бесплатный endpoint.
-2. Stable Horde (анонимный доступ через "0000000000") как фолбэк.
+2. Stable Horde (через HORDE_API_KEY / STABLE_HORDE_API_KEY) как фолбэк.
+3. Необязательный кастомный бэкенд (CUSTOM_IMAGE_BASE_URL), если настроен.
 
 ФАЙЛ НИКОГДА НЕ ЛОГИРУЕТ КЛЮЧИ (они и не нужны, кроме HORDE_API_KEY).
 
@@ -13,11 +14,26 @@ world_en/imagegen.py
 
 - POLLINATIONS_BASE_URL (по умолчанию "https://image.pollinations.ai/prompt/")
 - POLLINATIONS_TIMEOUT (по умолчанию 20 секунд)
+
 - HORDE_BASE_URL       (по умолчанию "https://stablehorde.net/api/v2")
 - HORDE_TIMEOUT        (по умолчанию 90 секунд)
 - STABLE_HORDE_API_KEY (секрет с API-ключом Horde; приоритетный)
 - HORDE_API_KEY        (альтернативное имя переменной)
   если оба не заданы, используется "0000000000" — анонимный бесплатный ключ.
+
+- IMAGEGEN_MAX_ATTEMPTS (общее число попыток генерации поверх всех бэкендов;
+  по умолчанию 3, минимум 1, максимум 5)
+
+Третий (опциональный) бэкенд:
+
+- CUSTOM_IMAGE_BASE_URL — базовый URL сервиса, который принимает:
+      GET {CUSTOM_IMAGE_BASE_URL}?prompt=...&width=...&height=...
+  и возвращает непосредственно изображение (PNG/JPEG). Если переменная
+  не задана или пустая, третий бэкенд не используется.
+
+- CUSTOM_IMAGE_TIMEOUT  — таймаут для этого запроса (по умолчанию 20 секунд)
+- CUSTOM_IMAGE_API_KEY  — опциональный токен для Authorization-заголовка
+  (если внешний сервис его требует).
 
 ОГРАНИЧЕНИЯ / ДОПУЩЕНИЯ:
 - Предполагается, что Pollinations принимает GET:
@@ -51,11 +67,15 @@ if not logger.handlers:
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
+# ---------- Pollinations ----------
+
 POLLINATIONS_BASE_URL = os.environ.get(
     "POLLINATIONS_BASE_URL",
     "https://image.pollinations.ai/prompt/",
 )
 POLLINATIONS_TIMEOUT = float(os.environ.get("POLLINATIONS_TIMEOUT", "20"))
+
+# ---------- Stable Horde ----------
 
 HORDE_BASE_URL = os.environ.get(
     "HORDE_BASE_URL",
@@ -73,6 +93,26 @@ HORDE_API_KEY = (
     or os.environ.get("HORDE_API_KEY")
     or "0000000000"
 )
+
+# ---------- Общие настройки ретраев ----------
+
+# Максимальное количество общих попыток генерации поверх всех бэкендов.
+# Настраивается через IMAGEGEN_MAX_ATTEMPTS, по умолчанию 3,
+# минимум 1, максимум 5.
+try:
+    MAX_ATTEMPTS = int(os.environ.get("IMAGEGEN_MAX_ATTEMPTS", "3"))
+    if MAX_ATTEMPTS < 1:
+        MAX_ATTEMPTS = 1
+    if MAX_ATTEMPTS > 5:
+        MAX_ATTEMPTS = 5
+except Exception:
+    MAX_ATTEMPTS = 3
+
+# ---------- Необязательный третий бэкенд ----------
+
+CUSTOM_IMAGE_BASE_URL = os.environ.get("CUSTOM_IMAGE_BASE_URL", "").rstrip("/")
+CUSTOM_IMAGE_TIMEOUT = float(os.environ.get("CUSTOM_IMAGE_TIMEOUT", "20"))
+CUSTOM_IMAGE_API_KEY = os.environ.get("CUSTOM_IMAGE_API_KEY", "")
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -240,7 +280,10 @@ def _fetch_from_horde(
 
         logger.info(
             "Horde still running: %s",
-            {k: check.get(k) for k in ("queue_position", "waiting", "processing", "done")},
+            {
+                k: check.get(k)
+                for k in ("queue_position", "waiting", "processing", "done")
+            },
         )
         time.sleep(5)
 
@@ -300,6 +343,68 @@ def _fetch_from_horde(
     return out_path
 
 
+def _fetch_from_custom_backend(
+    prompt: str,
+    out_path: Path,
+    size: Tuple[int, int] = (512, 512),
+) -> Optional[Path]:
+    """
+    Опциональный третий бэкенд.
+
+    Предполагается самый простой протокол:
+    - GET {CUSTOM_IMAGE_BASE_URL}?prompt=...&width=...&height=...
+    - в ответ приходит сразу изображение (PNG/JPEG).
+
+    Если CUSTOM_IMAGE_BASE_URL не задан, функция просто возвращает None.
+    Это сделано, чтобы файл оставался рабочим "из коробки", даже если
+    третий бэкенд не настроен.
+    """
+    if not CUSTOM_IMAGE_BASE_URL:
+        return None
+
+    query = quote_plus(prompt)
+    url = (
+        CUSTOM_IMAGE_BASE_URL
+        + f"?prompt={query}&width={size[0]}&height={size[1]}"
+    )
+
+    headers = {
+        "User-Agent": "WorldVibeMeterBot/1.0 (+https://t.me/worldvibemeter)",
+    }
+    if CUSTOM_IMAGE_API_KEY:
+        # если какой-то сервис требует авторизацию — можно передать сюда
+        headers["Authorization"] = CUSTOM_IMAGE_API_KEY
+
+    logger.info("Custom backend request: %s", url)
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=CUSTOM_IMAGE_TIMEOUT)
+    except Exception as exc:
+        logger.warning("Custom backend error: %s", exc)
+        return None
+
+    if resp.status_code != 200:
+        logger.warning(
+            "Custom backend non-200: %s, body preview=%s",
+            resp.status_code,
+            resp.text[:200],
+        )
+        return None
+
+    if not resp.content:
+        logger.warning("Custom backend returned empty content")
+        return None
+
+    _ensure_parent_dir(out_path)
+    out_path.write_bytes(resp.content)
+    logger.info(
+        "Custom backend image saved to %s (%d bytes)",
+        out_path,
+        out_path.stat().st_size,
+    )
+    return out_path
+
+
 def generate_astro_image(
     prompt: str,
     out_path: str,
@@ -311,24 +416,43 @@ def generate_astro_image(
     :param prompt: текстовый промпт (ENG), который ты передаёшь из world_astro_collect.
     :param out_path: путь к файлу (строка); директории будут созданы при необходимости.
     :param size: размер картинки (ширина, высота), сейчас используется как hint.
-    :return: строка пути к файлу или None, если все бэкенды упали.
+    :return: строка пути к файлу или None, если все бэкенды и все попытки упали.
     """
     out = Path(out_path)
     logger.info("Requested astro image at %s", out)
+    logger.info("Max attempts: %d", MAX_ATTEMPTS)
 
-    # 1. Pollinations
-    img = _fetch_from_pollinations(prompt, out, size=size)
-    if img is not None:
-        logger.info("Using Pollinations backend")
-        return str(img)
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        logger.info("Image generation attempt %d/%d", attempt, MAX_ATTEMPTS)
 
-    # 2. Stable Horde
-    img = _fetch_from_horde(prompt, out, size=size)
-    if img is not None:
-        logger.info("Using Stable Horde backend")
-        return str(img)
+        # 1. Pollinations
+        img = _fetch_from_pollinations(prompt, out, size=size)
+        if img is not None:
+            logger.info("Using Pollinations backend on attempt %d", attempt)
+            return str(img)
 
-    logger.error("All image backends failed for prompt: %r", prompt)
+        # 2. Stable Horde
+        img = _fetch_from_horde(prompt, out, size=size)
+        if img is not None:
+            logger.info("Using Stable Horde backend on attempt %d", attempt)
+            return str(img)
+
+        # 3. Custom backend (если настроен)
+        img = _fetch_from_custom_backend(prompt, out, size=size)
+        if img is not None:
+            logger.info("Using CUSTOM backend on attempt %d", attempt)
+            return str(img)
+
+        if attempt < MAX_ATTEMPTS:
+            logger.warning(
+                "All backends failed on attempt %d, will retry...", attempt
+            )
+        else:
+            logger.error(
+                "All backends failed after %d attempts, giving up",
+                MAX_ATTEMPTS,
+            )
+
     return None
 
 
