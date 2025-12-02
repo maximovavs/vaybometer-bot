@@ -30,6 +30,7 @@ jobs:
       FB_PAGE_ID: ${{ secrets.FB_PAGE_ID || '' }}
       FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN || '' }}
       TG_URL: ${{ secrets.TELEGRAM_CHANNEL_URL || 'https://t.me/WorldVibeMeter' }}
+      STABLE_HORDE_API_KEY: ${{ secrets.STABLE_HORDE_API_KEY || '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +44,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 1) Сбор данных -> world_en/astro.json
+      # 1) Сбор данных -> world_en/astro.json (+ попытка генерации изображения)
       - name: Collect Astro
         run: |
           python -u world_en/world_astro_collect.py
@@ -82,11 +83,14 @@ jobs:
               data = json.loads(pathlib.Path(p).read_text('utf-8'))
               cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
               if cand and os.path.exists(cand):
-                  print(cand)
+                  print(cand, end='')
           except Exception:
               pass
           PY
           )"
+
+          echo "Telegram MAIN IMG_PATH='${IMG_PATH}'"
+
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
             CAPTION="$(head -c 1000 world_en/astro_msg.txt)"
@@ -117,7 +121,7 @@ jobs:
           plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
           # компактный лимит для FB-поста
           if len(plain) > 2500:
-            plain = plain[:2490].rsplit('\n',1)[0] + '\n…'
+              plain = plain[:2490].rsplit('\n', 1)[0] + '\n…'
           link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
           out  = f"{plain}\n\nFollow daily on Telegram: {link}"
           pathlib.Path('world_en/astro_fb_msg.txt').write_text(out, 'utf-8')
@@ -128,11 +132,39 @@ jobs:
         if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'both' || inputs.publish_to == 'facebook') && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
         run: |
           set -euo pipefail
+
+          IMG_PATH="$(python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path('world_en/astro.json')
+          try:
+              data = json.loads(p.read_text('utf-8'))
+              cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
+              if cand and os.path.exists(cand):
+                  print(cand, end='')
+          except Exception:
+              pass
+          PY
+          )"
+
+          echo "Facebook IMG_PATH='${IMG_PATH}'"
+
           MSG="$(cat world_en/astro_fb_msg.txt)"
-          curl -sS -f -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/feed" \
-            --data-urlencode "message=$MSG" \
-            --data-urlencode "access_token=${FB_PAGE_TOKEN}" \
-            > world_en/fb_astro_response.json
+
+          if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
+            echo "Facebook: sending photo with caption, image=${IMG_PATH}"
+            curl -sS -f -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/photos" \
+              -F "access_token=${FB_PAGE_TOKEN}" \
+              -F "caption=${MSG}" \
+              -F "source=@${IMG_PATH}" \
+              > world_en/fb_astro_response.json
+          else
+            echo "Facebook: no image found, sending text-only post"
+            curl -sS -f -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/feed" \
+              --data-urlencode "message=${MSG}" \
+              --data-urlencode "access_token=${FB_PAGE_TOKEN}" \
+              > world_en/fb_astro_response.json
+          fi
+
           echo "Facebook response:"; cat world_en/fb_astro_response.json
           grep -q '"id":' world_en/fb_astro_response.json || { echo "Facebook post failed"; exit 1; }
 
@@ -154,11 +186,14 @@ jobs:
               data = json.loads(pathlib.Path(p).read_text('utf-8'))
               cand = data.get('ASTRO_IMAGE_PATH') or data.get('ASTRO_IMAGE_PATH_REL') or ''
               if cand and os.path.exists(cand):
-                  print(cand)
+                  print(cand, end='')
           except Exception:
               pass
           PY
           )"
+
+          echo "Telegram TEST IMG_PATH='${IMG_PATH}'"
+
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
             CAPTION="$(head -c 1000 world_en/astro_msg.txt)"
