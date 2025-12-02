@@ -89,6 +89,8 @@ jobs:
           PY
           )"
 
+          echo "Telegram MAIN IMG_PATH='${IMG_PATH}'"
+
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
             CAPTION="$(head -c 1000 world_en/astro_msg.txt)"
@@ -144,6 +146,8 @@ jobs:
           PY
           )"
 
+          echo "Facebook IMG_PATH='${IMG_PATH}'"
+
           MSG="$(cat world_en/astro_fb_msg.txt)"
 
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
@@ -187,6 +191,8 @@ jobs:
               pass
           PY
           )"
+
+          echo "Telegram TEST IMG_PATH='${IMG_PATH}'"
 
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
