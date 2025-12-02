@@ -12,8 +12,15 @@
 
 from __future__ import annotations
 
-import os, re, json, html, asyncio, logging, math, random, hashlib
-from dataclasses import dataclass, field
+import asyncio
+import hashlib
+import html
+import json
+import logging
+import math
+import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -21,6 +28,7 @@ import pendulum
 from dateutil.relativedelta import relativedelta
 from telegram import Bot, constants
 
+# Попытка импортировать общий генератор картинок
 try:
     from world_en.imagegen import generate_astro_image  # type: ignore
 except Exception:
@@ -29,20 +37,20 @@ except Exception:
     except Exception:
         generate_astro_image = None  # type: ignore
 
-
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_DIR = ROOT_DIR / "data"
-CACHE_DIR = ROOT_DIR / ".cache"
 
-# На будущее: если захочется включать/выключать мировую Kp
+# Если захочется включать/выключать мировую Kp
 USE_WORLD_KP = True
 
-# Изображения для вечернего поста по Кипру
-CY_IMAGE_ENABLED = os.getenv('CY_IMAGE_ENABLED', '1').strip().lower() not in ('0', 'false', 'no', 'off')
-CY_IMAGE_DIR = Path(os.getenv('CY_IMAGE_DIR', 'cy_img'))
+# Настройки для вечернего изображения по Кипру
+CY_IMAGE_ENABLED = (
+    os.getenv("CY_IMAGE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+)
+CY_IMAGE_DIR = Path(os.getenv("CY_IMAGE_DIR", "cy_img"))
 
 # ---------------------------------------------------------------------------
 # Общие утилиты
@@ -86,7 +94,7 @@ def round_half_up(x: float, ndigits: int = 0) -> float:
 
     1.25 -> 1.3 (при ndigits=1), 2.5 -> 3.0 (при ndigits=0) и т.п.
     """
-    factor = 10 ** ndigits
+    factor = 10**ndigits
     return math.floor(x * factor + 0.5) / factor
 
 
@@ -137,21 +145,6 @@ def wind_dir_to_text(deg: Optional[float]) -> str:
     return dirs[ix]
 
 
-def deg_to_beaufort(ms: Optional[float]) -> str:
-    """Грубая классификация скорости ветра через эмодзи."""
-    if ms is None:
-        return "💤"
-    if ms < 1:
-        return "🔹"
-    if ms < 4:
-        return "💨"
-    if ms < 8:
-        return "🌬"
-    if ms < 14:
-        return "🌪"
-    return "🌀"
-
-
 def uv_index_to_emoji(uv: Optional[float]) -> str:
     if uv is None:
         return ""
@@ -170,7 +163,6 @@ def make_sunrise_sunset_line(dt_obj: pendulum.DateTime, tz: pendulum.Timezone) -
     """
     Читабельная строка про рассвет/закат для конкретной даты и TZ.
     """
-
     from lunar import get_sun_times  # локальный модуль
 
     sun = get_sun_times(dt_obj.date(), tz)
@@ -245,8 +237,6 @@ def load_uv_for_region(region_key: str) -> Dict[str, Any]:
 def load_kp_index() -> Dict[str, Any]:
     """
     Загрузка глобальных данных Kp-индекса.
-
-    Файл может формироваться отдельным collector-скриптом.
     """
     path = DATA_DIR / "kp_index.json"
     return load_json(path, default={}) or {}
@@ -322,7 +312,9 @@ def build_group_block(label: str, cities: Iterable[CityWeather]) -> str:
     return "\n".join(lines)
 
 
-def split_cities_by_temp(cities: Iterable[CityWeather], warm_threshold: float = 20.0) -> Tuple[List[CityWeather], List[CityWeather]]:
+def split_cities_by_temp(
+    cities: Iterable[CityWeather], warm_threshold: float = 20.0
+) -> Tuple[List[CityWeather], List[CityWeather]]:
     """
     Делит города на тёплые и холодные по максимальной температуре.
 
@@ -337,7 +329,9 @@ def split_cities_by_temp(cities: Iterable[CityWeather], warm_threshold: float = 
     return warm, cold
 
 
-def build_continental_block(label: str, cities: Iterable[CityWeather], warm_threshold: float = 20.0) -> str:
+def build_continental_block(
+    label: str, cities: Iterable[CityWeather], warm_threshold: float = 20.0
+) -> str:
     """
     Формирует блок по континентальным городам, разделяя на "Тёплые" / "Холодные".
     """
@@ -387,10 +381,6 @@ def kp_level_to_emoji(kp: Optional[float]) -> str:
 def build_kp_block(kp_data: Dict[str, Any]) -> str:
     """
     Строит блок по геомагнитной обстановке.
-
-    Ожидается, что kp_data содержит поля:
-    - "current": float
-    - "forecast": [ ... ]
     """
     curr = kp_data.get("current")
     emoji = kp_level_to_emoji(curr)
@@ -423,13 +413,13 @@ def header_line(region_name: str, date: pendulum.DateTime) -> str:
     return f"{region_name}: погода на завтра ({date.format('DD.MM.YYYY')})"
 
 
-def astro_hint_block(region_key: str, date: pendulum.DateTime, tz: pendulum.Timezone) -> str:
+def astro_hint_block(
+    region_key: str, date: pendulum.DateTime, tz: pendulum.Timezone
+) -> str:
     """
     Небольшой астроблок (если хотим подсветить какое-то астрособытие).
-    Пока заглушка, может дополняться.
+    Сейчас использует lunar_calendar.json.
     """
-    # На текущий момент астроданные подтягиваются в отдельных скриптах,
-    # здесь можем просто заглянуть в precomputed JSON.
     path = ROOT_DIR / "lunar_calendar.json"
     data = load_json(path, default={}) or {}
     days = data.get("days") or {}
@@ -452,7 +442,10 @@ def astro_hint_block(region_key: str, date: pendulum.DateTime, tz: pendulum.Time
     if not base:
         return ""
 
-    return f"🌌 Астрособытия\n🌕 {base} — земля под ногами прочна, а аппетит к жизни растёт.\n💰 Время ценить то, что уже есть, и приумножать: вложения и отношения крепнут без суеты."
+    return (
+        f"🌕 {base} — земля под ногами прочна, а аппетит к жизни растёт.\n"
+        f"💰 Время ценить то, что уже есть, и приумножать: вложения и отношения крепнут без суеты."
+    )
 
 
 def hashtags_line(region_key: str) -> str:
@@ -475,7 +468,7 @@ def _pick_cyprus_style_prompt(
     region_name: str,
     tz: Union[pendulum.Timezone, str, None],
     mode: Optional[str],
-) -> Optional[tuple[str, str, str]]:
+) -> Optional[Tuple[str, str, str]]:
     """Выбор стиля и промпта для вечернего поста по Кипру.
 
     Возвращает (style_name, prompt, date_str) или None, если картинку
@@ -495,8 +488,8 @@ def _pick_cyprus_style_prompt(
     now = pendulum.now(tz_obj)
     date_str = now.to_date_string()
 
-    # Детминированный выбор стиля на день, чтобы при повторах дня
-    # получался тот же вариант.
+    # Детерминированный выбор стиля на день, чтобы при повторах дня
+    # получался один и тот же вариант.
     key = f"cy-image-style|{region_name}|{mode_lc}|{date_str}"
     digest = hashlib.sha256(key.encode("utf-8")).digest()
     idx = digest[0] % 3  # 0..2
@@ -504,25 +497,25 @@ def _pick_cyprus_style_prompt(
     if idx == 0:
         style_name = "sea-sunrise"
         scene = (
-            "Soft Mediterranean evening over Cyprus coast, gentle waves, distant hills, "  # noqa: E501
-            "subtle city lights along the shore"
+            "Soft Mediterranean evening over Cyprus coast, gentle waves, distant "
+            "hills, subtle city lights along the shore"
         )
     elif idx == 1:
         style_name = "harbor-lights"
         scene = (
-            "Warm evening in Cyprus by the sea, harbor silhouettes, boats and reflections "  # noqa: E501
-            "on the water"
+            "Warm evening in Cyprus by the sea, harbor silhouettes, boats and "
+            "reflections on the water"
         )
     else:
         style_name = "balcony-human"
         scene = (
-            "Person standing on a hill or balcony in Cyprus, looking at the sea and sky, "  # noqa: E501
-            "city lights glowing in the distance"
+            "Person standing on a hill or balcony in Cyprus, looking at the sea "
+            "and sky, city lights glowing in the distance"
         )
 
     base_style = (
-        "dreamy minimalist illustration, pastel colors, subtle gradients, soft light, "  # noqa: E501
-        "digital art, square format, no text"
+        "dreamy minimalist illustration, pastel colors, subtle gradients, soft "
+        "light, digital art, square format, no text"
     )
 
     prompt = f"{scene}. {base_style}"
@@ -533,7 +526,7 @@ def _maybe_generate_cyprus_image(
     region_name: str,
     tz: Union[pendulum.Timezone, str, None],
     mode: Optional[str],
-) -> tuple[Optional[str], Optional[str]]:
+) -> Tuple[Optional[str], Optional[str]]:
     """Синхронно пытается сгенерировать картинку для вечернего Кипра.
 
     Возвращает (image_path, style_name) или (None, None).
@@ -542,7 +535,7 @@ def _maybe_generate_cyprus_image(
         return None, None
 
     if generate_astro_image is None:
-        logging.info("CY image: imagegen backend not available")
+        logger.info("CY image: imagegen backend not available")
         return None, None
 
     try:
@@ -553,12 +546,12 @@ def _maybe_generate_cyprus_image(
         out_path = CY_IMAGE_DIR / f"cy_{date_str}.jpg"
         img_path = generate_astro_image(prompt, str(out_path))
         if img_path and os.path.exists(img_path):
-            logging.info("CY image generated: %s (style=%s)", img_path, style_name)
+            logger.info("CY image generated: %s (style=%s)", img_path, style_name)
             return img_path, style_name
-        logging.warning("CY image generation returned no file")
+        logger.warning("CY image generation returned no file")
         return None, None
     except Exception as exc:
-        logging.warning("CY image generation failed: %s", exc)
+        logger.warning("CY image generation failed: %s", exc)
         return None, None
 
 
@@ -590,11 +583,11 @@ def build_message(
         kp_data = load_kp_index()
         kp_block = build_kp_block(kp_data)
 
-    astro_block = astro_hint_block("cy", tomorrow, tz_obj) if "кипр" in region_name.lower() or "cyprus" in region_name.lower() else ""
+    is_cy = _is_cyprus_region(region_name)
+    astro_block = astro_hint_block("cy", tomorrow, tz_obj) if is_cy else ""
+    fact = load_fact_of_day("cy", tomorrow) if is_cy else ""
 
-    fact = load_fact_of_day("cy", tomorrow) if "кипр" in region_name.lower() or "cyprus" in region_name.lower() else ""
-
-    tags = hashtags_line("cy" if "кипр" in region_name.lower() or "cyprus" in region_name.lower() else "world")
+    tags = hashtags_line("cy" if is_cy else "world")
 
     parts: List[str] = []
     parts.append(header)
@@ -611,7 +604,7 @@ def build_message(
         parts.append(kp_block)
     if astro_block:
         parts.append("🌌 Астрособытия")
-        parts.append(astro_block.replace("🌌 Астрособытия\n", ""))
+        parts.append(astro_block)
     if fact:
         parts.append("🧠 Факт дня")
         parts.append(fact)
@@ -662,11 +655,11 @@ async def send_common_post(
             mode=mode,
         )
     except Exception as exc:
-        logging.warning("CY image helper failed: %s", exc)
+        logger.warning("CY image helper failed: %s", exc)
         img_path, style_name = None, None
 
     if img_path and os.path.exists(img_path):
-        logging.info(
+        logger.info(
             "Sending Cyprus image post with photo: %s (style=%s)",
             img_path,
             style_name or "?",
@@ -681,7 +674,7 @@ async def send_common_post(
                 )
             return
         except Exception as exc:
-            logging.warning(
+            logger.warning(
                 "send_common_post: send_photo failed, fallback to text: %s",
                 exc,
             )
@@ -695,18 +688,35 @@ async def send_common_post(
 
 
 async def main_common(
-    token: str,
-    chat_id: int,
-    region_name: str,
-    sea_label: str,
-    sea_cities,
-    other_label: str,
-    other_cities,
-    tz: Union[pendulum.Timezone, str],
+    *,
+    # старый стиль: готовый bot
+    bot: Optional[Bot] = None,
+    # новый стиль: токен для создания бота внутри
+    token: Optional[str] = None,
+    chat_id: Optional[int] = None,
+    region_name: str = "",
+    sea_label: str = "",
+    sea_cities=None,
+    other_label: str = "",
+    other_cities=None,
+    tz: Union[pendulum.Timezone, str] = "UTC",
     mode: Optional[str] = None,
 ) -> None:
-    """Создаёт Bot и отправляет общий пост."""
-    bot = Bot(token=token)
+    """
+    Создаёт Bot (если нужно) и отправляет общий пост.
+
+    Обратная совместимость:
+    - старый вызов: main_common(bot=bot, chat_id=..., region_name=..., ...)
+    - новый вызов: main_common(token=TOKEN, chat_id=..., region_name=..., ...)
+    """
+    if bot is None:
+        if not token:
+            raise ValueError("main_common: either `bot` or `token` must be provided")
+        bot = Bot(token=token)
+
+    if chat_id is None:
+        raise ValueError("main_common: `chat_id` is required")
+
     await send_common_post(
         bot=bot,
         chat_id=chat_id,
@@ -721,4 +731,7 @@ async def main_common(
 
 
 if __name__ == "__main__":
-    print("Этот модуль предполагается использовать как импортируемый (post_common).")
+    print(
+        "Этот модуль предполагается использовать как импортируемый "
+        "(post_common.main_common / send_common_post)."
+    )
