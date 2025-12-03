@@ -413,8 +413,12 @@ def _favday_status_for(day: int, bucket: dict | None) -> str | None:
 
 def _favdays_lines_for_date(rec: dict, date_local: pendulum.Date) -> list[str]:
     """
-    Собирает короткие строки про благоприятность текущего дня месяца
-    по категориям (общие дела, покупки, поездки и т.д.).
+    Короткие строки про благоприятность ТЕКУЩЕГО дня месяца.
+
+    Логика:
+    - 'general' даёт общий фон: благоприятный / неблагоприятный / смешанный.
+    - По остальным категориям показываем только те, где день явно благоприятный.
+      (Плохие категории не перечисляем, чтобы не перегружать сообщение.)
     """
     day = date_local.day
 
@@ -422,27 +426,34 @@ def _favdays_lines_for_date(rec: dict, date_local: pendulum.Date) -> list[str]:
     if not isinstance(root, dict):
         return []
 
-    good: list[str] = []
-    bad: list[str] = []
-    mixed: list[str] = []
+    lines: list[str] = []
+
+    # --- Общий фон дня (general) ---
+    general_bucket = root.get("general") or {}
+    st_general = _favday_status_for(day, general_bucket)
+
+    if st_general == "good":
+        lines.append("✅ Общий фон: благоприятный день.")
+    elif st_general == "bad":
+        lines.append("⚠️ Общий фон: неблагоприятный день.")
+    elif st_general == "mixed":
+        lines.append("➿ Общий фон: день с разным фоном — прислушивайся к себе.")
+
+    # --- Остальные категории: показываем только благоприятные ---
+    good_cats: list[str] = []
 
     for key, (icon, label) in _FAVDAY_LABELS.items():
+        if key == "general":
+            continue
         bucket = root.get(key) or {}
         st = _favday_status_for(day, bucket)
         if st == "good":
-            good.append(f"{icon} {label}")
-        elif st == "bad":
-            bad.append(f"{icon} {label}")
-        elif st == "mixed":
-            mixed.append(f"{icon} {label}")
+            # Напр. "💇‍♀️ стрижки", "💰 покупки"
+            good_cats.append(f"{icon} {label}")
 
-    lines: list[str] = []
-    if good:
-        lines.append("✅ Благоприятно для: " + ", ".join(good) + ".")
-    if bad:
-        lines.append("⚠️ Неблагоприятно для: " + ", ".join(bad) + ".")
-    if mixed:
-        lines.append("➿ Зависит от контекста: " + ", ".join(mixed) + ".")
+    if good_cats:
+        lines.append("💚 В плюсе сегодня: " + ", ".join(good_cats) + ".")
+
     return lines
 
 def build_astro_section(
