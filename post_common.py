@@ -14,12 +14,12 @@ post_common.py — VayboMeter (Кипр/универсальный).
 """
 
 from __future__ import annotations
-import os, re, json, html, asyncio, logging, math
+import os, re, json, html, asyncio, logging, math, datetime as dt
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Union
 
 import pendulum
-from telegram import Bot, constants
+from telegram import Bot, constants, FSInputFile
 
 from utils        import compass, get_fact, kmh_to_ms, smoke_index
 from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
@@ -27,6 +27,8 @@ from air          import get_air, get_sst, get_solar_wind
 from pollen       import get_pollen
 from radiation    import get_radiation
 from gpt          import gpt_blurb, gpt_complete
+from world_en.imagegen import generate_astro_image
+from image_prompt_cy   import build_cyprus_evening_prompt
 
 try:
     import requests  # type: ignore
@@ -360,7 +362,6 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
     try:
         txt = gpt_complete(prompt=prompt, system=system, temperature=0.2, max_tokens=160)
         raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
-
         safe: List[str] = []
         for l in raw_lines:
             l = _sanitize_line(l, 120)
@@ -443,19 +444,15 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
     hourly = wm.get("hourly") or {}
     times = _hourly_times(wm)
     tomorrow = pendulum.now(tz).add(days=1).date()
-
     spd_arr = _pick(hourly, "windspeed_10m","windspeed","wind_speed_10m","wind_speed", default=[])
     dir_arr = _pick(hourly, "winddirection_10m","winddirection","wind_dir_10m","wind_dir", default=[])
     prs_arr = hourly.get("surface_pressure", []) or hourly.get("pressure", [])
-
     if times:
         idx_noon = _nearest_index_for_day(times, tomorrow, 12, tz)
         idx_morn = _nearest_index_for_day(times, tomorrow, 6,  tz)
     else:
         idx_noon = idx_morn = None
-
     wind_ms = wind_dir = press_val = None; trend = "→"
-
     if idx_noon is not None:
         try: spd = float(spd_arr[idx_noon]) if idx_noon < len(spd_arr) else None
         except Exception: spd = None
@@ -465,14 +462,11 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
         except Exception: p_noon = None
         try: p_morn = float(prs_arr[idx_morn]) if idx_morn is not None and idx_morn < len(prs_arr) else None
         except Exception: p_morn = None
-
         wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else None
         wind_dir = int(round(wdir)) if isinstance(wdir, (int, float)) else None
         press_val = int(round(p_noon)) if isinstance(p_noon, (int, float)) else None
-
         if isinstance(p_noon,(int,float)) and isinstance(p_morn,(int,float)):
             diff = p_noon - p_morn; trend = "↑" if diff>=0.3 else "↓" if diff<=-0.3 else "→"
-
     if wind_ms is None and times:
         idxs = [i for i,t in enumerate(times) if t.in_tz(tz).date()==tomorrow]
         if idxs:
@@ -486,7 +480,6 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
             mean_dir = _circular_mean_deg(dirs)
             wind_dir = int(round(mean_dir)) if mean_dir is not None else wind_dir
             if prs: press_val = int(round(sum(prs)/len(prs)))
-
     if wind_ms is None or wind_dir is None or press_val is None:
         cur = wm.get("current") or {}
         if wind_ms is None:
@@ -504,7 +497,7 @@ def _tomorrow_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[
     times = _hourly_times(wm)
     tom = pendulum.now(tz).add(days=1).date()
     idxs: List[int] = []
-    for i, dt in enumerate(times):
+    for i, dt in enumerate(times):   # ← FIX: закрывающая скобка
         try:
             if dt.in_tz(tz).date() == tom:
                 idxs.append(i)
@@ -961,6 +954,51 @@ async def send_common_post(
         tz=tz,
         mode=mode,
     )
+
+    # Попытка сгенерировать картинку для вечернего кипрского поста.
+    # Можно выключить через CY_IMG_ENABLED=0.
+    try:
+        effective_mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
+    except Exception:
+        effective_mode = "evening"
+    enable_img = os.getenv("CY_IMG_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+
+    if enable_img and effective_mode.startswith("evening"):
+        try:
+            today = dt.date.today()
+            marine_mood = "warm Mediterranean evening by the sea, light breeze and relaxed vibe"
+            inland_mood = "cooler, quieter air in the mountains and inland towns"
+            astro_mood_en = "almost full Moon mood, grounded and calm energy for tomorrow"
+            prompt, style_name = build_cyprus_evening_prompt(
+                date=today,
+                marine_mood=marine_mood,
+                inland_mood=inland_mood,
+                astro_mood_en=astro_mood_en,
+            )
+            img_dir = Path("cy_images")
+            img_dir.mkdir(parents=True, exist_ok=True)
+            img_file = img_dir / f"cyprus_evening_{today.isoformat()}_{style_name}.jpg"
+            img_path = generate_astro_image(prompt, str(img_file))
+        except Exception as exc:
+            logging.warning("Cyprus image generation failed: %s", exc)
+            img_path = None
+
+        if img_path and Path(img_path).exists():
+            caption = msg
+            if len(caption) > 1000:
+                caption = caption[:1000]
+            try:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=FSInputFile(img_path),
+                    caption=caption,
+                    parse_mode=constants.ParseMode.HTML,
+                )
+                return
+            except Exception as exc:
+                logging.warning("Sending photo failed, fallback to text: %s", exc)
+
+    # Fallback — текст как раньше
     await bot.send_message(
         chat_id=chat_id,
         text=msg,
