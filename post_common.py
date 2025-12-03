@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Union
 
 import pendulum
-from telegram import Bot, constants, FSInputFile
+from telegram import Bot, constants
 
 from utils        import compass, get_fact, kmh_to_ms, smoke_index
 from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
@@ -988,15 +988,17 @@ async def send_common_post(
             if len(caption) > 1000:
                 caption = caption[:1000]
             try:
-                await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=FSInputFile(img_path),
-                    caption=caption,
-                    parse_mode=constants.ParseMode.HTML,
-                )
+                with open(img_path, "rb") as f:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=caption,
+                        parse_mode=constants.ParseMode.HTML,
+                    )
                 return
             except Exception as exc:
                 logging.warning("Sending photo failed, fallback to text: %s", exc)
+
 
     # Fallback — текст как раньше
     await bot.send_message(
