@@ -375,33 +375,127 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
         logging.warning("Astro LLM failed: %s", e)
     return []
 
-def build_astro_section(date_local: Optional[pendulum.Date] = None, tz_local: str = "Asia/Nicosia") -> str:
+# ───────────── благоприятные / неблагоприятные дни ─────────────
+
+_FAVDAY_LABELS = {
+    "general":  ("✨", "общие дела"),
+    "shopping": ("💰", "покупки"),
+    "travel":   ("✈️", "поездки"),
+    "haircut":  ("💇‍♀️", "стрижки"),
+    "health":   ("🩺", "здоровье"),
+}
+
+
+def _favday_status_for(day: int, bucket: dict | None) -> str | None:
+    """
+    Возвращает статус дня для одной категории:
+      - "good"   — день есть только в favorable
+      - "bad"    — день есть только в unfavorable
+      - "mixed"  — день в обоих списках
+      - None     — информации нет
+    """
+    if not isinstance(bucket, dict):
+        return None
+    fav = bucket.get("favorable") or []
+    unf = bucket.get("unfavorable") or []
+
+    in_f = day in fav
+    in_u = day in unf
+
+    if in_f and in_u:
+        return "mixed"
+    if in_f:
+        return "good"
+    if in_u:
+        return "bad"
+    return None
+
+
+def _favdays_lines_for_date(rec: dict, date_local: pendulum.Date) -> list[str]:
+    """
+    Собирает короткие строки про благоприятность текущего дня месяца
+    по категориям (общие дела, покупки, поездки и т.д.).
+    """
+    day = date_local.day
+
+    root = rec.get("favorable_days") or rec.get("unfavorable_days") or {}
+    if not isinstance(root, dict):
+        return []
+
+    good: list[str] = []
+    bad: list[str] = []
+    mixed: list[str] = []
+
+    for key, (icon, label) in _FAVDAY_LABELS.items():
+        bucket = root.get(key) or {}
+        st = _favday_status_for(day, bucket)
+        if st == "good":
+            good.append(f"{icon} {label}")
+        elif st == "bad":
+            bad.append(f"{icon} {label}")
+        elif st == "mixed":
+            mixed.append(f"{icon} {label}")
+
+    lines: list[str] = []
+    if good:
+        lines.append("✅ Благоприятно для: " + ", ".join(good) + ".")
+    if bad:
+        lines.append("⚠️ Неблагоприятно для: " + ", ".join(bad) + ".")
+    if mixed:
+        lines.append("➿ Зависит от контекста: " + ", ".join(mixed) + ".")
+    return lines
+
+def build_astro_section(
+    date_local: Optional[pendulum.Date] = None,
+    tz_local: str = "Asia/Nicosia",
+) -> str:
     tz = pendulum.timezone(tz_local)
     date_local = date_local or pendulum.today(tz)
     date_key = date_local.format("YYYY-MM-DD")
+
     cal = load_calendar("lunar_calendar.json")
     rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
+
     phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
     phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
+
     percent = rec.get("percent") or rec.get("illumination") or rec.get("illum") or 0
-    try: percent = int(round(float(percent)))
-    except Exception: percent = 0
+    try:
+        percent = int(round(float(percent)))
+    except Exception:
+        percent = 0
+
     sign = rec.get("sign") or rec.get("zodiac") or ""
+
     voc_text = ""
     voc = voc_interval_for_date(rec, tz_local=tz_local)
     if voc:
-        t1, t2 = voc; voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
+        t1, t2 = voc
+        voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
 
-    # коротко и по делу
-    bullets = _astro_llm_bullets(date_local.format("DD.MM.YYYY"), phase_name, int(percent or 0), sign, voc_text)
+    # Короткий LLM-обзор на основе фазы, знака и VoC
+    bullets = _astro_llm_bullets(
+        date_local.format("DD.MM.YYYY"),
+        phase_name,
+        int(percent or 0),
+        sign,
+        voc_text,
+    )
     if not bullets:
         base = f"🌙 {phase_name or 'Луна'} • освещённость {percent}%"
         mood = f"♒ Знак: {sign}" if sign else "— знак н/д"
         bullets = [base, mood]
-    lines = ["🌌 <b>Астрособытия</b>"]
+
+    lines: list[str] = ["🌌 <b>Астрособытия</b>"]
     lines += [zsym(x) for x in bullets[:3]]
+
     if voc_text:
         lines.append(f"⚫️ VoC {voc_text} — без новых стартов.")
+
+    # Добавляем строчки про благоприятные / неблагоприятные дни по категориям
+    fav_lines = _favdays_lines_for_date(rec, date_local)
+    lines += fav_lines
+
     return "\n".join(lines)
 
 # ───────────── hourly/ветер/давление ─────────────
