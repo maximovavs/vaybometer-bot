@@ -14,7 +14,7 @@ post_common.py — VayboMeter (Кипр/универсальный).
 """
 
 from __future__ import annotations
-import os, re, json, html, asyncio, logging, math
+import os, re, json, html, asyncio, logging, math, datetime as dt
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Union
 
@@ -27,6 +27,8 @@ from air          import get_air, get_sst, get_solar_wind
 from pollen       import get_pollen
 from radiation    import get_radiation
 from gpt          import gpt_blurb, gpt_complete
+from world_en.imagegen import generate_astro_image
+from image_prompt_cy   import build_cyprus_evening_prompt
 
 try:
     import requests  # type: ignore
@@ -952,6 +954,53 @@ async def send_common_post(
         tz=tz,
         mode=mode,
     )
+
+    # Попытка сгенерировать картинку для вечернего кипрского поста.
+    # Можно выключить через CY_IMG_ENABLED=0.
+    try:
+        effective_mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
+    except Exception:
+        effective_mode = "evening"
+    enable_img = os.getenv("CY_IMG_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+
+    if enable_img and effective_mode.startswith("evening"):
+        try:
+            today = dt.date.today()
+            marine_mood = "warm Mediterranean evening by the sea, light breeze and relaxed vibe"
+            inland_mood = "cooler, quieter air in the mountains and inland towns"
+            astro_mood_en = "almost full Moon mood, grounded and calm energy for tomorrow"
+            prompt, style_name = build_cyprus_evening_prompt(
+                date=today,
+                marine_mood=marine_mood,
+                inland_mood=inland_mood,
+                astro_mood_en=astro_mood_en,
+            )
+            img_dir = Path("cy_images")
+            img_dir.mkdir(parents=True, exist_ok=True)
+            img_file = img_dir / f"cyprus_evening_{today.isoformat()}_{style_name}.jpg"
+            img_path = generate_astro_image(prompt, str(img_file))
+        except Exception as exc:
+            logging.warning("Cyprus image generation failed: %s", exc)
+            img_path = None
+
+        if img_path and Path(img_path).exists():
+            caption = msg
+            if len(caption) > 1000:
+                caption = caption[:1000]
+            try:
+                with open(img_path, "rb") as f:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=caption,
+                        parse_mode=constants.ParseMode.HTML,
+                    )
+                return
+            except Exception as exc:
+                logging.warning("Sending photo failed, fallback to text: %s", exc)
+
+
+    # Fallback — текст как раньше
     await bot.send_message(
         chat_id=chat_id,
         text=msg,
