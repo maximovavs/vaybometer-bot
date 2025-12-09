@@ -369,8 +369,8 @@ def build_cyprus_evening_prompt(
     #   mini_dashboard — изредка (1),
     #   moon_goddess   — иногда (1), когда есть осмысленный астротекст.
     weighted_style_fns = (
-        [_style_prompt_sea_mountains] * 3
-        + [_style_prompt_map_mood] * 2
+        [_style_prompt_sea_mountains] * 1
+        + [_style_prompt_map_mood] * 1
         + [_style_prompt_mini_dashboard] * 1
         + [_style_prompt_moon_goddess] * 1
     )
