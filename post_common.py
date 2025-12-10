@@ -645,7 +645,7 @@ def _favdays_lines_for_date(rec: dict, date_local: pendulum.Date) -> list[str]:
             good_cats.append(f"{icon} {label}")
 
     if good_cats:
-        lines.append("💚 В плюсе сегодня: " + ", ".join(good_cats) + ".")
+        lines.append("💚 В плюсе: " + ", ".join(good_cats) + ".")
 
     return lines
 
