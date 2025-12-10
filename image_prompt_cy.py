@@ -7,14 +7,17 @@ image_prompt_cy.py
 с несколькими сценариями картинок и «взвешенным» случайным выбором стиля.
 
 Стили:
-1) "sea_mountains"  — приоритетный: море + горы + Луна, кинематографичный вечер.
+1) "sea_mountains"  — море + горы + Луна, кинематографичный вечер.
 2) "map_mood"       — стилизованная карта-настроение Кипра.
 3) "mini_dashboard" — утилитарный «дашборд»-метафора без текста/цифр.
 4) "moon_goddess"   — мифологичная Луна-богиня, играющая со знаком зодиака.
 
-Функция build_cyprus_evening_prompt НЕ делает HTTP-запросы, она только
-возвращает текст промта и имя выбранного стиля. Генерация картинки делается
-через world_en.imagegen.generate_astro_image или аналогичный бэкенд.
+Особенности:
+- Стиль выбирается детерминированно от даты,
+  с небольшим перевесом sea_mountains и map_mood.
+- Фаза Луны и знак берутся из lunar_calendar.json (на ЗАВТРА),
+  что даёт разную форму Луны и настроение неба.
+- Для каждого стиля есть несколько цветовых палитр, выбираемых от даты.
 """
 
 from __future__ import annotations
@@ -23,7 +26,9 @@ import dataclasses
 import datetime as dt
 import random
 import logging
-from typing import Tuple, Optional
+import json
+from pathlib import Path
+from typing import Tuple, Optional, List
 
 
 @dataclasses.dataclass(frozen=True)
@@ -33,7 +38,7 @@ class CyprusImageContext:
     marine_mood: str
     # Краткий смысл для суши/гор — по Никосии/Тродосу и т.п.
     inland_mood: str
-    # Краткий астротекст (строка/фраза из блока "Астрособытия", сжатая и/или переведённая на EN)
+    # Краткий астротекст (строка/фраза из блока "Астрособытия", сжатая/переведённая на EN)
     astro_mood_en: str = ""
 
 
@@ -72,6 +77,80 @@ ZODIAC_EN = [
 ]
 
 
+# ───────────────────── утилиты случайности ─────────────────────
+
+
+def _choice_by_date(ctx: CyprusImageContext, salt: str, options: List[str]) -> str:
+    """
+    Детерминированный выбор варианта от даты + "соли",
+    чтобы в один и тот же день картинка не скакала между перезапусками.
+    """
+    seed = ctx.date.toordinal() * 10007 + sum(ord(c) for c in salt)
+    rnd = random.Random(seed)
+    return rnd.choice(options)
+
+
+# ───────────────────── лунный календарь ─────────────────────
+
+
+def _load_calendar(path: str = "lunar_calendar.json") -> dict:
+    try:
+        data = json.loads(Path(path).read_text("utf-8"))
+    except Exception:
+        return {}
+    if isinstance(data, dict) and isinstance(data.get("days"), dict):
+        return data["days"]
+    return data if isinstance(data, dict) else {}
+
+
+def _astro_phrase_from_calendar(date_for_astro: dt.date) -> str:
+    """
+    Собираем короткую EN-фразу вроде 'Full Moon in Taurus'
+    из lunar_calendar.json для указанной даты.
+    """
+    cal = _load_calendar()
+    rec = cal.get(date_for_astro.isoformat(), {})
+    if not isinstance(rec, dict):
+        return ""
+
+    phase_raw = (rec.get("phase_name") or rec.get("phase") or "").lower()
+    sign_raw = (rec.get("sign") or rec.get("zodiac") or "").lower()
+
+    phase_en: Optional[str] = None
+
+    if "полнолуние" in phase_raw or "full" in phase_raw:
+        phase_en = "Full Moon"
+    elif "новолуние" in phase_raw or "new" in phase_raw:
+        phase_en = "New Moon"
+    elif "первая четверть" in phase_raw or "first quarter" in phase_raw or "растущ" in phase_raw or "waxing" in phase_raw:
+        phase_en = "First Quarter Moon"
+    elif "последняя четверть" in phase_raw or "last quarter" in phase_raw or "убывающ" in phase_raw or "waning" in phase_raw:
+        phase_en = "Last Quarter Moon"
+
+    sign_en: Optional[str] = None
+    if sign_raw:
+        for ru, en in ZODIAC_RU_EN.items():
+            if ru in sign_raw:
+                sign_en = en
+                break
+        if sign_en is None:
+            for en in ZODIAC_EN:
+                if en.lower() in sign_raw:
+                    sign_en = en
+                    break
+
+    parts: List[str] = []
+    if phase_en:
+        parts.append(phase_en)
+    if sign_en:
+        parts.append(f"in {sign_en}")
+
+    return " ".join(parts)
+
+
+# ───────────────────── анализ погоды ─────────────────────
+
+
 def _weather_flavour(marine_mood: str, inland_mood: str) -> str:
     """
     Вытащить «подтон» — ветрено / дождливо / спокойно — из текстовых mood'ов.
@@ -102,6 +181,9 @@ def _weather_flavour(marine_mood: str, inland_mood: str) -> str:
     )
 
 
+# ───────────────────── астрокартинка ─────────────────────
+
+
 def _parse_moon_phase_and_sign(text: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Из строки астропрогноза вытащить фазу Луны и знак (RU/EN).
@@ -117,9 +199,9 @@ def _parse_moon_phase_and_sign(text: str) -> Tuple[Optional[str], Optional[str]]
         phase = "full"
     elif "новолуние" in s or "new moon" in s:
         phase = "new"
-    elif "первая четверть" in s or "first quarter" in s:
+    elif "первая четверть" in s or "first quarter" in s or "waxing" in s or "растущ" in s:
         phase = "first_quarter"
-    elif "последняя четверть" in s or "last quarter" in s:
+    elif "последняя четверть" in s or "last quarter" in s or "waning" in s or "убывающ" in s:
         phase = "last_quarter"
 
     sign: Optional[str] = None
@@ -196,6 +278,43 @@ def _astro_visual_goddess(text: str) -> str:
 # ───────────────────── стили ─────────────────────
 
 
+def _sea_palette(ctx: CyprusImageContext) -> str:
+    return _choice_by_date(
+        ctx,
+        "sea_palette",
+        [
+            "soft coral and peach near the horizon, fading into deep indigo and midnight blue above",
+            "magenta and violet twilight sky with electric blue highlights near the horizon",
+            "cold silver-blue moonlit sky with subtle greenish aurora-like tints over the sea",
+            "stormy teal and steel-blue sky with heavy clouds and small gaps of warm light",
+        ],
+    )
+
+
+def _map_palette(ctx: CyprusImageContext) -> str:
+    return _choice_by_date(
+        ctx,
+        "map_palette",
+        [
+            "turquoise and deep teal water with golden-orange sky glow",
+            "soft cyan sea against a lavender and pink twilight sky",
+            "deep navy-blue sea with warm copper and amber sky tones",
+        ],
+    )
+
+
+def _dashboard_palette(ctx: CyprusImageContext) -> str:
+    return _choice_by_date(
+        ctx,
+        "dashboard_palette",
+        [
+            "cool teal and navy background with soft neon-like accents",
+            "warm gradient from peach to violet with calm turquoise sea area",
+            "deep blue background with subtle cyan and magenta glows",
+        ],
+    )
+
+
 def _style_prompt_map_mood(ctx: CyprusImageContext) -> Tuple[str, str]:
     """
     Стиль 1: «карта-настроение Кипра».
@@ -205,11 +324,13 @@ def _style_prompt_map_mood(ctx: CyprusImageContext) -> Tuple[str, str]:
 
     weather_text = _weather_flavour(ctx.marine_mood, ctx.inland_mood)
     astro_sky = _astro_visual_sky(ctx.astro_mood_en)
+    palette = _map_palette(ctx)
 
     prompt = (
-        "Dreamy stylized flat map of Cyprus floating above a calm Mediterranean sea at golden hour. "
-        "Turquoise and deep teal water in the lower half, very calm surface with soft reflections. "
-        "Soft coral and peach sunset sky in the upper half, fading smoothly into deep blue twilight. "
+        "Dreamy stylized flat map of Cyprus floating above the Mediterranean sea at golden hour. "
+        "The island shape is clean and easily recognizable, but without any labels. "
+        f"Water is rendered with {palette}, the surface mostly calm with soft reflections. "
+        "Soft sunset sky in the upper half, fading smoothly into deeper twilight tones. "
         "The coastline mood feels like this: "
         f"{ctx.marine_mood or 'warm, welcoming and slightly breezy by the sea'}. "
         "Inland areas carry a different, more grounded vibe: "
@@ -230,13 +351,14 @@ def _style_prompt_map_mood(ctx: CyprusImageContext) -> Tuple[str, str]:
 
 def _style_prompt_sea_mountains(ctx: CyprusImageContext) -> Tuple[str, str]:
     """
-    Стиль 2 (приоритетный): «море + горы + Луна».
+    Стиль 2 (основной): «море + горы + Луна».
     Кинематографичный вечер у моря с силуэтом Тродоса.
     """
     style_name = "sea_mountains"
 
     weather_text = _weather_flavour(ctx.marine_mood, ctx.inland_mood)
     astro_sky = _astro_visual_sky(ctx.astro_mood_en)
+    palette = _sea_palette(ctx)
 
     prompt = (
         "Cozy Cyprus coastal evening scene. "
@@ -247,9 +369,9 @@ def _style_prompt_sea_mountains(ctx: CyprusImageContext) -> Tuple[str, str]:
         "painted in cooler bluish and violet tones to show fresher, quieter air — "
         f"{ctx.inland_mood or 'cool, peaceful and grounding'}. "
         f"{weather_text} "
-        "Above everything, a large almost–full golden Moon with a subtle halo and a few tiny stars "
-        "shining through a clear twilight sky; the sky shifts from soft coral and peach near the horizon "
-        "into deep indigo and midnight blue higher up. "
+        "Above everything, the night sky is painted with this palette: "
+        f"{palette}. "
+        "A clearly visible Moon dominates the composition, its light reflected on the water in a soft shimmering path. "
         "Atmospheric, cinematic lighting, soft gradients, high quality digital painting, no people. "
         "No text, no captions, no labels, no logos, absolutely no letters or numbers anywhere. "
         "Square format composition, suitable as a weather thumbnail for social media."
@@ -272,6 +394,7 @@ def _style_prompt_mini_dashboard(ctx: CyprusImageContext) -> Tuple[str, str]:
 
     weather_text = _weather_flavour(ctx.marine_mood, ctx.inland_mood)
     astro_sky = _astro_visual_sky(ctx.astro_mood_en)
+    palette = _dashboard_palette(ctx)
 
     prompt = (
         "Modern minimalist weather dashboard–style illustration for Cyprus, but purely pictorial. "
@@ -281,7 +404,8 @@ def _style_prompt_mini_dashboard(ctx: CyprusImageContext) -> Tuple[str, str]:
         f"Coast markers feel warm and breezy, suggesting a pleasant seaside evening: {ctx.marine_mood or 'mild, slightly cloudy and comfortable'}; "
         f"the inland marker feels cooler and calmer: {ctx.inland_mood or 'fresh, stable and quiet'}. "
         f"{weather_text} "
-        "Above the island, an almost–full golden Moon and a few soft clouds and tiny stars hint at the astro energy. "
+        "Above the island, an almost–full Moon and a few soft clouds and tiny stars hint at the astro energy. "
+        f"The background and widgets use this color palette: {palette}. "
     )
 
     if ctx.astro_mood_en:
@@ -311,6 +435,7 @@ def _style_prompt_moon_goddess(ctx: CyprusImageContext) -> Tuple[str, str]:
         return _style_prompt_sea_mountains(ctx)
 
     style_name = "moon_goddess"
+    palette = _sea_palette(ctx)
 
     prompt = (
         "Mythic evening scene above the Cyprus coast. "
@@ -318,6 +443,7 @@ def _style_prompt_moon_goddess(ctx: CyprusImageContext) -> Tuple[str, str]:
         f"Below, the coastline reflects this mood: {ctx.marine_mood or 'warm Mediterranean shoreline with gentle waves and salty air'}. "
         f"Inland you can feel: {ctx.inland_mood or 'quieter, cooler hills and villages with grounded energy'}. "
         f"In the sky, {goddess}. "
+        f"The sky and sea follow this color palette: {palette}. "
         "The sea and the land are softly lit by her light, with subtle reflections on the water and the coastline. "
         "Rich colours, cinematic fantasy illustration, high detail, soft glow. "
         "No text, no captions, no labels, no logos, absolutely no letters or numbers anywhere. "
@@ -348,29 +474,37 @@ def build_cyprus_evening_prompt(
     Особенности:
     - randomness детерминируется датой (по ordinal), чтобы в течение дня
       стиль не скакал между перезапусками;
-    - стиль «sea_mountains» имеет повышенный вес, карта/дашборд/богиня — реже;
-    - mood'ы моря/суши и астротекст влияют на атмосферу и погоду в сцене,
-      включая ветреные и дождливые варианты.
+    - стиль «sea_mountains» и «map_mood» имеют слегка повышенный вес,
+      mini_dashboard и moon_goddess — реже;
+    - фаза Луны и знак берутся из lunar_calendar.json на ЗАВТРА.
     """
+    # Берём астроданные на ЗАВТРА, чтобы картинка была синхронна с прогнозом
+    cal_phrase = _astro_phrase_from_calendar(date + dt.timedelta(days=1))
+    if cal_phrase and astro_mood_en:
+        astro_combined = f"{cal_phrase}. {astro_mood_en}"
+    elif cal_phrase:
+        astro_combined = cal_phrase
+    else:
+        astro_combined = astro_mood_en or ""
+
     ctx = CyprusImageContext(
         date=date,
         marine_mood=(marine_mood or "").strip(),
         inland_mood=(inland_mood or "").strip(),
-        astro_mood_en=(astro_mood_en or "").strip(),
+        astro_mood_en=astro_combined.strip(),
     )
 
-    rnd = random.Random()
     # Соль по дате, чтобы стиль для конкретного дня был стабильным
-    rnd.seed(date.toordinal() * 9973 + 42)
+    rnd = random.Random(date.toordinal() * 9973 + 42)
 
     # Весовой выбор:
-    #   sea_mountains  — основной (3 «билета»),
-    #   map_mood       — чуть реже (2),
+    #   sea_mountains  — основной (2 «билета»),
+    #   map_mood       — тоже частый (2),
     #   mini_dashboard — изредка (1),
-    #   moon_goddess   — иногда (1), когда есть осмысленный астротекст.
+    #   moon_goddess   — иногда (1).
     weighted_style_fns = (
-        [_style_prompt_sea_mountains] * 1
-        + [_style_prompt_map_mood] * 1
+        [_style_prompt_sea_mountains] * 2
+        + [_style_prompt_map_mood] * 2
         + [_style_prompt_mini_dashboard] * 1
         + [_style_prompt_moon_goddess] * 1
     )
