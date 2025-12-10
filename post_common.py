@@ -11,6 +11,7 @@ post_common.py — VayboMeter (Кипр/универсальный).
 - Kp как в мировом чате (NOAA) — USE_WORLD_KP=1.
 - Защита от перепутанных аргументов tz/mode.
 - Терпимый парсер входных списков городов.
+- ASTRO_OFFSET — сдвиг даты для астроблока (в днях, по умолчанию 0).
 """
 
 from __future__ import annotations
@@ -649,12 +650,54 @@ def _favdays_lines_for_date(rec: dict, date_local: pendulum.Date) -> list[str]:
     return lines
 
 
+def _advice_lines_from_rec(rec: dict) -> list[str]:
+    """
+    Берёт готовый текст совета из rec['advice'] (или похожих полей)
+    и преобразует в 1–3 аккуратные строки.
+    """
+    if not isinstance(rec, dict):
+        return []
+    raw = (
+        rec.get("advice")
+        or rec.get("advice_ru")
+        or rec.get("text")
+        or rec.get("summary")
+    )
+    if not isinstance(raw, str):
+        return []
+    raw = raw.strip()
+    if not raw:
+        return []
+    lines: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # убираем уже существующие маркеры списка
+        line = re.sub(r"^[•\-\u2022]+\s*", "", line)
+        line = _sanitize_line(line, 120)
+        if not line or _looks_gibberish(line):
+            continue
+        if not re.match(r"^\W", line):
+            line = "• " + line
+        lines.append(line)
+    return lines[:3]
+
+
 def build_astro_section(
     date_local: Optional[pendulum.Date] = None,
     tz_local: str = "Asia/Nicosia",
 ) -> str:
     tz = pendulum.timezone(tz_local)
-    date_local = date_local or pendulum.today(tz)
+    base_date = date_local or pendulum.today(tz)
+
+    # Дополнительный сдвиг через ASTRO_OFFSET (в днях), если нужно
+    try:
+        offset_days = int(os.getenv("ASTRO_OFFSET", "0") or "0")
+    except Exception:
+        offset_days = 0
+
+    date_local = base_date.add(days=offset_days) if offset_days else base_date
     date_key = date_local.format("YYYY-MM-DD")
 
     cal = load_calendar("lunar_calendar.json")
@@ -677,13 +720,20 @@ def build_astro_section(
         t1, t2 = voc
         voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
 
-    bullets = _astro_llm_bullets(
-        date_local.format("DD.MM.YYYY"),
-        phase_name,
-        int(percent or 0),
-        sign,
-        voc_text,
-    )
+    # 1) сначала пробуем взять готовый текст из календаря
+    bullets = _advice_lines_from_rec(rec)
+
+    # 2) если советов нет — генерируем короткую сводку через LLM (с кешем)
+    if not bullets:
+        bullets = _astro_llm_bullets(
+            date_local.format("DD.MM.YYYY"),
+            phase_name,
+            int(percent or 0),
+            sign,
+            voc_text,
+        )
+
+    # 3) если ни календаря, ни LLM — показываем базовую лаконичную сводку
     if not bullets:
         base = f"🌙 {phase_name or 'Луна'} • освещённость {percent}%"
         mood = f"♒ Знак: {sign}" if sign else "— знак н/д"
@@ -866,6 +916,7 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[
     def _arr(*names, default=None):
         v = _pick(hourly, *names, default=default)
         return v if isinstance(v, list) else []
+
 
     def _vals(arr):
         out = []
@@ -1468,9 +1519,10 @@ def build_message(
     if sun_line:
         P.append(sun_line)
 
-    tz_nic = pendulum.timezone("Asia/Nicosia")
-    date_for_astro = pendulum.today(tz_nic).add(days=1)
-    P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
+    # Астроблок: используем ту же логическую дату, что и в заголовке (tomorrow),
+    # плюс при необходимости дополнительный сдвиг через ASTRO_OFFSET.
+    date_for_astro = tom
+    P.append(build_astro_section(date_local=date_for_astro, tz_local=tz_obj.name))
 
     all_rows = sea_rows + oth_rows
     warm_name = cool_name = None
