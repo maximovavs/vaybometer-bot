@@ -15,7 +15,7 @@ ENV:
     OPENAI_API_KEY
 
 Модели можно переопределить:
-    GEMINI_MODEL   (default: "gemini-1.5-flash")
+    GEMINI_MODEL   (default: "gemini-2.5-flash")
     OPENAI_MODEL   (default: "gpt-4o-mini")
     GROQ_MODELS    (comma-separated; первая — приоритетная)
     LLM_ORDER      (comma-separated: "gemini,groq,openai")
@@ -62,7 +62,7 @@ PROVIDER_ORDER = [
 ]
 
 # ── модели (переопределяемые env) ─────────────────────────────────────────
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")  # стабильный, без -latest
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")  # стабильный, без -latest
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 _env_groq_models = [m.strip() for m in (os.getenv("GROQ_MODELS") or "").split(",") if m.strip()]
