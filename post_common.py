@@ -1601,6 +1601,41 @@ def _cyprus_short_photo_caption(full_msg: str) -> str:
         caption = caption[: _TELEGRAM_PHOTO_CAPTION_LIMIT - 1] + "…"
     return caption
 
+_TG_CAPTION_LIMIT = 1024
+
+def _build_short_photo_caption(full_msg: str, max_len: int = _TG_CAPTION_LIMIT) -> str:
+    """
+    Короткая подпись к фото, чтобы не упираться в лимит Telegram caption=1024.
+    Делаем безопасно (без обрезки HTML-тегов в середине).
+    """
+    lines = [l.strip() for l in (full_msg or "").splitlines() if l.strip()]
+    if not lines:
+        return "⬇️ Полный прогноз — следующим сообщением."
+
+    header = lines[0]
+    storm_line = next((l for l in lines if "Штормовое предупреждение" in l), "")
+
+    cand = [header]
+    if storm_line:
+        cand.append(storm_line)
+    cand.append("⬇️ Полный прогноз — следующим сообщением.")
+    caption = "\n".join(cand)
+
+    if len(caption) <= max_len:
+        return caption
+
+    # без storm_line
+    caption = "\n".join([header, "⬇️ Полный прогноз — следующим сообщением."])
+    if len(caption) <= max_len:
+        return caption
+
+    # крайний случай: оставляем только заголовок (почти всегда короткий)
+    if len(header) <= max_len:
+        return header
+
+    # редкий случай: если заголовок очень длинный — аккуратно обрежем, но он обычно без длинных HTML
+    return header[: max_len - 1] + "…"
+
 
 # ───────────── отправка ─────────────
 async def send_common_post(
@@ -1702,53 +1737,46 @@ async def send_common_post(
             effective_mode,
         )
 
-    if img_path and Path(img_path).exists():
+        if img_path and Path(img_path).exists():
         try:
             logging.info("CY_IMG: sending photo %s", img_path)
 
-            # Вариант A: если текст длиннее лимита caption — отправляем фото с короткой подписью
-            # и полный текст следующим сообщением (при возможности — reply к фото).
-            if len(msg) <= _TELEGRAM_PHOTO_CAPTION_LIMIT:
-                with open(img_path, "rb") as f:
-                    await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=f,
-                        caption=msg,
-                        parse_mode=constants.ParseMode.HTML,
-                    )
-                return
-
-            short_caption = _cyprus_short_photo_caption(msg)
+            # Telegram caption limit = 1024.
+            need_split = len(msg) > _TG_CAPTION_LIMIT
+            caption = msg if not need_split else _build_short_photo_caption(msg)
 
             with open(img_path, "rb") as f:
                 sent = await bot.send_photo(
                     chat_id=chat_id,
                     photo=f,
-                    caption=short_caption,
+                    caption=caption,
                     parse_mode=constants.ParseMode.HTML,
                 )
 
-            # Пытаемся отправить полный текст reply к фото (если Telegram/чат позволяет)
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=msg,
-                    parse_mode=constants.ParseMode.HTML,
-                    disable_web_page_preview=True,
-                    reply_to_message_id=getattr(sent, "message_id", None),
-                )
-            except Exception:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=msg,
-                    parse_mode=constants.ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
+            # Если текст длинный — отправляем полную версию вторым сообщением (reply к фото, если можно)
+            if need_split:
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=msg,
+                        parse_mode=constants.ParseMode.HTML,
+                        disable_web_page_preview=True,
+                        reply_to_message_id=getattr(sent, "message_id", None),
+                    )
+                except TypeError:
+                    # на случай, если в твоей версии reply_to_message_id не поддерживается
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=msg,
+                        parse_mode=constants.ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
 
             return
 
         except Exception as exc:
             logging.exception("Sending photo failed, fallback to text: %s", exc)
+
 
     else:
         if enable_img and effective_mode.startswith("evening"):
