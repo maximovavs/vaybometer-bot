@@ -1660,13 +1660,13 @@ async def send_common_post(
         mode=mode,
     )
 
-    # Попытка сгенерировать картинку для вечернего кипрского поста.
-    # Можно выключить через CY_IMG_ENABLED=0.
+    # Режим
     try:
         effective_mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
     except Exception:
         effective_mode = "evening"
 
+    # Флаг картинки
     cy_img_env = os.getenv("CY_IMG_ENABLED", "1")
     enable_img = cy_img_env.strip().lower() not in ("0", "false", "no", "off")
 
@@ -1678,25 +1678,26 @@ async def send_common_post(
     )
 
     img_path: Optional[str] = None
-    storm_warning: bool = False  # пригодится для логов/консистентности
+    storm_warning: bool = False
 
+    # 1) Генерация картинки (только вечер)
     if enable_img and effective_mode.startswith("evening"):
         try:
             tz_obj = _as_tz(tz)
 
-            # FIX: вечерний пост анонсирует "завтра" → картинку тоже строим по tomorrow_date
+            # Вечерний пост = анонс на завтра → картинка тоже по завтра
             tomorrow_date = pendulum.today(tz_obj).add(days=1).date()
 
-            # Вычисляем storm_warning через ту же логику, что и в тексте поста
+            # Шторм-флаг (тот же, что в тексте)
             wm_region = get_weather(CY_LAT, CY_LON) or {}
             storm_region = storm_flags_for_tomorrow(wm_region, tz_obj)
             storm_warning = bool(storm_region.get("warning"))
 
             marine_mood, inland_mood, astro_mood_en = _build_cy_image_moods_for_evening(
-                tz_obj, storm_warning
+                tz_obj=tz_obj,
+                storm_warning=storm_warning,
             )
 
-            # storm_warning → приоритет шторма над «богиней луны» (логика внутри image_prompt_cy.py)
             prompt, style_name = build_cyprus_evening_prompt(
                 date=tomorrow_date,
                 marine_mood=marine_mood,
@@ -1715,18 +1716,18 @@ async def send_common_post(
             img_dir = Path("cy_images")
             img_dir.mkdir(parents=True, exist_ok=True)
 
-            safe_style = re.sub(
-                r"[^a-zA-Z0-9_-]+", "_", str(style_name) if style_name else "default"
-            )
+            safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(style_name) if style_name else "default")
             img_file = img_dir / f"cyprus_evening_{tomorrow_date.isoformat()}_{safe_style}.jpg"
 
             logging.info("CY_IMG: calling generate_astro_image -> %s", img_file)
             img_path = generate_astro_image(prompt, str(img_file))
+
             logging.info(
                 "CY_IMG: generate_astro_image returned %r, exists=%s",
                 img_path,
                 bool(img_path and Path(img_path).exists()),
             )
+
         except Exception as exc:
             logging.exception("Cyprus image generation failed: %s", exc)
             img_path = None
@@ -1737,13 +1738,13 @@ async def send_common_post(
             effective_mode,
         )
 
-        if img_path and Path(img_path).exists():
+    # 2) Отправка фото (если есть) + при необходимости полный текст вторым сообщением
+    if img_path and Path(img_path).exists():
         try:
             logging.info("CY_IMG: sending photo %s", img_path)
 
-            # Telegram caption limit = 1024.
-            need_split = len(msg) > _TG_CAPTION_LIMIT
-            caption = msg if not need_split else _build_short_photo_caption(msg)
+            need_split = len(msg) > _TELEGRAM_PHOTO_CAPTION_LIMIT
+            caption = msg if not need_split else _cyprus_short_photo_caption(msg)
 
             with open(img_path, "rb") as f:
                 sent = await bot.send_photo(
@@ -1753,7 +1754,6 @@ async def send_common_post(
                     parse_mode=constants.ParseMode.HTML,
                 )
 
-            # Если текст длинный — отправляем полную версию вторым сообщением (reply к фото, если можно)
             if need_split:
                 try:
                     await bot.send_message(
@@ -1764,7 +1764,6 @@ async def send_common_post(
                         reply_to_message_id=getattr(sent, "message_id", None),
                     )
                 except TypeError:
-                    # на случай, если в твоей версии reply_to_message_id не поддерживается
                     await bot.send_message(
                         chat_id=chat_id,
                         text=msg,
@@ -1777,15 +1776,15 @@ async def send_common_post(
         except Exception as exc:
             logging.exception("Sending photo failed, fallback to text: %s", exc)
 
+    # 3) Если хотели картинку, но не получилось — лог
+    if enable_img and effective_mode.startswith("evening"):
+        logging.warning(
+            "CY_IMG: image not sent (img_path=%r, exists=%s)",
+            img_path,
+            bool(img_path and Path(img_path).exists()),
+        )
 
-    else:
-        if enable_img and effective_mode.startswith("evening"):
-            logging.warning(
-                "CY_IMG: image not sent (img_path=%r, exists=%s)",
-                img_path,
-                bool(img_path and Path(img_path).exists()),
-            )
-
+    # 4) Фолбэк: обычное текстовое сообщение
     await bot.send_message(
         chat_id=chat_id,
         text=msg,
