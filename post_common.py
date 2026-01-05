@@ -1080,38 +1080,57 @@ def _shore_class(city: str, wind_from_deg: Optional[float]) -> Tuple[Optional[st
 
 
 def _fetch_wave_for_tomorrow(
-    lat: float, lon: float, tz_obj: pendulum.Timezone, prefer_hour: int = 12
+    lat: float,
+    lon: float,
+    tz_obj: pendulum.Timezone,
+    prefer_hour: int = 12,
+    timeout_s: int = 18,
+    retries: int = 2,
 ) -> Tuple[Optional[float], Optional[float]]:
     if not requests:
         return None, None
-    try:
-        url = "https://marine-api.open-meteo.com/v1/marine"
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "hourly": "wave_height,wave_period",
-            "timezone": tz_obj.name,
-        }
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        j = r.json()
-        hourly = j.get("hourly") or {}
-        times = [pendulum.parse(t) for t in (hourly.get("time") or []) if t]
 
-        # FIX: today() вместо now() — консистентность с WORK_DATE
-        tom = pendulum.today(tz_obj).add(days=1).date()
+    url = "https://marine-api.open-meteo.com/v1/marine"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "wave_height,wave_period",
+        "timezone": tz_obj.name,
+    }
 
-        idx = _nearest_index_for_day(times, tom, prefer_hour, tz_obj)
-        if idx is None:
-            return None, None
-        h = hourly.get("wave_height") or []
-        p = hourly.get("wave_period") or []
-        w_h = float(h[idx]) if idx < len(h) and h[idx] is not None else None
-        w_t = float(p[idx]) if idx < len(p) and p[idx] is not None else None
-        return w_h, w_t
-    except Exception as e:
-        logging.warning("marine fetch failed: %s", e)
-        return None, None
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            r = requests.get(url, params=params, timeout=timeout_s)
+            r.raise_for_status()
+            j = r.json()
+
+            hourly = j.get("hourly") or {}
+            times = [pendulum.parse(t) for t in (hourly.get("time") or []) if t]
+            idx = _nearest_index_for_day(
+                times,
+                pendulum.now(tz_obj).add(days=1).date(),
+                prefer_hour,
+                tz_obj,
+            )
+            if idx is None:
+                return None, None
+
+            h = hourly.get("wave_height") or []
+            p = hourly.get("wave_period") or []
+            w_h = float(h[idx]) if idx < len(h) and h[idx] is not None else None
+            w_t = float(p[idx]) if idx < len(p) and p[idx] is not None else None
+            return w_h, w_t
+
+        except Exception as e:
+            last_exc = e
+            # не спамим логами: пишем только на последней попытке
+            if attempt >= max(1, retries):
+                logging.warning("marine fetch failed: %s", e)
+                return None, None
+
+    logging.warning("marine fetch failed: %s", last_exc)
+    return None, None
 
 
 def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
