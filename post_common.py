@@ -31,6 +31,13 @@ from gpt          import gpt_blurb, gpt_complete
 from world_en.imagegen import generate_astro_image
 from image_prompt_cy   import build_cyprus_evening_prompt
 
+# Morning image prompts (Cyprus)
+try:
+    from image_prompt_cy_morning import build_cyprus_morning_prompt, MorningMetrics  # type: ignore
+except Exception:
+    build_cyprus_morning_prompt = None  # type: ignore
+    MorningMetrics = None  # type: ignore
+
 try:
     import requests  # type: ignore
 except Exception:
@@ -1670,6 +1677,10 @@ async def send_common_post(
     cy_img_env = os.getenv("CY_IMG_ENABLED", "1")
     enable_img = cy_img_env.strip().lower() not in ("0", "false", "no", "off")
 
+    # Отдельный флаг для утренних картинок (по умолчанию включено)
+    cy_morning_img_env = os.getenv("CY_MORNING_IMG_ENABLED", "1")
+    enable_morning_img = cy_morning_img_env.strip().lower() not in ("0", "false", "no", "off")
+
     logging.info(
         "CY_IMG: mode=%s, CY_IMG_ENABLED=%s -> enable_img=%s",
         effective_mode,
@@ -1679,7 +1690,125 @@ async def send_common_post(
 
     img_path: Optional[str] = None
     storm_warning: bool = False
+    # ─────────────────────────────────────────────────────────────
+    # УТРЕННЯЯ КАРТИНКА (только Кипр, только morning)
+    # Формат поста не меняем: фото (короткая caption) + полный текст следующим сообщением.
+    # Если что-то не получилось — fallback на обычный текстовый пост.
+    # ─────────────────────────────────────────────────────────────
+    is_cyprus = "кипр" in (region_name or "").strip().lower() or "cyprus" in (region_name or "").strip().lower()
+    if (
+        enable_img
+        and enable_morning_img
+        and effective_mode.startswith("morn")
+        and is_cyprus
+        and callable(build_cyprus_morning_prompt)
+        and MorningMetrics is not None
+    ):
+        try:
+            tz_obj = _as_tz(tz)
+            today_date = pendulum.today(tz_obj).date()
 
+            # Лёгкие метрики для промта (не влияют на текст поста)
+            tmax = tmin = None
+            try:
+                stats = day_night_stats(CY_LAT, CY_LON, tz=tz_obj.name) or {}
+                tmax = stats.get("t_day_max")
+                tmin = stats.get("t_night_min")
+            except Exception:
+                pass
+
+            aqi_val = None
+            try:
+                air_now = get_air(CY_LAT, CY_LON) or {}
+                aqi_raw = air_now.get("aqi")
+                aqi_val = float(aqi_raw) if aqi_raw is not None else None
+            except Exception:
+                aqi_val = None
+
+            kp_val = None
+            try:
+                if USE_WORLD_KP:
+                    kp_val, _age = _fetch_world_kp()
+            except Exception:
+                kp_val = None
+
+            metrics = MorningMetrics(
+                t_day_max=float(tmax) if isinstance(tmax, (int, float)) else None,
+                t_night_min=float(tmin) if isinstance(tmin, (int, float)) else None,
+                aqi=float(aqi_val) if isinstance(aqi_val, (int, float)) else None,
+                kp=float(kp_val) if isinstance(kp_val, (int, float)) else None,
+                storm_warning=False,
+            )
+
+            style = os.getenv("CY_MORNING_STYLE", "auto").strip() or "auto"
+            try:
+                seed_offset = int(os.getenv("CY_MORNING_STYLE_SEED_OFFSET", "0") or "0")
+            except Exception:
+                seed_offset = 0
+
+            prompt, style_name, style_id = build_cyprus_morning_prompt(
+                date_local=today_date,
+                metrics=metrics,
+                style=style,
+                seed_offset=seed_offset,
+            )
+
+            img_dir = Path("cy_images")
+            img_dir.mkdir(parents=True, exist_ok=True)
+            safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(style_name or style_id or "style"))
+            img_file = img_dir / f"cyprus_morning_{today_date.isoformat()}_{safe_style}.jpg"
+
+            logging.info(
+                "CY_MORNING_IMG: generating (style=%s/%s, date=%s, prompt_len=%d) -> %s",
+                style_id,
+                style_name,
+                today_date.isoformat(),
+                len(prompt or ""),
+                img_file,
+            )
+
+            gen_path = generate_astro_image(prompt, str(img_file))
+            if gen_path and Path(gen_path).exists():
+                img_path = gen_path
+
+                # В caption — коротко (лимит 1024), полный текст — следующим сообщением (без изменений)
+                caption = _build_short_photo_caption(msg)
+
+                logging.info("CY_MORNING_IMG: sending photo %s", img_path)
+                with open(img_path, "rb") as f:
+                    sent = await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=caption,
+                        parse_mode=constants.ParseMode.HTML,
+                    )
+
+                # Полный текст — как раньше, отдельным сообщением (reply к фото, если поддерживается)
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=msg,
+                        parse_mode=constants.ParseMode.HTML,
+                        disable_web_page_preview=True,
+                        reply_to_message_id=getattr(sent, "message_id", None),
+                    )
+                except TypeError:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=msg,
+                        parse_mode=constants.ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                return
+
+            logging.warning(
+                "CY_MORNING_IMG: image not sent (gen_path=%r, exists=%s) -> fallback to text",
+                gen_path,
+                bool(gen_path and Path(gen_path).exists()),
+            )
+        except Exception as exc:
+            logging.exception("Cyprus morning image generation/sending failed: %s", exc)
+        # fallback: обычный текстовый пост ниже
     # 1) Генерация картинки (только вечер)
     if enable_img and effective_mode.startswith("evening"):
         try:
