@@ -18,15 +18,29 @@ image_prompt_cy.py
 - Фаза Луны и знак берутся из lunar_calendar.json (на ЗАВТРА),
   что даёт разную форму Луны и настроение неба.
 - Для каждого стиля есть несколько цветовых палитр, выбираемых от даты.
+
+Дополнение (иконки «неблагоприятный/благоприятный» для астроблока):
+- Иногда астро-текст приходит с ⚠️/✅/⛔ и другими emoji, которые могут
+  триггерить у image-модели «storm warning» и т.п. даже при спокойной погоде.
+- Этот файл нормализует такие иконки через ENV и (опционально) умеет
+  полностью убирать emoji из astro_mood_en перед вставкой в промпт.
+
+ENV:
+- CY_IMG_ASTRO_ICON_UNFAV: чем заменить ⚠️/⛔/🚫 (по умолчанию: "🔻")
+- CY_IMG_ASTRO_ICON_FAV:   чем заменить ✅/✔️        (по умолчанию: "✅")
+- CY_IMG_ASTRO_STRIP_EMOJI: если true/1 — убрать почти все emoji из astro_mood_en (по умолчанию: 1)
 """
 
 from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-import random
-import logging
 import json
+import logging
+import os
+import random
+import re
+import unicodedata
 from pathlib import Path
 from typing import Tuple, Optional, List
 
@@ -43,6 +57,77 @@ class CyprusImageContext:
 
 
 logger = logging.getLogger(__name__)
+
+# ───────────────────── ENV: иконки и очистка ─────────────────────
+
+CY_IMG_ASTRO_ICON_UNFAV = os.getenv("CY_IMG_ASTRO_ICON_UNFAV", "🔻").strip() or "🔻"
+CY_IMG_ASTRO_ICON_FAV = os.getenv("CY_IMG_ASTRO_ICON_FAV", "✅").strip() or "✅"
+CY_IMG_ASTRO_STRIP_EMOJI = os.getenv("CY_IMG_ASTRO_STRIP_EMOJI", "1").strip().lower() in (
+    "1", "true", "yes", "on"
+)
+
+# Важно: для картинок чаще всего лучше убрать emoji совсем,
+# чтобы они не «подсказывали» генератору ненужные ассоциации.
+
+
+def _strip_emoji_like_symbols(text: str) -> str:
+    """Убирает большинство emoji/пиктограмм (категория So + variation selectors)."""
+    if not text:
+        return ""
+    out_chars: list[str] = []
+    for ch in text:
+        o = ord(ch)
+        # variation selectors (emoji presentation)
+        if o in (0xFE0E, 0xFE0F):
+            continue
+        cat = unicodedata.category(ch)
+        if cat == "So":
+            continue
+        out_chars.append(ch)
+    return "".join(out_chars)
+
+
+def _normalize_astro_mood_for_image(text: str) -> str:
+    """
+    Нормализуем «опасные» иконки и чистим astro_mood_en для промпта.
+    Задача — сохранить смысл, но убрать триггеры вроде ⚠️, ⛔ и т.п.
+    """
+    if not text:
+        return ""
+
+    s = text
+
+    # Нормализация самых частых warning/ok иконок.
+    replacements = {
+        "⚠️": CY_IMG_ASTRO_ICON_UNFAV,
+        "⚠": CY_IMG_ASTRO_ICON_UNFAV,
+        "⛔️": CY_IMG_ASTRO_ICON_UNFAV,
+        "⛔": CY_IMG_ASTRO_ICON_UNFAV,
+        "🚫": CY_IMG_ASTRO_ICON_UNFAV,
+        "✅": CY_IMG_ASTRO_ICON_FAV,
+        "✔️": CY_IMG_ASTRO_ICON_FAV,
+        "✔": CY_IMG_ASTRO_ICON_FAV,
+    }
+    for k, v in replacements.items():
+        s = s.replace(k, v)
+
+    # Часто «шторм/предупреждение/alert» в астро-тексте не нужно модели.
+    # Не удаляем смысл, но нейтрализуем маркеры.
+    s = re.sub(r"\b(storm\s*warning|weather\s*warning|alert)\b", "note", s, flags=re.IGNORECASE)
+
+    if CY_IMG_ASTRO_STRIP_EMOJI:
+        s = _strip_emoji_like_symbols(s)
+
+    # Чистим «шумы»: лишние пробелы, повторяющиеся точки и т.п.
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\.{2,}", ".", s).strip()
+
+    # Лимитируем длину: чтобы промпт не раздувался из-за длинных астро-советов.
+    if len(s) > 220:
+        s = s[:217].rstrip() + "..."
+
+    return s
+
 
 # Ключевые слова для определения «ветрено/дождливо» по тексту настроений
 WIND_KEYWORDS = (
@@ -122,9 +207,19 @@ def _astro_phrase_from_calendar(date_for_astro: dt.date) -> str:
         phase_en = "Full Moon"
     elif "новолуние" in phase_raw or "new" in phase_raw:
         phase_en = "New Moon"
-    elif "первая четверть" in phase_raw or "first quarter" in phase_raw or "растущ" in phase_raw or "waxing" in phase_raw:
+    elif (
+        "первая четверть" in phase_raw
+        or "first quarter" in phase_raw
+        or "растущ" in phase_raw
+        or "waxing" in phase_raw
+    ):
         phase_en = "First Quarter Moon"
-    elif "последняя четверть" in phase_raw or "last quarter" in phase_raw or "убывающ" in phase_raw or "waning" in phase_raw:
+    elif (
+        "последняя четверть" in phase_raw
+        or "last quarter" in phase_raw
+        or "убывающ" in phase_raw
+        or "waning" in phase_raw
+    ):
         phase_en = "Last Quarter Moon"
 
     sign_en: Optional[str] = None
@@ -155,6 +250,9 @@ def _weather_flavour(marine_mood: str, inland_mood: str) -> str:
     """
     Вытащить «подтон» — ветрено / дождливо / спокойно — из текстовых mood'ов.
     Если явных ключевых слов нет, считаем погоду спокойной.
+
+    ВАЖНО: избегаем слова “storm” в спокойном кейсе, т.к. image-модели
+    часто игнорируют отрицание (“no storm”) и рисуют шторм.
     """
     text = f"{marine_mood} {inland_mood}".lower()
     is_windy = any(k in text for k in WIND_KEYWORDS)
@@ -177,7 +275,7 @@ def _weather_flavour(marine_mood: str, inland_mood: str) -> str:
         )
     return (
         "Calm weather: light breeze, soft waves and clear visibility, "
-        "no heavy rain or storm."
+        "no severe weather."
     )
 
 
@@ -487,11 +585,14 @@ def build_cyprus_evening_prompt(
     else:
         astro_combined = astro_mood_en or ""
 
+    # Нормализуем иконки/emoji в астротексте перед вставкой в промпт
+    astro_combined = _normalize_astro_mood_for_image(astro_combined.strip())
+
     ctx = CyprusImageContext(
         date=date,
         marine_mood=(marine_mood or "").strip(),
         inland_mood=(inland_mood or "").strip(),
-        astro_mood_en=astro_combined.strip(),
+        astro_mood_en=astro_combined,
     )
 
     # Соль по дате, чтобы стиль для конкретного дня был стабильным
@@ -522,3 +623,6 @@ def build_cyprus_evening_prompt(
     )
 
     return prompt, style_name
+
+
+__all__ = ["build_cyprus_evening_prompt"]
