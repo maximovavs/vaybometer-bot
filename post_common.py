@@ -1246,17 +1246,15 @@ def hashtags_line(warm_city: Optional[str], cool_city: Optional[str]) -> str:
     return " ".join(base[:5])
 
 
-def _build_cy_image_moods_for_evening(tz_obj: pendulum.Timezone) -> tuple[str, str, str]:
+def _build_cy_image_moods_for_evening(
+    tz_obj: pendulum.Timezone,
+    storm_warning: bool,
+) -> tuple[str, str, str]:
     """
     Строит более живые описания моря/суши/астро для промта картинки на ЗАВТРА.
-    Использует завтрашний максимум/минимум и флаг шторма.
+    Выбор детерминированный от даты (чтобы ретраи не меняли картинку).
+    storm_warning передаётся извне (storm_flags_for_tomorrow(...)["warning"]).
     """
-    try:
-        wm = get_weather(CY_LAT, CY_LON) or {}
-    except Exception as exc:
-        logging.warning("CY_IMG: failed to fetch region weather for moods: %s", exc)
-        wm = {}
-
     try:
         stats = day_night_stats(CY_LAT, CY_LON, tz=tz_obj.name) or {}
         tmax = stats.get("t_day_max")
@@ -1264,17 +1262,17 @@ def _build_cy_image_moods_for_evening(tz_obj: pendulum.Timezone) -> tuple[str, s
     except Exception:
         tmax = tmin = None
 
-    try:
-        storm = storm_flags_for_tomorrow(wm, tz_obj)
-    except Exception as exc:
-        logging.warning("CY_IMG: failed to compute storm_flags for moods: %s", exc)
-        storm = {"warning": False}
+    # Привязываем «настроение» к завтрашней дате (вечерний пост анонсирует завтра)
+    tomorrow = pendulum.today(tz_obj).add(days=1).date()
+    seed = int(tomorrow.toordinal() * 10007 + (17 if storm_warning else 0))
+    rnd = random.Random(seed)
 
     # Море
-    if storm.get("warning"):
+    if storm_warning:
         marine_variants = [
             "windy Mediterranean evening with strong gusts, powerful waves and a dramatic sky",
             "stormy Cyprus coastline with rough sea, fast-moving clouds and very dynamic energy",
+            "dark storm clouds above the coast, loud wind and textured waves, high contrast moonlight",
         ]
     elif isinstance(tmax, (int, float)) and tmax >= 30:
         marine_variants = [
@@ -1297,7 +1295,7 @@ def _build_cy_image_moods_for_evening(tz_obj: pendulum.Timezone) -> tuple[str, s
             "chilly Mediterranean coastline with restless water and strong breeze, cozy if you have a warm hoodie",
         ]
 
-    marine_mood = random.choice(marine_variants)
+    marine_mood = rnd.choice(marine_variants)
 
     # Суша / горы
     if isinstance(tmin, (int, float)) and tmin <= 8:
@@ -1316,18 +1314,20 @@ def _build_cy_image_moods_for_evening(tz_obj: pendulum.Timezone) -> tuple[str, s
             "warm, cozy night in inland areas, less humid than the sea, good for slow walks and conversations",
         ]
 
-    inland_mood = random.choice(inland_variants)
+    inland_mood = rnd.choice(inland_variants)
 
-    # Астро-настрой
+    # Астро-настрой (не перегружаем — это просто «тон»)
     astro_variants = [
         "calm, grounded Moon energy supporting gentle planning and self-care for tomorrow",
         "soft, reflective sky mood, good for closing open loops and setting simple intentions for the next day",
         "balanced and stable cosmic weather, supporting rest, recovery and slow, conscious decisions",
+        "a slightly electric, inspiring night-sky mood, good for creative ideas and light re-planning",
     ]
-    astro_mood_en = random.choice(astro_variants)
+    astro_mood_en = rnd.choice(astro_variants)
 
     logging.info(
-        "CY_IMG: moods chosen -> marine=%r, inland=%r, astro=%r",
+        "CY_IMG: moods chosen -> storm=%s, marine=%r, inland=%r, astro=%r",
+        storm_warning,
         marine_mood,
         inland_mood,
         astro_mood_en,
@@ -1586,15 +1586,25 @@ async def send_common_post(
     if enable_img and effective_mode.startswith("evening"):
         try:
             tz_obj = _as_tz(tz)
-            today = dt.date.today()
 
-            marine_mood, inland_mood, astro_mood_en = _build_cy_image_moods_for_evening(tz_obj)
+            # ВАЖНО: используем pendulum.today(), чтобы WORK_DATE (в workflow) влиял и на картинки
+            today = pendulum.today(tz_obj).date()
+
+            # Вычисляем storm_warning через ту же логику, что и в тексте поста
+            wm_region = get_weather(CY_LAT, CY_LON) or {}
+            storm_region = storm_flags_for_tomorrow(wm_region, tz_obj)
+            storm_warning = bool(storm_region.get("warning"))
+
+            marine_mood, inland_mood, astro_mood_en = _build_cy_image_moods_for_evening(
+                tz_obj, storm_warning
+            )
 
             prompt, style_name = build_cyprus_evening_prompt(
                 date=today,
                 marine_mood=marine_mood,
                 inland_mood=inland_mood,
                 astro_mood_en=astro_mood_en,
+                storm_warning=storm_warning,
             )
 
             logging.info(
