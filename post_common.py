@@ -807,7 +807,10 @@ def pick_tomorrow_header_metrics(
 ) -> Tuple[Optional[float], Optional[int], Optional[int], str]:
     hourly = wm.get("hourly") or {}
     times = _hourly_times(wm)
-    tomorrow = pendulum.now(tz).add(days=1).date()
+
+    # FIX: используем today() вместо now(), чтобы WORK_DATE (pendulum.today monkeypatch) влиял корректно
+    tomorrow = pendulum.today(tz).add(days=1).date()
+
     spd_arr = _pick(
         hourly,
         "windspeed_10m",
@@ -896,7 +899,10 @@ def pick_tomorrow_header_metrics(
 # === индексы на завтра/шторм-флаги ============================
 def _tomorrow_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[int]:
     times = _hourly_times(wm)
-    tom = pendulum.now(tz).add(days=1).date()
+
+    # FIX: today() вместо now() для консистентности с WORK_DATE
+    tom = pendulum.today(tz).add(days=1).date()
+
     idxs: List[int] = []
     for i, dt_i in enumerate(times):
         try:
@@ -1091,7 +1097,11 @@ def _fetch_wave_for_tomorrow(
         j = r.json()
         hourly = j.get("hourly") or {}
         times = [pendulum.parse(t) for t in (hourly.get("time") or []) if t]
-        idx = _nearest_index_for_day(times, pendulum.now(tz_obj).add(days=1).date(), prefer_hour, tz_obj)
+
+        # FIX: today() вместо now() — консистентность с WORK_DATE
+        tom = pendulum.today(tz_obj).add(days=1).date()
+
+        idx = _nearest_index_for_day(times, tom, prefer_hour, tz_obj)
         if idx is None:
             return None, None
         h = hourly.get("wave_height") or []
@@ -1172,7 +1182,11 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     def _gust_at_noon(wm0: Dict[str, Any], tz0: pendulum.Timezone) -> Optional[float]:
         hourly = wm0.get("hourly") or {}
         times = _hourly_times(wm0)
-        idx = _nearest_index_for_day(times, pendulum.now(tz0).add(days=1).date(), 12, tz0)
+
+        # FIX: today() вместо now() — консистентность с WORK_DATE
+        tom = pendulum.today(tz0).add(days=1).date()
+
+        idx = _nearest_index_for_day(times, tom, 12, tz0)
         arr = _pick(hourly, "windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[])
         if idx is not None and idx < len(arr):
             try:
@@ -1541,6 +1555,34 @@ def build_message(
     return "\n".join(P)
 
 
+# ───────────── Telegram caption helper (Cyprus evening image) ─────────────
+_TELEGRAM_PHOTO_CAPTION_LIMIT = 1024
+
+
+def _cyprus_short_photo_caption(full_msg: str) -> str:
+    """
+    Короткая подпись под фото, когда полный текст не помещается в caption (лимит 1024).
+    Делаем: заголовок + (если есть) строка про шторм + маркер, что полный текст ниже.
+    """
+    lines = [l for l in (full_msg or "").splitlines() if l.strip()]
+    if not lines:
+        return "⬇️ Полный прогноз — следующим сообщением."
+
+    out: List[str] = [lines[0]]
+
+    for l in lines[1:6]:
+        if "Штормовое предупреждение" in l or l.strip().startswith("⚠️"):
+            out.append(l)
+            break
+
+    out.append("⬇️ Полный прогноз — следующим сообщением.")
+    caption = "\n".join(out).strip()
+
+    if len(caption) > _TELEGRAM_PHOTO_CAPTION_LIMIT:
+        caption = caption[: _TELEGRAM_PHOTO_CAPTION_LIMIT - 1] + "…"
+    return caption
+
+
 # ───────────── отправка ─────────────
 async def send_common_post(
     bot: Bot,
@@ -1582,13 +1624,14 @@ async def send_common_post(
     )
 
     img_path: Optional[str] = None
+    storm_warning: bool = False  # пригодится для логов/консистентности
 
     if enable_img and effective_mode.startswith("evening"):
         try:
             tz_obj = _as_tz(tz)
 
-            # ВАЖНО: используем pendulum.today(), чтобы WORK_DATE (в workflow) влиял и на картинки
-            today = pendulum.today(tz_obj).date()
+            # FIX: вечерний пост анонсирует "завтра" → картинку тоже строим по tomorrow_date
+            tomorrow_date = pendulum.today(tz_obj).add(days=1).date()
 
             # Вычисляем storm_warning через ту же логику, что и в тексте поста
             wm_region = get_weather(CY_LAT, CY_LON) or {}
@@ -1599,8 +1642,9 @@ async def send_common_post(
                 tz_obj, storm_warning
             )
 
+            # storm_warning → приоритет шторма над «богиней луны» (логика внутри image_prompt_cy.py)
             prompt, style_name = build_cyprus_evening_prompt(
-                date=today,
+                date=tomorrow_date,
                 marine_mood=marine_mood,
                 inland_mood=inland_mood,
                 astro_mood_en=astro_mood_en,
@@ -1610,7 +1654,7 @@ async def send_common_post(
             logging.info(
                 "CY_IMG: built prompt, style=%s, date=%s, prompt_len=%d",
                 style_name,
-                today.isoformat(),
+                tomorrow_date.isoformat(),
                 len(prompt),
             )
 
@@ -1620,7 +1664,7 @@ async def send_common_post(
             safe_style = re.sub(
                 r"[^a-zA-Z0-9_-]+", "_", str(style_name) if style_name else "default"
             )
-            img_file = img_dir / f"cyprus_evening_{today.isoformat()}_{safe_style}.jpg"
+            img_file = img_dir / f"cyprus_evening_{tomorrow_date.isoformat()}_{safe_style}.jpg"
 
             logging.info("CY_IMG: calling generate_astro_image -> %s", img_file)
             img_path = generate_astro_image(prompt, str(img_file))
@@ -1640,21 +1684,53 @@ async def send_common_post(
         )
 
     if img_path and Path(img_path).exists():
-        caption = msg
-        if len(caption) > 1000:
-            caption = caption[:1000]
         try:
             logging.info("CY_IMG: sending photo %s", img_path)
+
+            # Вариант A: если текст длиннее лимита caption — отправляем фото с короткой подписью
+            # и полный текст следующим сообщением (при возможности — reply к фото).
+            if len(msg) <= _TELEGRAM_PHOTO_CAPTION_LIMIT:
+                with open(img_path, "rb") as f:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=msg,
+                        parse_mode=constants.ParseMode.HTML,
+                    )
+                return
+
+            short_caption = _cyprus_short_photo_caption(msg)
+
             with open(img_path, "rb") as f:
-                await bot.send_photo(
+                sent = await bot.send_photo(
                     chat_id=chat_id,
                     photo=f,
-                    caption=caption,
+                    caption=short_caption,
                     parse_mode=constants.ParseMode.HTML,
                 )
+
+            # Пытаемся отправить полный текст reply к фото (если Telegram/чат позволяет)
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=msg,
+                    parse_mode=constants.ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_to_message_id=getattr(sent, "message_id", None),
+                )
+            except Exception:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=msg,
+                    parse_mode=constants.ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+
             return
+
         except Exception as exc:
             logging.exception("Sending photo failed, fallback to text: %s", exc)
+
     else:
         if enable_img and effective_mode.startswith("evening"):
             logging.warning(
