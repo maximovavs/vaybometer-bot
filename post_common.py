@@ -807,7 +807,10 @@ def pick_tomorrow_header_metrics(
 ) -> Tuple[Optional[float], Optional[int], Optional[int], str]:
     hourly = wm.get("hourly") or {}
     times = _hourly_times(wm)
-    tomorrow = pendulum.now(tz).add(days=1).date()
+
+    # FIX: используем today() вместо now(), чтобы WORK_DATE (pendulum.today monkeypatch) влиял корректно
+    tomorrow = pendulum.today(tz).add(days=1).date()
+
     spd_arr = _pick(
         hourly,
         "windspeed_10m",
@@ -896,7 +899,10 @@ def pick_tomorrow_header_metrics(
 # === индексы на завтра/шторм-флаги ============================
 def _tomorrow_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[int]:
     times = _hourly_times(wm)
-    tom = pendulum.now(tz).add(days=1).date()
+
+    # FIX: today() вместо now() для консистентности с WORK_DATE
+    tom = pendulum.today(tz).add(days=1).date()
+
     idxs: List[int] = []
     for i, dt_i in enumerate(times):
         try:
@@ -1074,34 +1080,57 @@ def _shore_class(city: str, wind_from_deg: Optional[float]) -> Tuple[Optional[st
 
 
 def _fetch_wave_for_tomorrow(
-    lat: float, lon: float, tz_obj: pendulum.Timezone, prefer_hour: int = 12
+    lat: float,
+    lon: float,
+    tz_obj: pendulum.Timezone,
+    prefer_hour: int = 12,
+    timeout_s: int = 18,
+    retries: int = 2,
 ) -> Tuple[Optional[float], Optional[float]]:
     if not requests:
         return None, None
-    try:
-        url = "https://marine-api.open-meteo.com/v1/marine"
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "hourly": "wave_height,wave_period",
-            "timezone": tz_obj.name,
-        }
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        j = r.json()
-        hourly = j.get("hourly") or {}
-        times = [pendulum.parse(t) for t in (hourly.get("time") or []) if t]
-        idx = _nearest_index_for_day(times, pendulum.now(tz_obj).add(days=1).date(), prefer_hour, tz_obj)
-        if idx is None:
-            return None, None
-        h = hourly.get("wave_height") or []
-        p = hourly.get("wave_period") or []
-        w_h = float(h[idx]) if idx < len(h) and h[idx] is not None else None
-        w_t = float(p[idx]) if idx < len(p) and p[idx] is not None else None
-        return w_h, w_t
-    except Exception as e:
-        logging.warning("marine fetch failed: %s", e)
-        return None, None
+
+    url = "https://marine-api.open-meteo.com/v1/marine"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "wave_height,wave_period",
+        "timezone": tz_obj.name,
+    }
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            r = requests.get(url, params=params, timeout=timeout_s)
+            r.raise_for_status()
+            j = r.json()
+
+            hourly = j.get("hourly") or {}
+            times = [pendulum.parse(t) for t in (hourly.get("time") or []) if t]
+            idx = _nearest_index_for_day(
+                times,
+                pendulum.now(tz_obj).add(days=1).date(),
+                prefer_hour,
+                tz_obj,
+            )
+            if idx is None:
+                return None, None
+
+            h = hourly.get("wave_height") or []
+            p = hourly.get("wave_period") or []
+            w_h = float(h[idx]) if idx < len(h) and h[idx] is not None else None
+            w_t = float(p[idx]) if idx < len(p) and p[idx] is not None else None
+            return w_h, w_t
+
+        except Exception as e:
+            last_exc = e
+            # не спамим логами: пишем только на последней попытке
+            if attempt >= max(1, retries):
+                logging.warning("marine fetch failed: %s", e)
+                return None, None
+
+    logging.warning("marine fetch failed: %s", last_exc)
+    return None, None
 
 
 def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
@@ -1172,7 +1201,11 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     def _gust_at_noon(wm0: Dict[str, Any], tz0: pendulum.Timezone) -> Optional[float]:
         hourly = wm0.get("hourly") or {}
         times = _hourly_times(wm0)
-        idx = _nearest_index_for_day(times, pendulum.now(tz0).add(days=1).date(), 12, tz0)
+
+        # FIX: today() вместо now() — консистентность с WORK_DATE
+        tom = pendulum.today(tz0).add(days=1).date()
+
+        idx = _nearest_index_for_day(times, tom, 12, tz0)
         arr = _pick(hourly, "windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[])
         if idx is not None and idx < len(arr):
             try:
@@ -1246,17 +1279,15 @@ def hashtags_line(warm_city: Optional[str], cool_city: Optional[str]) -> str:
     return " ".join(base[:5])
 
 
-def _build_cy_image_moods_for_evening(tz_obj: pendulum.Timezone) -> tuple[str, str, str]:
+def _build_cy_image_moods_for_evening(
+    tz_obj: pendulum.Timezone,
+    storm_warning: bool,
+) -> tuple[str, str, str]:
     """
     Строит более живые описания моря/суши/астро для промта картинки на ЗАВТРА.
-    Использует завтрашний максимум/минимум и флаг шторма.
+    Выбор детерминированный от даты (чтобы ретраи не меняли картинку).
+    storm_warning передаётся извне (storm_flags_for_tomorrow(...)["warning"]).
     """
-    try:
-        wm = get_weather(CY_LAT, CY_LON) or {}
-    except Exception as exc:
-        logging.warning("CY_IMG: failed to fetch region weather for moods: %s", exc)
-        wm = {}
-
     try:
         stats = day_night_stats(CY_LAT, CY_LON, tz=tz_obj.name) or {}
         tmax = stats.get("t_day_max")
@@ -1264,17 +1295,17 @@ def _build_cy_image_moods_for_evening(tz_obj: pendulum.Timezone) -> tuple[str, s
     except Exception:
         tmax = tmin = None
 
-    try:
-        storm = storm_flags_for_tomorrow(wm, tz_obj)
-    except Exception as exc:
-        logging.warning("CY_IMG: failed to compute storm_flags for moods: %s", exc)
-        storm = {"warning": False}
+    # Привязываем «настроение» к завтрашней дате (вечерний пост анонсирует завтра)
+    tomorrow = pendulum.today(tz_obj).add(days=1).date()
+    seed = int(tomorrow.toordinal() * 10007 + (17 if storm_warning else 0))
+    rnd = random.Random(seed)
 
     # Море
-    if storm.get("warning"):
+    if storm_warning:
         marine_variants = [
             "windy Mediterranean evening with strong gusts, powerful waves and a dramatic sky",
             "stormy Cyprus coastline with rough sea, fast-moving clouds and very dynamic energy",
+            "dark storm clouds above the coast, loud wind and textured waves, high contrast moonlight",
         ]
     elif isinstance(tmax, (int, float)) and tmax >= 30:
         marine_variants = [
@@ -1297,7 +1328,7 @@ def _build_cy_image_moods_for_evening(tz_obj: pendulum.Timezone) -> tuple[str, s
             "chilly Mediterranean coastline with restless water and strong breeze, cozy if you have a warm hoodie",
         ]
 
-    marine_mood = random.choice(marine_variants)
+    marine_mood = rnd.choice(marine_variants)
 
     # Суша / горы
     if isinstance(tmin, (int, float)) and tmin <= 8:
@@ -1316,18 +1347,20 @@ def _build_cy_image_moods_for_evening(tz_obj: pendulum.Timezone) -> tuple[str, s
             "warm, cozy night in inland areas, less humid than the sea, good for slow walks and conversations",
         ]
 
-    inland_mood = random.choice(inland_variants)
+    inland_mood = rnd.choice(inland_variants)
 
-    # Астро-настрой
+    # Астро-настрой (не перегружаем — это просто «тон»)
     astro_variants = [
         "calm, grounded Moon energy supporting gentle planning and self-care for tomorrow",
         "soft, reflective sky mood, good for closing open loops and setting simple intentions for the next day",
         "balanced and stable cosmic weather, supporting rest, recovery and slow, conscious decisions",
+        "a slightly electric, inspiring night-sky mood, good for creative ideas and light re-planning",
     ]
-    astro_mood_en = random.choice(astro_variants)
+    astro_mood_en = rnd.choice(astro_variants)
 
     logging.info(
-        "CY_IMG: moods chosen -> marine=%r, inland=%r, astro=%r",
+        "CY_IMG: moods chosen -> storm=%s, marine=%r, inland=%r, astro=%r",
+        storm_warning,
         marine_mood,
         inland_mood,
         astro_mood_en,
@@ -1541,6 +1574,69 @@ def build_message(
     return "\n".join(P)
 
 
+# ───────────── Telegram caption helper (Cyprus evening image) ─────────────
+_TELEGRAM_PHOTO_CAPTION_LIMIT = 1024
+
+
+def _cyprus_short_photo_caption(full_msg: str) -> str:
+    """
+    Короткая подпись под фото, когда полный текст не помещается в caption (лимит 1024).
+    Делаем: заголовок + (если есть) строка про шторм + маркер, что полный текст ниже.
+    """
+    lines = [l for l in (full_msg or "").splitlines() if l.strip()]
+    if not lines:
+        return "⬇️ Полный прогноз — следующим сообщением."
+
+    out: List[str] = [lines[0]]
+
+    for l in lines[1:6]:
+        if "Штормовое предупреждение" in l or l.strip().startswith("⚠️"):
+            out.append(l)
+            break
+
+    out.append("⬇️ Полный прогноз — следующим сообщением.")
+    caption = "\n".join(out).strip()
+
+    if len(caption) > _TELEGRAM_PHOTO_CAPTION_LIMIT:
+        caption = caption[: _TELEGRAM_PHOTO_CAPTION_LIMIT - 1] + "…"
+    return caption
+
+_TG_CAPTION_LIMIT = 1024
+
+def _build_short_photo_caption(full_msg: str, max_len: int = _TG_CAPTION_LIMIT) -> str:
+    """
+    Короткая подпись к фото, чтобы не упираться в лимит Telegram caption=1024.
+    Делаем безопасно (без обрезки HTML-тегов в середине).
+    """
+    lines = [l.strip() for l in (full_msg or "").splitlines() if l.strip()]
+    if not lines:
+        return "⬇️ Полный прогноз — следующим сообщением."
+
+    header = lines[0]
+    storm_line = next((l for l in lines if "Штормовое предупреждение" in l), "")
+
+    cand = [header]
+    if storm_line:
+        cand.append(storm_line)
+    cand.append("⬇️ Полный прогноз — следующим сообщением.")
+    caption = "\n".join(cand)
+
+    if len(caption) <= max_len:
+        return caption
+
+    # без storm_line
+    caption = "\n".join([header, "⬇️ Полный прогноз — следующим сообщением."])
+    if len(caption) <= max_len:
+        return caption
+
+    # крайний случай: оставляем только заголовок (почти всегда короткий)
+    if len(header) <= max_len:
+        return header
+
+    # редкий случай: если заголовок очень длинный — аккуратно обрежем, но он обычно без длинных HTML
+    return header[: max_len - 1] + "…"
+
+
 # ───────────── отправка ─────────────
 async def send_common_post(
     bot: Bot,
@@ -1564,13 +1660,13 @@ async def send_common_post(
         mode=mode,
     )
 
-    # Попытка сгенерировать картинку для вечернего кипрского поста.
-    # Можно выключить через CY_IMG_ENABLED=0.
+    # Режим
     try:
         effective_mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
     except Exception:
         effective_mode = "evening"
 
+    # Флаг картинки
     cy_img_env = os.getenv("CY_IMG_ENABLED", "1")
     enable_img = cy_img_env.strip().lower() not in ("0", "false", "no", "off")
 
@@ -1582,43 +1678,56 @@ async def send_common_post(
     )
 
     img_path: Optional[str] = None
+    storm_warning: bool = False
 
+    # 1) Генерация картинки (только вечер)
     if enable_img and effective_mode.startswith("evening"):
         try:
             tz_obj = _as_tz(tz)
-            today = dt.date.today()
 
-            marine_mood, inland_mood, astro_mood_en = _build_cy_image_moods_for_evening(tz_obj)
+            # Вечерний пост = анонс на завтра → картинка тоже по завтра
+            tomorrow_date = pendulum.today(tz_obj).add(days=1).date()
+
+            # Шторм-флаг (тот же, что в тексте)
+            wm_region = get_weather(CY_LAT, CY_LON) or {}
+            storm_region = storm_flags_for_tomorrow(wm_region, tz_obj)
+            storm_warning = bool(storm_region.get("warning"))
+
+            marine_mood, inland_mood, astro_mood_en = _build_cy_image_moods_for_evening(
+                tz_obj=tz_obj,
+                storm_warning=storm_warning,
+            )
 
             prompt, style_name = build_cyprus_evening_prompt(
-                date=today,
+                date=tomorrow_date,
                 marine_mood=marine_mood,
                 inland_mood=inland_mood,
                 astro_mood_en=astro_mood_en,
+                storm_warning=storm_warning,
             )
 
             logging.info(
                 "CY_IMG: built prompt, style=%s, date=%s, prompt_len=%d",
                 style_name,
-                today.isoformat(),
+                tomorrow_date.isoformat(),
                 len(prompt),
             )
 
             img_dir = Path("cy_images")
             img_dir.mkdir(parents=True, exist_ok=True)
 
-            safe_style = re.sub(
-                r"[^a-zA-Z0-9_-]+", "_", str(style_name) if style_name else "default"
-            )
-            img_file = img_dir / f"cyprus_evening_{today.isoformat()}_{safe_style}.jpg"
+            safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(style_name) if style_name else "default")
+            img_file = img_dir / f"cyprus_evening_{tomorrow_date.isoformat()}_{safe_style}.jpg"
 
             logging.info("CY_IMG: calling generate_astro_image -> %s", img_file)
             img_path = generate_astro_image(prompt, str(img_file))
+
             logging.info(
                 "CY_IMG: generate_astro_image returned %r, exists=%s",
                 img_path,
                 bool(img_path and Path(img_path).exists()),
             )
+
         except Exception as exc:
             logging.exception("Cyprus image generation failed: %s", exc)
             img_path = None
@@ -1629,30 +1738,53 @@ async def send_common_post(
             effective_mode,
         )
 
+    # 2) Отправка фото (если есть) + при необходимости полный текст вторым сообщением
     if img_path and Path(img_path).exists():
-        caption = msg
-        if len(caption) > 1000:
-            caption = caption[:1000]
         try:
             logging.info("CY_IMG: sending photo %s", img_path)
+
+            need_split = len(msg) > _TELEGRAM_PHOTO_CAPTION_LIMIT
+            caption = msg if not need_split else _cyprus_short_photo_caption(msg)
+
             with open(img_path, "rb") as f:
-                await bot.send_photo(
+                sent = await bot.send_photo(
                     chat_id=chat_id,
                     photo=f,
                     caption=caption,
                     parse_mode=constants.ParseMode.HTML,
                 )
+
+            if need_split:
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=msg,
+                        parse_mode=constants.ParseMode.HTML,
+                        disable_web_page_preview=True,
+                        reply_to_message_id=getattr(sent, "message_id", None),
+                    )
+                except TypeError:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=msg,
+                        parse_mode=constants.ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+
             return
+
         except Exception as exc:
             logging.exception("Sending photo failed, fallback to text: %s", exc)
-    else:
-        if enable_img and effective_mode.startswith("evening"):
-            logging.warning(
-                "CY_IMG: image not sent (img_path=%r, exists=%s)",
-                img_path,
-                bool(img_path and Path(img_path).exists()),
-            )
 
+    # 3) Если хотели картинку, но не получилось — лог
+    if enable_img and effective_mode.startswith("evening"):
+        logging.warning(
+            "CY_IMG: image not sent (img_path=%r, exists=%s)",
+            img_path,
+            bool(img_path and Path(img_path).exists()),
+        )
+
+    # 4) Фолбэк: обычное текстовое сообщение
     await bot.send_message(
         chat_id=chat_id,
         text=msg,
