@@ -1651,9 +1651,54 @@ def build_message_morning_compact(
     kal_line = f"Погода: 🏙️ Калининград — {temp_txt} • {desc} • {wind_txt} • {press_txt}."
 
     tz_name = tz_obj.name
+
+    # Нормализуем входные списки/словари городов в безопасный формат [(city, (lat, lon))].
+    # Это защищает от ValueError при входе вида [('City', lat, lon)] или {'City': (lat, lon)}.
+    def _pairs(cities):
+        out = []
+        if not cities:
+            return out
+        if isinstance(cities, dict):
+            for k, v in list(cities.items()):
+                try:
+                    if isinstance(v, (list, tuple)) and len(v) == 2:
+                        la, lo = float(v[0]), float(v[1])
+                        out.append((str(k), (la, lo)))
+                except Exception:
+                    continue
+            return out
+        if isinstance(cities, str):
+            return out
+        try:
+            iterable = list(cities)
+        except Exception:
+            return out
+        for item in iterable:
+            try:
+                if (
+                    isinstance(item, (list, tuple))
+                    and len(item) == 2
+                    and isinstance(item[1], (list, tuple))
+                    and len(item[1]) == 2
+                ):
+                    name = str(item[0])
+                    la, lo = float(item[1][0]), float(item[1][1])
+                    out.append((name, (la, lo)))
+                    continue
+                if isinstance(item, (list, tuple)) and len(item) == 3:
+                    name = str(item[0])
+                    la, lo = float(item[1]), float(item[2])
+                    out.append((name, (la, lo)))
+                    continue
+            except Exception:
+                continue
+        return out
+
+    sea_pairs = _pairs(sea_cities)
+    other_pairs = _pairs(other_cities)
     warm_city, warm_vals = None, None
     cold_city, cold_vals = None, None
-    for city, (la, lo) in other_cities:
+    for city, (la, lo) in other_pairs:
         tmax, tmin, _ = _fetch_temps_for_offset(la, lo, tz_name, DAY_OFFSET)
         if tmax is None:
             continue
@@ -1664,7 +1709,7 @@ def build_message_morning_compact(
     warm_txt = f"{warm_city} {int(round(warm_vals[0]))}/{int(round(warm_vals[1]))}{NBSP}°C" if warm_city else "н/д"
     cold_txt = f"{cold_city} {int(round(cold_vals[0]))}/{int(round(cold_vals[1]))}{NBSP}°C" if cold_city else "н/д"
     sst_hint = None
-    for _, (la, lo) in (sea_cities or []):
+    for _, (la, lo) in sea_pairs:
         try:
             s = get_sst(la, lo)
             if isinstance(s, (int, float)):
