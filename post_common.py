@@ -68,6 +68,11 @@ try:
 except Exception:
     build_kld_evening_prompt = None  # type: ignore
 
+try:
+    from image_prompt_kld import build_kld_morning_prompt  # type: ignore
+except Exception:
+    build_kld_morning_prompt = None  # type: ignore
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ────────────────────────── ENV flags ──────────────────────────
@@ -2253,71 +2258,60 @@ async def send_common_post(
 
     img_path: Optional[str] = None
 
-    # 3) Для вечернего поста пробуем сгенерировать картинку
+    # 3) Пробуем сгенерировать картинку (evening и morning)
+    # Выбираем промт‑билдер под режим. Если morning‑билдер отсутствует — используем evening.
+    prompt_builder = build_kld_evening_prompt
+    if effective_mode.startswith("morning"):
+        try:
+            if build_kld_morning_prompt is not None:  # type: ignore[name-defined]
+                prompt_builder = build_kld_morning_prompt  # type: ignore[name-defined]
+        except Exception:
+            pass
+
     if (
         enable_img
-        and effective_mode.startswith("evening")
         and generate_astro_image is not None
-        and build_kld_evening_prompt is not None
+        and prompt_builder is not None
+        and effective_mode.startswith(("evening", "morning"))
     ):
         try:
-            tz_obj = _as_tz(tz)
+            # tz-aware "today" so WORK_DATE and TZ are respected (important for GH Actions runs)
+            today = pendulum.today(tz_obj).date()
 
-            sea_pairs = _iter_city_pairs(sea_cities)
-            other_pairs = _iter_city_pairs(other_cities)
-
-            logging.info(
-                "KLD_IMG: evening image, sea_pairs=%d, other_pairs=%d",
-                len(sea_pairs),
-                len(other_pairs),
-            )
-
+            # Муды для картинки (используем общий расчёт; подходит и для morning)
             marine_mood, inland_mood, astro_mood_en = _build_kld_image_moods_for_evening(
                 tz_obj=tz_obj,
                 sea_pairs=sea_pairs,
                 other_pairs=other_pairs,
             )
 
-            today = dt.date.today()
-
-            prompt, style_name = build_kld_evening_prompt(
+            prompt, style_name = prompt_builder(
                 date=today,
                 marine_mood=marine_mood,
                 inland_mood=inland_mood,
                 astro_mood_en=astro_mood_en,
-            )
+            )  # type: ignore[misc]
 
-            logging.info(
-                "KLD_IMG: built prompt, style=%s, date=%s, prompt_len=%d",
-                style_name,
-                today.isoformat(),
-                len(prompt),
-            )
-
+            safe_style = (style_name or "default").strip().lower() or "default"
             img_dir = Path("kld_images")
             img_dir.mkdir(parents=True, exist_ok=True)
+            img_file = img_dir / f"kld_{effective_mode}_{today.isoformat()}_{safe_style}.jpg"
 
-            safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(style_name) if style_name else "default")
-            img_file = img_dir / f"kld_evening_{today.isoformat()}_{safe_style}.jpg"
+            logging.info("KLD_IMG: %s image: %s", effective_mode, img_file)
 
-            logging.info("KLD_IMG: calling generate_astro_image -> %s", img_file)
-            img_path = generate_astro_image(prompt, str(img_file))  # type: ignore[call-arg]
-            logging.info(
-                "KLD_IMG: generate_astro_image returned %r, exists=%s",
-                img_path,
-                bool(img_path and Path(img_path).exists()),
-            )
-        except Exception as exc:
-            logging.exception("KLD_IMG: image generation failed: %s", exc)
-            img_path = None
+            ok = generate_astro_image(prompt, str(img_file))  # type: ignore[misc]
+            if ok and img_file.exists():
+                img_path = str(img_file)
+            else:
+                logging.warning("KLD_IMG: gen returned False or file missing; fallback to text")
+        except Exception as e:
+            logging.warning("KLD_IMG: error in image generation: %s", e)
     else:
         logging.info(
             "KLD_IMG: skip image (enable_img=%s, effective_mode=%s, gen=%s, prompt_fn=%s)",
-            enable_img,
-            effective_mode,
-            bool(generate_astro_image),
-            bool(build_kld_evening_prompt),
+            enable_img, effective_mode, bool(generate_astro_image), bool(prompt_builder)
         )
+
 
     # 4) Отправка в Telegram
     if img_path and Path(img_path).exists():
