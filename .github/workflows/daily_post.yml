@@ -50,26 +50,21 @@ env:
   CHANNEL_ID:          ${{ secrets.CHANNEL_ID }}
   CHANNEL_ID_TEST:     ${{ secrets.CHANNEL_ID_TEST }}
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
-
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
-
   GEN_SKIP_SHORT: "1"
   DISABLE_LLM_DAILY: "0"
   DISABLE_SCHUMANN: "1"
-
   TZ: Asia/Nicosia
   WORK_DATE: ${{ github.event.inputs.work_date }}
   TO_TEST:   ${{ github.event.inputs.to_test }}
 
-  # ── Cyprus morning images ─────────────────────────────────────────────
-  # Включает генерацию картинки ТОЛЬКО для утреннего поста (fallback: если не получилось — уйдёт только текст).
-  CY_MORNING_IMG_ENABLED: "1"
-  # auto = ежедневная ротация 1..5 (по дате), чтобы собрать реакцию аудитории
-  CY_MORNING_STYLE: "auto"
-  # если захочешь сдвинуть порядок ротации (A/B), поставь 1/2/3...
-  CY_MORNING_STYLE_SEED_OFFSET: "0"
+  # Утренние картинки: 5 стилей, авто-ротация по дате
+  CY_IMG_ENABLED: "1"
+  CY_MORNING_STYLE: "auto"          # можно: auto | 1 | 2 | 3 | 4 | 5
+  CY_MORNING_SEED_OFFSET: "0"
+  CY_MORNING_ASPECT: "1:1"
 
 jobs:
   morning:
