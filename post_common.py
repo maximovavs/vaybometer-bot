@@ -1632,14 +1632,44 @@ def build_message_morning_compact(
     fact_text = fact_text.strip()
     fact_line = f"🌾 Доброе утро! {fact_text}" if fact_text else "🌾 Доброе утро!"
 
-    wm_klg = get_weather(KLD_LAT, KLD_LON) or {}
-    t_day, t_night, wcode = _fetch_temps_for_offset(KLD_LAT, KLD_LON, tz_obj.name, DAY_OFFSET)
-    wind_ms, wind_dir_deg, press_val, press_trend = pick_header_metrics_for_offset(wm_klg, tz_obj, DAY_OFFSET)
+    def _first_city_pair(cities):
+        """Пытаемся достать (name, (lat, lon)) из dict / list(items)."""
+        if not cities:
+            return None
+        try:
+            if isinstance(cities, dict):
+                for k, v in cities.items():
+                    if not v: continue
+                    la, lo = v
+                    return str(k), (float(la), float(lo))
+            else:
+                for item in cities:
+                    try:
+                        name, coords = item
+                        if not coords: continue
+                        la, lo = coords
+                        return str(name), (float(la), float(lo))
+                    except Exception:
+                        continue
+        except Exception:
+            return None
+        return None
+
+    ref_pair = _first_city_pair(other_cities) or _first_city_pair(sea_cities)
+    if ref_pair:
+        ref_city, (ref_lat, ref_lon) = ref_pair
+    else:
+        ref_city, (ref_lat, ref_lon) = region_name, (KLD_LAT_DEFAULT, KLD_LON_DEFAULT)
+    ref_city = ref_city or region_name
+
+    wm_ref = get_weather(ref_lat, ref_lon) or {}
+    t_day, t_night, wcode = _fetch_temps_for_offset(ref_lat, ref_lon, tz_obj.name, DAY_OFFSET)
+    wind_ms, wind_dir_deg, press_val, press_trend = pick_header_metrics_for_offset(wm_ref, tz_obj, DAY_OFFSET)
 
     gust = None
     try:
-        times = _hourly_times(wm_klg)
-        hourly = wm_klg.get("hourly") or {}
+        times = _hourly_times(wm_ref)
+        hourly = wm_ref.get("hourly") or {}
         idx_noon = _nearest_index_for_day(
             times,
             date_local.add(days=DAY_OFFSET).date(),
@@ -1665,7 +1695,7 @@ def build_message_morning_compact(
     if isinstance(gust, (int, float)):
         wind_txt += f" • порывы — {int(round(gust))}"
     press_txt = f"🔹 {press_val} гПа {press_trend}" if isinstance(press_val, int) else "🔹 н/д"
-    kal_line = f"Погода: 🏙️ Калининград — {temp_txt} • {desc} • {wind_txt} • {press_txt}."
+    main_line = f"Погода: 🏙️ {ref_city} — {temp_txt} • {desc} • {wind_txt} • {press_txt}."
 
     tz_name = tz_obj.name
 
@@ -1739,7 +1769,7 @@ def build_message_morning_compact(
 
     sunset = None
     try:
-        daily = wm_klg.get("daily") or {}
+        daily = wm_ref.get("daily") or {}
         ss = (daily.get("sunset") or [None])[0]
         if ss:
             sunset = pendulum.parse(ss).in_tz(tz_obj).format("HH:mm")
@@ -1778,7 +1808,7 @@ def build_message_morning_compact(
     if pollen_risk:
         air_line += f" • 🌿 пыльца: {pollen_risk}"
 
-    uvi_info = uvi_for_offset(wm_klg, tz_obj, DAY_OFFSET)
+    uvi_info = uvi_for_offset(wm_ref, tz_obj, DAY_OFFSET)
     uvi_line = None
     try:
         uvi_val = None
@@ -1806,14 +1836,14 @@ def build_message_morning_compact(
     sw_chunk = (" • 🌬️ " + ", ".join(parts) + f" — {sw.get('status', 'н/д')}") if parts else ""
     space_line = "🧲 Космопогода: " + kp_chunk + (sw_chunk or "")
 
-    storm_line_alert = storm_alert_line(wm_klg, tz_obj)
+    storm_line_alert = storm_alert_line(wm_ref, tz_obj)
 
     sc_line = safecast_summary_line()
     official_rad = radiation_line(KLD_LAT, KLD_LON)
 
     schu_line = schumann_line(get_schumann_with_fallback()) if SHOW_SCHUMANN else None
 
-    storm_short = storm_short_text(wm_klg, tz_obj)
+    storm_short = storm_short_text(wm_ref, tz_obj)
     kp_short = kp_status if isinstance(kp_val, (int, float)) else "н/д"
     air_emoji = air_emoji_main
     itogo = f"🔎 Итого: воздух {air_emoji} • {storm_short} • Кр {kp_short}"
@@ -1828,7 +1858,7 @@ def build_message_morning_compact(
     P: List[str] = [
         header,
         fact_line,
-        kal_line,
+        main_line,
         f"Погреться: {warm_txt}; остыть: {cold_txt}. {sea_txt}",
         "",
         sunset_line,
@@ -1853,7 +1883,15 @@ def build_message_morning_compact(
     P.append(itogo)
     P.append(today_line)
     P.append("")
-    P.append("#Калининград #погода #здоровье #сегодня #море")
+    tag_region = "#" + re.sub(r"[^0-9A-Za-zА-Яа-я]+", "", region_name).lower()
+    tags = [tag_region, "#погода", "#здоровье", "#сегодня"]
+    for city in (warm_city, cold_city):
+        if not city:
+            continue
+        tag_city = "#" + re.sub(r"[^0-9A-Za-zА-Яа-я]+", "", str(city)).lower()
+        if tag_city and tag_city not in tags:
+            tags.append(tag_city)
+    P.append(" ".join(tags[:6]))
     return "\n".join(P)
 
 # ────────────────────────── Evening (подробный) ──────────────────────────
@@ -1916,11 +1954,11 @@ def build_message_legacy_evening(
 
     press_txt = f" • 🔹 {press_val} гПа {press_trend}" if isinstance(press_val, int) else ""
 
-    kal_line = (
+    main_line = (
         f"🏙️ Калининград: дн/ночь {temp_txt} • {desc} • {wind_txt}{rh_txt}{press_txt}"
     )
 
-    P.append(kal_line)
+    P.append(main_line)
     P.append("———")
 
     if storm.get("warning"):
@@ -2038,7 +2076,8 @@ def build_message_legacy_evening(
         P.append(tip)
 
     P.append("———")
-    P.append("#Калининград #погода #здоровье #море")
+    tag_region = "#" + re.sub(r"[^0-9A-Za-zА-Яа-я]+", "", region_name).lower()
+    P.append(f"{tag_region} #погода #здоровье #море")
 
     return "\n".join(P)
 
@@ -2451,7 +2490,7 @@ async def send_common_post(
     if img_path and Path(img_path).exists():
         caption = msg
         if len(caption) > 1000:
-            caption = caption[:1000]
+            caption = caption[:1000].rstrip()
         try:
             logging.info("%s: sending photo %s", log_prefix, img_path)
             with open(img_path, "rb") as f:
@@ -2461,9 +2500,16 @@ async def send_common_post(
                     caption=caption,
                     parse_mode=constants.ParseMode.HTML,
                 )
+            if caption != msg:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=msg,
+                    parse_mode=constants.ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
             return
         except Exception as exc:
-            logging.exception("KLD_IMG: sending photo failed, fallback to text: %s", exc)
+            logging.exception("%s: sending photo failed, fallback to text: %s", log_prefix, exc)
 
     logging.info("%s: sending plain text message", log_prefix)
     await bot.send_message(
