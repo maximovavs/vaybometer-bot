@@ -52,26 +52,32 @@ try:
 except Exception:
     requests = None  # type: ignore
 
-# Картинки для KLD
+# ────────────────────────── Image generation ──────────────────────────
+# generate_astro_image: общий генератор изображений для VayboMeter (может жить в разных модулях)
 try:
-    # основной вариант — как в кипрском боте
     from world_en.imagegen import generate_astro_image  # type: ignore
 except Exception:
     try:
-        # запасной вариант — локальный модуль
         from imagegen import generate_astro_image  # type: ignore
     except Exception:
         generate_astro_image = None  # type: ignore
 
+# Prompt builders: Cyprus (этот репозиторий)
 try:
-    from image_prompt_kld import build_kld_evening_prompt  # type: ignore
+    from image_prompt_cy import build_cyprus_evening_prompt  # type: ignore
 except Exception:
-    build_kld_evening_prompt = None  # type: ignore
+    build_cyprus_evening_prompt = None  # type: ignore
 
 try:
-    from image_prompt_kld import build_kld_morning_prompt  # type: ignore
+    from image_prompt_cy_morning import MorningMetrics, build_cyprus_morning_prompt  # type: ignore
 except Exception:
-    build_kld_morning_prompt = None  # type: ignore
+    MorningMetrics = None  # type: ignore
+    build_cyprus_morning_prompt = None  # type: ignore
+
+# Имена сохранены для обратной совместимости (чтобы не падать при импорте старого кода),
+# но в кипрском репозитории калининградских промт‑билдеров нет.
+build_kld_evening_prompt = None  # type: ignore
+build_kld_morning_prompt = None  # type: ignore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -2239,35 +2245,79 @@ async def send_common_post(
         mode=mode,
     )
 
-    # 2) Определяем режим и флаг картинок
+    # 2) Режим + TZ (важно: WORK_DATE и TZ в GH Actions)
     try:
-        effective_mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
+        effective_mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").strip().lower()
     except Exception:
         effective_mode = "evening"
 
-    kld_img_env = os.getenv("KLD_IMG_ENABLED", "1")
-    enable_img = kld_img_env.strip().lower() not in ("0", "false", "no", "off")
+    tz_obj = _as_tz(tz)
+
+    # 3) Нормализуем города в пары (city, (lat, lon)) — нужно и для промтов
+    sea_pairs = _pairs_for_image(sea_cities)
+    other_pairs = _pairs_for_image(other_cities)
+
+    def _is_cyprus_context() -> bool:
+        rn = (region_name or "").strip().lower()
+        tz_n = (getattr(tz_obj, "name", "") or "").strip().lower()
+        if "кипр" in rn or "cyprus" in rn:
+            return True
+        if tz_n in ("asia/nicosia", "europe/nicosia"):
+            return True
+        if build_cyprus_morning_prompt is not None or build_cyprus_evening_prompt is not None:
+            return True
+        return False
+
+    is_cy = _is_cyprus_context()
+    log_tag = "CY_IMG" if is_cy else "IMG"
+
+    # 4) Флаг включения картинок — сначала CY_IMG_ENABLED/IMG_ENABLED, затем KLD_IMG_ENABLED (back-compat)
+    def _img_enabled() -> Tuple[bool, str, str]:
+        raw = os.getenv("CY_IMG_ENABLED")
+        if raw is not None:
+            return (raw.strip().lower() not in ("0", "false", "no", "off")), "CY_IMG_ENABLED", raw
+        raw = os.getenv("IMG_ENABLED")
+        if raw is not None:
+            return (raw.strip().lower() not in ("0", "false", "no", "off")), "IMG_ENABLED", raw
+        raw = os.getenv("KLD_IMG_ENABLED")
+        if raw is not None:
+            return (raw.strip().lower() not in ("0", "false", "no", "off")), "KLD_IMG_ENABLED", raw
+        return True, "default", "1"
+
+    enable_img, img_env_src, img_env_raw = _img_enabled()
 
     logging.info(
-        "KLD_IMG: send_common_post called, mode=%s, tz=%s, KLD_IMG_ENABLED=%s -> enable_img=%s",
+        "%s: send_common_post called, mode=%s, tz=%s, %s=%s -> enable_img=%s",
+        log_tag,
         effective_mode,
-        tz if isinstance(tz, str) else getattr(tz, "name", "obj"),
-        kld_img_env,
+        getattr(tz_obj, "name", "obj"),
+        img_env_src,
+        img_env_raw,
         enable_img,
     )
 
     img_path: Optional[str] = None
 
-    # 3) Пробуем сгенерировать картинку (evening и morning)
-    # Выбираем промт‑билдер под режим. Если morning‑билдер отсутствует — используем evening.
-    prompt_builder = build_kld_evening_prompt
-    if effective_mode.startswith("morning"):
-        try:
-            if build_kld_morning_prompt is not None:  # type: ignore[name-defined]
-                prompt_builder = build_kld_morning_prompt  # type: ignore[name-defined]
-        except Exception:
-            pass
+    # 5) Выбор prompt builder под режим/регион
+    prompt_builder = None
+    builder_kind: Optional[str] = None
 
+    if effective_mode.startswith("morning"):
+        if build_cyprus_morning_prompt is not None and MorningMetrics is not None:
+            prompt_builder = build_cyprus_morning_prompt
+            builder_kind = "cy_morning"
+        elif build_kld_morning_prompt is not None:
+            prompt_builder = build_kld_morning_prompt
+            builder_kind = "kld_morning"
+    elif effective_mode.startswith("evening"):
+        if build_cyprus_evening_prompt is not None:
+            prompt_builder = build_cyprus_evening_prompt
+            builder_kind = "cy_evening"
+        elif build_kld_evening_prompt is not None:
+            prompt_builder = build_kld_evening_prompt
+            builder_kind = "kld_evening"
+
+    # 6) Генерация картинки
     if (
         enable_img
         and generate_astro_image is not None
@@ -2275,51 +2325,285 @@ async def send_common_post(
         and effective_mode.startswith(("evening", "morning"))
     ):
         try:
-            # tz-aware "today" so WORK_DATE and TZ are respected (important for GH Actions runs)
-            today = pendulum.today(tz_obj).date()
+            # базовая дата для именования (локальная)
+            base_date = pendulum.today(tz_obj).date()
 
-            # Муды для картинки (используем общий расчёт; подходит и для morning)
-            marine_mood, inland_mood, astro_mood_en = _build_kld_image_moods_for_evening(
-                tz_obj=tz_obj,
-                sea_pairs=sea_pairs,
-                other_pairs=other_pairs,
-            )
+            # директория
+            img_dir = Path("cy_images" if is_cy else "images")
+            img_dir.mkdir(parents=True, exist_ok=True)
 
-            prompt, style_name = prompt_builder(
-                date=today,
-                marine_mood=marine_mood,
-                inland_mood=inland_mood,
-                astro_mood_en=astro_mood_en,
-            )  # type: ignore[misc]
+            def _pick_ref_coords_local(pairs, default):
+                return _pick_ref_coords(pairs, default)
+
+            def _storm_warning_for_offset(wm: Dict[str, Any], offset: int) -> bool:
+                hourly = wm.get("hourly") or {}
+                idxs = _day_indices(wm, tz_obj, offset)
+                if not idxs:
+                    return False
+                gust_kmh = _vals(hourly.get("wind_gusts_10m") or hourly.get("windgusts_10m") or [], idxs)
+                rain     = _vals(hourly.get("rain") or [], idxs)
+                thp      = _vals(hourly.get("thunderstorm_probability") or [], idxs)
+                g_max = max(gust_kmh, default=0) / 3.6
+                r_max = max(rain, default=0)
+                t_max = max(thp, default=0)
+                return bool(
+                    (g_max >= ALERT_GUST_MS)
+                    or (r_max >= ALERT_RAIN_MM_H)
+                    or (t_max >= ALERT_TSTORM_PROB_PC)
+                )
+
+            def _kp_bucket_en(kp_val: Optional[float]) -> Optional[str]:
+                if not isinstance(kp_val, (int, float)):
+                    return None
+                v = float(kp_val)
+                if v >= 7:
+                    return "stormy"
+                if v >= 5:
+                    return "active"
+                if v >= 4:
+                    return "unsettled"
+                return "quiet"
+
+            def _aqi_bucket_en(aqi_ru: str) -> str:
+                m = (aqi_ru or "").strip().lower()
+                return {
+                    "низкий": "good air",
+                    "умеренный": "moderate air",
+                    "высокий": "poor air",
+                    "очень высокий": "very poor air",
+                }.get(m, m)
+
+            def _sunset_hhmm_for_offset(lat: float, lon: float, offset: int) -> Optional[str]:
+                try:
+                    wm = get_weather(lat, lon) or {}
+                    daily = wm.get("daily") or {}
+                    times = _daily_times(wm)
+                    target = pendulum.today(tz_obj).add(days=offset).date()
+                    try:
+                        idx = times.index(target)
+                    except ValueError:
+                        return None
+                    arr = daily.get("sunset") or []
+                    if idx < len(arr) and arr[idx]:
+                        return pendulum.parse(arr[idx]).in_tz(tz_obj).format("HH:mm")
+                except Exception:
+                    return None
+                return None
+
+            def _build_cy_image_moods_for_evening() -> Tuple[str, str, str, bool]:
+                """
+                Возвращает (marine_mood, inland_mood, astro_mood_en, storm_warning) для Кипра.
+                Логика простая и устойчивая: не зависит от локальных «KLD_*» текстов.
+                """
+                la_sea, lo_sea = _pick_ref_coords_local(sea_pairs, (KLD_LAT_DEFAULT, KLD_LON_DEFAULT))
+                la_in,  lo_in  = _pick_ref_coords_local(other_pairs, (KLD_LAT_DEFAULT, KLD_LON_DEFAULT))
+
+                # Погода на завтра (как и вечерний прогноз)
+                try:
+                    stats_sea = day_night_stats(la_sea, lo_sea, tz=tz_obj.name) or {}
+                except Exception:
+                    stats_sea = {}
+                try:
+                    stats_in = day_night_stats(la_in, lo_in, tz=tz_obj.name) or {}
+                except Exception:
+                    stats_in = {}
+
+                tmax_sea = stats_sea.get("t_day_max")
+                tmax_in  = stats_in.get("t_day_max")
+
+                try:
+                    wm_sea = get_weather(la_sea, lo_sea) or {}
+                except Exception:
+                    wm_sea = {}
+                try:
+                    storm = storm_flags_for_tomorrow(wm_sea, tz_obj) or {"warning": False}
+                except Exception:
+                    storm = {"warning": False}
+
+                if storm.get("warning"):
+                    marine_variants = [
+                        "windy Mediterranean evening on the Cyprus coast with rougher sea, dramatic clouds and strong gusts",
+                        "stormy coastal Cyprus mood: whitecaps, blowing spray and fast-moving low clouds over the water",
+                    ]
+                else:
+                    if isinstance(tmax_sea, (int, float)) and tmax_sea >= 26:
+                        marine_variants = [
+                            "warm Cyprus seaside evening with calm water, soft golden light and a relaxed promenade vibe",
+                            "balmy Mediterranean coast at sunset: gentle waves, warm air and long pastel sky",
+                        ]
+                    elif isinstance(tmax_sea, (int, float)) and tmax_sea >= 18:
+                        marine_variants = [
+                            "mild Cyprus coastal evening with a fresh breeze, clear horizon and soft reflections on the sea",
+                            "comfortable seaside air, light jacket optional, peaceful sunset over the Mediterranean",
+                        ]
+                    else:
+                        marine_variants = [
+                            "cooler Cyprus seaside evening with crisp air, calmer streets and a quieter shoreline mood",
+                            "fresh coastal nightfall, more wind than heat, cozy lights along the waterfront",
+                        ]
+
+                if isinstance(tmax_in, (int, float)) and tmax_in >= 24:
+                    inland_variants = [
+                        "warm inland Cyprus evening with gentle city rhythm, palm silhouettes and calm streets",
+                        "soft inland night air, slower pace, cozy cafes and a grounded relaxed mood",
+                    ]
+                else:
+                    inland_variants = [
+                        "cooler inland Cyprus evening, calmer than the coast, with quiet neighborhoods and steady light",
+                        "grounded inland vibe with mild air and a slower, restful pace",
+                    ]
+
+                marine_mood = random.choice(marine_variants)
+                inland_mood = random.choice(inland_variants)
+
+                astro_mood_en = (
+                    "calm clear night sky energy supporting rest and practical planning"
+                    if not storm.get("warning")
+                    else "more intense restless sky mood — stay flexible, keep plans simple and prioritize recovery"
+                )
+                return marine_mood, inland_mood, astro_mood_en, bool(storm.get("warning"))
+
+            # prompt + style
+            style_name = "default"
+            prompt = ""
+
+            if builder_kind == "cy_morning":
+                # offset — берём из ENV (чтобы совпадало с текстом), иначе fallback на модульный DAY_OFFSET
+                try:
+                    img_offset = int(os.getenv("DAY_OFFSET", str(DAY_OFFSET)))
+                except Exception:
+                    img_offset = DAY_OFFSET
+
+                date_local = pendulum.today(tz_obj).add(days=img_offset).date()
+
+                # города: ищем «самый тёплый/самый прохладный» по tmax
+                pairs_all = list(sea_pairs) + list(other_pairs)
+                warm_city = cool_city = None
+                warm_t = cool_t = None
+                for city, (la, lo) in pairs_all:
+                    tmax, _, _ = _fetch_temps_for_offset(la, lo, tz_obj.name, img_offset)
+                    if tmax is None:
+                        continue
+                    if warm_t is None or float(tmax) > float(warm_t):
+                        warm_t = float(tmax)
+                        warm_city = str(city)
+                    if cool_t is None or float(tmax) < float(cool_t):
+                        cool_t = float(tmax)
+                        cool_city = str(city)
+
+                # референс‑координаты для воздуха/заката/шторм‑флага
+                ref_la, ref_lo = _pick_ref_coords_local(pairs_all, (KLD_LAT_DEFAULT, KLD_LON_DEFAULT))
+
+                sunset_hhmm = _sunset_hhmm_for_offset(ref_la, ref_lo, img_offset)
+
+                air = get_air(ref_la, ref_lo) or {}
+                try:
+                    aqi_val = float(air.get("aqi")) if air.get("aqi") is not None else None
+                except Exception:
+                    aqi_val = None
+                aqi_ru = aqi_risk_ru(aqi_val) if aqi_val is not None else ""
+                aqi_bucket = _aqi_bucket_en(aqi_ru) if aqi_ru else None
+
+                kp_val, _, _, _ = _kp_global_swpc()
+                kp_bucket = _kp_bucket_en(kp_val)
+
+                try:
+                    wm_ref = get_weather(ref_la, ref_lo) or {}
+                except Exception:
+                    wm_ref = {}
+                storm_warn = _storm_warning_for_offset(wm_ref, img_offset)
+
+                metrics = MorningMetrics(  # type: ignore[misc]
+                    warm_city=warm_city,
+                    warm_temp_c=warm_t,
+                    cool_city=cool_city,
+                    cool_temp_c=cool_t,
+                    sunset_hhmm=sunset_hhmm,
+                    aqi_value=aqi_val,
+                    aqi_bucket=aqi_bucket,
+                    kp_value=kp_val if isinstance(kp_val, (int, float)) else None,
+                    kp_bucket=kp_bucket,
+                    storm_warning=bool(storm_warn),
+                )
+
+                style_env = os.getenv("CY_MORNING_STYLE", "auto")
+                try:
+                    seed_offset = int(os.getenv("CY_MORNING_STYLE_SEED_OFFSET", "0"))
+                except Exception:
+                    seed_offset = 0
+
+                # build_cyprus_morning_prompt возвращает (prompt, style_name, style_id)
+                prompt, style_name, _style_id = prompt_builder(  # type: ignore[misc]
+                    date_local=date_local,
+                    metrics=metrics,
+                    region_name=region_name or "Cyprus",
+                    style=style_env,
+                    seed_offset=seed_offset,
+                    aspect="1:1",
+                    no_text=True,
+                )
+
+            elif builder_kind == "cy_evening":
+                marine_mood, inland_mood, astro_mood_en, storm_warn = _build_cy_image_moods_for_evening()
+                prompt, style_name = prompt_builder(  # type: ignore[misc]
+                    date=base_date,
+                    marine_mood=marine_mood,
+                    inland_mood=inland_mood,
+                    astro_mood_en=astro_mood_en,
+                    storm_warning=storm_warn,
+                )
+
+            else:
+                # Legacy / fallback: KLD signature (date, marine_mood, inland_mood, astro_mood_en)
+                marine_mood, inland_mood, astro_mood_en = _build_kld_image_moods_for_evening(
+                    tz_obj=tz_obj,
+                    sea_pairs=sea_pairs,
+                    other_pairs=other_pairs,
+                )
+                prompt, style_name = prompt_builder(  # type: ignore[misc]
+                    date=base_date,
+                    marine_mood=marine_mood,
+                    inland_mood=inland_mood,
+                    astro_mood_en=astro_mood_en,
+                )
 
             safe_style = (style_name or "default").strip().lower() or "default"
-            img_dir = Path("kld_images")
-            img_dir.mkdir(parents=True, exist_ok=True)
-            img_file = img_dir / f"kld_{effective_mode}_{today.isoformat()}_{safe_style}.jpg"
+            prefix = "cy" if is_cy else "img"
+            img_file = img_dir / f"{prefix}_{effective_mode}_{base_date.isoformat()}_{safe_style}.jpg"
 
-            logging.info("KLD_IMG: %s image: %s", effective_mode, img_file)
+            logging.info(
+                "%s: generating image builder=%s style=%s file=%s",
+                log_tag,
+                builder_kind,
+                safe_style,
+                img_file,
+            )
 
             ok = generate_astro_image(prompt, str(img_file))  # type: ignore[misc]
             if ok and img_file.exists():
                 img_path = str(img_file)
             else:
-                logging.warning("KLD_IMG: gen returned False or file missing; fallback to text")
+                logging.warning("%s: gen returned False or file missing; fallback to text", log_tag)
+
         except Exception as e:
-            logging.warning("KLD_IMG: error in image generation: %s", e)
+            logging.warning("%s: error in image generation: %s", log_tag, e)
     else:
         logging.info(
-            "KLD_IMG: skip image (enable_img=%s, effective_mode=%s, gen=%s, prompt_fn=%s)",
-            enable_img, effective_mode, bool(generate_astro_image), bool(prompt_builder)
+            "%s: skip image (enable_img=%s, effective_mode=%s, gen=%s, prompt_fn=%s)",
+            log_tag,
+            enable_img,
+            effective_mode,
+            bool(generate_astro_image),
+            bool(prompt_builder),
         )
 
-
-    # 4) Отправка в Telegram
+    # 7) Отправка в Telegram
     if img_path and Path(img_path).exists():
         caption = msg
         if len(caption) > 1000:
             caption = caption[:1000]
         try:
-            logging.info("KLD_IMG: sending photo %s", img_path)
+            logging.info("%s: sending photo %s", log_tag, img_path)
             with open(img_path, "rb") as f:
                 await bot.send_photo(
                     chat_id=chat_id,
@@ -2329,9 +2613,9 @@ async def send_common_post(
                 )
             return
         except Exception as exc:
-            logging.exception("KLD_IMG: sending photo failed, fallback to text: %s", exc)
+            logging.exception("%s: sending photo failed, fallback to text: %s", log_tag, exc)
 
-    logging.info("KLD_IMG: sending plain text message")
+    logging.info("%s: sending plain text message", log_tag)
     await bot.send_message(
         chat_id=chat_id,
         text=msg,
@@ -2340,6 +2624,7 @@ async def send_common_post(
     )
 
 async def main_common(
+
     bot: Bot,
     chat_id: int,
     region_name: str,
