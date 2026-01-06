@@ -32,6 +32,8 @@ from world_en.imagegen import generate_astro_image
 from image_prompt_cy   import build_cyprus_evening_prompt
 
 # Morning image prompts (Cyprus)
+from image_prompt_cy_morning import MorningMetrics, build_cyprus_morning_prompt
+
 try:
     from image_prompt_cy_morning import build_cyprus_morning_prompt, MorningMetrics  # type: ignore
 except Exception:
@@ -1642,7 +1644,95 @@ def _build_short_photo_caption(full_msg: str, max_len: int = _TG_CAPTION_LIMIT) 
 
     # редкий случай: если заголовок очень длинный — аккуратно обрежем, но он обычно без длинных HTML
     return header[: max_len - 1] + "…"
+    
+    def _cy_morning_metrics_from_message(
+    msg: str,
+    date_local: pendulum.Date,
+    region_name: str,
+) -> MorningMetrics:
+    """
+    Собираем MorningMetrics для генерации утренней картинки из УЖЕ СФОРМИРОВАННОГО текста поста.
+    Это:
+      - не меняет формат текста;
+      - гарантирует, что картинка соответствует тому, что вы опубликовали;
+      - не делает дополнительных запросов к погодным API.
+    """
+    text = msg or ""
 
+    def _strip_tags(s: str) -> str:
+        s = re.sub(r"<[^>]+>", "", s or "")
+        try:
+            return html.unescape(s).strip()
+        except Exception:
+            return s.strip()
+
+    warm_city = cool_city = None
+    warm_temp = cool_temp = None
+
+    # Обычно в утреннем посте есть строка вида:
+    # "Теплее всего — Лимассол (21°), прохладнее — Тродос (12°)"
+    m = re.search(
+        r"Теплее\s+всего\s*[—-]\s*([^\(\n,]+)\s*\(([-\d]+)°\).*?"
+        r"прохладнее\s*[—-]\s*([^\(\n,]+)\s*\(([-\d]+)°\)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        warm_city = _strip_tags(m.group(1))
+        cool_city = _strip_tags(m.group(3))
+        try:
+            warm_temp = float(m.group(2))
+        except Exception:
+            warm_temp = None
+        try:
+            cool_temp = float(m.group(4))
+        except Exception:
+            cool_temp = None
+
+    # AQI: "🏭 AQI 54 (умеренный) • PM..."
+    aqi_value = None
+    aqi_bucket = None
+    m = re.search(r"\bAQI\s+(\d{1,3})\b(?:\s*\(([^)]+)\))?", text)
+    if m:
+        try:
+            aqi_value = float(m.group(1))
+        except Exception:
+            aqi_value = None
+        if m.group(2):
+            aqi_bucket = _strip_tags(m.group(2))
+
+    # Kp: "🧲 Космопогода: Kp 2.3 (спокойно, 60 мин назад) ..."
+    kp_value = None
+    kp_bucket = None
+    m = re.search(r"\bKp\s*([0-9]+(?:\.[0-9]+)?)\s*\(\s*([^\),]+)", text, flags=re.IGNORECASE)
+    if m:
+        try:
+            kp_value = float(m.group(1))
+        except Exception:
+            kp_value = None
+        kp_bucket = _strip_tags(m.group(2))
+
+    # Солнце/закат/рассвет — просто для “настроения” изображения
+    sun_text = None
+    for line in text.splitlines():
+        if line.strip().startswith(("🌇", "🌅")):
+            sun_text = _strip_tags(line)
+            break
+
+    return MorningMetrics(
+        warm_city=warm_city,
+        cool_city=cool_city,
+        warm_temp_c=warm_temp,
+        cool_temp_c=cool_temp,
+        aqi_value=aqi_value,
+        aqi_bucket=aqi_bucket,
+        kp_value=kp_value,
+        kp_bucket=kp_bucket,
+        sun_text=sun_text,
+        date_local=date_local.to_date_string(),
+        region=_strip_tags(region_name),
+        seed_offset=0,
+    )
 
 # ───────────── отправка ─────────────
 async def send_common_post(
@@ -1732,13 +1822,16 @@ async def send_common_post(
             except Exception:
                 kp_val = None
 
-            metrics = MorningMetrics(
-                t_day_max=float(tmax) if isinstance(tmax, (int, float)) else None,
-                t_night_min=float(tmin) if isinstance(tmin, (int, float)) else None,
-                aqi=float(aqi_val) if isinstance(aqi_val, (int, float)) else None,
-                kp=float(kp_val) if isinstance(kp_val, (int, float)) else None,
-                storm_warning=False,
+            metrics = _cy_morning_metrics_from_message(
+                msg=msg,
+                date_local=today_date,
+                region_name=region_name,
             )
+            # опционально: управляем сидом ротации стиля из env
+            try:
+                metrics.seed_offset = int(os.getenv("CY_MORNING_SEED_OFFSET", "0") or "0")
+            except Exception:
+                metrics.seed_offset = 0
 
             style = os.getenv("CY_MORNING_STYLE", "auto").strip() or "auto"
             try:
