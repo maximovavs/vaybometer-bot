@@ -256,7 +256,7 @@ def _build_url(
 def _localize_time_list(times: List[Any], tz_name: str) -> Tuple[List[str], List[str]]:
     """
     Returns (time_with_offset, time_local_original_str).
-    If pendulum is unavailable or tz is 'auto', returns input strings for both.
+    If pendulum is unavailable, returns input strings for both.
     """
     local_strs = [str(t) for t in (times or []) if t is not None]
     if not local_strs:
@@ -310,22 +310,58 @@ def _ensure_aliases(payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _resolve_tz_name(requested_tz: Optional[str], payload: Dict[str, Any]) -> str:
+    """Resolve timezone name for normalization.
+
+    If caller passes a concrete IANA tz name, use it.
+    If caller passes None/""/"auto", attempt to use payload["timezone"].
+    Otherwise return requested_tz (possibly "auto").
+    """
+    tz = (requested_tz or "").strip()
+    if tz and tz.lower() != "auto":
+        return tz
+    p_tz = payload.get("timezone") if isinstance(payload, dict) else None
+    if isinstance(p_tz, str) and p_tz.strip():
+        return p_tz.strip()
+    return tz or "auto"
+
+
 def _normalize_times(payload: Dict[str, Any], tz_name: str) -> Dict[str, Any]:
     """
-    Convert hourly.time to ISO strings with timezone offset (if possible),
-    preserving original local time in hourly.time_local.
+    Convert time-like fields to ISO strings with timezone offset (if possible),
+    preserving original local time lists in *_local fields.
     """
     if not isinstance(payload, dict):
         return payload
+
+    tz_eff = _resolve_tz_name(tz_name, payload)
 
     hourly = payload.get("hourly")
     if isinstance(hourly, dict):
         t = hourly.get("time") or []
         if isinstance(t, list) and t:
-            t_off, t_local = _localize_time_list(t, tz_name)
+            t_off, t_local = _localize_time_list(t, tz_eff)
             if t_off:
                 hourly["time_local"] = t_local
                 hourly["time"] = t_off
+
+    daily = payload.get("daily")
+    if isinstance(daily, dict):
+        for k in ("sunrise", "sunset"):
+            v = daily.get(k)
+            if isinstance(v, list) and v:
+                v_off, v_local = _localize_time_list(v, tz_eff)
+                if v_off:
+                    daily[f"{k}_local"] = v_local
+                    daily[k] = v_off
+
+    cur = payload.get("current")
+    if isinstance(cur, dict) and isinstance(cur.get("time"), str):
+        # Some Open‑Meteo responses provide current.time.
+        t_off, t_local = _localize_time_list([cur.get("time")], tz_eff)
+        if t_off:
+            cur["time_local"] = t_local[0]
+            cur["time"] = t_off[0]
     return payload
 
 
