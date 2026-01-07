@@ -42,6 +42,15 @@ if not TOKEN:
 
 TZ_STR = os.getenv("TZ", "Asia/Nicosia")
 
+# weather.py использует WEATHER_TZ_DEFAULT, поэтому подстрахуем окружение,
+# чтобы дефолтный tz совпадал с вашим TZ, даже если где-то вызов погоды идет без tz_name.
+os.environ.setdefault("WEATHER_TZ_DEFAULT", TZ_STR)
+
+# Общая папка кэшей (удобно кэшировать в GitHub Actions)
+CACHE_DIR = Path(os.getenv("VAYBOMETER_CACHE_DIR", ".cache"))
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
 SEA_LABEL   = "Морские города"
 OTHER_LABEL = "Континентальные города"
 SEA_CITIES = {
@@ -57,9 +66,8 @@ OTHER_CITIES_ALL = {
 }
 
 # ─────────────── FX helpers ───────────────
-FX_CACHE_PATH     = Path("fx_cache.json")        # для «повтор/не повторять» по ЦБ
-INTER_CACHE_PATH  = Path("fx_inter_cache.json")  # лёгкий кэш межрынка «вчера»
-
+FX_CACHE_PATH = CACHE_DIR / "fx_cache.json"        # для «повтор/не повторять» по ЦБ
+INTER_CACHE_PATH = CACHE_DIR / "fx_inter_cache.json"  # лёгкий кэш межрынка «вчера»
 ECB_HEADERS = {
     "User-Agent": "VayboMeterBot/1.0 (+https://t.me/vaybometer)",
     "Accept": "application/xml,text/xml,application/json;q=0.9,*/*;q=0.8",
@@ -111,6 +119,7 @@ def _read_inter_cache() -> Tuple[Optional[str], Dict[str, float]]:
 
 def _save_inter_cache(date_str: str, values: Dict[str, float]) -> None:
     try:
+        INTER_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         INTER_CACHE_PATH.write_text(json.dumps({"date": date_str, "values": values}, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         logging.warning("INTER cache save failed: %s", e)
@@ -363,7 +372,8 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
         except Exception:
             logging.error("CHANNEL_ID_TEST должен быть числом, получено: %r", ch_test); sys.exit(1)
 
-    ch_main = os.getenv("CHANNEL_ID", "").strip() or os.getenv("CHANNEL_ID_KLG", "").strip()
+    # Важно: Cyprus-репо не должен иметь fallback на калининградские переменные.
+    ch_main = os.getenv("CHANNEL_ID", "").strip()
     if not ch_main:
         logging.error("CHANNEL_ID не задан и не указан --chat-id/override"); sys.exit(1)
     try: return int(ch_main)
