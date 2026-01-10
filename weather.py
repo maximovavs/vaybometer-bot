@@ -450,5 +450,123 @@ def get_weather(
         LOG.error("weather: no data (last_err=%s)", last_err)
     return {}
 
+def _daily_index_for_date(daily_times: Any, target_date: Any, tz_name: str) -> Optional[int]:
+    """
+    Возвращает индекс в daily['time'] для target_date (pendulum.Date или YYYY-MM-DD).
+    Работает и без pendulum.
+    """
+    if not isinstance(daily_times, list) or not daily_times:
+        return None
 
-__all__ = ["get_weather"]
+    # target_date as 'YYYY-MM-DD'
+    if isinstance(target_date, str):
+        target_key = target_date[:10]
+    else:
+        # pendulum.Date or date-like
+        try:
+            target_key = target_date.to_date_string()  # pendulum.Date
+        except Exception:
+            try:
+                target_key = str(target_date)[:10]
+            except Exception:
+                return None
+
+    # daily times can be 'YYYY-MM-DD' or ISO
+    for i, t in enumerate(daily_times):
+        if t is None:
+            continue
+        s = str(t)
+        if not s:
+            continue
+        if s[:10] == target_key:
+            return i
+
+    # fallback: if no match, use 1 for tomorrow-ish, else 0
+    return None
+
+
+def day_night_stats(lat: float, lon: float, tz: str = "auto", day_offset: int = 0) -> Dict[str, Any]:
+    """
+    Универсальная статистика по ДНЮ (max) и НОЧИ (min) для указанной даты.
+    Возвращает минимум ключей, которые ожидает post_common.py:
+      - t_day_max
+      - t_night_min
+    Дополнительно (если есть): sunrise, sunset, weathercode, uv_max.
+    """
+    tz_eff = (tz or "auto").strip() or "auto"
+
+    payload = get_weather(lat, lon, tz_name=tz_eff) or {}
+    daily = payload.get("daily") or {}
+    if not isinstance(daily, dict):
+        return {}
+
+    times = daily.get("time") or daily.get("date") or []
+    tmaxs = daily.get("temperature_2m_max") or []
+    tmins = daily.get("temperature_2m_min") or []
+    wc = daily.get("weathercode") or daily.get("weather_code") or []
+    sunrise = daily.get("sunrise") or []
+    sunset = daily.get("sunset") or []
+    uvmax = daily.get("uv_index_max") or []
+
+    # target date
+    if pendulum is not None and tz_eff and tz_eff.lower() != "auto":
+        try:
+            tz_obj = pendulum.timezone(tz_eff)
+            target = pendulum.today(tz_obj).add(days=int(day_offset)).date()
+        except Exception:
+            target = None
+    else:
+        target = None
+
+    idx = None
+    if target is not None:
+        idx = _daily_index_for_date(times, target, tz_eff)
+
+    # если pendulum нет/idx не нашли — используем day_offset как индекс (0=сегодня, 1=завтра)
+    if idx is None:
+        try:
+            idx = int(day_offset)
+        except Exception:
+            idx = 0
+
+    def _safe_f(arr, i) -> Optional[float]:
+        try:
+            if isinstance(arr, list) and 0 <= i < len(arr) and arr[i] is not None:
+                return float(arr[i])
+        except Exception:
+            return None
+        return None
+
+    out: Dict[str, Any] = {}
+    out["t_day_max"] = _safe_f(tmaxs, idx)
+    out["t_night_min"] = _safe_f(tmins, idx)
+
+    # дополнительные поля (не обязательны)
+    try:
+        if isinstance(sunrise, list) and 0 <= idx < len(sunrise):
+            out["sunrise"] = sunrise[idx]
+        if isinstance(sunset, list) and 0 <= idx < len(sunset):
+            out["sunset"] = sunset[idx]
+        if isinstance(wc, list) and 0 <= idx < len(wc):
+            out["weathercode"] = wc[idx]
+        if isinstance(uvmax, list) and 0 <= idx < len(uvmax):
+            out["uv_max"] = uvmax[idx]
+    except Exception:
+        pass
+
+    # если данных нет — вернём {}
+    if out.get("t_day_max") is None and out.get("t_night_min") is None:
+        return {}
+
+    return out
+
+
+def fetch_tomorrow_temps(lat: float, lon: float, tz: str = "auto") -> Tuple[Optional[float], Optional[float]]:
+    """
+    Совместимость со старым кодом: возвращает (t_day_max, t_night_min) на ЗАВТРА.
+    """
+    st = day_night_stats(lat, lon, tz=tz, day_offset=1) or {}
+    return st.get("t_day_max"), st.get("t_night_min")
+
+
+__all__ = ["get_weather", "day_night_stats", "fetch_tomorrow_temps"]
