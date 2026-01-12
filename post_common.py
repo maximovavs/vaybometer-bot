@@ -845,7 +845,22 @@ def main_common(*args: Any, **kwargs: Any) -> None:
     mode = (kwargs.get("mode") or "").strip().lower()
     date_s = (kwargs.get("date") or "").strip()
     to_test = bool(kwargs.get("to_test", False))
-    chat_id = (kwargs.get("chat_id") or kwargs.get("chat") or "").strip() or None
+
+    def _normalize_chat_id(v):
+        """Accept int chat_id (aiogram-friendly) or str (e.g., @channelname)."""
+        if v is None:
+            return None
+        if isinstance(v, int):
+            return v
+        s = str(v).strip()
+        if not s:
+            return None
+        try:
+            return int(s)
+        except Exception:
+            return s
+
+    chat_id = _normalize_chat_id(kwargs.get("chat_id") or kwargs.get("chat"))
 
     tz = env_str("TZ", "Asia/Nicosia")
     date_local = _parse_date(date_s) if date_s else _today_in_tz(tz)
