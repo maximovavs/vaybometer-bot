@@ -818,3 +818,65 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------
+# Compatibility: main_common (expected by post_cy.py in some repositories)
+# ---------------------------------------------------------------------
+
+def main_common(*args: Any, **kwargs: Any) -> None:
+    """
+    Backwards-compatible entrypoint expected by some region scripts:
+
+      from post_common import main_common
+      if __name__ == "__main__":
+          main_common()
+
+    Supported call styles:
+      - main_common()                       -> uses current sys.argv (expects --mode ...)
+      - main_common(argv=[...])             -> uses provided argv (without program name)
+      - main_common([...])                  -> same as argv
+      - main_common("morning")              -> convenience: builds argv for that mode
+      - main_common(mode="morning", date="YYYY-MM-DD", to_test=True, chat_id="...")
+
+    This wrapper will prefer direct function calls if mode/date/to_test/chat_id are provided.
+    """
+    # Direct-kwargs path (most explicit; avoids argparse surprises)
+    mode = (kwargs.get("mode") or "").strip().lower()
+    date_s = (kwargs.get("date") or "").strip()
+    to_test = bool(kwargs.get("to_test", False))
+    chat_id = (kwargs.get("chat_id") or kwargs.get("chat") or "").strip() or None
+
+    tz = env_str("TZ", "Asia/Nicosia")
+    date_local = _parse_date(date_s) if date_s else _today_in_tz(tz)
+
+    if mode in ("morning", "evening", "fx-only"):
+        if mode == "morning":
+            post_cy_morning(date_local, to_test=to_test, chat_id=chat_id)
+            return
+        if mode == "evening":
+            post_cy_evening(date_local, to_test=to_test, chat_id=chat_id)
+            return
+        post_fx_only(date_local, to_test=to_test, chat_id=chat_id)
+        return
+
+    # argv-based path
+    argv = kwargs.get("argv", None)
+    if argv is None and args:
+        argv = args[0]
+
+    # Convenience: main_common("morning")
+    if isinstance(argv, str):
+        s = argv.strip().lower()
+        if s in ("morning", "evening", "fx-only"):
+            return main_common(mode=s, date=date_s, to_test=to_test, chat_id=(chat_id or ""))
+        argv = None
+
+    if isinstance(argv, (list, tuple)):
+        import sys as _sys
+        _sys.argv = [_sys.argv[0]] + [str(x) for x in argv]
+        main()
+        return
+
+    # Fallback: use current sys.argv
+    main()
