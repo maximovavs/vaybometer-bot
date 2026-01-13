@@ -23,11 +23,15 @@ Key fixes included:
   - Deterministic morning style rotation (5 styles) based on local date.
   - Hardened network calls (timeouts, retries) + graceful fallbacks.
   - Persistent state stored under VAYBOMETER_CACHE_DIR (default: .cache).
+  - Telegram reliability: retries on transient errors, safe splitting for long messages,
+    and caption-length safety for sendPhoto (caption limit is much smaller than sendMessage).
+  - WORK_DATE override supported for deterministic CI runs (YYYY-MM-DD or ISO datetime).
 
 Environment (common):
   TELEGRAM_TOKEN, CHANNEL_ID, CHANNEL_ID_TEST
   TZ (default: Asia/Nicosia)
   VAYBOMETER_CACHE_DIR (default: .cache)
+  WORK_DATE (optional, overrides "today" in CI)
 
 Cyprus images (morning):
   CY_IMG_ENABLED=1/0
@@ -60,7 +64,7 @@ import html
 import hashlib
 import datetime as _dt
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 
@@ -177,6 +181,66 @@ def load_cy_cities() -> Tuple[List[City], List[City]]:
 
 
 # ----------------------------
+# Networking (hardened)
+# ----------------------------
+
+_SESSION = requests.Session()
+_DEFAULT_HEADERS = {"User-Agent": "VayboMeter/1.0 (+https://t.me/vaybometer)"}
+
+
+def _requests_get(url: str, params: Dict[str, Any], timeout: int = 15, retries: int = 2) -> Dict[str, Any]:
+    last_err: Optional[Exception] = None
+    for i in range(retries + 1):
+        try:
+            r = _SESSION.get(url, params=params, timeout=timeout, headers=_DEFAULT_HEADERS)
+            # Retry on transient status codes
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+            r.raise_for_status()
+            try:
+                return r.json()
+            except Exception as je:
+                raise RuntimeError(f"Bad JSON: {je}")
+        except Exception as e:
+            last_err = e
+            if i < retries:
+                time.sleep(0.7 * (i + 1))
+                continue
+    raise RuntimeError(f"GET failed: {url} ({last_err})")
+
+
+def _requests_post(
+    url: str,
+    *,
+    json_payload: Optional[Dict[str, Any]] = None,
+    data: Optional[Dict[str, Any]] = None,
+    files: Optional[Dict[str, Any]] = None,
+    timeout: int = 20,
+    retries: int = 2,
+) -> requests.Response:
+    last_err: Optional[Exception] = None
+    for i in range(retries + 1):
+        try:
+            r = _SESSION.post(
+                url,
+                json=json_payload,
+                data=data,
+                files=files,
+                timeout=timeout,
+                headers=_DEFAULT_HEADERS if files is None else None,  # multipart sets its own
+            )
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+            return r
+        except Exception as e:
+            last_err = e
+            if i < retries:
+                time.sleep(0.8 * (i + 1))
+                continue
+    raise RuntimeError(f"POST failed: {url} ({last_err})")
+
+
+# ----------------------------
 # Open-Meteo helpers
 # ----------------------------
 
@@ -222,21 +286,6 @@ def wcode_text(code: Optional[int]) -> str:
     return WEATHER_CODE_MAP.get(int(code), ("", ""))[1]
 
 
-def _requests_get(url: str, params: Dict[str, Any], timeout: int = 15, retries: int = 2) -> Dict[str, Any]:
-    last_err: Optional[Exception] = None
-    for i in range(retries + 1):
-        try:
-            r = requests.get(url, params=params, timeout=timeout)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            last_err = e
-            if i < retries:
-                time.sleep(0.6 * (i + 1))
-                continue
-    raise RuntimeError(f"GET failed: {url} ({last_err})")
-
-
 def fetch_daily_forecast(city: City, date_local: _dt.date, tz: str) -> Dict[str, Any]:
     """
     Returns a normalized dict for one day of forecast.
@@ -265,6 +314,7 @@ def fetch_daily_forecast(city: City, date_local: _dt.date, tz: str) -> Dict[str,
     }
     raw = _requests_get(url, params=params, timeout=18, retries=2)
     daily = raw.get("daily") or {}
+
     # Open-Meteo returns lists even for single-day range.
     def _pick(key: str) -> Optional[float]:
         arr = daily.get(key)
@@ -278,10 +328,11 @@ def fetch_daily_forecast(city: City, date_local: _dt.date, tz: str) -> Dict[str,
             return str(arr[0])
         return None
 
+    wc = _pick("weathercode")
     out: Dict[str, Any] = {
         "city": city.name,
         "date": date_local.isoformat(),
-        "wcode": int(_pick("weathercode")) if _pick("weathercode") is not None else None,
+        "wcode": int(wc) if wc is not None else None,
         "tmax": _pick("temperature_2m_max"),
         "tmin": _pick("temperature_2m_min"),
         "precip_mm": _pick("precipitation_sum") or 0.0,
@@ -375,13 +426,18 @@ def fetch_fx_cbr() -> Dict[str, Any]:
         except Exception:
             return 1
 
-    # Normalize TRY to 1 TRY if nominal is 10/100
+    usd = _rate("USD")
+    eur = _rate("EUR")
+    try_raw = _rate("TRY")
+    try_nom = _nom("TRY")
+    try_norm = (try_raw / try_nom) if (try_raw is not None and try_nom) else None
+
     out = {
         "ok": True,
         "date": raw.get("Date") or raw.get("PreviousDate") or "",
-        "USD_RUB": _rate("USD"),
-        "EUR_RUB": _rate("EUR"),
-        "TRY_RUB": (_rate("TRY") / _nom("TRY")) if (_rate("TRY") is not None) else None,
+        "USD_RUB": usd,
+        "EUR_RUB": eur,
+        "TRY_RUB": try_norm,
     }
     return out
 
@@ -399,24 +455,38 @@ def format_delta(curr: Optional[float], prev: Optional[float]) -> str:
 
 
 def build_fx_message(date_local: _dt.date) -> str:
-    fx = fetch_fx_cbr()
+    """
+    Reliability fix:
+      - If network fetch fails, fall back to cached values (if present) and mark as such.
+    """
     cache_path = fx_delta_cache_path()
-    prev = load_json(cache_path, {})
+    prev = load_json(cache_path, {}) or {}
+
+    fx: Dict[str, Any]
+    stale_note = ""
+    try:
+        fx = fetch_fx_cbr()
+    except Exception as e:
+        _log("WARNING", f"FX fetch failed; using cache if available. ({e})")
+        fx = {"ok": False, "date": prev.get("updated_at", ""), "USD_RUB": prev.get("USD_RUB"),
+              "EUR_RUB": prev.get("EUR_RUB"), "TRY_RUB": prev.get("TRY_RUB")}
+        stale_note = " ⚠️ Данные могут быть устаревшими."
+
     prev_usd = prev.get("USD_RUB")
     prev_eur = prev.get("EUR_RUB")
     prev_try = prev.get("TRY_RUB")
 
-    # Save new for next delta comparison
-    save_json(cache_path, {
-        "updated_at": _dt.datetime.utcnow().isoformat() + "Z",
-        "USD_RUB": fx.get("USD_RUB"),
-        "EUR_RUB": fx.get("EUR_RUB"),
-        "TRY_RUB": fx.get("TRY_RUB"),
-    })
+    # Save new for next delta comparison only if we have at least one fresh value
+    if fx.get("USD_RUB") is not None or fx.get("EUR_RUB") is not None or fx.get("TRY_RUB") is not None:
+        save_json(cache_path, {
+            "updated_at": _dt.datetime.utcnow().isoformat() + "Z",
+            "USD_RUB": fx.get("USD_RUB"),
+            "EUR_RUB": fx.get("EUR_RUB"),
+            "TRY_RUB": fx.get("TRY_RUB"),
+        })
 
-    # Message
     dstr = date_local.strftime("%d.%m.%Y")
-    lines = [f"💱 <b>Курсы валют</b> ({dstr}, 12:00 МСК)"]
+    lines = [f"💱 <b>Курсы валют</b> ({dstr}, 12:00 МСК){stale_note}"]
 
     usd = fx.get("USD_RUB")
     eur = fx.get("EUR_RUB")
@@ -446,13 +516,11 @@ def cy_style_for_date(date_local: _dt.date) -> int:
     if style_env in ("1", "2", "3", "4", "5"):
         return int(style_env)
     seed_off = env_int("CY_MORNING_SEED_OFFSET", 0)
-    # Use ordinal for rotation; stable across reruns.
     style = ((date_local.toordinal() + seed_off) % 5) + 1
     return style
 
 
 def cy_style_prompt(style_id: int) -> str:
-    # Short descriptors passed to an image generator (if connected).
     prompts = {
         1: "watercolor postcard, soft light, Mediterranean coast, calm mood",
         2: "clean minimal flat illustration, pastel palette, weather-themed icons",
@@ -650,9 +718,11 @@ def build_cyprus_morning(date_local: _dt.date, tz: str = "Asia/Nicosia") -> Tupl
         lines.append("—")
         lines.append("Коротко по городам: " + " • ".join(_row(d) for d in sample))
 
-    img_bytes = None
+    img_bytes: Optional[bytes] = None
     try:
-        summary = f"{wcode_text(days[0].get('wcode')) if days else 'weather'}; {int(round(hi)) if hi is not None else ''}C"
+        wtxt = wcode_text(days[0].get("wcode")) if days else "weather"
+        hi_s = f"{int(round(hi))}°C" if hi is not None else ""
+        summary = f"{wtxt}{('; ' + hi_s) if hi_s else ''}"
         img_bytes = maybe_generate_morning_image(date_local, summary=summary, focus_city=DEFAULT_MARINE[0])
     except Exception as e:
         _log("WARNING", f"Image hook failed: {e}")
@@ -700,53 +770,136 @@ def build_cyprus_evening(date_local: _dt.date, tz: str = "Asia/Nicosia") -> str:
 
 
 # ----------------------------
-# Telegram sending
+# Telegram sending (reliable)
 # ----------------------------
 
-def tg_send_message(token: str, chat_id: str, text: str, disable_preview: bool = True) -> None:
+ChatId = Union[str, int]
+
+TG_MESSAGE_LIMIT = 4096
+TG_CAPTION_LIMIT = 1024  # sendPhoto caption is much smaller than sendMessage (bots)
+
+
+def _split_by_lines(text: str, limit: int) -> List[str]:
+    """
+    Splits text by newline boundaries into chunks <= limit.
+    Assumes per-line HTML tags are self-contained (as in this module).
+    """
+    if len(text) <= limit:
+        return [text]
+
+    lines = text.split("\n")
+    parts: List[str] = []
+    buf: List[str] = []
+    size = 0
+
+    for line in lines:
+        add = len(line) + (1 if buf else 0)
+        if buf and (size + add) > limit:
+            parts.append("\n".join(buf))
+            buf = [line]
+            size = len(line)
+        else:
+            if buf:
+                buf.append(line)
+                size += 1 + len(line)
+            else:
+                buf = [line]
+                size = len(line)
+
+    if buf:
+        parts.append("\n".join(buf))
+
+    # If any part is still too large (very long single line), hard-split it.
+    fixed: List[str] = []
+    for p in parts:
+        if len(p) <= limit:
+            fixed.append(p)
+        else:
+            for i in range(0, len(p), limit):
+                fixed.append(p[i:i + limit])
+    return fixed
+
+
+def tg_send_message(token: str, chat_id: ChatId, text: str, disable_preview: bool = True) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": bool(disable_preview),
-    }
-    r = requests.post(url, json=payload, timeout=20)
-    if not r.ok:
-        raise RuntimeError(f"Telegram sendMessage failed: {r.status_code} {r.text}")
+
+    parts = _split_by_lines(text, TG_MESSAGE_LIMIT - 64)  # margin for safety
+    for idx, part in enumerate(parts):
+        payload = {
+            "chat_id": chat_id,
+            "text": part,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": bool(disable_preview),
+        }
+        r = _requests_post(url, json_payload=payload, timeout=25, retries=2)
+        if not r.ok:
+            raise RuntimeError(f"Telegram sendMessage failed: {r.status_code} {r.text}")
 
 
-def tg_send_photo(token: str, chat_id: str, photo_bytes: bytes, caption: str) -> None:
+def tg_send_photo(token: str, chat_id: ChatId, photo_bytes: bytes, caption: str) -> None:
+    """
+    Reliability fix:
+      - If caption is too long for sendPhoto, send photo with short/empty caption,
+        then send the full text via sendMessage.
+    """
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
+
+    # If caption too long, avoid failing the whole post.
+    if len(caption) > TG_CAPTION_LIMIT:
+        _log("WARNING", f"Caption too long for sendPhoto ({len(caption)} chars). Sending photo + separate message.")
+        # Send photo with a short caption (first line) or empty.
+        first_line = caption.split("\n", 1)[0].strip()
+        short_caption = first_line[: (TG_CAPTION_LIMIT - 1)] if first_line else ""
+        files = {"photo": ("image.png", photo_bytes)}
+        data = {
+            "chat_id": chat_id,
+            "caption": short_caption,
+            "parse_mode": "HTML",
+        }
+        r = _requests_post(url, data=data, files=files, timeout=45, retries=2)
+        if not r.ok:
+            raise RuntimeError(f"Telegram sendPhoto failed: {r.status_code} {r.text}")
+
+        # Send full caption as message (can be split)
+        tg_send_message(token, chat_id, caption)
+        return
+
     files = {"photo": ("image.png", photo_bytes)}
     data = {
         "chat_id": chat_id,
         "caption": caption,
         "parse_mode": "HTML",
     }
-    r = requests.post(url, data=data, files=files, timeout=40)
+    r = _requests_post(url, data=data, files=files, timeout=45, retries=2)
     if not r.ok:
         raise RuntimeError(f"Telegram sendPhoto failed: {r.status_code} {r.text}")
 
 
-def resolve_chat_id(to_test: bool = False, explicit_chat_id: Optional[str] = None) -> str:
-    if explicit_chat_id:
+def resolve_chat_id(to_test: bool = False, explicit_chat_id: Optional[ChatId] = None) -> ChatId:
+    if explicit_chat_id is not None and str(explicit_chat_id).strip() != "":
         return explicit_chat_id
     if to_test:
         cid = env_str("CHANNEL_ID_TEST", "").strip()
         if cid:
-            return cid
+            # try int if numeric
+            try:
+                return int(cid)
+            except Exception:
+                return cid
     cid = env_str("CHANNEL_ID", "").strip()
     if not cid:
         raise RuntimeError("CHANNEL_ID is not set.")
-    return cid
+    try:
+        return int(cid)
+    except Exception:
+        return cid
 
 
 # ----------------------------
 # Public entrypoints for region scripts
 # ----------------------------
 
-def post_cy_morning(date_local: _dt.date, to_test: bool = False, chat_id: Optional[str] = None) -> None:
+def post_cy_morning(date_local: _dt.date, to_test: bool = False, chat_id: Optional[ChatId] = None) -> None:
     token = env_str("TELEGRAM_TOKEN", "").strip()
     if not token:
         raise RuntimeError("TELEGRAM_TOKEN is not set.")
@@ -760,7 +913,7 @@ def post_cy_morning(date_local: _dt.date, to_test: bool = False, chat_id: Option
         tg_send_message(token, real_chat, text)
 
 
-def post_cy_evening(date_local: _dt.date, to_test: bool = False, chat_id: Optional[str] = None) -> None:
+def post_cy_evening(date_local: _dt.date, to_test: bool = False, chat_id: Optional[ChatId] = None) -> None:
     token = env_str("TELEGRAM_TOKEN", "").strip()
     if not token:
         raise RuntimeError("TELEGRAM_TOKEN is not set.")
@@ -771,7 +924,7 @@ def post_cy_evening(date_local: _dt.date, to_test: bool = False, chat_id: Option
     tg_send_message(token, real_chat, text)
 
 
-def post_fx_only(date_local: _dt.date, to_test: bool = False, chat_id: Optional[str] = None) -> None:
+def post_fx_only(date_local: _dt.date, to_test: bool = False, chat_id: Optional[ChatId] = None) -> None:
     token = env_str("TELEGRAM_TOKEN", "").strip()
     if not token:
         raise RuntimeError("TELEGRAM_TOKEN is not set.")
@@ -790,6 +943,20 @@ def _parse_date(s: str) -> _dt.date:
 
 
 def _today_in_tz(tz: str) -> _dt.date:
+    """
+    Uses WORK_DATE override if provided (useful for CI).
+    Accepts YYYY-MM-DD or full ISO datetime.
+    """
+    wd = env_str("WORK_DATE", "").strip()
+    if wd:
+        try:
+            if pendulum is not None:
+                dt = pendulum.parse(wd)
+                return dt.in_tz(tz).date()
+            return _dt.date.fromisoformat(wd[:10])
+        except Exception:
+            _log("WARNING", f"Invalid WORK_DATE={wd!r}; ignoring override.")
+
     if pendulum is not None:
         return pendulum.now(tz).date()
     return _dt.date.today()
@@ -806,7 +973,14 @@ def main() -> None:
 
     tz = env_str("TZ", "Asia/Nicosia")
     d = _parse_date(args.date) if args.date else _today_in_tz(tz)
-    chat = args.chat_id.strip() or None
+
+    chat: Optional[ChatId] = None
+    if args.chat_id.strip():
+        s = args.chat_id.strip()
+        try:
+            chat = int(s)
+        except Exception:
+            chat = s
 
     if args.mode == "morning":
         post_cy_morning(d, to_test=args.to_test, chat_id=chat)
@@ -841,12 +1015,11 @@ def main_common(*args: Any, **kwargs: Any) -> None:
 
     This wrapper will prefer direct function calls if mode/date/to_test/chat_id are provided.
     """
-    # Direct-kwargs path (most explicit; avoids argparse surprises)
     mode = (kwargs.get("mode") or "").strip().lower()
     date_s = (kwargs.get("date") or "").strip()
     to_test = bool(kwargs.get("to_test", False))
 
-    def _normalize_chat_id(v):
+    def _normalize_chat_id(v: Any) -> Optional[ChatId]:
         """Accept int chat_id (aiogram-friendly) or str (e.g., @channelname)."""
         if v is None:
             return None
@@ -875,7 +1048,6 @@ def main_common(*args: Any, **kwargs: Any) -> None:
         post_fx_only(date_local, to_test=to_test, chat_id=chat_id)
         return
 
-    # argv-based path
     argv = kwargs.get("argv", None)
     if argv is None and args:
         argv = args[0]
@@ -893,5 +1065,4 @@ def main_common(*args: Any, **kwargs: Any) -> None:
         main()
         return
 
-    # Fallback: use current sys.argv
     main()
