@@ -499,6 +499,73 @@ def load_calendar(path: str = "lunar_calendar.json") -> dict:
     return data if isinstance(data, dict) else {}
 
 
+# ───────────── Лунные спец-события (для картинок) ─────────────
+def _norm_phase_name(x: Any) -> str:
+    return re.sub(r"[^a-zа-яё]+", "", str(x or "").strip().lower())
+
+
+def _is_new_moon(phase_name: str) -> bool:
+    p = _norm_phase_name(phase_name)
+    return p in ("новолуние", "newmoon", "new")
+
+
+def _is_full_moon(phase_name: str) -> bool:
+    p = _norm_phase_name(phase_name)
+    return p in ("полнолуние", "fullmoon", "full")
+
+
+def lunar_special_event_for_date(date_local: pendulum.Date, tz_local: str = "Asia/Nicosia") -> Optional[Dict[str, Any]]:
+    """
+    Возвращает метку спец-события для даты (новолуние/полнолуние), если доступно из lunar_calendar.json.
+    Формат: {"type": "new_moon"|"full_moon", "title": "...", "percent": int, "sign_from": "...", "sign_to": "...", "phase_name": "..."}
+    """
+    try:
+        cal = load_calendar("lunar_calendar.json")
+        if not isinstance(cal, dict):
+            return None
+        rec = cal.get(date_local.format("YYYY-MM-DD"), {}) or {}
+        if not isinstance(rec, dict):
+            return None
+
+        phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
+        phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
+
+        percent = rec.get("percent") or rec.get("illumination") or rec.get("illum") or 0
+        try:
+            percent_i = int(round(float(percent)))
+        except Exception:
+            percent_i = 0
+
+        # Знаки: встречаются разные ключи в разных календарях
+        sign_from = (rec.get("sign") or rec.get("zodiac") or rec.get("sign_from") or rec.get("moon_sign") or "") or ""
+        sign_to = (rec.get("sign_to") or rec.get("zodiac_to") or rec.get("signNext") or "") or ""
+        if not sign_to:
+            sign_to = sign_from
+
+        if _is_new_moon(phase_name):
+            return {
+                "type": "new_moon",
+                "title": "Новолуние",
+                "percent": percent_i,
+                "sign_from": sign_from,
+                "sign_to": sign_to,
+                "phase_name": phase_name,
+            }
+        if _is_full_moon(phase_name):
+            return {
+                "type": "full_moon",
+                "title": "Полнолуние",
+                "percent": percent_i,
+                "sign_from": sign_from,
+                "sign_to": sign_to,
+                "phase_name": phase_name,
+            }
+    except Exception:
+        return None
+    return None
+
+
+
 def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
     if not s:
         return None
@@ -913,6 +980,21 @@ def _tomorrow_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[
     return idxs
 
 
+def _today_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[int]:
+    times = _hourly_times(wm)
+
+    # today() вместо now() для консистентности с WORK_DATE
+    day = pendulum.today(tz).date()
+
+    idxs: List[int] = []
+    for i, dt_i in enumerate(times):
+        try:
+            if dt_i.in_tz(tz).date() == day:
+                idxs.append(i)
+        except Exception:
+            pass
+    return idxs
+
 def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[str, Any]:
     hourly = wm.get("hourly") or {}
     idxs = _tomorrow_hourly_indices(wm, tz)
@@ -962,6 +1044,57 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[
         "warning": bool(reasons),
         "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else "",
     }
+
+
+def storm_flags_for_today(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[str, Any]:
+    hourly = wm.get("hourly") or {}
+    idxs = _today_hourly_indices(wm, tz)
+    if not idxs:
+        return {"warning": False}
+
+    def _arr(*names, default=None):
+        v = _pick(hourly, *names, default=default)
+        return v if isinstance(v, list) else []
+
+    def _vals(arr):
+        out = []
+        for i in idxs:
+            if i < len(arr):
+                try:
+                    out.append(float(arr[i]))
+                except Exception:
+                    pass
+        return out
+
+    speeds_kmh = _vals(_arr("windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed", default=[]))
+    gusts_kmh = _vals(_arr("windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[]))
+    rain_mm_h = _vals(_arr("rain", default=[]))
+    tprob = _vals(_arr("thunderstorm_probability", default=[]))
+
+    max_speed_ms = kmh_to_ms(max(speeds_kmh)) if speeds_kmh else None
+    max_gust_ms = kmh_to_ms(max(gusts_kmh)) if gusts_kmh else None
+    heavy_rain = (max(rain_mm_h) >= 8.0) if rain_mm_h else False
+    thunder = (max(tprob) >= 60) if tprob else False
+
+    reasons = []
+    if isinstance(max_speed_ms, (int, float)) and max_speed_ms >= 13:
+        reasons.append(f"ветер до {max_speed_ms:.0f} м/с")
+    if isinstance(max_gust_ms, (int, float)) and max_gust_ms >= 17:
+        reasons.append(f"порывы до {max_gust_ms:.0f} м/с")
+    if heavy_rain:
+        reasons.append("сильный дождь")
+    if thunder:
+        reasons.append("гроза")
+
+    return {
+        "max_speed_ms": max_speed_ms,
+        "max_gust_ms": max_gust_ms,
+        "heavy_rain": heavy_rain,
+        "thunder": thunder,
+        "warning": bool(reasons),
+        "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else "",
+    }
+
 
 
 # ───────────── Air combo (только утро) ─────────────
@@ -1279,6 +1412,59 @@ def hashtags_line(warm_city: Optional[str], cool_city: Optional[str]) -> str:
     return " ".join(base[:5])
 
 
+# ───────────── AI image helpers (storm / special moons) ─────────────
+def storm_visual_cues_en(storm: Dict[str, Any]) -> str:
+    reasons = []
+    try:
+        if isinstance(storm.get("max_speed_ms"), (int, float)) and storm["max_speed_ms"] >= 13:
+            reasons.append("strong wind")
+        if isinstance(storm.get("max_gust_ms"), (int, float)) and storm["max_gust_ms"] >= 17:
+            reasons.append("violent gusts")
+        if storm.get("heavy_rain"):
+            reasons.append("heavy rain")
+        if storm.get("thunder"):
+            reasons.append("thunderstorm")
+    except Exception:
+        pass
+    if not reasons:
+        reasons = ["storm conditions"]
+
+    return (
+        "VISUAL STORM CUES: clearly show "
+        + ", ".join(reasons)
+        + " — dramatic dark clouds, visible wind streaks, rough waves, rain shafts, and a high-contrast sky. "
+        "No calm sea. No 'nice weather' look."
+    )
+
+
+def moon_goddess_prompt_en(
+    *,
+    date: pendulum.Date,
+    phase_title_ru: str,
+    percent: int,
+    sign_from: str,
+    sign_to: str,
+    is_storm: bool,
+) -> Tuple[str, str]:
+    sign_from_s = zsym(str(sign_from or "")).strip()
+    sign_to_s = zsym(str(sign_to or "")).strip()
+    change = f"{sign_from_s}→{sign_to_s}" if (sign_from_s and sign_to_s and sign_from_s != sign_to_s) else (sign_from_s or sign_to_s or "")
+    mood = "stormy and powerful" if is_storm else "mystical and serene"
+
+    prompt = f"""
+Create a cinematic, premium square illustration for a Cyprus daily forecast post.
+Theme: {phase_title_ru} ({percent}% illumination), Moon sign {change if change else 'unknown'}.
+Date: {date.isoformat()}.
+
+Scene: a moon goddess over the Mediterranean coast of Cyprus at night.
+The Moon is large and clearly visible, with accurate illumination consistent with {phase_title_ru}.
+Atmosphere: {mood}. Elegant, magical realism, high detail, soft volumetric light.
+Include subtle Cyprus coastline cues (Mediterranean cliffs, coastal pines, moonlit sea).
+
+Style: modern cinematic digital painting, sharp details, realistic lighting, no text, no watermark.
+""".strip()
+    return prompt, "moon_goddess"
+
 def _build_cy_image_moods_for_evening(
     tz_obj: pendulum.Timezone,
     storm_warning: bool,
@@ -1406,7 +1592,7 @@ def build_message(
     P.append(f"<b>{region_name}: погода на {title_word} ({title_day.format('DD.MM.YYYY')})</b>")
 
     wm_region = get_weather(CY_LAT, CY_LON) or {}
-    storm_region = storm_flags_for_tomorrow(wm_region, tz_obj)
+    storm_region = storm_flags_for_today(wm_region, tz_obj) if is_morning else storm_flags_for_tomorrow(wm_region, tz_obj)
 
     # === УТРО ===
     if is_morning:
@@ -1679,37 +1865,151 @@ async def send_common_post(
 
     img_path: Optional[str] = None
     storm_warning: bool = False
-
-    # 1) Генерация картинки (только вечер)
-    if enable_img and effective_mode.startswith("evening"):
+    # 1) Генерация картинки (утро/вечер; приоритет: шторм > спец-луна > обычная)
+    if enable_img and (effective_mode.startswith("evening") or effective_mode.startswith("morning")):
         try:
             tz_obj = _as_tz(tz)
 
-            # Вечерний пост = анонс на завтра → картинка тоже по завтра
-            tomorrow_date = pendulum.today(tz_obj).add(days=1).date()
+            base_dt = pendulum.today(tz_obj)
+            target_date = base_dt.date() if effective_mode.startswith("morning") else base_dt.add(days=1).date()
 
-            # Шторм-флаг (тот же, что в тексте)
+            # Шторм-флаг должен соответствовать фактическому дню поста
             wm_region = get_weather(CY_LAT, CY_LON) or {}
-            storm_region = storm_flags_for_tomorrow(wm_region, tz_obj)
+            storm_region = storm_flags_for_today(wm_region, tz_obj) if effective_mode.startswith("morning") else storm_flags_for_tomorrow(wm_region, tz_obj)
             storm_warning = bool(storm_region.get("warning"))
 
-            marine_mood, inland_mood, astro_mood_en = _build_cy_image_moods_for_evening(
-                tz_obj=tz_obj,
-                storm_warning=storm_warning,
-            )
+            # Лунный спец-эвент (если есть)
+            special = lunar_special_event_for_date(target_date, tz_local=tz_obj.name)
+            theme_tag = "storm" if storm_warning else (special.get("type") if isinstance(special, dict) else None) or "regular"
 
-            prompt, style_name = build_cyprus_evening_prompt(
-                date=tomorrow_date,
-                marine_mood=marine_mood,
-                inland_mood=inland_mood,
-                astro_mood_en=astro_mood_en,
-                storm_warning=storm_warning,
-            )
+            prompt: str = ""
+            style_name: str = "default"
+
+            # A) Шторм — всегда главный
+            if storm_warning:
+                if effective_mode.startswith("evening"):
+                    marine_mood, inland_mood, astro_mood_en = _build_cy_image_moods_for_evening(
+                        tz_obj=tz_obj,
+                        storm_warning=True,
+                    )
+                    prompt, style_name = build_cyprus_evening_prompt(
+                        date=target_date,
+                        marine_mood=marine_mood,
+                        inland_mood=inland_mood,
+                        astro_mood_en=astro_mood_en,
+                        storm_warning=True,
+                    )
+                else:
+                    prompt = f"""
+Create a premium square illustration for a Cyprus morning forecast.
+Date: {target_date.isoformat()}.
+
+{storm_visual_cues_en(storm_region)}
+
+Scene: Cyprus coastline and city silhouette at dawn, with clearly visible storm conditions.
+Style: cinematic digital painting, high detail, realistic lighting, no text, no watermark.
+""".strip()
+                    style_name = "storm_morning"
+
+                prompt = (prompt + "\n\n" + storm_visual_cues_en(storm_region)).strip()
+
+            # B) Спец-луна (если не шторм)
+            elif isinstance(special, dict) and special.get("type") in ("new_moon", "full_moon"):
+                phase_title = str(special.get("title") or "Луна")
+                percent = int(special.get("percent") or 0)
+                sign_from = str(special.get("sign_from") or "")
+                sign_to = str(special.get("sign_to") or sign_from or "")
+                prompt, style_name = moon_goddess_prompt_en(
+                    date=target_date,
+                    phase_title_ru=phase_title,
+                    percent=percent,
+                    sign_from=sign_from,
+                    sign_to=sign_to,
+                    is_storm=False,
+                )
+
+                if effective_mode.startswith("morning"):
+                    prompt = (
+                        prompt
+                        + "\n\nAdditional constraint: make it dawn / early morning light, but keep the Moon clearly visible."
+                    )
+
+            # C) Обычная картинка
+            else:
+                if effective_mode.startswith("evening"):
+                    marine_mood, inland_mood, astro_mood_en = _build_cy_image_moods_for_evening(
+                        tz_obj=tz_obj,
+                        storm_warning=False,
+                    )
+                    prompt, style_name = build_cyprus_evening_prompt(
+                        date=target_date,
+                        marine_mood=marine_mood,
+                        inland_mood=inland_mood,
+                        astro_mood_en=astro_mood_en,
+                        storm_warning=False,
+                    )
+                else:
+                    # Утро: 5 стилей с авто-ротацией по дате
+                    style_env = (os.getenv("CY_MORNING_STYLE", "auto") or "auto").strip().lower()
+                    try:
+                        seed_off = int(os.getenv("CY_MORNING_SEED_OFFSET", "0") or "0")
+                    except Exception:
+                        seed_off = 0
+
+                    if style_env in ("1", "2", "3", "4", "5"):
+                        style_idx = int(style_env)
+                    else:
+                        style_idx = ((int(target_date.toordinal()) + seed_off) % 5) + 1
+
+                    style_variants = {
+                        1: "cinematic realistic photo look, dramatic but calm",
+                        2: "soft watercolor illustration, airy light, gentle textures",
+                        3: "minimalist poster art, clean shapes, premium design",
+                        4: "dreamy anime-inspired illustration, warm morning palette",
+                        5: "3D stylized illustration, high-end render, soft shadows",
+                    }
+                    style_hint = style_variants.get(style_idx, style_variants[1])
+                    style_name = f"cy_morning_{style_idx}"
+
+                    try:
+                        stats = day_night_stats(CY_LAT, CY_LON, tz=tz_obj.name) or {}
+                        tmax = stats.get("t_day_max")
+                        tmin = stats.get("t_night_min")
+                    except Exception:
+                        tmax = tmin = None
+
+                    wm0 = get_weather(CY_LAT, CY_LON) or {}
+                    wc0 = None
+                    try:
+                        wcx = (wm0.get("daily", {}) or {}).get("weathercode", [])
+                        wc0 = wcx[0] if isinstance(wcx, list) and len(wcx) >= 1 else None
+                    except Exception:
+                        wc0 = None
+                    desc0 = code_desc(wc0) or "clear conditions"
+
+                    temp_hint = ""
+                    try:
+                        if isinstance(tmax, (int, float)) and isinstance(tmin, (int, float)):
+                            temp_hint = f"Temperature range: {float(tmin):.0f}–{float(tmax):.0f}°C."
+                    except Exception:
+                        temp_hint = ""
+
+                    prompt = f"""
+Create a premium square illustration for a Cyprus morning forecast post.
+Date: {target_date.isoformat()}.
+Weather: {desc0}. {temp_hint}
+
+Scene: Cyprus coastline (Mediterranean sea, rocks, coastal pines), morning sun near the horizon.
+Style direction: {style_hint}.
+No text, no watermark.
+""".strip()
 
             logging.info(
-                "CY_IMG: built prompt, style=%s, date=%s, prompt_len=%d",
+                "CY_IMG: prompt selected -> mode=%s, date=%s, theme=%s, style=%s, len=%d",
+                effective_mode,
+                target_date.isoformat(),
+                theme_tag,
                 style_name,
-                tomorrow_date.isoformat(),
                 len(prompt),
             )
 
@@ -1717,7 +2017,9 @@ async def send_common_post(
             img_dir.mkdir(parents=True, exist_ok=True)
 
             safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(style_name) if style_name else "default")
-            img_file = img_dir / f"cyprus_evening_{tomorrow_date.isoformat()}_{safe_style}.jpg"
+            safe_theme = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(theme_tag) if theme_tag else "regular")
+            mode_tag = "morning" if effective_mode.startswith("morning") else "evening"
+            img_file = img_dir / f"cyprus_{mode_tag}_{target_date.isoformat()}_{safe_theme}_{safe_style}.jpg"
 
             logging.info("CY_IMG: calling generate_astro_image -> %s", img_file)
             img_path = generate_astro_image(prompt, str(img_file))
@@ -1777,7 +2079,7 @@ async def send_common_post(
             logging.exception("Sending photo failed, fallback to text: %s", exc)
 
     # 3) Если хотели картинку, но не получилось — лог
-    if enable_img and effective_mode.startswith("evening"):
+    if enable_img and (effective_mode.startswith("evening") or effective_mode.startswith("morning")):
         logging.warning(
             "CY_IMG: image not sent (img_path=%r, exists=%s)",
             img_path,
@@ -1822,5 +2124,6 @@ __all__ = [
     "send_common_post",
     "main_common",
     "pick_tomorrow_header_metrics",
+    "storm_flags_for_today",
     "storm_flags_for_tomorrow",
 ]
