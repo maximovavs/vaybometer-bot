@@ -15,7 +15,7 @@ post_common.py — VayboMeter (Кипр/универсальный).
 """
 
 from __future__ import annotations
-import os, re, json, html, asyncio, logging, math, datetime as dt, random
+import os, re, json, html, asyncio, logging, math, datetime as dt, random, imghdr
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Union
 
@@ -1760,6 +1760,43 @@ def build_message(
     return "\n".join(P)
 
 
+
+# ───────────── image validation (Telegram) ─────────────
+def _is_telegram_image_ok(path: Union[str, Path], min_bytes: int = 8000) -> bool:
+    """Cheap sanity-check to avoid Telegram 400 Image_process_failed on broken files."""
+    try:
+        p = Path(path)
+        if not p.exists():
+            return False
+        size = p.stat().st_size
+        if size < int(min_bytes):
+            return False
+        kind = imghdr.what(str(p))
+        if kind in ("jpeg", "png", "webp"):
+            return True
+        # signature fallback
+        head = p.open("rb").read(16)
+        if head.startswith(b"\xff\xd8\xff"):
+            return True  # JPEG
+        if head.startswith(b"\x89PNG\r\n\x1a\n"):
+            return True  # PNG
+        if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            return True  # WEBP
+    except Exception:
+        return False
+    return False
+
+
+def _image_debug_str(path: Union[str, Path]) -> str:
+    try:
+        p = Path(path)
+        size = p.stat().st_size if p.exists() else -1
+        kind = imghdr.what(str(p)) if p.exists() else None
+        return f"kind={kind}, bytes={size}"
+    except Exception:
+        return "kind=?, bytes=?"
+
+
 # ───────────── Telegram caption helper (Cyprus evening image) ─────────────
 _TELEGRAM_PHOTO_CAPTION_LIMIT = 1024
 
@@ -2021,14 +2058,37 @@ No text, no watermark.
             mode_tag = "morning" if effective_mode.startswith("morning") else "evening"
             img_file = img_dir / f"cyprus_{mode_tag}_{target_date.isoformat()}_{safe_theme}_{safe_style}.jpg"
 
-            logging.info("CY_IMG: calling generate_astro_image -> %s", img_file)
-            img_path = generate_astro_image(prompt, str(img_file))
+            min_bytes = int(os.getenv("CY_IMG_MIN_BYTES", "8000") or "8000")
+            max_gen = int(os.getenv("CY_IMG_GEN_ATTEMPTS", "2") or "2")
 
-            logging.info(
-                "CY_IMG: generate_astro_image returned %r, exists=%s",
-                img_path,
-                bool(img_path and Path(img_path).exists()),
-            )
+            for gen_try in range(1, max_gen + 1):
+                logging.info(
+                    "CY_IMG: calling generate_astro_image (%d/%d) -> %s",
+                    gen_try,
+                    max_gen,
+                    img_file,
+                )
+                img_path = generate_astro_image(prompt, str(img_file))
+                ok = bool(
+                    img_path
+                    and Path(img_path).exists()
+                    and _is_telegram_image_ok(img_path, min_bytes=min_bytes)
+                )
+                logging.info(
+                    "CY_IMG: generate_astro_image returned %r (%s), ok=%s",
+                    img_path,
+                    _image_debug_str(img_path) if img_path else "no-file",
+                    ok,
+                )
+                if ok:
+                    break
+                # remove broken file (Telegram часто отвечает Image_process_failed на мусор 0–2KB)
+                try:
+                    if img_path and Path(img_path).exists():
+                        Path(img_path).unlink()
+                except Exception:
+                    pass
+                img_path = None
 
         except Exception as exc:
             logging.exception("Cyprus image generation failed: %s", exc)
@@ -2043,6 +2103,9 @@ No text, no watermark.
     # 2) Отправка фото (если есть) + при необходимости полный текст вторым сообщением
     if img_path and Path(img_path).exists():
         try:
+            min_bytes = int(os.getenv("CY_IMG_MIN_BYTES", "8000") or "8000")
+            if not _is_telegram_image_ok(img_path, min_bytes=min_bytes):
+                raise RuntimeError(f"invalid image file: {_image_debug_str(img_path)}")
             logging.info("CY_IMG: sending photo %s", img_path)
 
             need_split = len(msg) > _TELEGRAM_PHOTO_CAPTION_LIMIT
