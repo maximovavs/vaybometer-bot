@@ -874,6 +874,7 @@ def build_astro_section(
     # 2) Если bullets слишком короткий (часто 1 строка из advice) — дополняем LLM и/или шаблоном
     need_min = 3
     extra = []
+    bullets: List[str] = []
     if not bullets or len(bullets) < need_min:
         extra = _astro_llm_bullets(
             date_local.format("DD.MM.YYYY"),
