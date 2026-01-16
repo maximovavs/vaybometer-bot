@@ -901,8 +901,7 @@ def build_astro_section(
     show_header = os.getenv("ASTRO_SHOW_HEADER", "0").strip().lower() in ("1", "true", "yes", "on")
     if show_header:
         lines.append("🌌 <b>Астрособытия</b>")
-
-       lines += [zsym(x) for x in bullets[:4]]
+    lines += [zsym(x) for x in bullets[:4]]
 
     if voc_text:
         low = " ".join(bullets).lower()
