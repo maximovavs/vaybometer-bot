@@ -66,12 +66,14 @@ OTHER_CITIES_ALL = {
 }
 
 # ─────────────── FX helpers ───────────────
+
 # NOTE:
 #  - FX_CACHE_PATH используется модулем fx.py (should_publish_again / save_fx_cache)
 #  - В тестовом канале важно НЕ "гасить" пост только из-за того, что ЦБ не обновился.
 #    Поэтому добавили force-режим (to_test или FX_FORCE=1) + разнесли кэши prod/test.
 FX_CACHE_PATH = CACHE_DIR / "fx_cache.json"             # прод-кэш (антидубль по ЦБ)
 INTER_CACHE_PATH = CACHE_DIR / "fx_inter_cache.json"    # прод-кэш межрынка «вчера»
+
 
 ECB_HEADERS = {
     "User-Agent": "VayboMeterBot/1.0 (+https://t.me/vaybometer)",
@@ -149,6 +151,8 @@ def _save_inter_cache(path: Path, date_str: str, values: Dict[str, float]) -> No
             json.dumps({"date": date_str, "values": values}, ensure_ascii=False),
             encoding="utf-8",
         )
+        INTER_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        INTER_CACHE_PATH.write_text(json.dumps({"date": date_str, "values": values}, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         logging.warning("INTER cache save failed: %s", e)
 
