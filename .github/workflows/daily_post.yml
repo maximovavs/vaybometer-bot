@@ -44,21 +44,32 @@ concurrency:
   group: daily-post-cy
   cancel-in-progress: false
 
-# общие переменные окружения
 env:
   TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
   CHANNEL_ID:          ${{ secrets.CHANNEL_ID }}
   CHANNEL_ID_TEST:     ${{ secrets.CHANNEL_ID_TEST }}
-  CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
+  CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override || '' }}
+
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
+
   GEN_SKIP_SHORT: "1"
   DISABLE_LLM_DAILY: "0"
   DISABLE_SCHUMANN: "1"
+
   TZ: Asia/Nicosia
-  WORK_DATE: ${{ github.event.inputs.work_date }}
-  TO_TEST:   ${{ github.event.inputs.to_test }}
+  WORK_DATE: ${{ github.event.inputs.work_date || '' }}
+  TO_TEST:   ${{ github.event.inputs.to_test || 'false' }}
+
+  # Постоянная папка кэша (fx_cache.json / fx_inter_cache.json и др.)
+  VAYBOMETER_CACHE_DIR: ".cache"
+
+  # Утренние картинки: 5 стилей, авто-ротация по дате
+  CY_IMG_ENABLED: "1"
+  CY_MORNING_STYLE: "auto"          # можно: auto | 1 | 2 | 3 | 4 | 5
+  CY_MORNING_SEED_OFFSET: "0"
+  CY_MORNING_ASPECT: "1:1"
 
 jobs:
   morning:
@@ -66,16 +77,23 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '30 5 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.run_morning == true || github.event.inputs.run_morning == 'true'))
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_morning == 'true')
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore .cache (FX + intermarket deltas)
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
+          restore-keys: |
+            cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
+
       - name: Time debug
         run: |
-          echo "UTC:   $(date -u)"
-          echo "Local: $(date)"
-          echo "MSK:   $(TZ=Europe/Moscow date)"
+          echo "UTC:    $(date -u)"
+          echo "Cyprus:  $(date)"
+          echo "MSK:    $(TZ=Europe/Moscow date)"
 
       - uses: actions/setup-python@v5
         with:
@@ -92,15 +110,14 @@ jobs:
         shell: bash
         run: |
           python <<'PY'
-          import os, runpy, sys, pendulum
-          wd = os.getenv("WORK_DATE")
-          if wd:
-              def _fake_today(tz=None):
-                  dt = pendulum.parse(wd)
-                  return dt.in_tz(tz) if tz else dt
-              pendulum.today = _fake_today
+          import os, runpy, sys
 
           args = ["post_cy.py", "--mode", "morning"]
+
+          wd = (os.getenv("WORK_DATE") or "").strip()
+          if wd:
+              args += ["--date", wd]
+
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           if chat_override:
               args += ["--chat-id", chat_override]
@@ -118,16 +135,23 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 14 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.run_evening == true || github.event.inputs.run_evening == 'true' || !github.event.inputs.run_evening))
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_evening == 'true')
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore .cache (FX + intermarket deltas)
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
+          restore-keys: |
+            cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
+
       - name: Time debug
         run: |
-          echo "UTC:   $(date -u)"
-          echo "Local: $(date)"
-          echo "MSK:   $(TZ=Europe/Moscow date)"
+          echo "UTC:    $(date -u)"
+          echo "Cyprus:  $(date)"
+          echo "MSK:    $(TZ=Europe/Moscow date)"
 
       - uses: actions/setup-python@v5
         with:
@@ -144,15 +168,14 @@ jobs:
         shell: bash
         run: |
           python <<'PY'
-          import os, runpy, sys, pendulum
-          wd = os.getenv("WORK_DATE")
-          if wd:
-              def _fake_today(tz=None):
-                  dt = pendulum.parse(wd)
-                  return dt.in_tz(tz) if tz else dt
-              pendulum.today = _fake_today
+          import os, runpy, sys
 
           args = ["post_cy.py", "--mode", "evening"]
+
+          wd = (os.getenv("WORK_DATE") or "").strip()
+          if wd:
+              args += ["--date", wd]
+
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           if chat_override:
               args += ["--chat-id", chat_override]
@@ -170,16 +193,23 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.run_noon_fx == true || github.event.inputs.run_noon_fx == 'true'))
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_noon_fx == 'true')
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore .cache (FX + intermarket deltas)
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
+          restore-keys: |
+            cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
+
       - name: Time debug
         run: |
-          echo "UTC:   $(date -u)"
-          echo "Local: $(date)"
-          echo "MSK:   $(TZ=Europe/Moscow date)"
+          echo "UTC:    $(date -u)"
+          echo "Cyprus:  $(date)"
+          echo "MSK:    $(TZ=Europe/Moscow date)"
 
       - uses: actions/setup-python@v5
         with:
@@ -196,15 +226,14 @@ jobs:
         shell: bash
         run: |
           python <<'PY'
-          import os, runpy, sys, pendulum
-          wd = os.getenv("WORK_DATE")
-          if wd:
-              def _fake_today(tz=None):
-                  dt = pendulum.parse(wd)
-                  return dt.in_tz(tz) if tz else dt
-              pendulum.today = _fake_today
+          import os, runpy, sys
 
           args = ["post_cy.py", "--fx-only"]
+
+          wd = (os.getenv("WORK_DATE") or "").strip()
+          if wd:
+              args += ["--date", wd]
+
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           if chat_override:
               args += ["--chat-id", chat_override]
