@@ -814,8 +814,6 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
 
     return lines[:4]
 
-
-
 def build_astro_section(
     date_local: Optional[pendulum.Date] = None,
     tz_local: str = "Asia/Nicosia",
@@ -878,7 +876,6 @@ def build_astro_section(
 
     sign_sym = _sign2sym.get(sign_raw, "")
     if not sign_sym:
-        # попробуем вытащить символ из phase, если он там есть
         ph = str(rec.get("phase") or "")
         m = re.search(r"[♈♉♊♋♌♍♎♏♐♑♒♓]", ph)
         if m:
@@ -886,8 +883,7 @@ def build_astro_section(
 
     sign_loc = _sign_loc.get(sign_raw, "")
     if not sign_loc and sign_sym:
-        # если есть только символ — оставим символ (чтобы не ломать падежи)
-        sign_loc = sign_sym
+        sign_loc = sign_sym  # без падежа, но хотя бы символ есть
 
     # ── Шаблон «как раньше»
     phase_l = (phase_name or "").lower()
@@ -937,7 +933,7 @@ def build_astro_section(
     else:
         bg_line = "➿ Общий фон: нейтрально — ориентируйся на самочувствие."
 
-    # В плюсе: сначала берём категории из favorable_days (если заполнены), иначе — по знаку
+    # В плюсе: сначала категории из favorable_days (если заполнены), иначе — по знаку
     cat_map = {
         "shopping": "💰 покупки",
         "haircut": "💇‍♀️ стрижки",
@@ -991,19 +987,17 @@ def build_astro_section(
         _sanitize_line(tmpl4, 160),
     ]
 
-    # advice из календаря + long_desc (очень дозировано, чтобы не раздувать блок)
+    # advice из календаря + long_desc (дозировано)
     bullets = _advice_lines_from_rec(rec) or []
     long_desc = (rec.get("long_desc") or "").strip()
     if long_desc:
-        # возьмём первую фразу/кусок
         long_piece = re.split(r"[.!?]\s+", long_desc, maxsplit=1)[0].strip()
         if long_piece and long_piece not in bullets:
             bullets = [long_piece] + bullets
 
-    # Если bullet-ов мало — можно дотянуть LLM (если доступен)
-    need_min = 3
+    # ── LLM В ПРИОРИТЕТЕ: сначала пробуем получить полноценный блок от LLM
     extra: list[str] = []
-    if len(bullets) < need_min:
+    try:
         extra = _astro_llm_bullets(
             work_date.format("DD.MM.YYYY"),
             phase_name,
@@ -1011,10 +1005,27 @@ def build_astro_section(
             sign_raw,
             voc_text,
         ) or []
+    except Exception:
+        extra = []
 
-    # Слияние (важный момент: template_bullets НЕ переопределяем ниже)
+    # Считаем «получилось», только если LLM вернул хотя бы 3 осмысленные строки
+    extra_sane: list[str] = []
+    for x in (extra or []):
+        x = _sanitize_line(str(x or "").strip(), 180)
+        if x:
+            extra_sane.append(x)
+    ok_llm = len(extra_sane) >= 3
+
+    # ── Сборка итоговых bullets:
+    # 1) если LLM ок — он идёт первым, дальше аккуратный шаблон/календарь как поддержка
+    # 2) если LLM не получился — используем fallback (шаблон + календарные строки)
     merged: list[str] = []
-    for src_list in (template_bullets, bullets, extra):
+    if ok_llm:
+        sources = (extra_sane, template_bullets, bullets)
+    else:
+        sources = (template_bullets, bullets)
+
+    for src_list in sources:
         for x in (src_list or []):
             x = _sanitize_line(str(x or "").strip(), 180)
             if not x:
@@ -1024,7 +1035,7 @@ def build_astro_section(
 
     final_bullets = merged[:5] if merged else template_bullets[:4]
 
-    # Заголовок по флагу (по умолчанию — без него, как в твоих старых примерах)
+    # Заголовок по флагу (по умолчанию — без него)
     lines: list[str] = []
     show_header = os.getenv("ASTRO_SHOW_HEADER", "0").strip().lower() in ("1", "true", "yes", "on")
     if show_header:
@@ -1038,7 +1049,6 @@ def build_astro_section(
         if ("voc" not in low) and ("без курса" not in low):
             lines.append(f"⚫️ VoC {voc_text} — без новых стартов.")
 
-    # Доп. строки «в плюсе» по категориям (если твой хелпер это формирует)
     lines += _favdays_lines_for_date(rec, work_date)
 
     return "\n".join(lines)
