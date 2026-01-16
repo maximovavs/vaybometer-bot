@@ -624,12 +624,16 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
         txt = gpt_complete(prompt=prompt, system=system, temperature=0.2, max_tokens=160)
         raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
         safe: List[str] = []
+        emoji_cycle = ["🌙", "✨", "✅"]
         for l in raw_lines:
+            l = re.sub(r"^[•\-\u2022]+\s*", "", l).strip()
             l = _sanitize_line(l, 120)
             if l and not _looks_gibberish(l):
                 if not re.match(r"^\W", l):
-                    l = "• " + l
+                    pref = emoji_cycle[min(len(safe), len(emoji_cycle) - 1)]
+                    l = f"{pref} {l}"
                 safe.append(l)
+
         if safe:
             cache_file.write_text("\n".join(safe[:3]), "utf-8")
             return safe[:3]
@@ -721,9 +725,13 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
     """
     Берёт готовый текст совета из rec['advice'] (или похожих полей)
     и преобразует в 1–3 аккуратные строки.
+
+    Важно: отбрасываем плейсхолдеры вида "✨ 16 января Луна", которые ломают астроблок.
+    Форматируем строки так, чтобы каждая начиналась с эмодзи (без "• ").
     """
     if not isinstance(rec, dict):
         return []
+
     raw = (
         rec.get("advice")
         or rec.get("advice_ru")
@@ -732,22 +740,48 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
     )
     if not isinstance(raw, str):
         return []
+
     raw = raw.strip()
     if not raw:
         return []
+
+    # 1) Отбрасываем короткие/пустые плейсхолдеры про "Луна" без фактики
+    low = raw.lower()
+    if len(raw) < 45 and ("луна" in low) and not any(
+        x in low for x in ("%", "voc", "vоc", "void", "без курса", "знак", "♈", "♉", "♊", "♋", "♌", "♍", "♎", "♏", "♐", "♑", "♒", "♓")
+    ):
+        return []
+    if re.fullmatch(
+        r"(?iu)[✨⭐🌙🌌\s]*\d{1,2}\s*(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)?\s*луна\s*",
+        raw,
+    ):
+        return []
+
+    # 2) Нормализация строк: без "• ", с эмодзи-префиксом при необходимости
     lines: list[str] = []
-    for line in raw.splitlines():
-        line = line.strip()
+    emoji_cycle = ["🌙", "✨", "✅"]
+
+    for src in raw.splitlines():
+        line = (src or "").strip()
         if not line:
             continue
-        # убираем уже существующие маркеры списка
-        line = re.sub(r"^[•\-\u2022]+\s*", "", line)
+
+        # убираем маркеры списка, если календарь их добавил
+        line = re.sub(r"^[•\-\u2022]+\s*", "", line).strip()
+
         line = _sanitize_line(line, 120)
         if not line or _looks_gibberish(line):
             continue
+
+        # если строка не начинается с эмодзи/символа — добавляем аккуратный эмодзи-префикс
         if not re.match(r"^\W", line):
-            line = "• " + line
+            pref = emoji_cycle[min(len(lines), len(emoji_cycle) - 1)]
+            line = f"{pref} {line}"
+
         lines.append(line)
+        if len(lines) >= 3:
+            break
+
     return lines[:3]
 
 
@@ -802,15 +836,24 @@ def build_astro_section(
 
     # 3) если ни календаря, ни LLM — показываем базовую лаконичную сводку
     if not bullets:
-        base = f"🌙 {phase_name or 'Луна'} • освещённость {percent}%"
-        mood = f"♒ Знак: {sign}" if sign else "— знак н/д"
-        bullets = [base, mood]
+        base1 = f"🌙 {phase_name or 'Луна'}" + (f" в {sign}" if sign else "")
+        base2 = f"✨ Освещённость: {percent}%." if percent else "✨ Освещённость: н/д."
+        bullets = [_sanitize_line(base1, 120), _sanitize_line(base2, 120)]
 
-    lines: list[str] = ["🌌 <b>Астрособытия</b>"]
+    # По умолчанию — без заголовка (как в ваших старых примерах).
+    # Если нужен заголовок, поставьте ASTRO_SHOW_HEADER=1.
+    lines: list[str] = []
+    show_header = os.getenv("ASTRO_SHOW_HEADER", "0").strip().lower() in ("1", "true", "yes", "on")
+    if show_header:
+        lines.append("🌌 <b>Астрособытия</b>")
+
     lines += [zsym(x) for x in bullets[:3]]
 
     if voc_text:
-        lines.append(f"⚫️ VoC {voc_text} — без новых стартов.")
+        low = " ".join(bullets).lower()
+        if ("voc" not in low) and ("без курса" not in low):
+            lines.append(f"⚫️ VoC {voc_text} — без новых стартов.")
+
 
     fav_lines = _favdays_lines_for_date(rec, date_local)
     lines += fav_lines
