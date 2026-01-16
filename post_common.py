@@ -829,8 +829,8 @@ def build_astro_section(
     except Exception:
         offset_days = 0
 
-    date_local = base_date.add(days=offset_days) if offset_days else base_date
-    date_key = date_local.format("YYYY-MM-DD")
+    work_date = base_date.add(days=offset_days) if offset_days else base_date
+    date_key = work_date.format("YYYY-MM-DD")
 
     cal = load_calendar("lunar_calendar.json")
     rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
@@ -844,48 +844,16 @@ def build_astro_section(
     except Exception:
         percent = 0
 
-    sign = rec.get("sign") or rec.get("zodiac") or ""
+    sign_raw = (rec.get("sign") or rec.get("zodiac") or "").strip()
 
+    # VoC
     voc_text = ""
     voc = voc_interval_for_date(rec, tz_local=tz_local)
     if voc:
         t1, t2 = voc
         voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
 
-        # 1) сначала пробуем взять готовый текст из календаря
-        bullets = _advice_lines_from_rec(rec)
-    
-        # 1.5) Шаблонные строки — чтобы астроблок был «как раньше», даже если advice короткий/LLM недоступен
-        sign_s = zsym(str(sign or "")).strip()
-        phase_s = (phase_name or "Луна").strip()
-        phase_l = (phase_name or "").lower()
-    
-        if "новол" in phase_l:
-            phase_hint = "время намерений и мягкого планирования"
-        elif "полн" in phase_l:
-            phase_hint = "пик эмоций и результатов — лучше завершать, чем начинать"
-        elif "убыв" in phase_l:
-            phase_hint = "подходит для завершения дел и разгрузки"
-        elif "раст" in phase_l:
-            phase_hint = "подходит для укрепления планов и постепенного роста"
-        else:
-            phase_hint = "держи курс на простые и понятные шаги"
-    
-        if percent:
-            if percent <= 20:
-                illum_hint = "не спеши — сначала настрой и наблюдение"
-            elif percent <= 60:
-                illum_hint = "можно набирать темп, но без перегруза"
-            elif percent <= 85:
-                illum_hint = "хорошо для практических решений и закрепления"
-            else:
-                illum_hint = "эмоции ярче обычного — выбирай спокойный темп"
-        else:
-            illum_hint = "ориентируйся на самочувствие и простые планы"
-    
-        tmpl1 = f"🌙 {phase_s}" + (f" в {sign_s}" if sign_s else "") + f" — {phase_hint}."
-        tmpl2 = f"✨ {percent}% освещённости — {illum_hint}." if percent else f"✨ Освещённость: н/д — {illum_hint}."
-        # знак Луны: получаем символ (♈…♓), чтобы плюс-подсказки работали стабильно
+    # ── знак: символ + локатив (в Тельце / в Козероге …)
     _sign2sym = {
         "Овен": "♈", "Телец": "♉", "Близнецы": "♊", "Рак": "♋",
         "Лев": "♌", "Дева": "♍", "Весы": "♎", "Скорпион": "♏",
@@ -893,19 +861,96 @@ def build_astro_section(
         "♈": "♈", "♉": "♉", "♊": "♊", "♋": "♋", "♌": "♌", "♍": "♍",
         "♎": "♎", "♏": "♏", "♐": "♐", "♑": "♑", "♒": "♒", "♓": "♓",
     }
-    sign_s = ""
-    try:
-        sign_s = str(rec.get("sign") or rec.get("moon_sign") or "").strip()
-    except Exception:
-        sign_s = ""
+    _sign_loc = {
+        "Овен": "Овне",
+        "Телец": "Тельце",
+        "Близнецы": "Близнецах",
+        "Рак": "Раке",
+        "Лев": "Льве",
+        "Дева": "Деве",
+        "Весы": "Весах",
+        "Скорпион": "Скорпионе",
+        "Стрелец": "Стрельце",
+        "Козерог": "Козероге",
+        "Водолей": "Водолее",
+        "Рыбы": "Рыбах",
+    }
 
-    sign_s = _sign2sym.get(sign_s, "")
-
-    if not sign_s:
+    sign_sym = _sign2sym.get(sign_raw, "")
+    if not sign_sym:
+        # попробуем вытащить символ из phase, если он там есть
         ph = str(rec.get("phase") or "")
         m = re.search(r"[♈♉♊♋♌♍♎♏♐♑♒♓]", ph)
         if m:
-            sign_s = m.group(0)
+            sign_sym = m.group(0)
+
+    sign_loc = _sign_loc.get(sign_raw, "")
+    if not sign_loc and sign_sym:
+        # если есть только символ — оставим символ (чтобы не ломать падежи)
+        sign_loc = sign_sym
+
+    # ── Шаблон «как раньше»
+    phase_l = (phase_name or "").lower()
+
+    if "новол" in phase_l:
+        moon_emoji = "🌑"
+        phase_hint = "время намерений и мягкого планирования"
+    elif "полн" in phase_l:
+        moon_emoji = "🌕"
+        phase_hint = "пик эмоций и результатов — лучше завершать, чем начинать"
+    elif "убыв" in phase_l:
+        moon_emoji = "🌘"
+        phase_hint = "подходит для завершения дел и разгрузки"
+    elif "раст" in phase_l:
+        moon_emoji = "🌙"
+        phase_hint = "подходит для укрепления планов и постепенного роста"
+    else:
+        moon_emoji = "🌙"
+        phase_hint = "держи курс на простые и понятные шаги"
+
+    if percent:
+        if percent <= 20:
+            illum_hint = "не спеши — сначала настрой и наблюдение"
+        elif percent <= 60:
+            illum_hint = "можно набирать темп, но без перегруза"
+        elif percent <= 85:
+            illum_hint = "хорошо для практических решений и закрепления"
+        else:
+            illum_hint = "эмоции ярче обычного — выбирай спокойный темп"
+    else:
+        illum_hint = "ориентируйся на самочувствие и простые планы"
+
+    # Общий фон (по календарю благоприятных/неблагоприятных дней)
+    day_n = int(getattr(work_date, "day", 0) or 0)
+    fav_general = (rec.get("favorable_days") or {}).get("general") or {}
+    fav_list = fav_general.get("favorable") or []
+    unf_list = fav_general.get("unfavorable") or []
+    is_fav = day_n in fav_list if day_n else False
+    is_unf = day_n in unf_list if day_n else False
+
+    if is_fav and not is_unf:
+        bg_line = "✅ Общий фон: благоприятный день."
+    elif is_unf and not is_fav:
+        bg_line = "⚠️ Общий фон: неблагоприятный день."
+    elif is_fav and is_unf:
+        bg_line = "➿ Общий фон: день с разным фоном — прислушивайся к себе."
+    else:
+        bg_line = "➿ Общий фон: нейтрально — ориентируйся на самочувствие."
+
+    # В плюсе: сначала берём категории из favorable_days (если заполнены), иначе — по знаку
+    cat_map = {
+        "shopping": "💰 покупки",
+        "haircut": "💇‍♀️ стрижки",
+        "travel": "✈️ поездки",
+        "health": "💪 здоровье",
+    }
+    plus_bits: list[str] = []
+    fav_days = rec.get("favorable_days") or {}
+    for k, label in cat_map.items():
+        k_rec = fav_days.get(k) or {}
+        k_fav = k_rec.get("favorable") or []
+        if day_n and day_n in k_fav:
+            plus_bits.append(label)
 
     plus_map = {
         "♑": "💼 планы, 🧾 финансы, 🧱 структура",
@@ -921,60 +966,83 @@ def build_astro_section(
         "♌": "🌟 уверенность, 🎭 самовыражение, 💛 сердце",
         "♊": "🗣️ общение, 📩 связи, 🧩 гибкость",
     }
-    plus_hint = plus_map.get(sign_s, "маленькие практические шаги, порядок, забота о себе")
-    tmpl3 = f"💚 В плюсе: {plus_hint}."
+
+    if plus_bits:
+        plus_line = f"💚 В плюсе: {', '.join(plus_bits)}."
+    else:
+        plus_hint = plus_map.get(sign_sym, "маленькие практические шаги, порядок, забота о себе")
+        plus_line = f"💚 В плюсе: {plus_hint}."
+
+    # База: 3–4 строки «как раньше»
+    phase_disp = phase_name or "Луна"
+    if sign_loc:
+        tmpl1 = f"{moon_emoji} {phase_disp} в {sign_loc} — {phase_hint}."
+    else:
+        tmpl1 = f"{moon_emoji} {phase_disp} — {phase_hint}."
+
+    tmpl2 = f"✨ {percent}% освещённости — {illum_hint}." if percent else f"✨ Освещённость: н/д — {illum_hint}."
+    tmpl3 = bg_line
+    tmpl4 = plus_line
 
     template_bullets = [
-        _sanitize_line(tmpl1, 140),
-        _sanitize_line(tmpl2, 140),
-        _sanitize_line(tmpl3, 140),
+        _sanitize_line(tmpl1, 160),
+        _sanitize_line(tmpl2, 160),
+        _sanitize_line(tmpl3, 160),
+        _sanitize_line(tmpl4, 160),
     ]
 
+    # advice из календаря + long_desc (очень дозировано, чтобы не раздувать блок)
+    bullets = _advice_lines_from_rec(rec) or []
+    long_desc = (rec.get("long_desc") or "").strip()
+    if long_desc:
+        # возьмём первую фразу/кусок
+        long_piece = re.split(r"[.!?]\s+", long_desc, maxsplit=1)[0].strip()
+        if long_piece and long_piece not in bullets:
+            bullets = [long_piece] + bullets
 
-    # 2) Если bullets слишком короткий (часто 1 строка из advice) — дополняем LLM и/или шаблоном
+    # Если bullet-ов мало — можно дотянуть LLM (если доступен)
     need_min = 3
-    extra = []
-    bullets: List[str] = []
-    if not bullets or len(bullets) < need_min:
+    extra: list[str] = []
+    if len(bullets) < need_min:
         extra = _astro_llm_bullets(
-            date_local.format("DD.MM.YYYY"),
+            work_date.format("DD.MM.YYYY"),
             phase_name,
             int(percent or 0),
-            sign,
+            sign_raw,
             voc_text,
-        )
+        ) or []
 
+    # Слияние (важный момент: template_bullets НЕ переопределяем ниже)
     merged: list[str] = []
-    template_bullets: List[str] = []
     for src_list in (template_bullets, bullets, extra):
         for x in (src_list or []):
-            x = (x or "").strip()
+            x = _sanitize_line(str(x or "").strip(), 180)
             if not x:
                 continue
             if x not in merged:
                 merged.append(x)
 
-    bullets = merged[:5] if merged else template_bullets
+    final_bullets = merged[:5] if merged else template_bullets[:4]
 
-
-    # По умолчанию — без заголовка (как в ваших старых примерах).
-    # Если нужен заголовок, поставьте ASTRO_SHOW_HEADER=1.
+    # Заголовок по флагу (по умолчанию — без него, как в твоих старых примерах)
     lines: list[str] = []
     show_header = os.getenv("ASTRO_SHOW_HEADER", "0").strip().lower() in ("1", "true", "yes", "on")
     if show_header:
         lines.append("🌌 <b>Астрособытия</b>")
-    lines += [zsym(x) for x in bullets[:5]]
 
+    lines += [zsym(x) for x in final_bullets]
+
+    # VoC отдельной строкой, если есть и не продублирован
     if voc_text:
-        low = " ".join(bullets).lower()
+        low = " ".join(final_bullets).lower()
         if ("voc" not in low) and ("без курса" not in low):
             lines.append(f"⚫️ VoC {voc_text} — без новых стартов.")
 
-
-    fav_lines = _favdays_lines_for_date(rec, date_local)
-    lines += fav_lines
+    # Доп. строки «в плюсе» по категориям (если твой хелпер это формирует)
+    lines += _favdays_lines_for_date(rec, work_date)
 
     return "\n".join(lines)
+
 
 
 # ───────────── hourly/ветер/давление ─────────────
