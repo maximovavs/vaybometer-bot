@@ -749,12 +749,18 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
         or rec.get("text")
         or rec.get("summary")
     )
+
+    # advice может быть list[str] (как в твоём lunar_calendar.json) — превращаем в текст
+    if isinstance(raw, list):
+        raw = "\n".join([str(x).strip() for x in raw if str(x).strip()])
+
     if not isinstance(raw, str):
         return []
 
     raw = raw.strip()
     if not raw:
         return []
+
 
     # 1) Отбрасываем совсем короткие плейсхолдеры "… Луна" без фактики
     low = raw.lower()
@@ -879,7 +885,29 @@ def build_astro_section(
     
         tmpl1 = f"🌙 {phase_s}" + (f" в {sign_s}" if sign_s else "") + f" — {phase_hint}."
         tmpl2 = f"✨ {percent}% освещённости — {illum_hint}." if percent else f"✨ Освещённость: н/д — {illum_hint}."
-        template_bullets = [_sanitize_line(tmpl1, 140), _sanitize_line(tmpl2, 140)]
+    plus_map = {
+        "♑": "💼 планы, 🧾 финансы, 🧱 структура",
+        "♉": "💰 покупки, 🍲 тело, 🌿 стабильность",
+        "♈": "🔥 старт, 🏃 энергия, 🎯 решительность",
+        "♋": "🏠 дом, 💞 близкие, 🫖 забота",
+        "♍": "🧹 порядок, 📋 рутина, 🧠 фокус",
+        "♎": "🤝 договорённости, ⚖️ баланс, 🎨 эстетика",
+        "♏": "🧿 глубина, 🧠 трансформация, 🔥 мотивация",
+        "♐": "🧭 планы, ✈️ дороги, 📚 обучение",
+        "♒": "💡 идеи, 🧑‍🤝‍🧑 сообщество, 🛠️ обновления",
+        "♓": "🎵 интуиция, 🫧 восстановление, 🎨 творчество",
+        "♌": "🌟 уверенность, 🎭 самовыражение, 💛 сердце",
+        "♊": "🗣️ общение, 📩 связи, 🧩 гибкость",
+    }
+    plus_hint = plus_map.get(sign_s, "маленькие практические шаги, порядок, забота о себе")
+    tmpl3 = f"💚 В плюсе: {plus_hint}."
+
+    template_bullets = [
+        _sanitize_line(tmpl1, 140),
+        _sanitize_line(tmpl2, 140),
+        _sanitize_line(tmpl3, 140),
+    ]
+
 
     # 2) Если bullets слишком короткий (часто 1 строка из advice) — дополняем LLM и/или шаблоном
     need_min = 3
@@ -896,7 +924,7 @@ def build_astro_section(
 
     merged: list[str] = []
     template_bullets: List[str] = []
-    for src_list in (bullets, extra, template_bullets):
+    for src_list in (template_bullets, bullets, extra):
         for x in (src_list or []):
             x = (x or "").strip()
             if not x:
@@ -904,7 +932,7 @@ def build_astro_section(
             if x not in merged:
                 merged.append(x)
 
-    bullets = merged[:4] if merged else template_bullets
+    bullets = merged[:5] if merged else template_bullets
 
 
     # По умолчанию — без заголовка (как в ваших старых примерах).
@@ -913,7 +941,7 @@ def build_astro_section(
     show_header = os.getenv("ASTRO_SHOW_HEADER", "0").strip().lower() in ("1", "true", "yes", "on")
     if show_header:
         lines.append("🌌 <b>Астрособытия</b>")
-    lines += [zsym(x) for x in bullets[:4]]
+    lines += [zsym(x) for x in bullets[:5]]
 
     if voc_text:
         low = " ".join(bullets).lower()
