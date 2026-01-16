@@ -885,6 +885,7 @@ def build_astro_section(
         )
 
     merged: list[str] = []
+    template_bullets: List[str] = []
     for src_list in (bullets, extra, template_bullets):
         for x in (src_list or []):
             x = (x or "").strip()
