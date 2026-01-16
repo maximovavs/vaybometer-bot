@@ -606,28 +606,36 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
     if cache_file.exists():
         lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
         if lines:
-            return lines[:3]
+            return lines[:4]
+
     if not USE_DAILY_LLM:
         return []
+
     system = (
         "Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
         "Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
         "Пиши грамотно по-русски, без клише. Используй ТОЛЬКО данную информацию: "
         "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
         "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи и содержит одну мысль."
-    )
+     )
+
     prompt = (
         f"Дата: {date_str}. Фаза Луны: {phase or 'н/д'} ({percent}% освещённости). "
         f"Знак: {sign or 'н/д'}. VoC: {voc_text or 'нет'}."
     )
+
     try:
-        txt = gpt_complete(prompt=prompt, system=system, temperature=0.2, max_tokens=160)
+        txt = gpt_complete(prompt=prompt, system=system, temperature=0.2, max_tokens=220)
         raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
+
         safe: List[str] = []
-        emoji_cycle = ["🌙", "✨", "✅"]
+        emoji_cycle = ["🌙", "✨", "✅", "⚫️"]
+
         for l in raw_lines:
             l = re.sub(r"^[•\-\u2022]+\s*", "", l).strip()
-            l = _sanitize_line(l, 120)
+            l = re.sub(r"\*", "", l).strip()  # убираем markdown-звёздочки
+            l = _sanitize_line(l, 140)
+
             if l and not _looks_gibberish(l):
                 if not re.match(r"^\W", l):
                     pref = emoji_cycle[min(len(safe), len(emoji_cycle) - 1)]
@@ -635,10 +643,12 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
                 safe.append(l)
 
         if safe:
-            cache_file.write_text("\n".join(safe[:3]), "utf-8")
-            return safe[:3]
+            cache_file.write_text("\n".join(safe[:4]), "utf-8")
+            return safe[:4]
+
     except Exception as e:
         logging.warning("Astro LLM failed: %s", e)
+
     return []
 
 
@@ -724,10 +734,11 @@ def _favdays_lines_for_date(rec: dict, date_local: pendulum.Date) -> list[str]:
 def _advice_lines_from_rec(rec: dict) -> list[str]:
     """
     Берёт готовый текст совета из rec['advice'] (или похожих полей)
-    и преобразует в 1–3 аккуратные строки.
+    и преобразует в 1–4 аккуратные строки.
 
-    Важно: отбрасываем плейсхолдеры вида "✨ 16 января Луна", которые ломают астроблок.
-    Форматируем строки так, чтобы каждая начиналась с эмодзи (без "• ").
+    Важно:
+    - убираем плейсхолдеры и markdown-символы '*'
+    - не ограничиваемся 1 строкой, если текст короткий — дальше build_astro_section дополнит
     """
     if not isinstance(rec, dict):
         return []
@@ -745,44 +756,48 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
     if not raw:
         return []
 
-    # 1) Отбрасываем короткие/пустые плейсхолдеры про "Луна" без фактики
+    # 1) Отбрасываем совсем короткие плейсхолдеры "… Луна" без фактики
     low = raw.lower()
     if len(raw) < 45 and ("луна" in low) and not any(
-        x in low for x in ("%", "voc", "vоc", "void", "без курса", "знак", "♈", "♉", "♊", "♋", "♌", "♍", "♎", "♏", "♐", "♑", "♒", "♓")
+        x in low for x in (
+            "%", "voc", "vоc", "void", "без курса", "знак",
+            "♈", "♉", "♊", "♋", "♌", "♍", "♎", "♏", "♐", "♑", "♒", "♓"
+        )
     ):
         return []
+
     if re.fullmatch(
         r"(?iu)[✨⭐🌙🌌\s]*\d{1,2}\s*(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)?\s*луна\s*",
         raw,
     ):
         return []
 
-    # 2) Нормализация строк: без "• ", с эмодзи-префиксом при необходимости
+    # 2) Нормализация строк: без "•", без "*", с эмодзи-префиксом при необходимости
     lines: list[str] = []
-    emoji_cycle = ["🌙", "✨", "✅"]
+    emoji_cycle = ["🌙", "✨", "✅", "⚫️"]
 
     for src in raw.splitlines():
         line = (src or "").strip()
         if not line:
             continue
 
-        # убираем маркеры списка, если календарь их добавил
         line = re.sub(r"^[•\-\u2022]+\s*", "", line).strip()
+        line = re.sub(r"\*", "", line).strip()  # убираем markdown-звёздочки
 
-        line = _sanitize_line(line, 120)
+        line = _sanitize_line(line, 140)
         if not line or _looks_gibberish(line):
             continue
 
-        # если строка не начинается с эмодзи/символа — добавляем аккуратный эмодзи-префикс
         if not re.match(r"^\W", line):
             pref = emoji_cycle[min(len(lines), len(emoji_cycle) - 1)]
             line = f"{pref} {line}"
 
         lines.append(line)
-        if len(lines) >= 3:
+        if len(lines) >= 4:
             break
 
-    return lines[:3]
+    return lines[:4]
+
 
 
 def build_astro_section(
@@ -821,12 +836,46 @@ def build_astro_section(
         t1, t2 = voc
         voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
 
-    # 1) сначала пробуем взять готовый текст из календаря
-    bullets = _advice_lines_from_rec(rec)
+        # 1) сначала пробуем взять готовый текст из календаря
+        bullets = _advice_lines_from_rec(rec)
+    
+        # 1.5) Шаблонные строки — чтобы астроблок был «как раньше», даже если advice короткий/LLM недоступен
+        sign_s = zsym(str(sign or "")).strip()
+        phase_s = (phase_name or "Луна").strip()
+        phase_l = (phase_name or "").lower()
+    
+        if "новол" in phase_l:
+            phase_hint = "время намерений и мягкого планирования"
+        elif "полн" in phase_l:
+            phase_hint = "пик эмоций и результатов — лучше завершать, чем начинать"
+        elif "убыв" in phase_l:
+            phase_hint = "подходит для завершения дел и разгрузки"
+        elif "раст" in phase_l:
+            phase_hint = "подходит для укрепления планов и постепенного роста"
+        else:
+            phase_hint = "держи курс на простые и понятные шаги"
+    
+        if percent:
+            if percent <= 20:
+                illum_hint = "не спеши — сначала настрой и наблюдение"
+            elif percent <= 60:
+                illum_hint = "можно набирать темп, но без перегруза"
+            elif percent <= 85:
+                illum_hint = "хорошо для практических решений и закрепления"
+            else:
+                illum_hint = "эмоции ярче обычного — выбирай спокойный темп"
+        else:
+            illum_hint = "ориентируйся на самочувствие и простые планы"
+    
+        tmpl1 = f"🌙 {phase_s}" + (f" в {sign_s}" if sign_s else "") + f" — {phase_hint}."
+        tmpl2 = f"✨ {percent}% освещённости — {illum_hint}." if percent else f"✨ Освещённость: н/д — {illum_hint}."
+        template_bullets = [_sanitize_line(tmpl1, 140), _sanitize_line(tmpl2, 140)]
 
-    # 2) если советов нет — генерируем короткую сводку через LLM (с кешем)
-    if not bullets:
-        bullets = _astro_llm_bullets(
+    # 2) Если bullets слишком короткий (часто 1 строка из advice) — дополняем LLM и/или шаблоном
+    need_min = 3
+    extra = []
+    if not bullets or len(bullets) < need_min:
+        extra = _astro_llm_bullets(
             date_local.format("DD.MM.YYYY"),
             phase_name,
             int(percent or 0),
@@ -834,11 +883,17 @@ def build_astro_section(
             voc_text,
         )
 
-    # 3) если ни календаря, ни LLM — показываем базовую лаконичную сводку
-    if not bullets:
-        base1 = f"🌙 {phase_name or 'Луна'}" + (f" в {sign}" if sign else "")
-        base2 = f"✨ Освещённость: {percent}%." if percent else "✨ Освещённость: н/д."
-        bullets = [_sanitize_line(base1, 120), _sanitize_line(base2, 120)]
+    merged: list[str] = []
+    for src_list in (bullets, extra, template_bullets):
+        for x in (src_list or []):
+            x = (x or "").strip()
+            if not x:
+                continue
+            if x not in merged:
+                merged.append(x)
+
+    bullets = merged[:4] if merged else template_bullets
+
 
     # По умолчанию — без заголовка (как в ваших старых примерах).
     # Если нужен заголовок, поставьте ASTRO_SHOW_HEADER=1.
@@ -847,7 +902,7 @@ def build_astro_section(
     if show_header:
         lines.append("🌌 <b>Астрособытия</b>")
 
-    lines += [zsym(x) for x in bullets[:3]]
+       lines += [zsym(x) for x in bullets[:4]]
 
     if voc_text:
         low = " ".join(bullets).lower()
