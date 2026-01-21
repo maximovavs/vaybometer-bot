@@ -738,7 +738,7 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
 
     Важно:
     - убираем плейсхолдеры и markdown-символы '*'
-    - не ограничиваемся 1 строкой, если текст короткий — дальше build_astro_section дополнит
+    - строки сразу санитизируются (HTML-escape) внутри этой функции
     """
     if not isinstance(rec, dict):
         return []
@@ -750,7 +750,7 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
         or rec.get("summary")
     )
 
-    # advice может быть list[str] (как в твоём lunar_calendar.json) — превращаем в текст
+    # advice может быть list[str] — превращаем в текст
     if isinstance(raw, list):
         raw = "\n".join([str(x).strip() for x in raw if str(x).strip()])
 
@@ -761,9 +761,9 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
     if not raw:
         return []
 
+    low = raw.lower()
 
     # 1) Отбрасываем совсем короткие плейсхолдеры "… Луна" без фактики
-    low = raw.lower()
     if len(raw) < 45 and ("луна" in low) and not any(
         x in low for x in (
             "%", "voc", "vоc", "void", "без курса", "знак",
@@ -772,13 +772,14 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
     ):
         return []
 
+    # 1a) Плейсхолдер вида "✨ 17 января луна" (без сути)
     if re.fullmatch(
         r"(?iu)[✨⭐🌙🌌\s]*\d{1,2}\s*(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)?\s*луна\s*",
         raw,
     ):
         return []
 
-        # 1b) Отбрасываем плейсхолдеры вида "✨ 17 января наступает" (обрезанный заголовок без сути)
+    # 1b) Плейсхолдер вида "✨ 17 января наступает" (обрезанный заголовок без сути)
     if len(raw) < 45 and ("наступает" in low) and not any(
         x in low for x in (
             "новолуние", "полнолуние", "четверт", "%", "voc", "vоc", "void", "без курса", "знак",
@@ -786,7 +787,6 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
         )
     ):
         return []
-
 
     # 2) Нормализация строк: без "•", без "*", с эмодзи-префиксом при необходимости
     lines: list[str] = []
@@ -804,6 +804,7 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
         if not line or _looks_gibberish(line):
             continue
 
+        # если строка не начинается с эмодзи/пунктуации — добавим
         if not re.match(r"^\W", line):
             pref = emoji_cycle[min(len(lines), len(emoji_cycle) - 1)]
             line = f"{pref} {line}"
@@ -814,6 +815,7 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
 
     return lines[:4]
 
+
 def build_astro_section(
     date_local: Optional[pendulum.Date] = None,
     tz_local: str = "Asia/Nicosia",
@@ -821,7 +823,7 @@ def build_astro_section(
     tz = pendulum.timezone(tz_local)
     base_date = date_local or pendulum.today(tz)
 
-    # Дополнительный сдвиг через ASTRO_OFFSET (в днях), если нужно
+    # ASTRO_OFFSET (в днях)
     try:
         offset_days = int(os.getenv("ASTRO_OFFSET", "0") or "0")
     except Exception:
@@ -832,15 +834,17 @@ def build_astro_section(
 
     cal = load_calendar("lunar_calendar.json")
     rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
+    if not isinstance(rec, dict):
+        rec = {}
 
     phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
     phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
 
     percent = rec.get("percent") or rec.get("illumination") or rec.get("illum") or 0
     try:
-        percent = int(round(float(percent)))
+        percent_i = int(round(float(percent)))
     except Exception:
-        percent = 0
+        percent_i = 0
 
     sign_raw = (rec.get("sign") or rec.get("zodiac") or "").strip()
 
@@ -883,7 +887,7 @@ def build_astro_section(
 
     sign_loc = _sign_loc.get(sign_raw, "")
     if not sign_loc and sign_sym:
-        sign_loc = sign_sym  # без падежа, но хотя бы символ есть
+        sign_loc = sign_sym  # если нет падежа — хотя бы символ
 
     # ── Шаблон «как раньше»
     phase_l = (phase_name or "").lower()
@@ -904,25 +908,27 @@ def build_astro_section(
         moon_emoji = "🌙"
         phase_hint = "держи курс на простые и понятные шаги"
 
-    if percent:
-        if percent <= 20:
+    if percent_i:
+        if percent_i <= 20:
             illum_hint = "не спеши — сначала настрой и наблюдение"
-        elif percent <= 60:
+        elif percent_i <= 60:
             illum_hint = "можно набирать темп, но без перегруза"
-        elif percent <= 85:
+        elif percent_i <= 85:
             illum_hint = "хорошо для практических решений и закрепления"
         else:
             illum_hint = "эмоции ярче обычного — выбирай спокойный темп"
     else:
         illum_hint = "ориентируйся на самочувствие и простые планы"
 
-    # Общий фон (по календарю благоприятных/неблагоприятных дней)
+    # Общий фон дня (по календарю) — безопасно по типам
     day_n = int(getattr(work_date, "day", 0) or 0)
-    fav_general = (rec.get("favorable_days") or {}).get("general") or {}
+    fav_root = rec.get("favorable_days") if isinstance(rec.get("favorable_days"), dict) else {}
+    fav_general = fav_root.get("general") if isinstance(fav_root.get("general"), dict) else {}
     fav_list = fav_general.get("favorable") or []
     unf_list = fav_general.get("unfavorable") or []
-    is_fav = day_n in fav_list if day_n else False
-    is_unf = day_n in unf_list if day_n else False
+
+    is_fav = bool(day_n and day_n in fav_list)
+    is_unf = bool(day_n and day_n in unf_list)
 
     if is_fav and not is_unf:
         bg_line = "✅ Общий фон: благоприятный день."
@@ -933,7 +939,7 @@ def build_astro_section(
     else:
         bg_line = "➿ Общий фон: нейтрально — ориентируйся на самочувствие."
 
-    # В плюсе: сначала категории из favorable_days (если заполнены), иначе — по знаку
+    # В плюсе: сначала категории из favorable_days, иначе — по знаку
     cat_map = {
         "shopping": "💰 покупки",
         "haircut": "💇‍♀️ стрижки",
@@ -941,12 +947,13 @@ def build_astro_section(
         "health": "💪 здоровье",
     }
     plus_bits: list[str] = []
-    fav_days = rec.get("favorable_days") or {}
-    for k, label in cat_map.items():
-        k_rec = fav_days.get(k) or {}
-        k_fav = k_rec.get("favorable") or []
-        if day_n and day_n in k_fav:
-            plus_bits.append(label)
+    if isinstance(fav_root, dict):
+        for k, label in cat_map.items():
+            k_rec = fav_root.get(k)
+            if isinstance(k_rec, dict):
+                k_fav = k_rec.get("favorable") or []
+                if day_n and day_n in k_fav:
+                    plus_bits.append(label)
 
     plus_map = {
         "♑": "💼 планы, 🧾 финансы, 🧱 структура",
@@ -969,17 +976,17 @@ def build_astro_section(
         plus_hint = plus_map.get(sign_sym, "маленькие практические шаги, порядок, забота о себе")
         plus_line = f"💚 В плюсе: {plus_hint}."
 
-    # База: 3–4 строки «как раньше»
     phase_disp = phase_name or "Луна"
     if sign_loc:
         tmpl1 = f"{moon_emoji} {phase_disp} в {sign_loc} — {phase_hint}."
     else:
         tmpl1 = f"{moon_emoji} {phase_disp} — {phase_hint}."
 
-    tmpl2 = f"✨ {percent}% освещённости — {illum_hint}." if percent else f"✨ Освещённость: н/д — {illum_hint}."
+    tmpl2 = f"✨ {percent_i}% освещённости — {illum_hint}." if percent_i else f"✨ Освещённость: н/д — {illum_hint}."
     tmpl3 = bg_line
     tmpl4 = plus_line
 
+    # template bullets — санитизируем ОДИН раз
     template_bullets = [
         _sanitize_line(tmpl1, 160),
         _sanitize_line(tmpl2, 160),
@@ -987,51 +994,58 @@ def build_astro_section(
         _sanitize_line(tmpl4, 160),
     ]
 
-    # advice из календаря + long_desc (дозировано)
-    bullets = _advice_lines_from_rec(rec) or []
+    # advice bullets уже санитизируются внутри _advice_lines_from_rec
+    advice_bullets = _advice_lines_from_rec(rec) or []
+
+    # long_desc (1-я фраза) — санитизируем один раз и добавляем, если полезно
+    extra_texts: list[str] = []
     long_desc = (rec.get("long_desc") or "").strip()
     if long_desc:
         long_piece = re.split(r"[.!?]\s+", long_desc, maxsplit=1)[0].strip()
-        if long_piece and long_piece not in bullets:
-            bullets = [long_piece] + bullets
+        if long_piece:
+            lp = _sanitize_line(long_piece, 160)
+            # добавим эмодзи, если строка “голая”
+            if lp and not re.match(r"^\W", lp):
+                lp = "🌙 " + lp
+            extra_texts.append(lp)
 
-    # ── LLM В ПРИОРИТЕТЕ: сначала пробуем получить полноценный блок от LLM
-    extra: list[str] = []
+    # ── LLM в приоритете
+    llm_bullets: list[str] = []
     try:
-        extra = _astro_llm_bullets(
+        llm_bullets = _astro_llm_bullets(
             work_date.format("DD.MM.YYYY"),
             phase_name,
-            int(percent or 0),
+            int(percent_i or 0),
             sign_raw,
             voc_text,
         ) or []
     except Exception:
-        extra = []
+        llm_bullets = []
 
-    # Считаем «получилось», только если LLM вернул хотя бы 3 осмысленные строки
-    extra_sane: list[str] = []
-    for x in (extra or []):
-        x = _sanitize_line(str(x or "").strip(), 180)
-        if x:
-            extra_sane.append(x)
-    ok_llm = len(extra_sane) >= 3
+    # ВАЖНО: _astro_llm_bullets уже возвращает санитизированные строки → НЕ санитизируем повторно
+    llm_bullets = [x.strip() for x in llm_bullets if (x or "").strip()]
+    ok_llm = len(llm_bullets) >= 3  # “считаем успехом” только полноценный блок
 
-    # ── Сборка итоговых bullets:
-    # 1) если LLM ок — он идёт первым, дальше аккуратный шаблон/календарь как поддержка
-    # 2) если LLM не получился — используем fallback (шаблон + календарные строки)
+    # ── сборка с приоритетом: LLM → (template + advice + long_desc)
     merged: list[str] = []
-    if ok_llm:
-        sources = (extra_sane, template_bullets, bullets)
-    else:
-        sources = (template_bullets, bullets)
 
-    for src_list in sources:
-        for x in (src_list or []):
-            x = _sanitize_line(str(x or "").strip(), 180)
+    def _add_unique(items: list[str]) -> None:
+        for x in items or []:
+            x = (x or "").strip()
             if not x:
                 continue
             if x not in merged:
                 merged.append(x)
+
+    if ok_llm:
+        _add_unique(llm_bullets)
+        _add_unique(template_bullets)
+        _add_unique(extra_texts)
+        _add_unique(advice_bullets)
+    else:
+        _add_unique(template_bullets)
+        _add_unique(extra_texts)
+        _add_unique(advice_bullets)
 
     final_bullets = merged[:5] if merged else template_bullets[:4]
 
@@ -1041,7 +1055,9 @@ def build_astro_section(
     if show_header:
         lines.append("🌌 <b>Астрособытия</b>")
 
-    lines += [zsym(x) for x in final_bullets]
+    # bullets уже санитизированы → только zsym
+    for b in final_bullets:
+        lines.append(zsym(b))
 
     # VoC отдельной строкой, если есть и не продублирован
     if voc_text:
@@ -1049,10 +1065,13 @@ def build_astro_section(
         if ("voc" not in low) and ("без курса" not in low):
             lines.append(f"⚫️ VoC {voc_text} — без новых стартов.")
 
-    lines += _favdays_lines_for_date(rec, work_date)
+    # favdays в конце, но без дублей
+    for fl in (_favdays_lines_for_date(rec, work_date) or []):
+        fl = (fl or "").strip()
+        if fl and fl not in lines:
+            lines.append(fl)
 
-    return "\n".join(lines)
-
+    return "\n".join([x for x in lines if (x or "").strip()])
 
 
 # ───────────── hourly/ветер/давление ─────────────
