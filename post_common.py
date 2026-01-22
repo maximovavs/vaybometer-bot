@@ -49,6 +49,10 @@ USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", 
 # Kp-источник «как в мировом чате»
 USE_WORLD_KP = os.getenv("USE_WORLD_KP", "1").strip().lower() in ("1", "true", "yes", "on")
 
+ # ───────────── UV (утро) ─────────────
+ # Показываем предупреждение только при UV >= 6 (по твоему правилу).
+ UV_WARN_MIN = float(os.getenv("UV_WARN_MIN", "6") or "6")
+
 # ────────────────────────── HTML/utils ──────────────────────────
 def _escape_html(s: str) -> str:
     return html.escape(str(s), quote=False)
@@ -240,7 +244,117 @@ def code_desc(c: Any) -> Optional[str]:
         return WMO_DESC.get(int(c))
     except Exception:
         return None
-
+ # ───────────── UV helpers (утро) ─────────────
+ def _daily_idx_for_date(
+     wm: Dict[str, Any],
+     tz: pendulum.tz.timezone.Timezone,
+     date_obj: pendulum.Date,
+ ) -> Optional[int]:
+     """Ищет индекс нужной даты в wm['daily']['time'] / ['date']."""
+     try:
+         daily = wm.get("daily") or {}
+         times = daily.get("time") or daily.get("date") or []
+         for i, t in enumerate(times):
+             dt_i = _parse_iso_to_tz(t, tz)
+             if dt_i and dt_i.date() == date_obj:
+                 return i
+     except Exception:
+         pass
+     return None
+ 
+ 
+ def _uv_max_for_date(
+     wm: Dict[str, Any],
+     tz_obj: pendulum.Timezone,
+     date_obj: pendulum.Date,
+ ) -> Tuple[Optional[float], Optional[str]]:
+     """
+     Возвращает (uv_max, peak_time_HH:mm?) для указанной даты.
+     Пытается взять из daily uv_index_max; если нет — из hourly uv_index.
+     """
+     # 1) daily
+     try:
+         daily = wm.get("daily") or {}
+         idx = _daily_idx_for_date(wm, tz_obj, date_obj)
+         if idx is not None:
+             # наиболее вероятные ключи в Open-Meteo
+             cand_keys = [
+                 "uv_index_max",
+                 "uv_index_max_clear_sky",
+                 "uv_index_clear_sky_max",
+                 "uv_index",  # иногда отдают дневной uv как массив
+             ]
+             for k in cand_keys:
+                 arr = daily.get(k)
+                 if isinstance(arr, list) and idx < len(arr) and arr[idx] is not None:
+                     try:
+                         return float(arr[idx]), None
+                     except Exception:
+                         continue
+     except Exception:
+         pass
+ 
+     # 2) hourly fallback
+     try:
+         hourly = wm.get("hourly") or {}
+         arr = _pick(hourly, "uv_index", "uv_index_clear_sky", "uvindex", default=[])
+         times = _hourly_times(wm)
+         idxs = [
+             i for i, t in enumerate(times)
+             if t and (t.in_tz(tz_obj).date() == date_obj)
+         ]
+         best_v: Optional[float] = None
+         best_i: Optional[int] = None
+         for i in idxs:
+             if i < len(arr) and arr[i] is not None:
+                 try:
+                     v = float(arr[i])
+                 except Exception:
+                     continue
+                 if best_v is None or v > best_v:
+                     best_v, best_i = v, i
+         peak = None
+         if best_i is not None and best_i < len(times):
+             try:
+                 peak = times[best_i].in_tz(tz_obj).format("HH:mm")
+             except Exception:
+                 peak = None
+         return best_v, peak
+     except Exception:
+         return None, None
+ 
+ 
+ def _uv_warning_line_for_morning(
+     wm_region: Dict[str, Any],
+     tz_obj: pendulum.Timezone,
+ ) -> Optional[str]:
+     """
+     Формирует строку предупреждения по UV на СЕГОДНЯ.
+     Пороги:
+       6–7  High      → SPF 30–50, очки/головной убор, тень в полдень
+       8–10 Very High → SPF 50, тень 11–16, закрыть плечи, очки/головной убор
+       11 +  Extreme   → минимум солнца 11–16, тень/закрытая одежда, SPF 50 +
+     """
+     today = pendulum.today(tz_obj).date()
+     uv_max, peak = _uv_max_for_date(wm_region, tz_obj, today)
+     if not isinstance(uv_max, (int, float)):
+         return None
+     if float(uv_max) < float(UV_WARN_MIN):
+         return None
+ 
+     uv_i = int(round(float(uv_max)))
+     if 6 <= uv_i <= 7:
+         lvl = "High"
+         tip = "SPF 30–50, очки/головной убор, по возможности тень в полдень"
+     elif 8 <= uv_i <= 10:
+         lvl = "Very High"
+         tip = "SPF 50, тень 11–16, закрыть плечи, очки/головной убор"
+     else:
+         lvl = "Extreme"
+         tip = "минимум солнца 11–16, тень/закрытая одежда, SPF 50+"
+ 
+     peak_txt = f" (пик около {peak})" if peak else ""
+     return f"☀️ <b>УФ-индекс {uv_i} ({lvl})</b>{peak_txt}: {tip}"
 
 def _iter_city_pairs(cities) -> list[tuple[str, tuple[float, float]]]:
     """
@@ -1882,6 +1996,10 @@ def build_message(
 
         if storm_region.get("warning"):
             P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
+        # UV предупреждение (только при UV >= 6)
+        uv_line = _uv_warning_line_for_morning(wm_region, tz_obj)
+        if uv_line:
+            P.append(uv_line)
 
         la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
         sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)
