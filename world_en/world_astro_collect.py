@@ -12,9 +12,11 @@ import datetime as dt
 import json
 import traceback
 from typing import Optional, Tuple
-from pytz import UTC
 import hashlib
 import random
+
+# --- UTC без pytz ---
+UTC = dt.timezone.utc
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(__file__).parent / "astro.json"
@@ -32,6 +34,61 @@ except Exception as e:
     except Exception as e2:
         print(f"[astro] imagegen import fallback failed: {e2}")
         generate_astro_image = None  # type: ignore
+
+# ---------------- optional placeholder detection (PIL) ----------------
+# Не делаем PIL обязательной зависимостью: если Pillow не установлен, просто пропустим проверку.
+try:
+    from PIL import Image  # type: ignore
+except Exception:
+    Image = None  # type: ignore
+
+# dHash “RATE LIMIT REACHED” заглушки Pollinations (по вашему примеру)
+_POLLINATIONS_RATELIMIT_DHASH_HEX = "e2c69676888974f4"
+_POLLINATIONS_RATELIMIT_DHASH = int(_POLLINATIONS_RATELIMIT_DHASH_HEX, 16)
+
+
+def _dhash_pil(img, hash_size: int = 8) -> int:
+    """
+    Difference hash (dHash) без numpy.
+    """
+    # Resize to (hash_size+1, hash_size)
+    try:
+        resample = Image.Resampling.LANCZOS  # type: ignore[attr-defined]
+    except Exception:
+        resample = Image.LANCZOS  # type: ignore[attr-defined]
+
+    im = img.convert("L").resize((hash_size + 1, hash_size), resample=resample)
+    pixels = list(im.getdata())
+    w = hash_size + 1
+
+    h = 0
+    for row in range(hash_size):
+        row_start = row * w
+        for col in range(hash_size):
+            left = pixels[row_start + col]
+            right = pixels[row_start + col + 1]
+            h = (h << 1) | (1 if right > left else 0)
+    return h
+
+
+def _hamming64(a: int, b: int) -> int:
+    return (a ^ b).bit_count() if hasattr(int, "bit_count") else bin(a ^ b).count("1")
+
+
+def is_pollinations_ratelimit_placeholder(path: str, max_distance: int = 3) -> bool:
+    """
+    Возвращает True, если картинка визуально совпадает с заглушкой Pollinations "RATE LIMIT REACHED".
+    max_distance — допускаем небольшую вариацию (сжатие/ресайз).
+    """
+    if Image is None:
+        return False
+    try:
+        with Image.open(path) as im:  # type: ignore[misc]
+            h = _dhash_pil(im, 8)
+        dist = _hamming64(h, _POLLINATIONS_RATELIMIT_DHASH)
+        return dist <= max_distance
+    except Exception:
+        return False
 
 # ---------------- sign mapping ----------------
 
@@ -148,7 +205,7 @@ def parse_voc_utc(start_s: Optional[str], end_s: Optional[str]) -> Tuple[Optiona
 
     def _parse_one(s: str) -> dt.datetime:
         s = s.strip()
-        today = dt.datetime.utcnow().date()
+        today = dt.datetime.now(UTC).date()
         if " " in s:  # 'DD.MM HH:MM'
             dpart, tpart = s.split()
             d, m = map(int, dpart.split("."))
@@ -191,7 +248,7 @@ def voc_text_status(start_utc: Optional[dt.datetime],
     total_min = max(0, int((end_utc - start_utc).total_seconds() // 60))
     pretty = pretty_duration(total_min)
     rng = f"{start_utc.strftime('%H:%M')}–{end_utc.strftime('%H:%M')} UTC"
-    now = dt.datetime.utcnow().replace(tzinfo=UTC)
+    now = dt.datetime.now(UTC)
     if now < start_utc:
         return f"VoC later today — {rng} ({pretty})", voc_badge_by_len(total_min), total_min
     if start_utc <= now <= end_utc:
@@ -379,46 +436,32 @@ def scene_for_sign(sign_en: str) -> str:
 # ---------------- phase visual for image ----------------
 
 def phase_shape_phrase(phase_en: str, percent: Optional[int]) -> str:
-    """
-    Описывает Луну так, чтобы:
-    - при Полнолунии был чёткий полный диск;
-    - во все остальные дни контур был мягким, частично скрытым облаками/дымкой,
-      чтобы точная фаза не бросалась в глаза и не конфликтовала с текстом.
-
-    Модель всё равно может рисовать круг, но благодаря облакам и размытию
-    зритель не считывает это как «идеально полная луна».
-    """
     s = (phase_en or "").lower()
     p = percent if isinstance(percent, int) else None
 
-    # Единственный день, когда хотим чёткий полный диск
     if "full moon" in s:
         return (
             "a big bright full moon, a complete glowing circle in the sky with clear edges"
         )
 
-    # New Moon — почти нет диска, только намёк
     if "new moon" in s:
         return (
             "a very subtle new moon, almost invisible dark disc with only a faint halo, "
             "mostly hidden behind thin clouds so its exact shape is hard to see"
         )
 
-    # Четверти
     if "first quarter" in s or "last quarter" in s:
         return (
             "a moon where only one side softly glows and the rest is hidden in gentle clouds, "
             "so it does not look like a perfect full circle"
         )
 
-    # Серпы
     if "crescent" in s:
         return (
             "a visible curved slice of moonlight emerging from soft clouds, "
             "with most of the disc lost in haze, clearly not a full circle"
         )
 
-    # Waxing / Waning / Gibbous — делаем акцент на «толстая, но в дымке»
     if "gibbous" in s or "waxing" in s or "waning" in s:
         if p is not None and 45 < p < 85:
             return (
@@ -430,13 +473,11 @@ def phase_shape_phrase(phase_en: str, percent: Optional[int]) -> str:
                 "an almost full moon, but with one side softly fading into clouds so it is clearly "
                 "not a sharp perfect full circle"
             )
-        # до половины освещённости
         return (
             "a more-than-half moon with part of the disc glowing and the rest melting into clouds, "
             "edges softened so it does not read as a simple thin crescent or a full circle"
         )
 
-    # Фолбэк для любых других неполных фаз
     return (
         "a moon partially veiled by thin glowing clouds, with only part of the disc clearly visible "
         "and the rest lost in haze, so it is obviously not a sharp perfect full circle"
@@ -455,7 +496,7 @@ def write_json_safe(path: Path, payload: dict):
 
 def main():
     today = dt.date.today()
-    weekday = dt.datetime.utcnow().strftime("%a")
+    weekday = dt.datetime.now(UTC).strftime("%a")
 
     item = read_calendar_today() or {}
 
@@ -498,19 +539,15 @@ def main():
     style_block, style_name = pick_style_for_date(today)
     out["ASTRO_IMAGE_STYLE"] = style_name or "default"
 
-    # --- optional image generation (используем глобальный generate_astro_image) ---
+    # --- optional image generation ---
     if "generate_astro_image" in globals() and generate_astro_image is not None:  # type: ignore[name-defined]
         try:
-            # Описание формы Луны по фазе и проценту
             moon_phrase = phase_shape_phrase(phase_en, moon_percent)
-
-            # Сцена по знаку
             scene_visual = scene_for_sign(sign_en)
             scene_sentence = f"Dreamy scene with {moon_phrase} above {scene_visual}."
             if sign_en and sign_en != "—":
                 scene_sentence += f" This reflects {sign_en} energy."
 
-            # Эмоция: по ENERGY_LINE / VOC_TEXT
             energy_lower = (energy_line or "").lower()
             voc_lower = (VOC_TEXT or "").lower()
 
@@ -540,23 +577,38 @@ def main():
 
             rel_img_path = f"astro_img/astro_{today.isoformat()}.jpg"
             abs_img_path = ROOT / rel_img_path
+            abs_img_path.parent.mkdir(parents=True, exist_ok=True)
 
-            img_path = generate_astro_image(prompt, str(abs_img_path))  # type: ignore[call-arg]
-            if img_path and os.path.exists(img_path):
-                try:
-                    rel = os.path.relpath(img_path, start=str(ROOT))
-                except Exception:
-                    rel = rel_img_path
+            # 1) КЭШ: если файл уже есть и это НЕ заглушка — не тратим лимит на повторную генерацию
+            if abs_img_path.exists() and not is_pollinations_ratelimit_placeholder(str(abs_img_path)):
+                rel = os.path.relpath(str(abs_img_path), start=str(ROOT))
                 out["ASTRO_IMAGE_PATH"] = rel
-                print(f"[astro] image style: {style_name}, path: {rel}")
+                print(f"[astro] image cached: {rel}")
             else:
-                print("[astro] image: not generated")
+                img_path = generate_astro_image(prompt, str(abs_img_path))  # type: ignore[call-arg]
+                if img_path and os.path.exists(img_path):
+                    # 2) Санитарная проверка: если Pollinations вернул заглушку — не прикрепляем
+                    if is_pollinations_ratelimit_placeholder(img_path):
+                        print("[astro] image looks like Pollinations RATE LIMIT placeholder — skip attach")
+                        try:
+                            os.remove(img_path)
+                            print("[astro] placeholder removed")
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            rel = os.path.relpath(img_path, start=str(ROOT))
+                        except Exception:
+                            rel = rel_img_path
+                        out["ASTRO_IMAGE_PATH"] = rel
+                        print(f"[astro] image style: {style_name}, path: {rel}")
+                else:
+                    print("[astro] image: not generated")
         except Exception as e:
             print(f"[astro] image generation failed: {e}")
     else:
         print("[astro] imagegen not available")
 
-    # Финальная запись world_en/astro.json
     write_json_safe(OUT, out)
 
 
@@ -566,7 +618,7 @@ if __name__ == "__main__":
     except Exception as e:
         fb = {
             "DATE": dt.date.today().isoformat(),
-            "WEEKDAY": dt.datetime.utcnow().strftime("%a"),
+            "WEEKDAY": dt.datetime.now(UTC).strftime("%a"),
             "MOON_PHASE": "—",
             "PHASE_EN": "—",
             "PHASE_EMOJI": "",

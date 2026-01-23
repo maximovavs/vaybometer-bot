@@ -26,11 +26,21 @@ jobs:
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
+
+      # ── секреты/настройки публикации ─────────────────────────────
       # поднимем секреты в env (так безопаснее использовать их в if:)
       FB_PAGE_ID: ${{ secrets.FB_PAGE_ID || '' }}
       FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN || '' }}
       TG_URL: ${{ secrets.TELEGRAM_CHANNEL_URL || 'https://t.me/WorldVibeMeter' }}
+
+      # ── imagegen keys ───────────────────────────────────────────
       STABLE_HORDE_API_KEY: ${{ secrets.STABLE_HORDE_API_KEY || '' }}
+      POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN || '' }}
+
+      # (опционально) можно увеличить таймаут Pollinations, чтобы реже ловить timeout
+      POLLINATIONS_TIMEOUT: "45"
+      # (опционально) общее число попыток генерации поверх всех бэкендов
+      IMAGEGEN_MAX_ATTEMPTS: "3"
 
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +53,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Debug image keys presence
+        run: |
+          python - <<'PY'
+          import os
+          print("Has POLLINATIONS_TOKEN:", bool(os.getenv("POLLINATIONS_TOKEN")))
+          print("Has STABLE_HORDE_API_KEY:", bool(os.getenv("STABLE_HORDE_API_KEY")))
+          PY
 
       # 1) Сбор данных -> world_en/astro.json (+ попытка генерации изображения)
       - name: Collect Astro
@@ -69,7 +87,10 @@ jobs:
 
       # ===================== TELEGRAM (MAIN) =====================
       - name: Send to MAIN Telegram
-        if: ${{ github.event_name == 'schedule' || inputs.publish_to == 'both' || inputs.publish_to == 'telegram' || (inputs.publish_to == '' && inputs.send_to_test != true) }}
+        if: ${{ github.event_name == 'schedule'
+            || github.event.inputs.publish_to == 'both'
+            || github.event.inputs.publish_to == 'telegram'
+            || (github.event.inputs.publish_to == '' && github.event.inputs.send_to_test != 'true') }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_EN }}
           TG_CHAT:  ${{ secrets.TELEGRAM_CHAT_ID_EN }}
@@ -93,7 +114,12 @@ jobs:
 
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
-            CAPTION="$(head -c 1000 world_en/astro_msg.txt)"
+            CAPTION="$(python - <<'PY'
+          import pathlib
+          t = pathlib.Path('world_en/astro_msg.txt').read_text('utf-8', errors='ignore')
+          print(t[:1000], end='')
+          PY
+            )"
             curl -sS -f -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
               -F "chat_id=${TG_CHAT}" \
               -F "photo=@${IMG_PATH}" \
@@ -109,7 +135,10 @@ jobs:
 
       # ===================== FACEBOOK =====================
       - name: Build Facebook-safe text
-        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'both' || inputs.publish_to == 'facebook') && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
+        if: ${{ (github.event_name == 'schedule'
+            || github.event.inputs.publish_to == 'both'
+            || github.event.inputs.publish_to == 'facebook')
+            && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
         run: |
           python - <<'PY'
           import re, html, pathlib, os
@@ -129,7 +158,10 @@ jobs:
           PY
 
       - name: Post to Facebook Page
-        if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'both' || inputs.publish_to == 'facebook') && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
+        if: ${{ (github.event_name == 'schedule'
+            || github.event.inputs.publish_to == 'both'
+            || github.event.inputs.publish_to == 'facebook')
+            && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
         run: |
           set -euo pipefail
 
@@ -170,7 +202,9 @@ jobs:
 
       # ===================== TELEGRAM (TEST) =====================
       - name: Send to TEST Telegram
-        if: ${{ inputs.publish_to == 'test' || (inputs.publish_to == '' && inputs.send_to_test == true) }}
+        if: ${{ github.event_name == 'workflow_dispatch'
+            && (github.event.inputs.publish_to == 'test'
+            || github.event.inputs.send_to_test == 'true') }}
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TEST }}
           TG_CHAT:  ${{ secrets.CHANNEL_ID_TEST || secrets.TELEGRAM_CHAT_ID_TEST }}
@@ -196,7 +230,12 @@ jobs:
 
           if [ -n "${IMG_PATH:-}" ] && [ -f "$IMG_PATH" ]; then
             echo "Sending sendPhoto with: $IMG_PATH"
-            CAPTION="$(head -c 1000 world_en/astro_msg.txt)"
+            CAPTION="$(python - <<'PY'
+          import pathlib
+          t = pathlib.Path('world_en/astro_msg.txt').read_text('utf-8', errors='ignore')
+          print(t[:1000], end='')
+          PY
+            )"
             curl -sS -f -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendPhoto" \
               -F "chat_id=${TG_CHAT}" \
               -F "photo=@${IMG_PATH}" \

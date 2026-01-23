@@ -49,6 +49,10 @@ USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", 
 # Kp-источник «как в мировом чате»
 USE_WORLD_KP = os.getenv("USE_WORLD_KP", "1").strip().lower() in ("1", "true", "yes", "on")
 
+# ───────────── UV (утро) ─────────────
+# Показываем предупреждение только при UV >= 6 (по твоему правилу).
+UV_WARN_MIN = float(os.getenv("UV_WARN_MIN", "6") or "6")
+
 # ────────────────────────── HTML/utils ──────────────────────────
 def _escape_html(s: str) -> str:
     return html.escape(str(s), quote=False)
@@ -240,7 +244,117 @@ def code_desc(c: Any) -> Optional[str]:
         return WMO_DESC.get(int(c))
     except Exception:
         return None
+ # ───────────── UV helpers (утро) ─────────────
+def _daily_idx_for_date(
+    wm: Dict[str, Any],
+    tz: pendulum.tz.timezone.Timezone,
+    date_obj: pendulum.Date,
+) -> Optional[int]:
+    """Ищет индекс нужной даты в wm['daily']['time'] / ['date']."""
+    try:
+        daily = wm.get("daily") or {}
+        times = daily.get("time") or daily.get("date") or []
+        for i, t in enumerate(times):
+            dt_i = _parse_iso_to_tz(t, tz)
+            if dt_i and dt_i.date() == date_obj:
+                return i
+    except Exception:
+        pass
+    return None
+ 
+ 
+def _uv_max_for_date(
+    wm: Dict[str, Any],
+    tz_obj: pendulum.Timezone,
+    date_obj: pendulum.Date,
+) -> Tuple[Optional[float], Optional[str]]:
+    """
+    Возвращает (uv_max, peak_time_HH:mm?) для указанной даты.
+    Пытается взять из daily uv_index_max; если нет — из hourly uv_index.
+    """
+    # 1) daily
+    try:
+        daily = wm.get("daily") or {}
+        idx = _daily_idx_for_date(wm, tz_obj, date_obj)
+        if idx is not None:
+            # наиболее вероятные ключи в Open-Meteo
+            cand_keys = [
+                "uv_index_max",
+                "uv_index_max_clear_sky",
+                "uv_index_clear_sky_max",
+                "uv_index",  # иногда отдают дневной uv как массив
+            ]
+            for k in cand_keys:
+                arr = daily.get(k)
+                if isinstance(arr, list) and idx < len(arr) and arr[idx] is not None:
+                    try:
+                        return float(arr[idx]), None
+                    except Exception:
+                        continue
+    except Exception:
+        pass
 
+    # 2) hourly fallback
+    try:
+        hourly = wm.get("hourly") or {}
+        arr = _pick(hourly, "uv_index", "uv_index_clear_sky", "uvindex", default=[])
+        times = _hourly_times(wm)
+        idxs = [
+            i for i, t in enumerate(times)
+            if t and (t.in_tz(tz_obj).date() == date_obj)
+        ]
+        best_v: Optional[float] = None
+        best_i: Optional[int] = None
+        for i in idxs:
+            if i < len(arr) and arr[i] is not None:
+                try:
+                    v = float(arr[i])
+                except Exception:
+                    continue
+                if best_v is None or v > best_v:
+                    best_v, best_i = v, i
+        peak = None
+        if best_i is not None and best_i < len(times):
+            try:
+                peak = times[best_i].in_tz(tz_obj).format("HH:mm")
+            except Exception:
+                peak = None
+        return best_v, peak
+    except Exception:
+        return None, None
+ 
+ 
+def _uv_warning_line_for_morning(
+    wm_region: Dict[str, Any],
+    tz_obj: pendulum.Timezone,
+) -> Optional[str]:
+    """
+    Формирует строку предупреждения по UV на СЕГОДНЯ.
+    Пороги:
+      6–7  High      → SPF 30–50, очки/головной убор, тень в полдень
+      8–10 Very High → SPF 50, тень 11–16, закрыть плечи, очки/головной убор
+      11 +  Extreme   → минимум солнца 11–16, тень/закрытая одежда, SPF 50 +
+    """
+    today = pendulum.today(tz_obj).date()
+    uv_max, peak = _uv_max_for_date(wm_region, tz_obj, today)
+    if not isinstance(uv_max, (int, float)):
+        return None
+    if float(uv_max) < float(UV_WARN_MIN):
+        return None
+
+    uv_i = int(round(float(uv_max)))
+    if 6 <= uv_i <= 7:
+        lvl = "High"
+        tip = "SPF 30–50, очки/головной убор, по возможности тень в полдень"
+    elif 8 <= uv_i <= 10:
+        lvl = "Very High"
+        tip = "SPF 50, тень 11–16, закрыть плечи, очки/головной убор"
+    else:
+        lvl = "Extreme"
+        tip = "минимум солнца 11–16, тень/закрытая одежда, SPF 50+"
+
+    peak_txt = f" (пик около {peak})" if peak else ""
+    return f"☀️ <b>УФ-индекс {uv_i} ({lvl})</b>{peak_txt}: {tip}"
 
 def _iter_city_pairs(cities) -> list[tuple[str, tuple[float, float]]]:
     """
@@ -738,7 +852,7 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
 
     Важно:
     - убираем плейсхолдеры и markdown-символы '*'
-    - не ограничиваемся 1 строкой, если текст короткий — дальше build_astro_section дополнит
+    - строки сразу санитизируются (HTML-escape) внутри этой функции
     """
     if not isinstance(rec, dict):
         return []
@@ -750,7 +864,7 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
         or rec.get("summary")
     )
 
-    # advice может быть list[str] (как в твоём lunar_calendar.json) — превращаем в текст
+    # advice может быть list[str] — превращаем в текст
     if isinstance(raw, list):
         raw = "\n".join([str(x).strip() for x in raw if str(x).strip()])
 
@@ -761,9 +875,9 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
     if not raw:
         return []
 
+    low = raw.lower()
 
     # 1) Отбрасываем совсем короткие плейсхолдеры "… Луна" без фактики
-    low = raw.lower()
     if len(raw) < 45 and ("луна" in low) and not any(
         x in low for x in (
             "%", "voc", "vоc", "void", "без курса", "знак",
@@ -772,13 +886,14 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
     ):
         return []
 
+    # 1a) Плейсхолдер вида "✨ 17 января луна" (без сути)
     if re.fullmatch(
         r"(?iu)[✨⭐🌙🌌\s]*\d{1,2}\s*(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)?\s*луна\s*",
         raw,
     ):
         return []
 
-        # 1b) Отбрасываем плейсхолдеры вида "✨ 17 января наступает" (обрезанный заголовок без сути)
+    # 1b) Плейсхолдер вида "✨ 17 января наступает" (обрезанный заголовок без сути)
     if len(raw) < 45 and ("наступает" in low) and not any(
         x in low for x in (
             "новолуние", "полнолуние", "четверт", "%", "voc", "vоc", "void", "без курса", "знак",
@@ -786,7 +901,6 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
         )
     ):
         return []
-
 
     # 2) Нормализация строк: без "•", без "*", с эмодзи-префиксом при необходимости
     lines: list[str] = []
@@ -804,6 +918,7 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
         if not line or _looks_gibberish(line):
             continue
 
+        # если строка не начинается с эмодзи/пунктуации — добавим
         if not re.match(r"^\W", line):
             pref = emoji_cycle[min(len(lines), len(emoji_cycle) - 1)]
             line = f"{pref} {line}"
@@ -815,7 +930,6 @@ def _advice_lines_from_rec(rec: dict) -> list[str]:
     return lines[:4]
 
 
-
 def build_astro_section(
     date_local: Optional[pendulum.Date] = None,
     tz_local: str = "Asia/Nicosia",
@@ -823,7 +937,7 @@ def build_astro_section(
     tz = pendulum.timezone(tz_local)
     base_date = date_local or pendulum.today(tz)
 
-    # Дополнительный сдвиг через ASTRO_OFFSET (в днях), если нужно
+    # ASTRO_OFFSET (в днях)
     try:
         offset_days = int(os.getenv("ASTRO_OFFSET", "0") or "0")
     except Exception:
@@ -834,15 +948,17 @@ def build_astro_section(
 
     cal = load_calendar("lunar_calendar.json")
     rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
+    if not isinstance(rec, dict):
+        rec = {}
 
     phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
     phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
 
     percent = rec.get("percent") or rec.get("illumination") or rec.get("illum") or 0
     try:
-        percent = int(round(float(percent)))
+        percent_i = int(round(float(percent)))
     except Exception:
-        percent = 0
+        percent_i = 0
 
     sign_raw = (rec.get("sign") or rec.get("zodiac") or "").strip()
 
@@ -878,7 +994,6 @@ def build_astro_section(
 
     sign_sym = _sign2sym.get(sign_raw, "")
     if not sign_sym:
-        # попробуем вытащить символ из phase, если он там есть
         ph = str(rec.get("phase") or "")
         m = re.search(r"[♈♉♊♋♌♍♎♏♐♑♒♓]", ph)
         if m:
@@ -886,8 +1001,7 @@ def build_astro_section(
 
     sign_loc = _sign_loc.get(sign_raw, "")
     if not sign_loc and sign_sym:
-        # если есть только символ — оставим символ (чтобы не ломать падежи)
-        sign_loc = sign_sym
+        sign_loc = sign_sym  # если нет падежа — хотя бы символ
 
     # ── Шаблон «как раньше»
     phase_l = (phase_name or "").lower()
@@ -908,25 +1022,27 @@ def build_astro_section(
         moon_emoji = "🌙"
         phase_hint = "держи курс на простые и понятные шаги"
 
-    if percent:
-        if percent <= 20:
+    if percent_i:
+        if percent_i <= 20:
             illum_hint = "не спеши — сначала настрой и наблюдение"
-        elif percent <= 60:
+        elif percent_i <= 60:
             illum_hint = "можно набирать темп, но без перегруза"
-        elif percent <= 85:
+        elif percent_i <= 85:
             illum_hint = "хорошо для практических решений и закрепления"
         else:
             illum_hint = "эмоции ярче обычного — выбирай спокойный темп"
     else:
         illum_hint = "ориентируйся на самочувствие и простые планы"
 
-    # Общий фон (по календарю благоприятных/неблагоприятных дней)
+    # Общий фон дня (по календарю) — безопасно по типам
     day_n = int(getattr(work_date, "day", 0) or 0)
-    fav_general = (rec.get("favorable_days") or {}).get("general") or {}
+    fav_root = rec.get("favorable_days") if isinstance(rec.get("favorable_days"), dict) else {}
+    fav_general = fav_root.get("general") if isinstance(fav_root.get("general"), dict) else {}
     fav_list = fav_general.get("favorable") or []
     unf_list = fav_general.get("unfavorable") or []
-    is_fav = day_n in fav_list if day_n else False
-    is_unf = day_n in unf_list if day_n else False
+
+    is_fav = bool(day_n and day_n in fav_list)
+    is_unf = bool(day_n and day_n in unf_list)
 
     if is_fav and not is_unf:
         bg_line = "✅ Общий фон: благоприятный день."
@@ -937,7 +1053,7 @@ def build_astro_section(
     else:
         bg_line = "➿ Общий фон: нейтрально — ориентируйся на самочувствие."
 
-    # В плюсе: сначала берём категории из favorable_days (если заполнены), иначе — по знаку
+    # В плюсе: сначала категории из favorable_days, иначе — по знаку
     cat_map = {
         "shopping": "💰 покупки",
         "haircut": "💇‍♀️ стрижки",
@@ -945,12 +1061,13 @@ def build_astro_section(
         "health": "💪 здоровье",
     }
     plus_bits: list[str] = []
-    fav_days = rec.get("favorable_days") or {}
-    for k, label in cat_map.items():
-        k_rec = fav_days.get(k) or {}
-        k_fav = k_rec.get("favorable") or []
-        if day_n and day_n in k_fav:
-            plus_bits.append(label)
+    if isinstance(fav_root, dict):
+        for k, label in cat_map.items():
+            k_rec = fav_root.get(k)
+            if isinstance(k_rec, dict):
+                k_fav = k_rec.get("favorable") or []
+                if day_n and day_n in k_fav:
+                    plus_bits.append(label)
 
     plus_map = {
         "♑": "💼 планы, 🧾 финансы, 🧱 структура",
@@ -973,17 +1090,17 @@ def build_astro_section(
         plus_hint = plus_map.get(sign_sym, "маленькие практические шаги, порядок, забота о себе")
         plus_line = f"💚 В плюсе: {plus_hint}."
 
-    # База: 3–4 строки «как раньше»
     phase_disp = phase_name or "Луна"
     if sign_loc:
         tmpl1 = f"{moon_emoji} {phase_disp} в {sign_loc} — {phase_hint}."
     else:
         tmpl1 = f"{moon_emoji} {phase_disp} — {phase_hint}."
 
-    tmpl2 = f"✨ {percent}% освещённости — {illum_hint}." if percent else f"✨ Освещённость: н/д — {illum_hint}."
+    tmpl2 = f"✨ {percent_i}% освещённости — {illum_hint}." if percent_i else f"✨ Освещённость: н/д — {illum_hint}."
     tmpl3 = bg_line
     tmpl4 = plus_line
 
+    # template bullets — санитизируем ОДИН раз
     template_bullets = [
         _sanitize_line(tmpl1, 160),
         _sanitize_line(tmpl2, 160),
@@ -991,46 +1108,70 @@ def build_astro_section(
         _sanitize_line(tmpl4, 160),
     ]
 
-    # advice из календаря + long_desc (очень дозировано, чтобы не раздувать блок)
-    bullets = _advice_lines_from_rec(rec) or []
+    # advice bullets уже санитизируются внутри _advice_lines_from_rec
+    advice_bullets = _advice_lines_from_rec(rec) or []
+
+    # long_desc (1-я фраза) — санитизируем один раз и добавляем, если полезно
+    extra_texts: list[str] = []
     long_desc = (rec.get("long_desc") or "").strip()
     if long_desc:
-        # возьмём первую фразу/кусок
         long_piece = re.split(r"[.!?]\s+", long_desc, maxsplit=1)[0].strip()
-        if long_piece and long_piece not in bullets:
-            bullets = [long_piece] + bullets
+        if long_piece:
+            lp = _sanitize_line(long_piece, 160)
+            # добавим эмодзи, если строка “голая”
+            if lp and not re.match(r"^\W", lp):
+                lp = "🌙 " + lp
+            extra_texts.append(lp)
 
-    # Если bullet-ов мало — можно дотянуть LLM (если доступен)
-    need_min = 3
-    extra: list[str] = []
-    if len(bullets) < need_min:
-        extra = _astro_llm_bullets(
+    # ── LLM в приоритете
+    llm_bullets: list[str] = []
+    try:
+        llm_bullets = _astro_llm_bullets(
             work_date.format("DD.MM.YYYY"),
             phase_name,
-            int(percent or 0),
+            int(percent_i or 0),
             sign_raw,
             voc_text,
         ) or []
+    except Exception:
+        llm_bullets = []
 
-    # Слияние (важный момент: template_bullets НЕ переопределяем ниже)
+    # ВАЖНО: _astro_llm_bullets уже возвращает санитизированные строки → НЕ санитизируем повторно
+    llm_bullets = [x.strip() for x in llm_bullets if (x or "").strip()]
+    ok_llm = len(llm_bullets) >= 3  # “считаем успехом” только полноценный блок
+
+    # ── сборка с приоритетом: LLM → (template + advice + long_desc)
     merged: list[str] = []
-    for src_list in (template_bullets, bullets, extra):
-        for x in (src_list or []):
-            x = _sanitize_line(str(x or "").strip(), 180)
+
+    def _add_unique(items: list[str]) -> None:
+        for x in items or []:
+            x = (x or "").strip()
             if not x:
                 continue
             if x not in merged:
                 merged.append(x)
 
+    if ok_llm:
+        _add_unique(llm_bullets)
+        _add_unique(template_bullets)
+        _add_unique(extra_texts)
+        _add_unique(advice_bullets)
+    else:
+        _add_unique(template_bullets)
+        _add_unique(extra_texts)
+        _add_unique(advice_bullets)
+
     final_bullets = merged[:5] if merged else template_bullets[:4]
 
-    # Заголовок по флагу (по умолчанию — без него, как в твоих старых примерах)
+    # Заголовок по флагу (по умолчанию — без него)
     lines: list[str] = []
     show_header = os.getenv("ASTRO_SHOW_HEADER", "0").strip().lower() in ("1", "true", "yes", "on")
     if show_header:
         lines.append("🌌 <b>Астрособытия</b>")
 
-    lines += [zsym(x) for x in final_bullets]
+    # bullets уже санитизированы → только zsym
+    for b in final_bullets:
+        lines.append(zsym(b))
 
     # VoC отдельной строкой, если есть и не продублирован
     if voc_text:
@@ -1038,11 +1179,13 @@ def build_astro_section(
         if ("voc" not in low) and ("без курса" not in low):
             lines.append(f"⚫️ VoC {voc_text} — без новых стартов.")
 
-    # Доп. строки «в плюсе» по категориям (если твой хелпер это формирует)
-    lines += _favdays_lines_for_date(rec, work_date)
+    # favdays в конце, но без дублей
+    for fl in (_favdays_lines_for_date(rec, work_date) or []):
+        fl = (fl or "").strip()
+        if fl and fl not in lines:
+            lines.append(fl)
 
-    return "\n".join(lines)
-
+    return "\n".join([x for x in lines if (x or "").strip()])
 
 
 # ───────────── hourly/ветер/давление ─────────────
@@ -1853,6 +1996,10 @@ def build_message(
 
         if storm_region.get("warning"):
             P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
+        # UV предупреждение (только при UV >= 6)
+        uv_line = _uv_warning_line_for_morning(wm_region, tz_obj)
+        if uv_line:
+            P.append(uv_line)
 
         la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
         sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)
