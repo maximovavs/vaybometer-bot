@@ -4,28 +4,36 @@ world_en/imagegen.py
 Генерация картинок для астрологических постов.
 
 Приоритет бэкендов внутри одной попытки:
-1. Pollinations (без ключей) — быстрый бесплатный endpoint.
+1. Pollinations (с токеном, если задан) — быстрый endpoint.
 2. Stable Horde (через HORDE_API_KEY / STABLE_HORDE_API_KEY) как фолбэк.
 3. Необязательный кастомный бэкенд (CUSTOM_IMAGE_BASE_URL), если настроен.
 
-ФАЙЛ НИКОГДА НЕ ЛОГИРУЕТ КЛЮЧИ (они и не нужны, кроме HORDE_API_KEY).
+ФАЙЛ НИКОГДА НЕ ЛОГИРУЕТ КЛЮЧИ (POLLINATIONS_TOKEN / HORDE_API_KEY и т.п.).
 
 Переменные окружения (опционально):
 
-- POLLINATIONS_BASE_URL (по умолчанию "https://image.pollinations.ai/prompt/")
-- POLLINATIONS_TIMEOUT (по умолчанию 20 секунд)
+Pollinations:
+- POLLINATIONS_BASE_URL    (по умолчанию "https://image.pollinations.ai/prompt/")
+- POLLINATIONS_TIMEOUT     (по умолчанию 20 секунд)
+- POLLINATIONS_TOKEN       (секретный токен/ключ Pollinations; если задан — используется Authorization: Bearer ...)
+- POLLINATIONS_REFERRER    (опционально; добавляется в querystring как referrer=...)
+- POLLINATIONS_MODELS      (опционально; список моделей через запятую, например: "flux,sdxl"
+                           если не задан — запрос идёт без параметра model)
+- POLLINATIONS_ALLOW_ANON  (по умолчанию "1"; если "0" и токен не задан — Pollinations пропускается)
+- POLLINATIONS_ADD_UUID    (по умолчанию "1"; добавляет UUID в prompt для борьбы с кешем)
 
+Stable Horde:
 - HORDE_BASE_URL       (по умолчанию "https://stablehorde.net/api/v2")
 - HORDE_TIMEOUT        (по умолчанию 90 секунд)
 - STABLE_HORDE_API_KEY (секрет с API-ключом Horde; приоритетный)
 - HORDE_API_KEY        (альтернативное имя переменной)
   если оба не заданы, используется "0000000000" — анонимный бесплатный ключ.
 
+Общие:
 - IMAGEGEN_MAX_ATTEMPTS (общее число попыток генерации поверх всех бэкендов;
   по умолчанию 3, минимум 1, максимум 5)
 
 Третий (опциональный) бэкенд:
-
 - CUSTOM_IMAGE_BASE_URL — базовый URL сервиса, который принимает:
       GET {CUSTOM_IMAGE_BASE_URL}?prompt=...&width=...&height=...
   и возвращает непосредственно изображение (PNG/JPEG). Если переменная
@@ -36,10 +44,10 @@ world_en/imagegen.py
   (если внешний сервис его требует).
 
 ОГРАНИЧЕНИЯ / ДОПУЩЕНИЯ:
-- Предполагается, что Pollinations принимает GET:
-    {POLLINATIONS_BASE_URL}/{urlencoded_prompt}?width=512&height=512
-  и отдаёт непосредственно изображение (PNG/JPEG).
-- Предполагается, что Stable Horde v2:
+- Pollinations: предполагается GET
+    {POLLINATIONS_BASE_URL}/{urlencoded_prompt}?width=512&height=512[&model=...][&referrer=...]
+  и в ответ приходит изображение (PNG/JPEG).
+- Stable Horde v2:
   * POST /generate/async -> {"id": "<job-id>", ...}
   * GET  /generate/check/{id} -> JSON с полем done / finished / state
   * GET  /generate/status/{id} -> {"generations": [{"img": "<base64>"}]}
@@ -53,7 +61,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from urllib.parse import quote_plus
 
 import requests
@@ -74,6 +82,22 @@ POLLINATIONS_BASE_URL = os.environ.get(
     "https://image.pollinations.ai/prompt/",
 )
 POLLINATIONS_TIMEOUT = float(os.environ.get("POLLINATIONS_TIMEOUT", "20"))
+
+# Токен Pollinations (Bearer). Не логируем.
+POLLINATIONS_TOKEN = (os.environ.get("POLLINATIONS_TOKEN") or "").strip()
+
+# referrer (если нужен). Не секрет.
+POLLINATIONS_REFERRER = (os.environ.get("POLLINATIONS_REFERRER") or "").strip()
+
+# Модели Pollinations (через запятую). Если пусто — параметр model не передаём.
+_raw_models = (os.environ.get("POLLINATIONS_MODELS") or "").strip()
+POLLINATIONS_MODELS: List[str] = [m.strip() for m in _raw_models.split(",") if m.strip()]
+
+# Разрешать ли анонимные запросы (без токена). По умолчанию да (чтобы не ломать старое поведение).
+POLLINATIONS_ALLOW_ANON = (os.environ.get("POLLINATIONS_ALLOW_ANON", "1").strip() != "0")
+
+# Добавлять UUID к prompt (борьба с кешем). По умолчанию да.
+POLLINATIONS_ADD_UUID = (os.environ.get("POLLINATIONS_ADD_UUID", "1").strip() != "0")
 
 # ---------- Stable Horde ----------
 
@@ -119,32 +143,77 @@ def _ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _looks_like_non_image_response(resp: requests.Response) -> bool:
+    """
+    Pollinations иногда может вернуть не изображение (HTML/JSON/text) при ошибках/лимитах.
+    В этом случае считаем попытку неуспешной.
+    """
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    if ctype.startswith("text/") or "application/json" in ctype or "application/javascript" in ctype:
+        return True
+
+    # Если Content-Type не помогает — смотрим первые байты
+    head = (resp.content or b"")[:64].lstrip()
+    if not head:
+        return True
+    if head.startswith(b"<") or head.startswith(b"{") or head.startswith(b"["):
+        return True
+    return False
+
+
+def _build_pollinations_url(prompt: str, size: Tuple[int, int], model: str = "") -> str:
+    """
+    Собирает URL для Pollinations без включения каких-либо секретов.
+    """
+    p = prompt
+    if POLLINATIONS_ADD_UUID:
+        p = f"{p} :: {uuid.uuid4().hex}"
+
+    query = quote_plus(p)
+
+    qs_parts = [f"width={size[0]}", f"height={size[1]}"]
+    if POLLINATIONS_REFERRER:
+        qs_parts.append(f"referrer={quote_plus(POLLINATIONS_REFERRER)}")
+    if model:
+        qs_parts.append(f"model={quote_plus(model)}")
+
+    return (
+        POLLINATIONS_BASE_URL.rstrip("/")
+        + "/"
+        + query
+        + "?"
+        + "&".join(qs_parts)
+    )
+
+
 def _fetch_from_pollinations(
     prompt: str,
     out_path: Path,
     size: Tuple[int, int] = (512, 512),
+    model: str = "",
 ) -> Optional[Path]:
     """
     Попытка получить картинку через Pollinations.
 
-    Без ключей, только GET-запрос. Для борьбы с кэшем к prompt
-    добавляется случайный UUID.
+    - Если задан POLLINATIONS_TOKEN, используется Authorization: Bearer <token>
+      (что позволяет уйти от anonymous tier лимитов).
+    - Если токен не задан и POLLINATIONS_ALLOW_ANON=0 — бэкенд пропускается.
+    - Если POLLINATIONS_MODELS задан, модель передаётся параметром model=...
     """
-    prompt_with_uuid = f"{prompt} :: {uuid.uuid4().hex}"
-    query = quote_plus(prompt_with_uuid)
+    if not POLLINATIONS_TOKEN and not POLLINATIONS_ALLOW_ANON:
+        logger.info("Pollinations skipped: no token and POLLINATIONS_ALLOW_ANON=0")
+        return None
 
-    # Допущение: width/height работают для управления размером изображения.
-    url = (
-        POLLINATIONS_BASE_URL.rstrip("/")
-        + "/"
-        + query
-        + f"?width={size[0]}&height={size[1]}"
-    )
+    url = _build_pollinations_url(prompt, size=size, model=model)
 
+    # ВАЖНО: токен только в заголовке. В URL его нет, лог безопасен.
     logger.info("Pollinations request: %s", url)
+
     headers = {
         "User-Agent": "WorldVibeMeterBot/1.0 (+https://t.me/worldvibemeter)",
     }
+    if POLLINATIONS_TOKEN:
+        headers["Authorization"] = f"Bearer {POLLINATIONS_TOKEN}"
 
     try:
         resp = requests.get(url, headers=headers, timeout=POLLINATIONS_TIMEOUT)
@@ -156,12 +225,20 @@ def _fetch_from_pollinations(
         logger.warning(
             "Pollinations non-200: %s, body preview=%s",
             resp.status_code,
-            resp.text[:200],
+            (resp.text or "")[:200],
         )
         return None
 
     if not resp.content:
         logger.warning("Pollinations returned empty content")
+        return None
+
+    if _looks_like_non_image_response(resp):
+        logger.warning(
+            "Pollinations returned non-image response (Content-Type=%r), body preview=%s",
+            resp.headers.get("Content-Type"),
+            (resp.text or "")[:200],
+        )
         return None
 
     _ensure_parent_dir(out_path)
@@ -395,6 +472,14 @@ def _fetch_from_custom_backend(
         logger.warning("Custom backend returned empty content")
         return None
 
+    if _looks_like_non_image_response(resp):
+        logger.warning(
+            "Custom backend returned non-image response (Content-Type=%r), body preview=%s",
+            resp.headers.get("Content-Type"),
+            (resp.text or "")[:200],
+        )
+        return None
+
     _ensure_parent_dir(out_path)
     out_path.write_bytes(resp.content)
     logger.info(
@@ -425,33 +510,35 @@ def generate_astro_image(
     for attempt in range(1, MAX_ATTEMPTS + 1):
         logger.info("Image generation attempt %d/%d", attempt, MAX_ATTEMPTS)
 
-        # 1. Pollinations
-        img = _fetch_from_pollinations(prompt, out, size=size)
-        if img is not None:
-            logger.info("Using Pollinations backend on attempt %d", attempt)
-            return str(img)
+        # 1) Pollinations (приоритет), с перебором моделей если POLLINATIONS_MODELS задан
+        if POLLINATIONS_MODELS:
+            for model in POLLINATIONS_MODELS:
+                img = _fetch_from_pollinations(prompt, out, size=size, model=model)
+                if img is not None:
+                    logger.info("Using Pollinations backend (model=%s) on attempt %d", model, attempt)
+                    return str(img)
+        else:
+            img = _fetch_from_pollinations(prompt, out, size=size, model="")
+            if img is not None:
+                logger.info("Using Pollinations backend on attempt %d", attempt)
+                return str(img)
 
-        # 2. Stable Horde
+        # 2) Stable Horde (фолбэк)
         img = _fetch_from_horde(prompt, out, size=size)
         if img is not None:
             logger.info("Using Stable Horde backend on attempt %d", attempt)
             return str(img)
 
-        # 3. Custom backend (если настроен)
+        # 3) Custom backend (если настроен)
         img = _fetch_from_custom_backend(prompt, out, size=size)
         if img is not None:
             logger.info("Using CUSTOM backend on attempt %d", attempt)
             return str(img)
 
         if attempt < MAX_ATTEMPTS:
-            logger.warning(
-                "All backends failed on attempt %d, will retry...", attempt
-            )
+            logger.warning("All backends failed on attempt %d, will retry...", attempt)
         else:
-            logger.error(
-                "All backends failed after %d attempts, giving up",
-                MAX_ATTEMPTS,
-            )
+            logger.error("All backends failed after %d attempts, giving up", MAX_ATTEMPTS)
 
     return None
 
