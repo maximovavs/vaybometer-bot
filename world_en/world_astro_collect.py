@@ -12,9 +12,11 @@ import datetime as dt
 import json
 import traceback
 from typing import Optional, Tuple
-from pytz import UTC
 import hashlib
 import random
+
+# --- stdlib UTC (без pytz) ---
+UTC = dt.timezone.utc
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(__file__).parent / "astro.json"
@@ -92,6 +94,7 @@ def _sign_en_emoji(sign_raw: Optional[str]) -> Tuple[str, str]:
         return _EN_SIGNS[low]
     return s, ""
 
+
 # ---------------- phase mapping ----------------
 
 _PHASE_LC_MAP = {
@@ -131,8 +134,8 @@ def _phase_en_emoji(phase_name: Optional[str]) -> Tuple[str, str]:
             return val
     return phase_name, ""
 
-# ---------------- helpers ----------------
 
+# ---------------- helpers ----------------
 
 def fmt_percent_or_none(x) -> Optional[int]:
     try:
@@ -191,15 +194,15 @@ def voc_text_status(start_utc: Optional[dt.datetime],
     total_min = max(0, int((end_utc - start_utc).total_seconds() // 60))
     pretty = pretty_duration(total_min)
     rng = f"{start_utc.strftime('%H:%M')}–{end_utc.strftime('%H:%M')} UTC"
-    now = dt.datetime.utcnow().replace(tzinfo=UTC)
+    now = dt.datetime.now(tz=UTC)
     if now < start_utc:
         return f"VoC later today — {rng} ({pretty})", voc_badge_by_len(total_min), total_min
     if start_utc <= now <= end_utc:
         return f"VoC now — {rng} ({pretty})", voc_badge_by_len(total_min), total_min
     return f"VoC earlier today — {rng} ({pretty})", "", total_min
 
-# ---------------- calendar IO ----------------
 
+# ---------------- calendar IO ----------------
 
 def read_calendar_today():
     cal_path = ROOT / "lunar_calendar.json"
@@ -210,8 +213,8 @@ def read_calendar_today():
     today = dt.date.today().isoformat()
     return days.get(today)
 
-# ---------------- energy ----------------
 
+# ---------------- energy ----------------
 
 def base_energy_tip(phase_name_ru: str, percent: int) -> tuple[str, str]:
     pn = (phase_name_ru or "").lower()
@@ -247,6 +250,7 @@ def energy_and_tip(phase_name_ru: str, percent: int, voc_minutes: Optional[int])
     if voc_minutes >= 60:
         return ("Short VoC — keep tasks flexible.", tip)
     return energy, tip
+
 
 # ---------------- image style presets ----------------
 
@@ -290,6 +294,7 @@ def pick_style_for_date(date: dt.date) -> tuple[str, str]:
     rng = random.Random(seed)
     key = rng.choice(keys)
     return _STYLE_PRESETS[key], key
+
 
 # ---------------- sign scenes for image ----------------
 
@@ -376,6 +381,7 @@ def scene_for_sign(sign_en: str) -> str:
         return "calm water surface with reflections of the moon and distant shoreline"
     return "a soft abstract landscape with gentle hills and sky"
 
+
 # ---------------- phase visual for image ----------------
 
 def phase_shape_phrase(phase_en: str, percent: Optional[int]) -> str:
@@ -384,41 +390,33 @@ def phase_shape_phrase(phase_en: str, percent: Optional[int]) -> str:
     - при Полнолунии был чёткий полный диск;
     - во все остальные дни контур был мягким, частично скрытым облаками/дымкой,
       чтобы точная фаза не бросалась в глаза и не конфликтовала с текстом.
-
-    Модель всё равно может рисовать круг, но благодаря облакам и размытию
-    зритель не считывает это как «идеально полная луна».
     """
     s = (phase_en or "").lower()
     p = percent if isinstance(percent, int) else None
 
-    # Единственный день, когда хотим чёткий полный диск
     if "full moon" in s:
         return (
             "a big bright full moon, a complete glowing circle in the sky with clear edges"
         )
 
-    # New Moon — почти нет диска, только намёк
     if "new moon" in s:
         return (
             "a very subtle new moon, almost invisible dark disc with only a faint halo, "
             "mostly hidden behind thin clouds so its exact shape is hard to see"
         )
 
-    # Четверти
     if "first quarter" in s or "last quarter" in s:
         return (
             "a moon where only one side softly glows and the rest is hidden in gentle clouds, "
             "so it does not look like a perfect full circle"
         )
 
-    # Серпы
     if "crescent" in s:
         return (
             "a visible curved slice of moonlight emerging from soft clouds, "
             "with most of the disc lost in haze, clearly not a full circle"
         )
 
-    # Waxing / Waning / Gibbous — делаем акцент на «толстая, но в дымке»
     if "gibbous" in s or "waxing" in s or "waning" in s:
         if p is not None and 45 < p < 85:
             return (
@@ -430,37 +428,35 @@ def phase_shape_phrase(phase_en: str, percent: Optional[int]) -> str:
                 "an almost full moon, but with one side softly fading into clouds so it is clearly "
                 "not a sharp perfect full circle"
             )
-        # до половины освещённости
         return (
             "a more-than-half moon with part of the disc glowing and the rest melting into clouds, "
             "edges softened so it does not read as a simple thin crescent or a full circle"
         )
 
-    # Фолбэк для любых других неполных фаз
     return (
         "a moon partially veiled by thin glowing clouds, with only part of the disc clearly visible "
         "and the rest lost in haze, so it is obviously not a sharp perfect full circle"
     )
 
-# ---------------- safe writer ----------------
 
+# ---------------- safe writer ----------------
 
 def write_json_safe(path: Path, payload: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[astro] wrote: {path}")
 
-# ---------------- main ----------------
 
+# ---------------- main ----------------
 
 def main():
     today = dt.date.today()
-    weekday = dt.datetime.utcnow().strftime("%a")
+    weekday = dt.datetime.now(tz=UTC).strftime("%a")
 
     item = read_calendar_today() or {}
 
     phase_name = item.get("phase_name") or ""
-    phase_pct = item.get("percent")
+    phase_pct_raw = item.get("percent")
     sign_raw = item.get("sign") or ""
     voc_block = item.get("void_of_course") or {}
 
@@ -472,9 +468,11 @@ def main():
 
     sign_en, sign_emoji = _sign_en_emoji(sign_raw)
     phase_en, phase_emoji = _phase_en_emoji(phase_name)
-    moon_percent = fmt_percent_or_none(phase_pct)
+    moon_percent = fmt_percent_or_none(phase_pct_raw)
+
+    percent_for_tips = moon_percent or 0
     energy_icon = energy_icon_pick(os.getenv("ENERGY_ICON_MODE", "phase"), phase_en, VOC_LEN_MIN)
-    energy_line, advice_line = energy_and_tip(phase_name, int(phase_pct or 0), VOC_LEN_MIN)
+    energy_line, advice_line = energy_and_tip(phase_name, percent_for_tips, VOC_LEN_MIN)
 
     out: dict = {
         "DATE": today.isoformat(),
@@ -499,18 +497,17 @@ def main():
     out["ASTRO_IMAGE_STYLE"] = style_name or "default"
 
     # --- optional image generation (используем глобальный generate_astro_image) ---
-    if "generate_astro_image" in globals() and generate_astro_image is not None:  # type: ignore[name-defined]
+    if os.getenv("ASTRO_IMAGE_ENABLED", "1") != "1":
+        print("[astro] image disabled via ASTRO_IMAGE_ENABLED=0")
+    elif "generate_astro_image" in globals() and generate_astro_image is not None:  # type: ignore[name-defined]
         try:
-            # Описание формы Луны по фазе и проценту
             moon_phrase = phase_shape_phrase(phase_en, moon_percent)
-
-            # Сцена по знаку
             scene_visual = scene_for_sign(sign_en)
+
             scene_sentence = f"Dreamy scene with {moon_phrase} above {scene_visual}."
             if sign_en and sign_en != "—":
                 scene_sentence += f" This reflects {sign_en} energy."
 
-            # Эмоция: по ENERGY_LINE / VOC_TEXT
             energy_lower = (energy_line or "").lower()
             voc_lower = (VOC_TEXT or "").lower()
 
@@ -556,7 +553,6 @@ def main():
     else:
         print("[astro] imagegen not available")
 
-    # Финальная запись world_en/astro.json
     write_json_safe(OUT, out)
 
 
@@ -566,7 +562,7 @@ if __name__ == "__main__":
     except Exception as e:
         fb = {
             "DATE": dt.date.today().isoformat(),
-            "WEEKDAY": dt.datetime.utcnow().strftime("%a"),
+            "WEEKDAY": dt.datetime.now(tz=UTC).strftime("%a"),
             "MOON_PHASE": "—",
             "PHASE_EN": "—",
             "PHASE_EMOJI": "",
