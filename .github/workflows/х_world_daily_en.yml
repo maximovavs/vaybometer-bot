@@ -50,31 +50,11 @@ jobs:
         if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') }}
         run: |
           set -euo pipefail
-          if [ -z "$X_API_KEY" ]; then
-            echo "X_API_KEY is empty or not set"
-          else
-            echo "X_API_KEY is set (length: ${#X_API_KEY})"
-          fi
-          if [ -z "$X_API_SECRET" ]; then
-            echo "X_API_SECRET is empty or not set"
-          else
-            echo "X_API_SECRET is set (length: ${#X_API_SECRET})"
-          fi
-          if [ -z "$X_ACCESS_TOKEN" ]; then
-            echo "X_ACCESS_TOKEN is empty or not set"
-          else
-            echo "X_ACCESS_TOKEN is set (length: ${#X_ACCESS_TOKEN})"
-          fi
-          if [ -z "$X_ACCESS_SECRET" ]; then
-            echo "X_ACCESS_SECRET is empty or not set"
-          else
-            echo "X_ACCESS_SECRET is set (length: ${#X_ACCESS_SECRET})"
-          fi
-          if [ -z "$X_BEARER_TOKEN" ]; then
-            echo "X_BEARER_TOKEN is empty or not set"
-          else
-            echo "X_BEARER_TOKEN is set (length: ${#X_BEARER_TOKEN})"
-          fi
+          echo "X_API_KEY length: ${#X_API_KEY}"
+          echo "X_API_SECRET length: ${#X_API_SECRET}"
+          echo "X_ACCESS_TOKEN length: ${#X_ACCESS_TOKEN}"
+          echo "X_ACCESS_SECRET length: ${#X_ACCESS_SECRET}"
+          echo "X_BEARER_TOKEN length: ${#X_BEARER_TOKEN}"
       # ===================== X (TWITTER) =====================
       - name: Build X-safe message
         if: ${{ (github.event_name == 'schedule' || inputs.publish_to == 'x') && env.X_API_KEY != '' && env.X_API_SECRET != '' && env.X_ACCESS_TOKEN != '' && env.X_ACCESS_SECRET != '' }}
@@ -86,10 +66,14 @@ jobs:
           plain = html.unescape(plain)
           plain = re.sub(r'[ \t]+\n', '\n', plain)
           plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
-          if len(plain) > 270:
-            plain = plain[:270].rsplit(' ',1)[0] + '…'
+          if len(plain) > 250:
+            plain = plain[:250].rsplit(' ',1)[0] + '…'
           link = os.getenv('TG_URL') or 'https://t.me/WorldVibeMeter'
           out = f"{plain}\n\nFrom: {link} #SchumannResonance #EcologyVibes"
+          if len(out) > 280:
+            diff = len(out) - 280
+            plain = plain[:-(diff + 10)].rsplit(' ',1)[0] + '…'
+            out = f"{plain}\n\nFrom: {link} #SchumannResonance #EcologyVibes"
           pathlib.Path('world_en/x_message.txt').write_text(out, 'utf-8')
           print('X text length:', len(out))
           PY
