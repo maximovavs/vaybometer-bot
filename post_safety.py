@@ -66,6 +66,10 @@ def _line_is_separator(line: str) -> bool:
     return bool(s) and set(s) <= {"—", "-", "─"}
 
 
+def _compact_for_compare(line: str) -> str:
+    return re.sub(r"\s+", " ", str(line or "")).strip()
+
+
 def _replace_shore_terms(line: str, issues: list[str]) -> str:
     def repl(match: re.Match[str]) -> str:
         d = match.group(1).upper()
@@ -75,8 +79,9 @@ def _replace_shore_terms(line: str, issues: list[str]) -> str:
         issues.append(f"translated shore note: ({d}/{shore})")
         return f"({d_ru}, {shore_ru})"
 
+    # No word boundary around parentheses: a boundary fails before '(' after whitespace.
     return re.sub(
-        r"\b\((N|NE|E|SE|S|SW|W|NW)/(onshore|offshore|cross)\)\b",
+        r"\((N|NE|E|SE|S|SW|W|NW)/(onshore|offshore|cross)\)",
         repl,
         line,
         flags=re.I,
@@ -92,14 +97,16 @@ def _normalize_line(line: str, issues: list[str] | None = None) -> str:
     line = _replace_shore_terms(line, issues)
 
     # Remove empty weather placeholders inside metric chains.
+    before_structural = line
     line = line.replace(" • —", "")
     line = line.replace(" • -", "")
     line = line.replace(" — —", " —")
     line = line.replace(" - -", " -")
     line = re.sub(r"\s*•\s*[—-]\s*•\s*", " • ", line)
-    line = re.sub(r"\s{2,}", " ", line)
-    line = line.strip()
-    if original.strip() != line and "translated shore note" not in "\n".join(issues[-1:]):
+    line = re.sub(r"\s{2,}", " ", line).strip()
+
+    # Report only meaningful cleanup, not plain double-space trimming.
+    if _compact_for_compare(before_structural) != _compact_for_compare(line):
         issues.append(f"normalized line: {original.strip()[:120]}")
     return line
 
