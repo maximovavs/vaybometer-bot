@@ -66,10 +66,6 @@ def _line_is_separator(line: str) -> bool:
     return bool(s) and set(s) <= {"—", "-", "─"}
 
 
-def _compact_for_compare(line: str) -> str:
-    return re.sub(r"\s+", " ", str(line or "")).strip()
-
-
 def _replace_shore_terms(line: str, issues: list[str]) -> str:
     def repl(match: re.Match[str]) -> str:
         d = match.group(1).upper()
@@ -79,9 +75,8 @@ def _replace_shore_terms(line: str, issues: list[str]) -> str:
         issues.append(f"translated shore note: ({d}/{shore})")
         return f"({d_ru}, {shore_ru})"
 
-    # No word boundary around parentheses: a boundary fails before '(' after whitespace.
     return re.sub(
-        r"\((N|NE|E|SE|S|SW|W|NW)/(onshore|offshore|cross)\)",
+        r"\b\((N|NE|E|SE|S|SW|W|NW)/(onshore|offshore|cross)\)\b",
         repl,
         line,
         flags=re.I,
@@ -95,18 +90,14 @@ def _normalize_line(line: str, issues: list[str] | None = None) -> str:
     line = re.sub(r"\s+/None\b", "", line, flags=re.I)
     line = re.sub(r"\((?:N|NE|E|SE|S|SW|W|NW)?/?None\)", "", line, flags=re.I)
     line = _replace_shore_terms(line, issues)
-
-    # Remove empty weather placeholders inside metric chains.
-    before_structural = line
     line = line.replace(" • —", "")
     line = line.replace(" • -", "")
     line = line.replace(" — —", " —")
     line = line.replace(" - -", " -")
     line = re.sub(r"\s*•\s*[—-]\s*•\s*", " • ", line)
-    line = re.sub(r"\s{2,}", " ", line).strip()
-
-    # Report only meaningful cleanup, not plain double-space trimming.
-    if _compact_for_compare(before_structural) != _compact_for_compare(line):
+    line = re.sub(r"\s{2,}", " ", line)
+    line = line.strip()
+    if original.strip() != line and not (issues and issues[-1].startswith("translated shore note")):
         issues.append(f"normalized line: {original.strip()[:120]}")
     return line
 
@@ -124,7 +115,6 @@ def _line_should_drop(line: str) -> tuple[bool, str | None]:
         if rx.search(stripped):
             return True, reason
 
-    # Lines ending with known clipped fragments are usually broken LLM/advice output.
     last_word = re.sub(r"[^A-Za-zА-Яа-яЁё]+", "", stripped.split()[-1]).lower() if stripped.split() else ""
     if last_word in _BROKEN_TAILS:
         return True, f"clipped tail: {last_word}"
@@ -163,7 +153,6 @@ def sanitize_post_text(text: str) -> SafetyResult:
         blank_seen = False
         prev_sep = is_sep
 
-    # Trim separators/blanks from the end.
     while out and (not out[-1].strip() or _line_is_separator(out[-1])):
         out.pop()
 
@@ -197,7 +186,6 @@ def split_telegram_text(text: str, limit: int = _SAFE_CHUNK_LIMIT) -> list[str]:
     if cur:
         chunks.append("".join(cur).strip())
 
-    # Last-resort hard split for a very long paragraph.
     final: list[str] = []
     for ch in chunks:
         while len(ch) > limit:
