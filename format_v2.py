@@ -41,7 +41,7 @@ def _astro_lines(lines: list[str]) -> list[str]:
         s = line.strip()
         if not s:
             continue
-        if s.startswith(("🌅 Рассвет", "➿", "✅", "💚", "⚫️", "🌙")):
+        if s.startswith(("🌅 Рассвет", "🌇 Закат", "➿", "✅", "💚", "⚫️", "🌙", "🌘")):
             keep.append(s)
     return keep[:4]
 
@@ -70,8 +70,99 @@ def _city_names(lines: list[str]) -> list[str]:
     return names
 
 
-def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
-    """Build a more explanatory scenario-style post from already sanitized legacy text."""
+def _hashtags(lines: list[str], fallback: str) -> str:
+    for line in reversed(lines):
+        s = line.strip()
+        if s.startswith("#"):
+            return s
+    return fallback
+
+
+def _first_content_line(lines: list[str]) -> str:
+    for line in lines[1:]:
+        s = line.strip()
+        if s and not _is_sep(s) and not s.startswith("#"):
+            return s
+    return ""
+
+
+def _morning_pick(lines: list[str], prefixes: tuple[str, ...]) -> list[str]:
+    return [x.strip() for x in lines if x.strip().startswith(prefixes)]
+
+
+def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
+    lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
+    date_s = _date_from_title(safe_legacy_text)
+    title_date = f" ({date_s})" if date_s else ""
+    greeting = _first_content_line(lines)
+    warning = _storm_line(lines)
+    uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
+    sun = _morning_pick(lines, ("🌅", "🌇"))
+    air = _morning_pick(lines, ("🌫", "🌬", "🌿", "🫁", "💨", "📟", "☢", "🟢", "🟡", "🔴", "ℹ️"))
+    space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
+    summary = _morning_pick(lines, ("🔎",))
+    today_tips = _morning_pick(lines, ("✅ Сегодня",))
+    tags = _hashtags(lines, "#Кипр #погода #здоровье #Никосия #Тродос")
+
+    has_warning = bool(warning)
+    has_air = bool(air)
+    has_uv = bool(uv)
+
+    out: list[str] = [f"<b>🌅 Кипр сегодня: утренний прогноз с поправкой на остров{title_date}</b>", ""]
+
+    out.append("🧭 <b>Главный сценарий</b>")
+    if greeting:
+        out.append(greeting)
+    if has_warning:
+        out.append("День лучше планировать с запасом: ветер и локальные условия у моря могут быстро менять ощущение погоды.")
+    else:
+        out.append("Смотри на день не усреднённо: побережье, Никосия и Тродос могут ощущаться как разные погодные зоны.")
+    out.append("")
+
+    out.append("🎯 <b>На что обратить внимание</b>")
+    out.append("✅ Температура: можно использовать для базового планирования.")
+    out.append("🟡 Ветер/порывы у моря: проверить перед прогулкой или поездкой к воде.")
+    if has_uv:
+        out.append("🟡 UV: защита от солнца важна в активные часы.")
+    if has_air:
+        out.append("🟡 Воздух/пыльца: учитывай самочувствие и аллергию.")
+    out.append("")
+
+    if warning or uv or sun:
+        out.append("☀️ <b>Солнце и погодные риски</b>")
+        if warning:
+            out.append(_compact_warning(warning))
+        out.extend(uv[:2])
+        out.extend(sun[:2])
+        out.append("")
+
+    if air:
+        out.append("🌫 <b>Воздух, пыльца и фон</b>")
+        out.extend(air[:4])
+        out.append("")
+
+    if space:
+        out.append("🧲 <b>Космопогода</b>")
+        out.extend(space[:2])
+        out.append("")
+
+    if summary or today_tips:
+        out.append("✅ <b>Рекомендации на день</b>")
+        out.extend(summary[:1])
+        out.extend(today_tips[:1])
+        out.append("")
+
+    out.append("📌 <b>Вывод</b>")
+    if has_warning:
+        out.append("Выбирай гибкий план: море и открытые места — по фактическому ветру, городские дела — без спешки и с запасом времени.")
+    else:
+        out.append("Хороший день для обычных дел: проверь ветер у моря, воздух по самочувствию и оставь место для короткой прогулки.")
+    out.append("")
+    out.append(tags)
+    return "\n".join(out).strip()
+
+
+def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines()]
     date_s = _date_from_title(safe_legacy_text)
     storm = _storm_line(lines)
@@ -139,3 +230,10 @@ def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
     out.append("")
     out.append("#Кипр #погода #здоровье #Никосия #Тродос")
     return "\n".join(out).strip()
+
+
+def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
+    mode_s = (mode or "").strip().lower()
+    if mode_s.startswith("morn"):
+        return build_morning_format_v2(region_name, safe_legacy_text)
+    return build_evening_format_v2(region_name, safe_legacy_text)
