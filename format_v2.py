@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import re
-from typing import List
 
 
 def _is_sep(line: str) -> bool:
@@ -54,6 +53,13 @@ def _storm_line(lines: list[str]) -> str:
     return ""
 
 
+def _compact_warning(line: str) -> str:
+    s = str(line or "").strip()
+    s = re.sub(r"^⚠️\s*", "", s)
+    s = s.replace("<b>Штормовое предупреждение</b>:", "Штормовое предупреждение:")
+    return s.strip()
+
+
 def _city_names(lines: list[str]) -> list[str]:
     names: list[str] = []
     for line in lines:
@@ -74,7 +80,6 @@ def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
     astro = _astro_lines(lines)
 
     sea_names = _city_names(sea)
-    inland_names = _city_names(inland)
 
     has_storm = bool(storm)
     has_troodos = any("Тродос" in x for x in inland)
@@ -85,7 +90,7 @@ def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
 
     out.append("🧭 <b>Главный сценарий</b>")
     if has_storm:
-        out.append("Главный фактор дня — ветер и порывы. На побережье условия могут быстро меняться по часам, особенно у открытых пляжей и на трассах вдоль моря.")
+        out.append("Главный фактор дня — ветер и порывы. На побережье условия могут быстро меняться по часам, особенно у открытых пляжей, на пирсах и на трассах вдоль моря.")
     else:
         out.append("Остров живёт разными микросценариями: у моря мягче и ветренее, в Никосии заметно теплее, а Тродос держит отдельный горный режим.")
     if has_nicosia and has_troodos:
@@ -101,7 +106,7 @@ def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
 
     if storm:
         out.append("⚠️ <b>Предупреждение</b>")
-        out.append(storm)
+        out.append(_compact_warning(storm))
         out.append("")
 
     if sea:
@@ -122,13 +127,13 @@ def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
     out.append("")
 
     if astro:
-        out.append("🌙 <b>Луна и ритм дня</b>")
+        out.append("☀️ <b>Солнце и ритм дня</b>")
         out.extend(astro)
         out.append("")
 
     out.append("📌 <b>Вывод</b>")
     if has_storm:
-        out.append("Планируй день гибко: прогулки и море лучше переносить на более спокойные часы, а перед выездом перепроверить ветер и порывы.")
+        out.append("Планируй день гибко: прогулки у моря лучше переносить на более спокойные часы, а перед выездом перепроверить ветер и порывы.")
     else:
         out.append("Хороший день для обычных дел, но с поправкой на микроклимат: море, Никосия и Тродос завтра ощущаются как разные погодные зоны.")
     out.append("")
