@@ -98,9 +98,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     warning = _storm_line(lines)
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌅", "🌇"))
-    air = _morning_pick(lines, ("🌫", "🌬", "🌿", "🫁", "💨", "📟", "☢", "🟢", "🟡", "🔴", "ℹ️"))
+    air = _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "📟", "☢", "🟢", "🟡", "🔴", "ℹ️"))
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
-    summary = _morning_pick(lines, ("🔎",))
+    summary = [x for x in _morning_pick(lines, ("🔎",)) if "н/д" not in x]
     today_tips = _morning_pick(lines, ("✅ Сегодня",))
     tags = _hashtags(lines, "#Кипр #погода #здоровье #Никосия #Тродос")
 
@@ -138,12 +138,12 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     if air:
         out.append("🌫 <b>Воздух, пыльца и фон</b>")
-        out.extend(air[:4])
+        out.extend(air[:3])
         out.append("")
 
     if space:
         out.append("🧲 <b>Космопогода</b>")
-        out.extend(space[:2])
+        out.extend(space[:1])
         out.append("")
 
     if summary or today_tips:
