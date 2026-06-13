@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 
 import pendulum
 from telegram import Bot, constants
@@ -42,6 +43,81 @@ def _env_on(name: str, default: bool = False) -> bool:
     if val is None:
         return default
     return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"</?b>", "", str(text or "")).strip()
+
+
+def _num(pattern: str, text: str) -> float | None:
+    m = re.search(pattern, _plain(text), flags=re.I)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except Exception:
+        return None
+
+
+def _cyprus_feels_line(v2_text: str) -> str:
+    lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
+    temp_line = next((x for x in lines if x.startswith("🌡 Теплее всего")), "")
+    wind_line = next((x for x in lines if x.startswith("💨")), "")
+    uv_line = next((x for x in lines if x.startswith("☀️")), "")
+
+    t = _plain(temp_line)
+    warm = re.search(r"Теплее всего\s*[—-]\s*([^()]+)\(([-+]?\d+(?:[\.,]\d+)?)°\)", t)
+    cool = re.search(r"прохладнее\s*[—-]\s*([^()]+)\(([-+]?\d+(?:[\.,]\d+)?)°\)", t)
+    warm_city = warm.group(1).strip() if warm else ""
+    cool_city = cool.group(1).strip() if cool else ""
+    warm_t = float(warm.group(2).replace(",", ".")) if warm else None
+
+    wind = _num(r"Ветер:\s*(\d+(?:[\.,]\d+)?)", wind_line)
+    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", wind_line)
+    uv = _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line)
+
+    parts: list[str] = []
+    if warm_t is not None and warm_city:
+        if warm_t >= 31:
+            parts.append(f"жарко в {warm_city}")
+        elif warm_t >= 28:
+            parts.append(f"очень тепло в {warm_city}")
+        else:
+            parts.append(f"тепло в {warm_city}")
+    if cool_city:
+        parts.append(f"свежее в {cool_city}")
+    if gust is not None and gust >= 15:
+        parts.append("у моря порывы ощутимы")
+    elif wind is not None and wind >= 5:
+        parts.append("ветер заметный у моря")
+    if uv is not None and uv >= 8:
+        parts.append("на солнце нагрузка высокая")
+    elif uv is not None and uv >= 6:
+        parts.append("SPF обязателен")
+    return "🌡 Ощущается: " + "; ".join(parts[:4]) + "." if parts else ""
+
+
+def _inject_morning_feels(v2_text: str, mode: str) -> str:
+    if not (mode.startswith("morn") and _env_on("MORNING_FEELS_LIKE")):
+        return v2_text
+    feels = _cyprus_feels_line(v2_text)
+    if not feels:
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    inserted = False
+    for line in lines:
+        out.append(line)
+        if not inserted and line.strip().startswith("💨"):
+            out.append(feels)
+            inserted = True
+    if not inserted:
+        for i, line in enumerate(out):
+            if line.strip().startswith("🌡"):
+                out.insert(i + 1, feels)
+                inserted = True
+                break
+    return "\n".join(out)
 
 
 def resolve_chat_id(args_chat: str, to_test: bool) -> int:
@@ -122,6 +198,7 @@ async def main() -> None:
     if use_format_v2:
         from format_v2 import build_format_v2
         v2_raw = build_format_v2("Кипр", mode, legacy_result.text)
+        v2_raw = _inject_morning_feels(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
