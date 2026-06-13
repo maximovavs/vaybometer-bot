@@ -26,7 +26,7 @@ on:
         default: false
         required: false
       format_v2:
-        description: "FORMAT_V2 для вечернего поста (ручной тест/override; расписание evening уже включает V2)"
+        description: "FORMAT_V2 для ручного теста/override; расписание morning/evening уже включает V2"
         type: boolean
         default: false
         required: false
@@ -101,6 +101,7 @@ jobs:
           echo "Cyprus:  $(date)"
           echo "MSK:    $(TZ=Europe/Moscow date)"
           echo "FORMAT_V2: $FORMAT_V2"
+          echo "event:   $GITHUB_EVENT_NAME"
 
       - uses: actions/setup-python@v5
         with:
@@ -119,20 +120,36 @@ jobs:
           python <<'PY'
           import os, runpy, sys
 
-          args = ["post_cy.py", "--mode", "morning"]
-
+          scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
+          format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
+          to_test = (os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on"))
+          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
+          production_chat = (os.getenv("CHANNEL_ID") or "").strip()
           wd = (os.getenv("WORK_DATE") or "").strip()
+
+          if format_v2:
+              args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
+              if wd:
+                  args += ["--date", wd]
+              if chat_override:
+                  args += ["--chat-id", chat_override, "--send", "--no-test-label"]
+              elif to_test:
+                  args += ["--to-test", "--send"]
+              elif scheduled_run and production_chat:
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+              else:
+                  print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
+              sys.argv = args
+              runpy.run_path("safe_test_post.py", run_name="__main__")
+              raise SystemExit(0)
+
+          args = ["post_cy.py", "--mode", "morning"]
           if wd:
               args += ["--date", wd]
-
-          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           if chat_override:
               args += ["--chat-id", chat_override]
-          else:
-              to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
-              if to_test:
-                  args.append("--to-test")
-
+          elif to_test:
+              args.append("--to-test")
           sys.argv = args
           runpy.run_path("post_cy.py", run_name="__main__")
           PY
