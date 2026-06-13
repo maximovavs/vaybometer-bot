@@ -59,6 +59,13 @@ def _num(pattern: str, text: str) -> float | None:
         return None
 
 
+def _cy_place(city: str) -> str:
+    c = str(city or "").strip()
+    if not c:
+        return ""
+    return {"Никосия": "в Никосии", "Тродос": "на Тродосе"}.get(c, f"в {c}")
+
+
 def _cyprus_feels_line(v2_text: str) -> str:
     lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
     temp_line = next((x for x in lines if x.startswith("🌡 Теплее всего")), "")
@@ -77,21 +84,23 @@ def _cyprus_feels_line(v2_text: str) -> str:
     uv = _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line)
 
     parts: list[str] = []
-    if warm_t is not None and warm_city:
+    warm_place = _cy_place(warm_city)
+    cool_place = _cy_place(cool_city)
+    if warm_t is not None and warm_place:
         if warm_t >= 31:
-            parts.append(f"жарко в {warm_city}")
+            parts.append(f"жарко {warm_place}")
         elif warm_t >= 28:
-            parts.append(f"очень тепло в {warm_city}")
+            parts.append(f"очень тепло {warm_place}")
         else:
-            parts.append(f"тепло в {warm_city}")
-    if cool_city:
-        parts.append(f"свежее в {cool_city}")
+            parts.append(f"тепло {warm_place}")
+    if cool_place:
+        parts.append(f"свежее {cool_place}")
     if gust is not None and gust >= 15:
         parts.append("у моря порывы ощутимы")
     elif wind is not None and wind >= 5:
         parts.append("ветер заметный у моря")
     if uv is not None and uv >= 8:
-        parts.append("на солнце нагрузка высокая")
+        parts.append("на солнце высокая нагрузка")
     elif uv is not None and uv >= 6:
         parts.append("SPF обязателен")
     return "🌡 Ощущается: " + "; ".join(parts[:4]) + "." if parts else ""
