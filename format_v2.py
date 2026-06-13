@@ -114,6 +114,30 @@ def _clean_kp_line(line: str) -> str:
     return s
 
 
+def _clean_uv_line(line: str) -> str:
+    s = _plain(line).strip()
+    m = re.search(r"УФ-индекс\s*(\d+(?:[\.,]\d+)?)\s*\(([^)]+)\)\s*:\s*(.+)$", s, flags=re.I)
+    if m:
+        value = m.group(1).replace(",", ".")
+        label_raw = m.group(2).strip().lower()
+        advice = m.group(3).strip()
+        label_map = {
+            "low": "низкий",
+            "moderate": "умеренный",
+            "medium": "умеренный",
+            "high": "высокий",
+            "very high": "очень высокий",
+            "extreme": "экстремальный",
+        }
+        label = label_map.get(label_raw, label_raw)
+        return f"☀️ УФ {value:g} — {label}: {advice}" if value.replace('.', '', 1).isdigit() else f"☀️ УФ {value} — {label}: {advice}"
+    s = re.sub(r"^☀️\s*<b>УФ-индекс\s*", "☀️ УФ ", s, flags=re.I)
+    s = re.sub(r"</?b>", "", s)
+    s = re.sub(r"\((Very High|High|Moderate|Low|Extreme)\)", lambda mm: "— " + {"Very High": "очень высокий", "High": "высокий", "Moderate": "умеренный", "Low": "низкий", "Extreme": "экстремальный"}.get(mm.group(1), mm.group(1)), s)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
 def _to_float(value) -> float | None:
     try:
         if value is None or value == "":
@@ -219,7 +243,6 @@ def _source_wind_pressure_line(date_s: str) -> str:
     pressure = _value_at(prs_arr, idx_day)
     pressure_morn = _value_at(prs_arr, idx_morn)
 
-    # Gusts: use max for the target day when hourly data is available; otherwise current value.
     gust_ms = None
     day_gusts: list[float] = []
     for i, raw_t in enumerate(times or []):
@@ -297,7 +320,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if warning:
         out.append("⚠️ " + _compact_warning(warning))
     if uv:
-        out.append(uv[0])
+        out.append(_clean_uv_line(uv[0]))
     if air:
         out.append(air[0])
     if space:
