@@ -125,6 +125,31 @@ def _cyprus_best_window_line(v2_text: str) -> str:
     return "🕒 Лучшее окно: позднее утро и время перед закатом."
 
 
+def _cyprus_smart_plan_line(v2_text: str) -> str:
+    lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
+    temp_line = next((x for x in lines if x.startswith("🌡 Теплее всего")), "")
+    wind_line = next((x for x in lines if x.startswith("💨")), "")
+    uv_line = next((x for x in lines if x.startswith("☀️")), "")
+    warm_t = _num(r"Теплее всего\s*[—-]\s*[^()]+\(([-+]?\d+(?:[\.,]\d+)?)°\)", temp_line)
+    uv = _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line)
+    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", wind_line)
+    hot = warm_t is not None and warm_t >= 31
+    high_uv = uv is not None and uv >= 8
+    windy = gust is not None and gust >= 15
+
+    if hot and high_uv and windy:
+        return "✅ План: дела и прогулка до 11:00; 11–16 — тень/помещение; SPF 50 и вода с собой; у моря — защищённые места."
+    if high_uv and windy:
+        return "✅ План: активность до 11:00 или после 18:30; 11–16 — тень; SPF 50, вода; у моря — защищённые места."
+    if hot and high_uv:
+        return "✅ План: основные дела до 11:00; 11–16 — тень/помещение; SPF 50 и вода; прогулка ближе к закату."
+    if high_uv:
+        return "✅ План: SPF 50, вода с собой; полдень провести в тени; прогулка утром или ближе к закату."
+    if windy:
+        return "✅ План: у моря выбирать защищённые места; лёгкие вещи закрепить; прогулку сверять с фактическим ветром."
+    return ""
+
+
 def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
     if not line_to_add:
         return v2_text
@@ -136,6 +161,23 @@ def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...
         if not inserted and line.strip().startswith(anchors):
             out.append(line_to_add)
             inserted = True
+    return "\n".join(out)
+
+
+def _replace_plan(v2_text: str, new_plan: str) -> str:
+    if not new_plan:
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if not replaced and line.strip().startswith("✅"):
+            out.append(new_plan)
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(new_plan)
     return "\n".join(out)
 
 
@@ -171,6 +213,12 @@ def _inject_morning_best_window(v2_text: str, mode: str) -> str:
     if "🌡 Ощущается:" in v2_text:
         return _inject_after_anchor(v2_text, window, ("🌡 Ощущается:",))
     return _inject_after_anchor(v2_text, window, ("💨", "🌡"))
+
+
+def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:
+    if not (mode.startswith("morn") and _env_on("MORNING_SMART_PLAN")):
+        return v2_text
+    return _replace_plan(v2_text, _cyprus_smart_plan_line(v2_text))
 
 
 def resolve_chat_id(args_chat: str, to_test: bool) -> int:
@@ -253,6 +301,7 @@ async def main() -> None:
         v2_raw = build_format_v2("Кипр", mode, legacy_result.text)
         v2_raw = _inject_morning_feels(v2_raw, mode)
         v2_raw = _inject_morning_best_window(v2_raw, mode)
+        v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
