@@ -66,6 +66,7 @@ env:
   MORNING_FEELS_LIKE: "1"
   MORNING_BEST_WINDOW: "1"
   MORNING_SMART_PLAN: "1"
+  MORNING_VAYBOMETER_SCORE: "1"
 
   TZ: Asia/Nicosia
   WORK_DATE: ${{ github.event.inputs.work_date || '' }}
