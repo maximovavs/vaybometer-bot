@@ -66,27 +66,40 @@ def _cy_place(city: str) -> str:
     return {"Никосия": "в Никосии", "Тродос": "на Тродосе"}.get(c, f"в {c}")
 
 
-def _cyprus_feels_line(v2_text: str) -> str:
+def _cyprus_conditions(v2_text: str) -> dict[str, float | bool | str | None]:
     lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
     temp_line = next((x for x in lines if x.startswith("🌡 Теплее всего")), "")
     wind_line = next((x for x in lines if x.startswith("💨")), "")
     uv_line = next((x for x in lines if x.startswith("☀️")), "")
+    air_line = next((x for x in lines if x.startswith("🏭")), "")
 
-    t = _plain(temp_line)
-    warm = re.search(r"Теплее всего\s*[—-]\s*([^()]+)\(([-+]?\d+(?:[\.,]\d+)?)°\)", t)
-    cool = re.search(r"прохладнее\s*[—-]\s*([^()]+)\(([-+]?\d+(?:[\.,]\d+)?)°\)", t)
-    warm_city = warm.group(1).strip() if warm else ""
-    cool_city = cool.group(1).strip() if cool else ""
-    warm_t = float(warm.group(2).replace(",", ".")) if warm else None
+    warm = re.search(r"Теплее всего\s*[—-]\s*([^()]+)\(([-+]?\d+(?:[\.,]\d+)?)°\)", _plain(temp_line))
+    cool = re.search(r"прохладнее\s*[—-]\s*([^()]+)\(([-+]?\d+(?:[\.,]\d+)?)°\)", _plain(temp_line))
+    return {
+        "warm_city": warm.group(1).strip() if warm else "",
+        "cool_city": cool.group(1).strip() if cool else "",
+        "warm_t": float(warm.group(2).replace(",", ".")) if warm else None,
+        "cool_t": float(cool.group(2).replace(",", ".")) if cool else None,
+        "wind": _num(r"Ветер:\s*(\d+(?:[\.,]\d+)?)", wind_line),
+        "gust": _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", wind_line),
+        "uv": _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line),
+        "aqi": _num(r"AQI\s*(\d+(?:[\.,]\d+)?)", air_line),
+    }
 
-    wind = _num(r"Ветер:\s*(\d+(?:[\.,]\d+)?)", wind_line)
-    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", wind_line)
-    uv = _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line)
+
+def _cyprus_feels_line(v2_text: str) -> str:
+    c = _cyprus_conditions(v2_text)
+    warm_city = str(c.get("warm_city") or "")
+    cool_city = str(c.get("cool_city") or "")
+    warm_t = c.get("warm_t")
+    wind = c.get("wind")
+    gust = c.get("gust")
+    uv = c.get("uv")
 
     parts: list[str] = []
     warm_place = _cy_place(warm_city)
     cool_place = _cy_place(cool_city)
-    if warm_t is not None and warm_place:
+    if isinstance(warm_t, (int, float)) and warm_place:
         if warm_t >= 31:
             parts.append(f"жарко {warm_place}")
         elif warm_t >= 28:
@@ -95,47 +108,42 @@ def _cyprus_feels_line(v2_text: str) -> str:
             parts.append(f"тепло {warm_place}")
     if cool_place:
         parts.append(f"свежее {cool_place}")
-    if gust is not None and gust >= 15:
+    if isinstance(gust, (int, float)) and gust >= 15:
         parts.append("у моря порывы ощутимы")
-    elif wind is not None and wind >= 5:
+    elif isinstance(wind, (int, float)) and wind >= 5:
         parts.append("ветер заметный у моря")
-    if uv is not None and uv >= 8:
+    if isinstance(uv, (int, float)) and uv >= 8:
         parts.append("на солнце высокая нагрузка")
-    elif uv is not None and uv >= 6:
+    elif isinstance(uv, (int, float)) and uv >= 6:
         parts.append("SPF обязателен")
     return "🌡 Ощущается: " + "; ".join(parts[:4]) + "." if parts else ""
 
 
 def _cyprus_best_window_line(v2_text: str) -> str:
-    lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
-    wind_line = next((x for x in lines if x.startswith("💨")), "")
-    uv_line = next((x for x in lines if x.startswith("☀️")), "")
-    uv = _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line)
-    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", wind_line)
+    c = _cyprus_conditions(v2_text)
+    uv = c.get("uv")
+    gust = c.get("gust")
 
-    if uv is not None and uv >= 8:
+    if isinstance(uv, (int, float)) and uv >= 8:
         tail = "днём — тень"
-        if gust is not None and gust >= 15:
+        if isinstance(gust, (int, float)) and gust >= 15:
             tail += ", у моря — защищённые места"
         return f"🕒 Лучшее окно: до 11:00 и после 18:30; {tail}."
-    if uv is not None and uv >= 6:
+    if isinstance(uv, (int, float)) and uv >= 6:
         return "🕒 Лучшее окно: до 12:00 и ближе к закату; в полдень лучше тень."
-    if gust is not None and gust >= 15:
+    if isinstance(gust, (int, float)) and gust >= 15:
         return "🕒 Лучшее окно: спокойные утренние часы; у моря — по фактическому ветру."
     return "🕒 Лучшее окно: позднее утро и время перед закатом."
 
 
 def _cyprus_smart_plan_line(v2_text: str) -> str:
-    lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
-    temp_line = next((x for x in lines if x.startswith("🌡 Теплее всего")), "")
-    wind_line = next((x for x in lines if x.startswith("💨")), "")
-    uv_line = next((x for x in lines if x.startswith("☀️")), "")
-    warm_t = _num(r"Теплее всего\s*[—-]\s*[^()]+\(([-+]?\d+(?:[\.,]\d+)?)°\)", temp_line)
-    uv = _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line)
-    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", wind_line)
-    hot = warm_t is not None and warm_t >= 31
-    high_uv = uv is not None and uv >= 8
-    windy = gust is not None and gust >= 15
+    c = _cyprus_conditions(v2_text)
+    warm_t = c.get("warm_t")
+    uv = c.get("uv")
+    gust = c.get("gust")
+    hot = isinstance(warm_t, (int, float)) and warm_t >= 31
+    high_uv = isinstance(uv, (int, float)) and uv >= 8
+    windy = isinstance(gust, (int, float)) and gust >= 15
 
     if hot and high_uv and windy:
         return "✅ План: дела и прогулка до 11:00; 11–16 — тень/помещение; SPF 50 и вода с собой; у моря — защищённые места."
@@ -148,6 +156,47 @@ def _cyprus_smart_plan_line(v2_text: str) -> str:
     if windy:
         return "✅ План: у моря выбирать защищённые места; лёгкие вещи закрепить; прогулку сверять с фактическим ветром."
     return ""
+
+
+def _cyprus_score_line(v2_text: str) -> str:
+    c = _cyprus_conditions(v2_text)
+    warm_t = c.get("warm_t")
+    uv = c.get("uv")
+    gust = c.get("gust")
+    wind = c.get("wind")
+    aqi = c.get("aqi")
+
+    score = 10.0
+    reasons: list[str] = []
+    if isinstance(warm_t, (int, float)):
+        if warm_t >= 35:
+            score -= 2.0; reasons.append("сильная жара")
+        elif warm_t >= 32:
+            score -= 1.4; reasons.append("жара")
+        elif warm_t >= 30:
+            score -= 0.8; reasons.append("тепло")
+    if isinstance(uv, (int, float)):
+        if uv >= 9:
+            score -= 1.5; reasons.append("очень высокий УФ")
+        elif uv >= 8:
+            score -= 1.3; reasons.append("высокий УФ")
+        elif uv >= 6:
+            score -= 0.7; reasons.append("УФ заметный")
+    if isinstance(gust, (int, float)):
+        if gust >= 18:
+            score -= 1.1; reasons.append("порывы у моря")
+        elif gust >= 15:
+            score -= 0.8; reasons.append("ветер у моря")
+    elif isinstance(wind, (int, float)) and wind >= 6:
+        score -= 0.5; reasons.append("ветер")
+    if isinstance(aqi, (int, float)) and aqi > 80:
+        score -= 0.8; reasons.append("воздух похуже")
+
+    score = max(1.0, min(10.0, score))
+    label = "отлично" if score >= 8.5 else "хорошо" if score >= 7 else "с оговорками" if score >= 5.5 else "бережный режим"
+    if reasons:
+        return f"✨ VayboMeter: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
+    return f"✨ VayboMeter: {score:.1f}/10 — {label} для обычных дел и прогулок."
 
 
 def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
@@ -213,6 +262,17 @@ def _inject_morning_best_window(v2_text: str, mode: str) -> str:
     if "🌡 Ощущается:" in v2_text:
         return _inject_after_anchor(v2_text, window, ("🌡 Ощущается:",))
     return _inject_after_anchor(v2_text, window, ("💨", "🌡"))
+
+
+def _inject_morning_score(v2_text: str, mode: str) -> str:
+    if not (mode.startswith("morn") and _env_on("MORNING_VAYBOMETER_SCORE")):
+        return v2_text
+    score = _cyprus_score_line(v2_text)
+    if "🕒 Лучшее окно:" in v2_text:
+        return _inject_after_anchor(v2_text, score, ("🕒 Лучшее окно:",))
+    if "🌡 Ощущается:" in v2_text:
+        return _inject_after_anchor(v2_text, score, ("🌡 Ощущается:",))
+    return _inject_after_anchor(v2_text, score, ("💨", "🌡"))
 
 
 def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:
@@ -301,6 +361,7 @@ async def main() -> None:
         v2_raw = build_format_v2("Кипр", mode, legacy_result.text)
         v2_raw = _inject_morning_feels(v2_raw, mode)
         v2_raw = _inject_morning_best_window(v2_raw, mode)
+        v2_raw = _inject_morning_score(v2_raw, mode)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
