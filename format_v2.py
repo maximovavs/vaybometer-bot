@@ -119,6 +119,7 @@ def _clean_uv_line(line: str) -> str:
     m = re.search(r"УФ-индекс\s*(\d+(?:[\.,]\d+)?)\s*\(([^)]+)\)\s*:\s*(.+)$", s, flags=re.I)
     if m:
         value = m.group(1).replace(",", ".")
+        value_txt = re.sub(r"\.0$", "", value)
         label_raw = m.group(2).strip().lower()
         advice = m.group(3).strip()
         label_map = {
@@ -130,7 +131,7 @@ def _clean_uv_line(line: str) -> str:
             "extreme": "экстремальный",
         }
         label = label_map.get(label_raw, label_raw)
-        return f"☀️ УФ {value:g} — {label}: {advice}" if value.replace('.', '', 1).isdigit() else f"☀️ УФ {value} — {label}: {advice}"
+        return f"☀️ УФ {value_txt} — {label}: {advice}"
     s = re.sub(r"^☀️\s*<b>УФ-индекс\s*", "☀️ УФ ", s, flags=re.I)
     s = re.sub(r"</?b>", "", s)
     s = re.sub(r"\((Very High|High|Moderate|Low|Extreme)\)", lambda mm: "— " + {"Very High": "очень высокий", "High": "высокий", "Moderate": "умеренный", "Low": "низкий", "Extreme": "экстремальный"}.get(mm.group(1), mm.group(1)), s)
