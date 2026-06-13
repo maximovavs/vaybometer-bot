@@ -248,7 +248,7 @@ def _source_wind_pressure_line(date_s: str) -> str:
         if c:
             wind_part += f" ({c})"
         if isinstance(gust_ms, (int, float)):
-            wind_part += f" • порывы до {float(gust_ms):.0f}"
+            wind_part += f" • порывы до {float(gust_ms):.0f} м/с"
         parts.append(wind_part)
     elif isinstance(gust_ms, (int, float)):
         parts.append(f"💨 Порывы до {float(gust_ms):.0f} м/с")
@@ -267,7 +267,7 @@ def _legacy_wind_pressure_line(lines: list[str]) -> str:
     for line in lines:
         s = line.strip()
         if s.startswith("💨") or s.startswith("🔹"):
-            return s
+            return re.sub(r"\bпорывы до (\d+)(?!\s*м/с)", r"порывы до \1 м/с", s)
     return ""
 
 
