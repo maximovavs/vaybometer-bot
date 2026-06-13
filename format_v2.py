@@ -90,74 +90,54 @@ def _morning_pick(lines: list[str], prefixes: tuple[str, ...]) -> list[str]:
     return [x.strip() for x in lines if x.strip().startswith(prefixes)]
 
 
+def _temperature_note(greeting: str) -> str:
+    """Extract only the useful weather part from the long greeting/fact line."""
+    s = _plain(greeting)
+    m = re.search(r"(Теплее всего\s*[—-].+)$", s)
+    return "🌡 " + m.group(1).strip() if m else ""
+
+
+def _clean_today_tip(line: str) -> str:
+    s = str(line or "").strip()
+    s = re.sub(r"^✅\s*Сегодня:\s*", "", s)
+    s = s.rstrip(".")
+    return s
+
+
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
+    """Compact morning post: only actionable weather, air, UV and short plan."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
     date_s = _date_from_title(safe_legacy_text)
     title_date = f" ({date_s})" if date_s else ""
+
     greeting = _first_content_line(lines)
+    temp_note = _temperature_note(greeting)
     warning = _storm_line(lines)
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
-    sun = _morning_pick(lines, ("🌅", "🌇"))
-    air = _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "📟", "☢", "🟢", "🟡", "🔴", "ℹ️"))
-    space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
-    summary = [x for x in _morning_pick(lines, ("🔎",)) if "н/д" not in x]
+    sun = _morning_pick(lines, ("🌇",))
+    air = _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
     today_tips = _morning_pick(lines, ("✅ Сегодня",))
     tags = _hashtags(lines, "#Кипр #погода #здоровье #Никосия #Тродос")
 
-    has_warning = bool(warning)
-    has_air = bool(air)
-    has_uv = bool(uv)
+    out: list[str] = [f"<b>🌅 Кипр сегодня{title_date}</b>"]
 
-    out: list[str] = [f"<b>🌅 Кипр сегодня: утренний прогноз с поправкой на остров{title_date}</b>", ""]
-
-    out.append("🧭 <b>Главный сценарий</b>")
-    if greeting:
-        out.append(greeting)
-    if has_warning:
-        out.append("День лучше планировать с запасом: ветер и локальные условия у моря могут быстро менять ощущение погоды.")
-    else:
-        out.append("Смотри на день не усреднённо: побережье, Никосия и Тродос могут ощущаться как разные погодные зоны.")
-    out.append("")
-
-    out.append("🎯 <b>На что обратить внимание</b>")
-    out.append("✅ Температура: можно использовать для базового планирования.")
-    out.append("🟡 Ветер/порывы у моря: проверить перед прогулкой или поездкой к воде.")
-    if has_uv:
-        out.append("🟡 UV: защита от солнца важна в активные часы.")
-    if has_air:
-        out.append("🟡 Воздух/пыльца: учитывай самочувствие и аллергию.")
-    out.append("")
-
-    if warning or uv or sun:
-        out.append("☀️ <b>Солнце и погодные риски</b>")
-        if warning:
-            out.append(_compact_warning(warning))
-        out.extend(uv[:2])
-        out.extend(sun[:2])
-        out.append("")
-
+    if temp_note:
+        out.append(temp_note)
+    if warning:
+        out.append("⚠️ " + _compact_warning(warning))
+    if uv:
+        out.append(uv[0])
     if air:
-        out.append("🌫 <b>Воздух, пыльца и фон</b>")
-        out.extend(air[:3])
-        out.append("")
+        out.append(air[0])
+    if sun:
+        out.append(sun[0])
 
-    if space:
-        out.append("🧲 <b>Космопогода</b>")
-        out.extend(space[:1])
-        out.append("")
-
-    if summary or today_tips:
-        out.append("✅ <b>Рекомендации на день</b>")
-        out.extend(summary[:1])
-        out.extend(today_tips[:1])
-        out.append("")
-
-    out.append("📌 <b>Вывод</b>")
-    if has_warning:
-        out.append("Выбирай гибкий план: море и открытые места — по фактическому ветру, городские дела — без спешки и с запасом времени.")
+    plan = _clean_today_tip(today_tips[0]) if today_tips else "вода, SPF, тень 11–16, прогулка до полудня"
+    if warning:
+        out.append("✅ План: " + plan + "; у моря ориентируйся на фактический ветер.")
     else:
-        out.append("Хороший день для обычных дел: проверь ветер у моря, воздух по самочувствию и оставь место для короткой прогулки.")
-    out.append("")
+        out.append("✅ План: " + plan + ".")
+
     out.append(tags)
     return "\n".join(out).strip()
 
