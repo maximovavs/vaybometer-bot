@@ -3,7 +3,10 @@
 """FORMAT_V2 text transformer for Cyprus VayboMeter posts."""
 from __future__ import annotations
 
+import datetime as dt
 import re
+
+CY_LAT, CY_LON = 34.707, 33.022
 
 
 def _is_sep(line: str) -> bool:
@@ -111,8 +114,165 @@ def _clean_kp_line(line: str) -> str:
     return s
 
 
+def _to_float(value) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _pick(mapping: dict, *keys):
+    for key in keys:
+        if key in mapping and mapping.get(key) is not None:
+            return mapping.get(key)
+    return None
+
+
+def _kmh_to_ms(value) -> float | None:
+    x = _to_float(value)
+    if x is None:
+        return None
+    try:
+        from utils import kmh_to_ms as _repo_kmh_to_ms  # type: ignore
+        return float(_repo_kmh_to_ms(x))
+    except Exception:
+        return float(x) / 3.6
+
+
+def _compass(deg) -> str | None:
+    x = _to_float(deg)
+    if x is None:
+        return None
+    try:
+        from utils import compass as _repo_compass  # type: ignore
+        return str(_repo_compass(int(round(x))))
+    except Exception:
+        dirs = ["С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ"]
+        return dirs[int((x + 22.5) // 45) % 8]
+
+
+def _parse_target_date(date_s: str) -> dt.date:
+    try:
+        return dt.datetime.strptime(date_s, "%d.%m.%Y").date()
+    except Exception:
+        try:
+            from zoneinfo import ZoneInfo
+            return dt.datetime.now(ZoneInfo("Asia/Nicosia")).date()
+        except Exception:
+            return dt.date.today()
+
+
+def _parse_hourly_time(value) -> dt.datetime | None:
+    try:
+        s = str(value).replace("Z", "+00:00")
+        return dt.datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _nearest_index(times: list, target_date: dt.date, prefer_hour: int) -> int | None:
+    best_i = None
+    best_diff = None
+    target_min = prefer_hour * 60
+    for i, raw_t in enumerate(times or []):
+        parsed = _parse_hourly_time(raw_t)
+        if parsed is None or parsed.date() != target_date:
+            continue
+        minute = parsed.hour * 60 + parsed.minute
+        diff = abs(minute - target_min)
+        if best_diff is None or diff < best_diff:
+            best_i, best_diff = i, diff
+    return best_i
+
+
+def _value_at(arr, idx: int | None) -> float | None:
+    if idx is None or not isinstance(arr, list) or idx >= len(arr):
+        return None
+    return _to_float(arr[idx])
+
+
+def _source_wind_pressure_line(date_s: str) -> str:
+    """Fetch current source weather and build a compact wind/gust/pressure line when data exists."""
+    try:
+        from weather import get_weather  # type: ignore
+        wm = get_weather(CY_LAT, CY_LON) or {}
+    except Exception:
+        return ""
+
+    target_date = _parse_target_date(date_s)
+    hourly = wm.get("hourly") or {}
+    current = wm.get("current") or wm.get("current_weather") or {}
+    times = hourly.get("time") or hourly.get("time_local") or hourly.get("timestamp") or []
+
+    idx_day = _nearest_index(times, target_date, 12)
+    idx_morn = _nearest_index(times, target_date, 6)
+
+    spd_arr = _pick(hourly, "windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed") or []
+    gust_arr = _pick(hourly, "windgusts_10m", "wind_gusts_10m", "wind_gusts", "windgusts") or []
+    dir_arr = _pick(hourly, "winddirection_10m", "winddirection", "wind_dir_10m", "wind_dir", "wind_direction_10m") or []
+    prs_arr = _pick(hourly, "surface_pressure", "pressure_msl", "pressure") or []
+
+    wind_ms = _kmh_to_ms(_value_at(spd_arr, idx_day))
+    wind_dir = _value_at(dir_arr, idx_day)
+    pressure = _value_at(prs_arr, idx_day)
+    pressure_morn = _value_at(prs_arr, idx_morn)
+
+    # Gusts: use max for the target day when hourly data is available; otherwise current value.
+    gust_ms = None
+    day_gusts: list[float] = []
+    for i, raw_t in enumerate(times or []):
+        parsed = _parse_hourly_time(raw_t)
+        if parsed is None or parsed.date() != target_date:
+            continue
+        g = _value_at(gust_arr, i)
+        if g is not None:
+            day_gusts.append(g)
+    if day_gusts:
+        gust_ms = _kmh_to_ms(max(day_gusts))
+
+    if wind_ms is None:
+        wind_ms = _kmh_to_ms(_pick(current, "windspeed", "wind_speed", "wind_speed_10m"))
+    if wind_dir is None:
+        wind_dir = _to_float(_pick(current, "winddirection", "wind_dir", "wind_direction_10m"))
+    if gust_ms is None:
+        gust_ms = _kmh_to_ms(_pick(current, "wind_gusts_10m", "wind_gusts", "windgusts"))
+    if pressure is None:
+        pressure = _to_float(_pick(current, "surface_pressure", "pressure_msl", "pressure"))
+
+    parts: list[str] = []
+    if isinstance(wind_ms, (int, float)):
+        wind_part = f"💨 Ветер: {float(wind_ms):.1f} м/с"
+        c = _compass(wind_dir)
+        if c:
+            wind_part += f" ({c})"
+        if isinstance(gust_ms, (int, float)):
+            wind_part += f" • порывы до {float(gust_ms):.0f}"
+        parts.append(wind_part)
+    elif isinstance(gust_ms, (int, float)):
+        parts.append(f"💨 Порывы до {float(gust_ms):.0f} м/с")
+
+    if isinstance(pressure, (int, float)):
+        trend = "→"
+        if isinstance(pressure_morn, (int, float)):
+            diff = float(pressure) - float(pressure_morn)
+            trend = "↑" if diff >= 0.3 else "↓" if diff <= -0.3 else "→"
+        parts.append(f"🔹 {int(round(float(pressure)))} гПа {trend}")
+
+    return " • ".join(parts)
+
+
+def _legacy_wind_pressure_line(lines: list[str]) -> str:
+    for line in lines:
+        s = line.strip()
+        if s.startswith("💨") or s.startswith("🔹"):
+            return s
+    return ""
+
+
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
-    """Compact morning post: only actionable weather, air, UV, valid Kp and short plan."""
+    """Compact morning post: only actionable weather, air, UV, valid Kp, wind/pressure and short plan."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
     date_s = _date_from_title(safe_legacy_text)
     title_date = f" ({date_s})" if date_s else ""
@@ -120,6 +280,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     greeting = _first_content_line(lines)
     temp_note = _temperature_note(greeting)
     warning = _storm_line(lines)
+    weather_line = _legacy_wind_pressure_line(lines) or _source_wind_pressure_line(date_s)
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌇",))
     air = _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
@@ -131,6 +292,8 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     if temp_note:
         out.append(temp_note)
+    if weather_line:
+        out.append(weather_line)
     if warning:
         out.append("⚠️ " + _compact_warning(warning))
     if uv:
