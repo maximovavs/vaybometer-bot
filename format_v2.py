@@ -104,8 +104,15 @@ def _clean_today_tip(line: str) -> str:
     return s
 
 
+def _clean_kp_line(line: str) -> str:
+    s = str(line or "").strip()
+    s = re.sub(r"(\b(?:Kp|Кр)\s*\d+(?:[\.,]\d+)?)\s*\([^)]*\)", r"\1", s, flags=re.I)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
-    """Compact morning post: only actionable weather, air, UV and short plan."""
+    """Compact morning post: only actionable weather, air, UV, valid Kp and short plan."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
     date_s = _date_from_title(safe_legacy_text)
     title_date = f" ({date_s})" if date_s else ""
@@ -116,6 +123,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌇",))
     air = _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
+    space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     today_tips = _morning_pick(lines, ("✅ Сегодня",))
     tags = _hashtags(lines, "#Кипр #погода #здоровье #Никосия #Тродос")
 
@@ -129,6 +137,8 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(uv[0])
     if air:
         out.append(air[0])
+    if space:
+        out.append(_clean_kp_line(space[0]))
     if sun:
         out.append(sun[0])
 
