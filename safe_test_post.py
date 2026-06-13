@@ -106,6 +106,39 @@ def _cyprus_feels_line(v2_text: str) -> str:
     return "🌡 Ощущается: " + "; ".join(parts[:4]) + "." if parts else ""
 
 
+def _cyprus_best_window_line(v2_text: str) -> str:
+    lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
+    wind_line = next((x for x in lines if x.startswith("💨")), "")
+    uv_line = next((x for x in lines if x.startswith("☀️")), "")
+    uv = _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line)
+    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", wind_line)
+
+    if uv is not None and uv >= 8:
+        tail = "днём — тень"
+        if gust is not None and gust >= 15:
+            tail += ", у моря — защищённые места"
+        return f"🕒 Лучшее окно: до 11:00 и после 18:30; {tail}."
+    if uv is not None and uv >= 6:
+        return "🕒 Лучшее окно: до 12:00 и ближе к закату; в полдень лучше тень."
+    if gust is not None and gust >= 15:
+        return "🕒 Лучшее окно: спокойные утренние часы; у моря — по фактическому ветру."
+    return "🕒 Лучшее окно: позднее утро и время перед закатом."
+
+
+def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
+    if not line_to_add:
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    inserted = False
+    for line in lines:
+        out.append(line)
+        if not inserted and line.strip().startswith(anchors):
+            out.append(line_to_add)
+            inserted = True
+    return "\n".join(out)
+
+
 def _inject_morning_feels(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_FEELS_LIKE")):
         return v2_text
@@ -127,6 +160,17 @@ def _inject_morning_feels(v2_text: str, mode: str) -> str:
                 inserted = True
                 break
     return "\n".join(out)
+
+
+def _inject_morning_best_window(v2_text: str, mode: str) -> str:
+    if not (mode.startswith("morn") and _env_on("MORNING_BEST_WINDOW")):
+        return v2_text
+    window = _cyprus_best_window_line(v2_text)
+    if not window:
+        return v2_text
+    if "🌡 Ощущается:" in v2_text:
+        return _inject_after_anchor(v2_text, window, ("🌡 Ощущается:",))
+    return _inject_after_anchor(v2_text, window, ("💨", "🌡"))
 
 
 def resolve_chat_id(args_chat: str, to_test: bool) -> int:
@@ -208,6 +252,7 @@ async def main() -> None:
         from format_v2 import build_format_v2
         v2_raw = build_format_v2("Кипр", mode, legacy_result.text)
         v2_raw = _inject_morning_feels(v2_raw, mode)
+        v2_raw = _inject_morning_best_window(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
