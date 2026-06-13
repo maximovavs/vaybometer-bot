@@ -63,6 +63,7 @@ env:
   DISABLE_LLM_DAILY: "0"
   DISABLE_SCHUMANN: "1"
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
+  MORNING_FEELS_LIKE: "1"
 
   TZ: Asia/Nicosia
   WORK_DATE: ${{ github.event.inputs.work_date || '' }}
