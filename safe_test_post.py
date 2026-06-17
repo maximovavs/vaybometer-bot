@@ -217,24 +217,38 @@ def _cyprus_score_line(v2_text: str) -> str:
 def _cyprus_evening_score_line(v2_text: str) -> str:
     text = _plain(v2_text)
     low = text.lower()
-    temps = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*°", text)
-    max_t = max(temps) if temps else None
+    daily_highs = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*/\s*-?\d+(?:[\.,]\d+)?\s*°", text)
+    gusts = _numbers(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", text)
+    winds = _numbers(r"💨\s*(\d+(?:[\.,]\d+)?)", text)
+    max_t = max(daily_highs) if daily_highs else None
+    max_gust = max(gusts) if gusts else None
+    max_wind = max(winds) if winds else None
+    has_real_mist = any(
+        ("туман" in line.lower() or "дымк" in line.lower()) and not line.strip().startswith("🟡 Туман/дымка")
+        for line in str(v2_text or "").splitlines()
+    )
+
     score = 10.0
     reasons: list[str] = []
 
     if max_t is not None:
         if max_t >= 35:
-            score -= 1.6; reasons.append("сильная жара")
-        elif max_t >= 32:
-            score -= 1.1; reasons.append("жара")
-        elif max_t >= 30:
-            score -= 0.6; reasons.append("тепло")
-    if "шторм" in low or "предупреждение" in low:
-        score -= 1.2; reasons.append("ветер/порывы")
-    elif "порыв" in low or "ветер" in low:
+            score -= 1.8; reasons.append("сильная жара")
+        elif max_t >= 33:
+            score -= 1.5; reasons.append("жара")
+        elif max_t >= 31:
+            score -= 1.0; reasons.append("тепло")
+    if isinstance(max_gust, (int, float)):
+        if max_gust >= 16:
+            score -= 1.1; reasons.append("порывы у моря")
+        elif max_gust >= 12:
+            score -= 0.8; reasons.append("порывы у моря")
+    if isinstance(max_wind, (int, float)) and max_wind >= 6:
         score -= 0.4; reasons.append("ветер у моря")
-    if "туман" in low or "дымк" in low:
-        score -= 0.4; reasons.append("дымка/туман")
+    if has_real_mist:
+        score -= 0.3; reasons.append("дымка/туман")
+    if "шторм" in low or "предупреждение" in low:
+        score -= 1.0; reasons.append("предупреждение")
     if "микросценар" in low:
         score -= 0.2; reasons.append("разные зоны острова")
 
