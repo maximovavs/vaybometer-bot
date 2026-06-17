@@ -62,6 +62,10 @@ def _env_on(name: str, default: bool = False) -> bool:
     return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env_any(*names: str) -> bool:
+    return any(_env_on(name) for name in names)
+
+
 def _plain(text: str) -> str:
     return re.sub(r"</?b>", "", str(text or "")).strip()
 
@@ -293,10 +297,35 @@ def _translate_shore_notes(text: str) -> str:
     )
 
 
+def _fmt_ms(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
+
+
+def _downgrade_sup_lines(text: str) -> str:
+    lines = str(text or "").splitlines()
+    out: list[str] = []
+    last_gust: float | None = None
+    for line in lines:
+        gust = _num(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", line)
+        if gust is not None:
+            last_gust = gust
+        if "SUP" in line and "Отлично" in line and isinstance(last_gust, (int, float)) and last_gust >= 12:
+            note_m = re.search(r"\(([^()]+)\)", line)
+            note = f" • {note_m.group(1)}" if note_m else ""
+            if last_gust >= 15:
+                out.append(f"🧜‍♂️ SUP лучше отложить: порывы до {_fmt_ms(last_gust)} м/с{note}.")
+            else:
+                out.append(f"🧜‍♂️ SUP: только опытным и короткая сессия • порывы до {_fmt_ms(last_gust)} м/с{note}.")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _apply_format_v2_test_polish(v2_text: str) -> str:
-    if not _env_on("FORMAT_V2_TEST_POLISH"):
+    if not _env_any("FORMAT_V2_POLISH", "FORMAT_V2_TEST_POLISH"):
         return v2_text
     text = _translate_shore_notes(v2_text)
+    text = _downgrade_sup_lines(text)
     text = re.sub(r"\s+,", ",", text)
     text = re.sub(r"🌙\s+🌙", "🌙", text)
     return text
@@ -337,7 +366,7 @@ def _replace_conclusion(v2_text: str, conclusion: str) -> str:
 
 
 def _apply_score_conclusion(v2_text: str) -> str:
-    if not _env_on("FORMAT_V2_TEST_CONCLUSION"):
+    if not _env_any("FORMAT_V2_SCORE_CONCLUSION", "FORMAT_V2_TEST_CONCLUSION"):
         return v2_text
     score = _score_value(v2_text)
     if score is None:
