@@ -286,7 +286,7 @@ def _translate_shore_notes(text: str) -> str:
         return f"({direction}, {_SHORE_RU.get(shore, shore)})"
 
     return re.sub(
-        r"\b\((N|NE|E|SE|S|SW|W|NW)/(onshore|offshore|cross|None)\)\b",
+        r"\((N|NE|E|SE|S|SW|W|NW)/(onshore|offshore|cross|None)\)",
         repl,
         str(text or ""),
         flags=re.I,
