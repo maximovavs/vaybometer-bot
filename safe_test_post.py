@@ -37,6 +37,23 @@ OTHER_CITIES_ALL = {
     "Troodos": (34.916, 32.823),
 }
 
+_DIR_RU = {
+    "N": "северный ветер",
+    "NE": "северо-восточный ветер",
+    "E": "восточный ветер",
+    "SE": "юго-восточный ветер",
+    "S": "южный ветер",
+    "SW": "юго-западный ветер",
+    "W": "западный ветер",
+    "NW": "северо-западный ветер",
+}
+
+_SHORE_RU = {
+    "onshore": "к берегу",
+    "offshore": "от берега",
+    "cross": "вдоль берега",
+}
+
 
 def _env_on(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
@@ -259,6 +276,75 @@ def _cyprus_evening_score_line(v2_text: str) -> str:
     return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
 
 
+def _translate_shore_notes(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        d = match.group(1).upper()
+        shore = match.group(2).lower()
+        direction = _DIR_RU.get(d, d)
+        if shore == "none":
+            return f"({direction})"
+        return f"({direction}, {_SHORE_RU.get(shore, shore)})"
+
+    return re.sub(
+        r"\b\((N|NE|E|SE|S|SW|W|NW)/(onshore|offshore|cross|None)\)\b",
+        repl,
+        str(text or ""),
+        flags=re.I,
+    )
+
+
+def _apply_format_v2_test_polish(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_TEST_POLISH"):
+        return v2_text
+    text = _translate_shore_notes(v2_text)
+    text = re.sub(r"\s+,", ",", text)
+    text = re.sub(r"🌙\s+🌙", "🌙", text)
+    return text
+
+
+def _score_value(v2_text: str) -> float | None:
+    return _num(r"VayboMeter\s+завтра:\s*(\d+(?:[\.,]\d+)?)\s*/\s*10", v2_text)
+
+
+def _cyprus_score_conclusion(score: float) -> str:
+    if score >= 8.5:
+        return "День комфортный для обычных дел и прогулок; у моря всё равно стоит сверить ветер утром."
+    if score >= 7:
+        return "День в целом хороший: основные дела можно планировать свободно, а прогулки у моря — с поправкой на ветер и жару."
+    if score >= 5.5:
+        return "День рабочий, но с нагрузкой: лучше тень/вода, короткие прогулки и гибкий план по ветру."
+    return "День лучше вести в бережном режиме: минимум перегрева, больше тени, воды и запасной план."
+
+
+def _replace_conclusion(v2_text: str, conclusion: str) -> str:
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    in_conclusion = False
+    replaced = False
+    for line in lines:
+        if line.strip().startswith("📌 <b>Вывод"):
+            in_conclusion = True
+            replaced = False
+            out.append(line)
+            continue
+        if in_conclusion and not replaced and line.strip():
+            out.append(conclusion)
+            replaced = True
+            in_conclusion = False
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def _apply_score_conclusion(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_TEST_CONCLUSION"):
+        return v2_text
+    score = _score_value(v2_text)
+    if score is None:
+        return v2_text
+    return _replace_conclusion(v2_text, _cyprus_score_conclusion(score))
+
+
 def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
     if not line_to_add:
         return v2_text
@@ -448,6 +534,8 @@ async def main() -> None:
         v2_raw = _inject_morning_best_window(v2_raw, mode)
         v2_raw = _inject_morning_score(v2_raw, mode)
         v2_raw = _inject_evening_score(v2_raw, mode)
+        v2_raw = _apply_format_v2_test_polish(v2_raw)
+        v2_raw = _apply_score_conclusion(v2_raw)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
