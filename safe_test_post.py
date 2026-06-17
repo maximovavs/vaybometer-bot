@@ -331,8 +331,18 @@ def _apply_format_v2_test_polish(v2_text: str) -> str:
     return text
 
 
+def _score_line(v2_text: str) -> str:
+    return next((x.strip() for x in str(v2_text or "").splitlines() if "VayboMeter" in x and "/10" in x), "")
+
+
 def _score_value(v2_text: str) -> float | None:
     return _num(r"VayboMeter\s+завтра:\s*(\d+(?:[\.,]\d+)?)\s*/\s*10", v2_text)
+
+
+def _score_reasons(v2_text: str) -> str:
+    line = _score_line(v2_text)
+    m = re.search(r";\s*(.*?)\.?$", line)
+    return (m.group(1) if m else "").lower()
 
 
 def _cyprus_score_conclusion(score: float) -> str:
@@ -343,6 +353,25 @@ def _cyprus_score_conclusion(score: float) -> str:
     if score >= 5.5:
         return "День рабочий, но с нагрузкой: лучше тень/вода, короткие прогулки и гибкий план по ветру."
     return "День лучше вести в бережном режиме: минимум перегрева, больше тени, воды и запасной план."
+
+
+def _cyprus_reason_conclusion(score: float, reasons: str, v2_text: str) -> str:
+    low = (reasons + " " + _plain(v2_text)).lower()
+    heat = any(x in low for x in ("жара", "тепло", "перегрев"))
+    wind = any(x in low for x in ("порыв", "ветер"))
+    mist = any(x in low for x in ("туман", "дымк"))
+    warning = any(x in low for x in ("шторм", "предупреждение"))
+    if warning:
+        return "День лучше планировать гибко: держать запасной сценарий, сверять предупреждения утром и не перегружать поездки к морю."
+    if heat and wind:
+        return "День лучше проживать в два окна: основные дела утром/вечером, днём — вода и тень; у моря выбирай защищённые места."
+    if heat:
+        return "Главная нагрузка — жара: активность лучше утром или после заката, днём — вода, тень и минимум открытого солнца."
+    if wind:
+        return "Для прогулок у моря выбирай закрытые бухты и защищённые променады; лёгкие вещи лучше закрепить, а ветер сверить утром."
+    if mist:
+        return "Утром возможна дымка: для дороги и прогулок лучше заложить запас времени и сверить видимость по факту."
+    return _cyprus_score_conclusion(score)
 
 
 def _replace_conclusion(v2_text: str, conclusion: str) -> str:
@@ -371,7 +400,100 @@ def _apply_score_conclusion(v2_text: str) -> str:
     score = _score_value(v2_text)
     if score is None:
         return v2_text
+    if _env_on("FORMAT_V2_REASON_CONCLUSION"):
+        return _replace_conclusion(v2_text, _cyprus_reason_conclusion(score, _score_reasons(v2_text), v2_text))
     return _replace_conclusion(v2_text, _cyprus_score_conclusion(score))
+
+
+def _cyprus_main_nuance(v2_text: str) -> str:
+    reasons = _score_reasons(v2_text)
+    low = (reasons + " " + _plain(v2_text)).lower()
+    heat = any(x in low for x in ("жара", "тепло"))
+    wind = any(x in low for x in ("порыв", "ветер"))
+    mist = any(x in low for x in ("туман", "дымк"))
+    if heat and wind:
+        return "⚠️ Главный нюанс: жара в Никосии и порывы у моря."
+    if heat:
+        return "⚠️ Главный нюанс: жара во внутренних районах острова."
+    if wind:
+        return "⚠️ Главный нюанс: порывы у моря — лучше сверить ветер утром."
+    if mist:
+        return "⚠️ Главный нюанс: локальная утренняя дымка/туман."
+    return ""
+
+
+def _insert_main_nuance(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_MAIN_NUANCE") or "⚠️ Главный нюанс:" in v2_text:
+        return v2_text
+    return _inject_after_anchor(v2_text, _cyprus_main_nuance(v2_text), ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
+
+
+def _apply_confidence_polish(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_CONFIDENCE_POLISH"):
+        return v2_text
+    return str(v2_text or "").replace(
+        "✅ Давление/общий фон: можно использовать для планирования дня.",
+        "✅ Общий фон: стабильный — день можно планировать заранее.",
+    )
+
+
+def _apply_astro_cleanup(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_ASTRO_CLEANUP"):
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    in_astro = False
+    astro_details = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(("☀️ <b>Солнце", "🌙 <b>Астроритм")):
+            in_astro = True
+            astro_details = 0
+            out.append(line)
+            continue
+        if in_astro and stripped.startswith(("📌 <b>Вывод", "✅ <b>Рекомендации", "#")):
+            in_astro = False
+        if in_astro and stripped:
+            if stripped.endswith("для первых") or stripped.endswith("и вдо…"):
+                continue
+            if "…" in stripped and len(stripped) > 80:
+                continue
+            if stripped.startswith("✅ В целом:"):
+                line = "✅ Астроритм: благоприятный."
+                stripped = line
+            if not stripped.startswith(("🌅", "🌙", "✅", "💚")):
+                continue
+            astro_details += 1
+            if astro_details > 4:
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def _apply_compact(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_COMPACT"):
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    in_main = False
+    main_text_seen = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("🧭 <b>Главный сценарий"):
+            in_main = True
+            main_text_seen = 0
+            out.append(line)
+            continue
+        if in_main and stripped.startswith(("✨ VayboMeter", "🎯")):
+            in_main = False
+        if in_main and stripped and not stripped.startswith("🧭"):
+            main_text_seen += 1
+            if main_text_seen > 1:
+                continue
+        if stripped.startswith("🧜‍♂️ Отлично: SUP"):
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
@@ -564,8 +686,12 @@ async def main() -> None:
         v2_raw = _inject_morning_score(v2_raw, mode)
         v2_raw = _inject_evening_score(v2_raw, mode)
         v2_raw = _apply_format_v2_test_polish(v2_raw)
+        v2_raw = _apply_confidence_polish(v2_raw)
+        v2_raw = _insert_main_nuance(v2_raw)
+        v2_raw = _apply_astro_cleanup(v2_raw)
         v2_raw = _apply_score_conclusion(v2_raw)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
+        v2_raw = _apply_compact(v2_raw)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
