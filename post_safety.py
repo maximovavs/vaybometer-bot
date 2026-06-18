@@ -42,6 +42,8 @@ _SHORE_RU = {
     "cross": "вдоль берега",
 }
 
+_TEMP_PREFIXES = ("🥵", "😎", "😊", "😌", "🙄", "😮‍💨", "🥶", "🌤", "🌥", "🩵")
+
 _FORBIDDEN_PATTERNS = [
     (re.compile(r"\bKp\s+н/д\b", re.I), "Kp n/a"),
     (re.compile(r"\bКр\s+н/д\b", re.I), "Kp n/a"),
@@ -136,6 +138,37 @@ def _line_should_drop(line: str) -> tuple[bool, str | None]:
     return False, None
 
 
+def _cy_temp_emoji(t: float) -> str:
+    if t >= 34:
+        return "🥵"
+    if t >= 30:
+        return "😎"
+    if t >= 26:
+        return "😊"
+    if t >= 21:
+        return "🌤"
+    return "🥶"
+
+
+def _fix_cy_temperature_emojis(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        prefix = match.group("prefix") or ""
+        city_part = match.group("city") or ""
+        temp_raw = (match.group("temp") or "").replace(",", ".")
+        try:
+            t = float(temp_raw)
+        except Exception:
+            return match.group(0)
+        return f"{prefix}{_cy_temp_emoji(t)} {city_part}{match.group('temp')}/"
+
+    emoji_alt = "|".join(re.escape(x) for x in _TEMP_PREFIXES)
+    pattern = re.compile(
+        rf"^(?P<prefix>\s*)(?:{emoji_alt})\s+(?P<city>[^:\n]+:\s*)(?P<temp>-?\d+(?:[\.,]\d+)?)/",
+        flags=re.M,
+    )
+    return pattern.sub(repl, str(text or ""))
+
+
 def _promote_vaybometer_after_title(text: str) -> str:
     if not _env_on("FORMAT_V2"):
         return text
@@ -219,6 +252,7 @@ def sanitize_post_text(text: str) -> SafetyResult:
 
     safe = "\n".join(out).strip()
     safe = re.sub(r"\n{3,}", "\n\n", safe)
+    safe = _fix_cy_temperature_emojis(safe)
     safe = _promote_vaybometer_after_title(safe)
     safe = _apply_cy_morning_spacing(safe)
     return SafetyResult(text=safe, issues=issues)
