@@ -280,13 +280,13 @@ jobs:
           pip install -r requirements.txt
           pip install "aiogram>=3,<4"
 
-      - name: Post FX only (12:00 MSK)
+      - name: Post FX Market Pulse only (12:00 MSK)
         shell: bash
         run: |
           python <<'PY'
           import os, runpy, sys
 
-          args = ["post_cy.py", "--fx-only"]
+          args = ["post_cy_fx_market_pulse.py"]
 
           wd = (os.getenv("WORK_DATE") or "").strip()
           if wd:
@@ -301,5 +301,5 @@ jobs:
                   args.append("--to-test")
 
           sys.argv = args
-          runpy.run_path("post_cy.py", run_name="__main__")
+          runpy.run_path("post_cy_fx_market_pulse.py", run_name="__main__")
           PY
