@@ -76,23 +76,65 @@ def _fetch_crypto() -> list[str]:
     return out
 
 
-def _fetch_gold() -> list[str]:
+def _fetch_gold_from_stooq(symbol: str) -> float | None:
     try:
         r = requests.get(
             "https://stooq.com/q/l/",
-            params={"s": "xauusd", "f": "sd2t2ohlcv", "h": "", "e": "csv"},
+            params={"s": symbol, "f": "sd2t2ohlcv", "h": "", "e": "csv"},
             timeout=10,
             headers={"User-Agent": "VayboMeter/1.0"},
         )
         r.raise_for_status()
         lines = [x.strip() for x in r.text.splitlines() if x.strip()]
         if len(lines) < 2:
-            return []
+            return None
         parts = lines[-1].split(",")
-        close = _to_float(parts[6]) if len(parts) > 6 else None
-        return [f"🥇 Gold {_fmt_usd_compact(close)}"] if close is not None else []
+        if len(parts) <= 6 or parts[6].upper() == "N/D":
+            return None
+        return _to_float(parts[6])
     except Exception:
-        return []
+        return None
+
+
+def _fetch_gold_from_yahoo(symbol: str) -> float | None:
+    try:
+        r = requests.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+            params={"range": "1d", "interval": "1d"},
+            timeout=10,
+            headers={"User-Agent": "VayboMeter/1.0"},
+        )
+        r.raise_for_status()
+        result = (((r.json() or {}).get("chart") or {}).get("result") or [None])[0] or {}
+        meta = result.get("meta") or {}
+        price = _to_float(meta.get("regularMarketPrice"))
+        if price is not None:
+            return price
+        quote = (((result.get("indicators") or {}).get("quote") or [None])[0] or {})
+        closes = quote.get("close") or []
+        for raw in reversed(closes):
+            price = _to_float(raw)
+            if price is not None:
+                return price
+    except Exception:
+        return None
+    return None
+
+
+def _fetch_gold() -> list[str]:
+    price = None
+    for symbol in ("xauusd", "gc.f"):
+        price = _fetch_gold_from_stooq(symbol)
+        if price is not None:
+            break
+    if price is None:
+        for symbol in ("GC=F", "XAUUSD=X"):
+            price = _fetch_gold_from_yahoo(symbol)
+            if price is not None:
+                break
+    if price is not None:
+        return [f"🥇 Gold {_fmt_usd_compact(price)}"]
+    return ["🥇 Gold н/д"]
 
 
 def build_market_pulse_block() -> str:
