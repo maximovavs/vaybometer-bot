@@ -1,0 +1,67 @@
+name: Safe FX Market Pulse (Cyprus)
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_branch:
+        description: "Branch with safe test code"
+        default: main
+        required: true
+      work_date:
+        description: "Optional date override (YYYY-MM-DD)"
+        required: false
+      send_to_test:
+        description: "Send to CHANNEL_ID_TEST? If false, logs only."
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: safe-fx-market-pulse-cy
+  cancel-in-progress: false
+
+env:
+  TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+  CHANNEL_ID_TEST: ${{ secrets.CHANNEL_ID_TEST }}
+  TZ: Asia/Nicosia
+  VAYBOMETER_CACHE_DIR: ".cache"
+  FX_FORCE: "1"
+
+jobs:
+  safe_fx_market_pulse:
+    name: Build separate FX Market Pulse test post
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.test_branch }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build / optionally send FX Market Pulse test
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=("fx_market_pulse_test.py" "--to-test")
+
+          if [ -n "${{ github.event.inputs.work_date }}" ]; then
+            args+=("--date" "${{ github.event.inputs.work_date }}")
+          fi
+
+          if [ "${{ github.event.inputs.send_to_test }}" = "true" ]; then
+            args+=("--send")
+          fi
+
+          echo "Running: python ${args[*]}"
+          python "${args[@]}"
