@@ -28,7 +28,7 @@ on:
       format_v2:
         description: "FORMAT_V2 для ручного теста/override; расписание morning/evening уже включает V2"
         type: boolean
-        default: false
+        default: true
         required: false
       work_date:
         description: "Переопределить дату (YYYY-MM-DD)"
