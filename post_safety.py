@@ -8,10 +8,8 @@ removes lines that look broken, stale, or low-trust before a post is sent.
 from __future__ import annotations
 
 import html
-import json
 import os
 import re
-import urllib.request
 from dataclasses import dataclass
 from typing import List
 
@@ -171,91 +169,6 @@ def _fix_cy_temperature_emojis(text: str) -> str:
     return pattern.sub(repl, str(text or ""))
 
 
-def _urlopen_text(url: str, timeout: int = 5) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "VayboMeter/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", errors="replace")
-
-
-def _fmt_usd_compact(value: float | None) -> str:
-    if not isinstance(value, (int, float)):
-        return "н/д"
-    v = float(value)
-    if abs(v) >= 1000:
-        return f"${v/1000:.1f}K"
-    if abs(v) >= 100:
-        return f"${v:.0f}"
-    return f"${v:.2f}"
-
-
-def _fmt_pct(value: float | None) -> str:
-    if not isinstance(value, (int, float)):
-        return ""
-    sign = "+" if value >= 0 else "−"
-    return f" ({sign}{abs(value):.1f}% 24ч)"
-
-
-def _fetch_coin_line() -> str:
-    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true"
-    try:
-        data = json.loads(_urlopen_text(url, timeout=6))
-        btc = data.get("bitcoin", {})
-        eth = data.get("ethereum", {})
-        parts = []
-        if isinstance(btc.get("usd"), (int, float)):
-            parts.append(f"₿ BTC {_fmt_usd_compact(float(btc.get('usd')))}{_fmt_pct(btc.get('usd_24h_change'))}")
-        if isinstance(eth.get("usd"), (int, float)):
-            parts.append(f"Ξ ETH {_fmt_usd_compact(float(eth.get('usd')))}{_fmt_pct(eth.get('usd_24h_change'))}")
-        return " • ".join(parts)
-    except Exception:
-        return ""
-
-
-def _fetch_gold_line() -> str:
-    url = "https://stooq.com/q/l/?s=xauusd&f=sd2t2ohlcv&h&e=csv"
-    try:
-        lines = [x.strip() for x in _urlopen_text(url, timeout=6).splitlines() if x.strip()]
-        if len(lines) < 2:
-            return ""
-        parts = lines[-1].split(",")
-        if len(parts) < 7 or parts[6].upper() == "N/D":
-            return ""
-        return f"🥇 Gold {_fmt_usd_compact(float(parts[6]))}"
-    except Exception:
-        return ""
-
-
-def _market_pulse_line() -> str:
-    coin = _fetch_coin_line()
-    gold = _fetch_gold_line()
-    parts = [x for x in (coin, gold) if x]
-    if not parts:
-        return ""
-    return "💱 Рынки: " + " • ".join(parts) + " • индикатор дня, не рекомендация"
-
-
-def _inject_cy_market_pulse(text: str) -> str:
-    if not _env_on("CY_MARKET_PULSE"):
-        return text
-    s = str(text or "")
-    if "💱 Рынки:" in s:
-        return s
-    line = _market_pulse_line()
-    if not line:
-        return s
-    lines = s.splitlines()
-    target_idx = next((i for i, ln in enumerate(lines) if ln.strip().startswith("⚠️ Главный нюанс:")), -1)
-    if target_idx < 0:
-        target_idx = next((i for i, ln in enumerate(lines) if ln.strip().startswith("✨ VayboMeter")), -1)
-    if target_idx < 0:
-        return s
-    insert_at = target_idx + 1
-    payload = [""]
-    payload.append(line)
-    payload.append("")
-    return "\n".join(lines[:insert_at] + payload + lines[insert_at:])
-
-
 def _promote_vaybometer_after_title(text: str) -> str:
     if not _env_on("FORMAT_V2"):
         return text
@@ -341,7 +254,6 @@ def sanitize_post_text(text: str) -> SafetyResult:
     safe = re.sub(r"\n{3,}", "\n\n", safe)
     safe = _fix_cy_temperature_emojis(safe)
     safe = _promote_vaybometer_after_title(safe)
-    safe = _inject_cy_market_pulse(safe)
     safe = _apply_cy_morning_spacing(safe)
     return SafetyResult(text=safe, issues=issues)
 
