@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from visual_context_cy import parse_visual_context_cy
 from visual_rules_cy import apply_visual_rules_cy
+from image_prompt_cy_scene import build_cyprus_scene_prompt
 
 
 def _all_cues(scene) -> str:
@@ -133,6 +135,55 @@ def cy_no_baltic_leak() -> None:
     assert not any(word in positive_cues for word in forbidden)
 
 
+def cy_prompt_morning_sanitized() -> None:
+    message = """
+    <b>Кипр: погода на сегодня</b>
+    Доброе утро. Лимассол +32°, ясно, УФ-индекс 9.
+    Море спокойное, на побережье лёгкая дымка.
+    Moon poster weather card with logo, text and Baltic sunset.
+    """
+    prompt, style = build_cyprus_scene_prompt(message, post_type="morning")
+    low = prompt.lower()
+    assert "mediterranean" in low
+    assert "daylight" in low
+    for forbidden in (
+        "text", "logo", "poster", "card", "moon", "night", "sunset",
+        "baltic", "kaliningrad",
+    ):
+        assert not re.search(rf"\b{forbidden}\b", low)
+    assert style == "cyprus_morning_mediterranean_landscape"
+
+
+def cy_prompt_evening_dust_heat() -> None:
+    message = """
+    Кипр: прогноз на завтра.
+    Никосия: жара до +39°, сухой воздух.
+    Ларнака и Лимассол: пыль, дымка, AQI 118, у моря +35°.
+    """
+    prompt, style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "dust" in low or "haze" in low
+    assert "heat shimmer" in low
+    assert "baltic" not in low
+    assert "kaliningrad" not in low
+    assert style == "cyprus_evening_mediterranean_landscape"
+
+
+def cy_prompt_rain_not_leisure() -> None:
+    message = """
+    Кипр: прогноз на завтра.
+    Пафос и Лимассол: дождь, местами гроза, порывы 13 м/с.
+    На побережье мокро, море неспокойное.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "wet promenade" in low
+    assert "dramatic rain clouds" in low
+    assert "practical rain mood" in low
+    for forbidden in ("beach leisure", "party", "vacation", "poster"):
+        assert forbidden not in low
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -141,6 +192,9 @@ TESTS = [
     cy_inland_heat_nicosia,
     cy_coastal_wind,
     cy_no_baltic_leak,
+    cy_prompt_morning_sanitized,
+    cy_prompt_evening_dust_heat,
+    cy_prompt_rain_not_leisure,
 ]
 
 
