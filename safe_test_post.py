@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import logging
 import os
+from pathlib import Path
 import re
 
 import pendulum
@@ -35,6 +36,11 @@ SEA_CITIES_ORDERED = [
 OTHER_CITIES_ALL = {
     "Nicosia": (35.170, 33.360),
     "Troodos": (34.916, 32.823),
+}
+
+_CY_SAFE_IMAGE_CAPTIONS = {
+    "morning": "🧪 Визуальный вайб сегодняшнего утра на Кипре 🌊",
+    "evening": "🧪 Визуальный вайб сегодняшнего вечера на Кипре 🌊",
 }
 
 _DIR_RU = {
@@ -615,6 +621,98 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
     raise SystemExit("Safe runner refuses production send. Use --to-test or --chat-id explicitly.")
 
 
+def _cy_safe_image_min_bytes() -> int:
+    raw = os.getenv("CY_IMG_MIN_BYTES", "12000").strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise SystemExit(f"CY_IMG_MIN_BYTES должен быть числом, получено: {raw!r}") from exc
+    if value < 1:
+        raise SystemExit("CY_IMG_MIN_BYTES должен быть положительным")
+    return value
+
+
+def _cy_safe_image_output_path(style_name: str) -> Path:
+    safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", style_name).strip("_") or "cyprus_safe"
+    output_dir = Path(os.getenv("CY_SAFE_IMAGE_DIR", ".cache/cy_safe_images"))
+    return output_dir / f"{safe_style}.jpg"
+
+
+async def _build_safe_test_image(
+    final_text: str,
+    mode: str,
+    *,
+    generate_image: bool,
+    send_image_to_test: bool,
+) -> None:
+    if not generate_image:
+        if send_image_to_test:
+            raise SystemExit(
+                "--send-image-to-test требует --generate-image"
+            )
+        return
+
+    image_chat = ""
+    if send_image_to_test:
+        image_chat = os.getenv("CHANNEL_ID_TEST", "").strip()
+        if not image_chat:
+            raise SystemExit(
+                "--send-image-to-test задан, но CHANNEL_ID_TEST не определён"
+            )
+        if not TOKEN:
+            raise SystemExit(
+                "--send-image-to-test задан, но TELEGRAM_TOKEN не определён"
+            )
+
+    from image_prompt_cy_scene import build_cyprus_scene_prompt
+
+    prompt, style_name = build_cyprus_scene_prompt(final_text, post_type=mode)
+    print("\nCY_SAFE_IMAGE_PROMPT_BEGIN")
+    print(prompt)
+    print("CY_SAFE_IMAGE_PROMPT_END")
+    print(f"CY_SAFE_IMAGE_STYLE: {style_name}")
+
+    try:
+        from world_en.imagegen import generate_astro_image
+
+        requested_path = _cy_safe_image_output_path(style_name)
+        requested_path.parent.mkdir(parents=True, exist_ok=True)
+        generated = generate_astro_image(prompt, str(requested_path))
+        if not generated:
+            raise RuntimeError("image backend returned no file")
+
+        image_path = Path(generated)
+        if not image_path.is_file():
+            raise RuntimeError(f"generated image does not exist: {image_path}")
+
+        image_size = image_path.stat().st_size
+        minimum = _cy_safe_image_min_bytes()
+        if image_size <= minimum:
+            raise RuntimeError(
+                f"generated image is too small: {image_size} bytes; "
+                f"must be greater than {minimum}"
+            )
+
+        print(f"CY_SAFE_IMAGE_PATH: {image_path.resolve()}")
+        print(f"CY_SAFE_IMAGE_BYTES: {image_size}")
+
+        if send_image_to_test:
+            image_bot = Bot(token=TOKEN)
+            caption = _CY_SAFE_IMAGE_CAPTIONS[mode]
+            with image_path.open("rb") as photo:
+                await image_bot.send_photo(
+                    chat_id=int(image_chat),
+                    photo=photo,
+                    caption=caption,
+                )
+            logging.info("CY SAFE IMAGE sent to test chat=%s", image_chat)
+    except Exception as exc:
+        logging.exception(
+            "CY SAFE IMAGE failed; existing text safe-test flow will continue: %s",
+            exc,
+        )
+
+
 class _TodayPatch:
     def __init__(self, base_date: pendulum.DateTime):
         self.base_date = base_date
@@ -650,6 +748,8 @@ async def main() -> None:
     parser.add_argument("--chat-id", default="")
     parser.add_argument("--format-v2", action="store_true", help="Build scenario-style FORMAT_V2 text after legacy sanitizing.")
     parser.add_argument("--send", action="store_true", help="Actually send to CHANNEL_ID_TEST / --chat-id. Omit for dry-run.")
+    parser.add_argument("--generate-image", action="store_true", help="Generate a Cyprus safe-test image after final text is built.")
+    parser.add_argument("--send-image-to-test", action="store_true", help="Send the generated image only to CHANNEL_ID_TEST.")
     parser.add_argument("--no-test-label", action="store_true", help="Do not prepend the 'Test safe post' label when sending.")
     args = parser.parse_args()
 
@@ -710,6 +810,13 @@ async def main() -> None:
     print(f"\n===== {final_label} BEGIN =====\n")
     print(final_result.text)
     print(f"\n===== {final_label} END =====\n")
+
+    await _build_safe_test_image(
+        final_result.text,
+        mode,
+        generate_image=args.generate_image,
+        send_image_to_test=args.send_image_to_test,
+    )
 
     if not args.send:
         logging.info("SAFE DRY-RUN: отправка пропущена, format_v2=%s, chunks=%d", use_format_v2, len(chunks))

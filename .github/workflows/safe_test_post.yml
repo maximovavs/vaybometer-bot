@@ -58,6 +58,16 @@ on:
         type: boolean
         default: false
         required: false
+      generate_image:
+        description: "Generate an opt-in Cyprus safe-test image"
+        type: boolean
+        default: false
+        required: false
+      send_image_to_test:
+        description: "Send generated image only to CHANNEL_ID_TEST"
+        type: boolean
+        default: false
+        required: false
       for_tomorrow:
         description: "Shift base date by +1 day"
         type: boolean
@@ -80,6 +90,8 @@ env:
   OWM_KEY: ${{ secrets.OWM_KEY }}
   POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN }}
   STABLE_HORDE_API_KEY: ${{ secrets.STABLE_HORDE_API_KEY }}
+  CUSTOM_IMAGE_API_KEY: ${{ secrets.CUSTOM_IMAGE_API_KEY }}
+  CY_IMG_MIN_BYTES: "12000"
   TZ: Asia/Nicosia
   VAYBOMETER_CACHE_DIR: ".cache"
   CY_IMG_ENABLED: "0"
@@ -135,6 +147,8 @@ jobs:
           echo "FORMAT_V2_MAIN_NUANCE: $FORMAT_V2_MAIN_NUANCE"
           echo "FORMAT_V2_ASTRO_CLEANUP: $FORMAT_V2_ASTRO_CLEANUP"
           echo "FORMAT_V2_CONFIDENCE_POLISH: $FORMAT_V2_CONFIDENCE_POLISH"
+          echo "GENERATE_IMAGE: ${{ github.event.inputs.generate_image }}"
+          echo "SEND_IMAGE_TO_TEST: ${{ github.event.inputs.send_image_to_test }}"
 
       - uses: actions/setup-python@v5
         with:
@@ -166,6 +180,14 @@ jobs:
 
           if [ "${{ github.event.inputs.send_to_test }}" = "true" ]; then
             args+=("--to-test" "--send")
+          fi
+
+          if [ "${{ github.event.inputs.generate_image }}" = "true" ]; then
+            args+=("--generate-image")
+          fi
+
+          if [ "${{ github.event.inputs.send_image_to_test }}" = "true" ]; then
+            args+=("--send-image-to-test")
           fi
 
           echo "Running: python ${args[*]}"
