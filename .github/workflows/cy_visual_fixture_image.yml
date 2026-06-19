@@ -1,0 +1,165 @@
+name: Cyprus Visual Fixture Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      post_type:
+        description: "Fixture post type"
+        type: choice
+        options:
+          - morning
+          - evening
+        default: evening
+        required: true
+      scenario:
+        description: "Synthetic Cyprus weather scenario"
+        type: choice
+        options:
+          - clear_hot
+          - dust_haze
+          - rain
+          - storm
+          - coastal_wind
+          - inland_heat
+        default: clear_hot
+        required: true
+      generate_image:
+        description: "Generate an image with the existing backend"
+        type: boolean
+        default: false
+        required: false
+      send_image_to_test:
+        description: "Send generated photo to CHANNEL_ID_TEST"
+        type: boolean
+        default: false
+        required: false
+      caption:
+        description: "Optional Telegram test-photo caption"
+        type: string
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cy-visual-fixture-image
+  cancel-in-progress: false
+
+env:
+  TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+  CHANNEL_ID_TEST: ${{ secrets.CHANNEL_ID_TEST }}
+  POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN }}
+  STABLE_HORDE_API_KEY: ${{ secrets.STABLE_HORDE_API_KEY }}
+  CUSTOM_IMAGE_API_KEY: ${{ secrets.CUSTOM_IMAGE_API_KEY }}
+  CY_IMG_MIN_BYTES: "12000"
+
+jobs:
+  fixture:
+    name: Build Cyprus visual fixture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create FORMAT_V2-like fixture
+        shell: bash
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          set -euo pipefail
+          case "$SCENARIO" in
+            clear_hot)
+              cat > fixture.txt <<'EOF'
+          <b>Кипр: погода на сегодня</b>
+          ☀️ Ясно и жарко: Лимассол +34°, Ларнака +35°, Никосия +38°.
+          УФ-индекс 9 — высокий. Ветер 4 м/с, порывы до 7 м/с.
+          Море у Ларнаки +28°, вода спокойная, на побережье солнечно.
+          EOF
+              ;;
+            dust_haze)
+              cat > fixture.txt <<'EOF'
+          <b>Кипр: прогноз на завтра</b>
+          Лимассол +33°, Ларнака +34°, Никосия +37°.
+          Пыль из Сахары, заметная дымка, AQI 118, влажность у моря 68%.
+          УФ-индекс 8. Ветер 5 м/с, порывы до 9 м/с. Вода +27°.
+          EOF
+              ;;
+            rain)
+              cat > fixture.txt <<'EOF'
+          <b>Кипр: прогноз на завтра</b>
+          Пафос +24°, Лимассол +25°: дождь и плотная облачность.
+          На побережье мокро, море неспокойное, вода +23°.
+          УФ-индекс 2. Ветер 8 м/с, порывы до 13 м/с.
+          EOF
+              ;;
+            storm)
+              cat > fixture.txt <<'EOF'
+          <b>Кипр: прогноз на завтра</b>
+          Пафос и Лимассол: гроза, ливень и шторм, температура +22–25°.
+          На побережье сильный прибой, море бурное, вода +22°.
+          УФ-индекс 1. Ветер 12 м/с, порывы до 20 м/с.
+          EOF
+              ;;
+            coastal_wind)
+              cat > fixture.txt <<'EOF'
+          <b>Кипр: погода на сегодня</b>
+          Ларнака +29°, Лимассол +30°, Пафос +28°.
+          На побережье ветер 9 м/с, порывы до 14 м/с, выраженный морской бриз.
+          УФ-индекс 7. Море с умеренной волной, вода +26°.
+          EOF
+              ;;
+            inland_heat)
+              cat > fixture.txt <<'EOF'
+          <b>Кипр: прогноз на завтра</b>
+          Никосия: жара до +40°, сухой воздух и сильный УФ-индекс 10.
+          Лимассол +33°, Ларнака +34°, у моря вода +28°.
+          Ветер 3 м/с, порывы до 6 м/с, AQI 62.
+          EOF
+              ;;
+            *)
+              echo "Unknown scenario: $SCENARIO" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Compile Cyprus visual modules
+        run: |
+          python -m py_compile \
+            visual_context_cy.py \
+            visual_rules_cy.py \
+            image_prompt_cy_scene.py \
+            tools/cy_visual_fixture_image.py
+
+      - name: Run Cyprus synthetic visual checks
+        run: python tools/test_visual_cy.py
+
+      - name: Build prompt and optionally generate/send fixture image
+        shell: bash
+        env:
+          POST_TYPE: ${{ inputs.post_type }}
+          GENERATE_IMAGE: ${{ inputs.generate_image }}
+          SEND_IMAGE_TO_TEST: ${{ inputs.send_image_to_test }}
+          FIXTURE_CAPTION: ${{ inputs.caption }}
+        run: |
+          set -euo pipefail
+          args=(
+            "tools/cy_visual_fixture_image.py"
+            "--message-file" "fixture.txt"
+            "--post-type" "$POST_TYPE"
+            "--generate-image" "$GENERATE_IMAGE"
+            "--send-image-to-test" "$SEND_IMAGE_TO_TEST"
+          )
+          if [ -n "$FIXTURE_CAPTION" ]; then
+            args+=("--caption" "$FIXTURE_CAPTION")
+          fi
+          python "${args[@]}"
