@@ -3,11 +3,11 @@ name: Daily VayboMeter (Cyprus)
 on:
   schedule:
     # Утренний пост: ~08:30 на Кипре летом / ~07:30 зимой (UTC only)
-    - cron: '30 5 * * *'
+    - cron: '30 2 * * *'
     # Вечерний пост: 14:00 UTC (≈17:00 на Кипре летом / 16:00 зимой)
-    - cron: '0 14 * * *'
+    - cron: '0 11 * * *'
     # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
-    - cron: '0 9 * * *'
+    - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
       run_morning:
