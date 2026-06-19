@@ -136,6 +136,19 @@ def _qualitative_level(line: str, kind: str) -> Optional[str]:
     return None
 
 
+def _normalized_sea_state(lines: list[str]) -> Optional[str]:
+    low = " ".join(lines).lower()
+    if not low:
+        return None
+    if any(token in low for token in ("шторм", "бурн", "сильн", "неспокойн", "прибой")):
+        return "rough"
+    if any(token in low for token in ("волн", "бриз")):
+        return "breezy"
+    if any(token in low for token in ("штиль", "спокойн")):
+        return "calm"
+    return "present"
+
+
 def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> VisualContextCY:
     """Parse finalized Cyprus FORMAT_V2 text without network or model calls."""
     if not isinstance(text, str):
@@ -307,11 +320,14 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
         humidity_hint = "present"
 
     coastal_focus = bool(coastal_lines)
-    inland_heat_focus = nicosia_hot or (
+    inland_heat_candidate = nicosia_hot or (
         temp_max is not None
         and temp_max >= 33
         and any("nicosia" in _cities_in_line(line.lower()) for line in city_lines)
     )
+    # An explicit Cyprus coast/sea/city mention wins over inland heat. Nicosia
+    # becomes the scene focus only for genuinely inland-only source material.
+    inland_heat_focus = inland_heat_candidate and not coastal_focus
     if troodos_relevant:
         evidence["weather_lines"].append("INLAND_MOUNTAIN_RELEVANCE: Troodos")
 
@@ -327,7 +343,7 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
         aqi_level=aqi_level,
         dust_hint="; ".join(dust_lines) if dust_lines else None,
         sea_temp=max(sea_temps) if sea_temps else None,
-        sea_state_hint="; ".join(sea_state_lines) if sea_state_lines else None,
+        sea_state_hint=_normalized_sea_state(sea_state_lines),
         coastal_focus=coastal_focus,
         inland_heat_focus=inland_heat_focus,
         city_weather_lines=city_lines,

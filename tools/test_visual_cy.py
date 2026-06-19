@@ -91,7 +91,6 @@ def cy_inland_heat_nicosia() -> None:
     text = """
     Кипр: погода на завтра.
     Никосия: жара до +39°, сухо и без ветра.
-    Лимассол: +32°.
     """
     ctx = parse_visual_context_cy(text)
     scene = apply_visual_rules_cy(ctx)
@@ -184,6 +183,46 @@ def cy_prompt_rain_not_leisure() -> None:
         assert forbidden not in low
 
 
+def cy_prompt_no_raw_source_hints() -> None:
+    message = """
+    <b>Кипр: погода на завтра</b>
+    Ларнака +34°, Никосия +38°.
+    Море у Ларнаки +28°, вода спокойная, на побережье солнечно.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    assert "source" not in prompt.lower()
+    assert "°" not in prompt
+    assert not re.search(r"[\u0400-\u04FF]", prompt)
+    assert "<b>" not in prompt.lower()
+
+
+def cy_prompt_coastal_priority_over_nicosia() -> None:
+    message = """
+    Кипр: прогноз на завтра.
+    Лимассол +34°, Ларнака +35°, Никосия +39°.
+    Море у Ларнаки +28°, вода спокойная, на побережье жарко.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "mediterranean coast" in low or "coastal" in low
+    assert "nicosia inland" not in low
+
+
+def cy_prompt_inland_only_when_no_coast() -> None:
+    message = """
+    Кипр: прогноз на завтра.
+    Никосия: жара до +40°, сухой воздух, УФ-индекс 10.
+    Ветер 3 м/с, порывы до 6 м/с.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "nicosia" in low
+    assert "inland" in low
+    assert "uninterrupted sea and coast" not in low
+    assert "mediterranean coast" not in low
+    assert "coastal promenade" not in low
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -195,6 +234,9 @@ TESTS = [
     cy_prompt_morning_sanitized,
     cy_prompt_evening_dust_heat,
     cy_prompt_rain_not_leisure,
+    cy_prompt_no_raw_source_hints,
+    cy_prompt_coastal_priority_over_nicosia,
+    cy_prompt_inland_only_when_no_coast,
 ]
 
 

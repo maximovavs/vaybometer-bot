@@ -44,10 +44,10 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     dusty = ctx.weather_main == "dusty" or bool(ctx.dust_hint)
     windy = _is_windy(ctx)
 
-    if ctx.inland_heat_focus:
-        base_scene = "Cyprus dry urban inland scene in Nicosia"
-    elif ctx.coastal_focus:
+    if ctx.coastal_focus:
         base_scene = "Cyprus Mediterranean coast with a Limassol or Larnaca promenade"
+    elif ctx.inland_heat_focus:
+        base_scene = "Cyprus dry urban inland scene in Nicosia"
     else:
         base_scene = "Cyprus Mediterranean coast with palms and local stone architecture"
 
@@ -79,11 +79,16 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     elif windy:
         sea_cue = "visible sea breeze across the promenade, palms and water surface"
     elif ctx.coastal_focus:
-        sea_cue = "Mediterranean water beside a Cyprus promenade or rocky coast"
+        if ctx.sea_state_hint == "calm":
+            sea_cue = "calm warm sea surface beside a Cyprus coastal promenade"
+        elif ctx.sea_state_hint == "rough":
+            sea_cue = "active Mediterranean sea beside a weather-exposed Cyprus coast"
+        else:
+            sea_cue = "Mediterranean water beside a Cyprus promenade or rocky coast"
+    elif ctx.inland_heat_focus:
+        sea_cue = "dry inland horizon with sun-warmed stone and urban depth"
     else:
         sea_cue = "Mediterranean sea present as quiet geographic context"
-    if ctx.sea_state_hint:
-        sea_cue += f"; source sea-state hint: {ctx.sea_state_hint}"
 
     air_parts: list[str] = []
     if dusty:
@@ -98,12 +103,12 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
 
     if wet:
         activity_cue = "sheltered pedestrians on a wet promenade; no beach leisure mood"
-    elif ctx.inland_heat_focus:
-        activity_cue = "quiet shaded Nicosia street, sparse midday activity, practical heat avoidance"
     elif windy:
         activity_cue = "coastal walking scene with palms responding to the sea breeze"
     elif ctx.coastal_focus:
         activity_cue = "practical coastal promenade activity, relaxed but weather-aware"
+    elif ctx.inland_heat_focus:
+        activity_cue = "quiet shaded Nicosia street, sparse midday activity, practical heat avoidance"
     else:
         activity_cue = "subtle everyday Cyprus life, not object-focused"
 
@@ -121,7 +126,7 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     must_show = ["recognizable Cyprus Mediterranean character"]
     if ctx.coastal_focus:
         must_show.extend(["Mediterranean coast", "Cyprus promenade or rocky shoreline", "palm trees"])
-    if ctx.inland_heat_focus:
+    if ctx.inland_heat_focus and not ctx.coastal_focus:
         must_show.extend(["dry Nicosia urban heat", "shade and sun-baked stone"])
     if wet:
         must_show.extend(["wet promenade surfaces", "dramatic rain clouds"])
@@ -168,6 +173,7 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
             "wind_rule": windy,
             "coastal_focus": ctx.coastal_focus,
             "inland_heat_focus": ctx.inland_heat_focus,
+            "sea_state_hint": ctx.sea_state_hint,
             "uv_level": ctx.uv_level,
         },
     )

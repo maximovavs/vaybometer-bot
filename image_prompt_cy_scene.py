@@ -51,13 +51,23 @@ _CITY_PATTERNS = (
     ("Ayia Napa", (r"\bayia[\s-]+napa\b", r"айя[\s-]+напа")),
 )
 
-_SAFE_FOUNDATION = (
+_COASTAL_FOUNDATION = (
     "pure full-frame Mediterranean landscape",
     "natural open sky",
     "uninterrupted sea and coast",
     "clean scenic composition",
     "human-made objects only distant and non-focal",
     "practical weather mood",
+    "Mediterranean coastal weather mood",
+    "coastal promenade and palm silhouettes as background",
+)
+_INLAND_FOUNDATION = (
+    "pure full-frame inland Cyprus landscape",
+    "natural open sky",
+    "sun-baked Nicosia urban depth",
+    "clean scenic composition",
+    "human-made objects only distant and non-focal",
+    "practical hot-weather mood",
 )
 
 
@@ -76,7 +86,26 @@ def sanitize_cyprus_scene_prompt(prompt: str, *, post_type: str) -> str:
     if mode not in {"morning", "evening"}:
         raise ValueError("post_type must be 'morning' or 'evening'")
 
-    cleaned = str(prompt)
+    cleaned = re.sub(r"<[^>]*>", " ", str(prompt))
+    cleaned = re.sub(r"\bsource\b[^;]*", " ", cleaned, flags=re.I)
+    cleaned = re.sub(
+        r"[-+]?\d+(?:[.,]\d+)?\s*°\s*[cCfFСс]?",
+        " ",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\b(?:UV|AQI)\s*[-:=]?\s*\d+(?:[.,]\d+)?\b",
+        " ",
+        cleaned,
+        flags=re.I,
+    )
+    cleaned = re.sub(
+        r"[-+]?\d+(?:[.,]\d+)?\s*(?:m/s|km/h|м/с|км/ч|%)",
+        " ",
+        cleaned,
+        flags=re.I,
+    )
+    cleaned = re.sub(r"[\u0400-\u04FF]+", " ", cleaned)
     patterns = list(_GENERAL_TRIGGER_PATTERNS) + list(_FOCAL_OBJECT_PATTERNS)
     if mode == "morning":
         patterns.extend(_MORNING_TRIGGER_PATTERNS)
@@ -101,16 +130,18 @@ def _location_cue(message: str, ctx: VisualContextCY) -> str:
         if any(re.search(pattern, low, flags=re.I) for pattern in patterns)
     ]
 
+    if ctx.coastal_focus:
+        if "Paphos" in found:
+            return "Paphos rocky Mediterranean coast as the geographic setting"
+        if "Larnaca" in found:
+            return "Larnaca seafront promenade with palms and distant marina silhouettes"
+        if "Limassol" in found:
+            return "Limassol Mediterranean promenade with palms and distant marina silhouettes"
+        if "Ayia Napa" in found:
+            return "Ayia Napa eastern Cyprus coast with clear Mediterranean shoreline"
+        return "Cyprus Mediterranean coast with palms and local stone architecture"
     if "Nicosia" in found and ctx.inland_heat_focus:
         return "Nicosia inland Cyprus with sun-baked stone streets and shaded urban depth"
-    if "Paphos" in found:
-        return "Paphos rocky Mediterranean coast as the geographic setting"
-    if "Larnaca" in found:
-        return "Larnaca seafront promenade with palms and distant marina silhouettes"
-    if "Limassol" in found:
-        return "Limassol Mediterranean promenade with palms and distant marina silhouettes"
-    if "Ayia Napa" in found:
-        return "Ayia Napa eastern Cyprus coast with clear Mediterranean shoreline"
     if ctx.inland_heat_focus:
         return "dry inland Cyprus urban setting with Nicosia character"
     return "Cyprus Mediterranean coast with palms and local stone architecture"
@@ -142,10 +173,14 @@ def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
         cues.append("dust haze with muted beige-gold atmospheric depth")
     if scene.diagnostics.get("hot_rule"):
         cues.append("visible heat shimmer above sun-warmed stone and dry air")
+        if ctx.coastal_focus and ctx.post_type == "evening":
+            cues.append("clear hot Cyprus evening air")
     if ctx.uv_level in {"high", "extreme"}:
         cues.append("strong direct sunlight with crisp daylight contrast")
     if ctx.humidity_hint in {"high", "present"}:
         cues.append("soft humid sea haze along the coast")
+    if ctx.coastal_focus and ctx.sea_state_hint == "calm":
+        cues.append("calm warm sea surface")
 
     return cues
 
@@ -168,14 +203,20 @@ def build_cyprus_scene_prompt(
         if mode == "morning"
         else "warm Mediterranean late-day atmosphere with soft golden dusk light"
     )
+    foundation = _COASTAL_FOUNDATION if ctx.coastal_focus or not ctx.inland_heat_focus else _INLAND_FOUNDATION
     prompt_parts = [
-        *_SAFE_FOUNDATION,
+        *foundation,
         _location_cue(final_format_v2_message, ctx),
         time_cue,
         *_weather_cues(ctx, scene),
-        "palms and promenade integrated as environmental background",
-        "distant marina silhouettes as subtle non-focal background detail",
     ]
+    if ctx.coastal_focus or not ctx.inland_heat_focus:
+        prompt_parts.extend(
+            [
+                "palms and promenade integrated as environmental background",
+                "distant marina silhouettes as subtle non-focal background detail",
+            ]
+        )
     prompt = sanitize_cyprus_scene_prompt(
         "; ".join(part for part in prompt_parts if part),
         post_type=mode,
