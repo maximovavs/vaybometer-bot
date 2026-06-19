@@ -58,6 +58,10 @@ env:
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
+  POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN }}
+  STABLE_HORDE_API_KEY: ${{ secrets.STABLE_HORDE_API_KEY }}
+  CUSTOM_IMAGE_API_KEY: ${{ secrets.CUSTOM_IMAGE_API_KEY }}
+  CY_IMG_MIN_BYTES: "12000"
 
   GEN_SKIP_SHORT: "1"
   DISABLE_LLM_DAILY: "0"
@@ -144,11 +148,11 @@ jobs:
               if wd:
                   args += ["--date", wd]
               if chat_override:
-                  args += ["--chat-id", chat_override, "--send", "--no-test-label"]
+                  args += ["--chat-id", chat_override, "--send", "--no-test-label", "--generate-image", "--send-image-to-chat"]
               elif to_test:
-                  args += ["--to-test", "--send"]
+                  args += ["--to-test", "--send", "--generate-image", "--send-image-to-test"]
               elif scheduled_run and production_chat:
-                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label", "--generate-image", "--send-image-to-chat"]
               else:
                   print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
               sys.argv = args
@@ -220,11 +224,11 @@ jobs:
               if wd:
                   args += ["--date", wd]
               if chat_override:
-                  args += ["--chat-id", chat_override, "--send", "--no-test-label"]
+                  args += ["--chat-id", chat_override, "--send", "--no-test-label", "--generate-image", "--send-image-to-chat"]
               elif to_test:
-                  args += ["--to-test", "--send"]
+                  args += ["--to-test", "--send", "--generate-image", "--send-image-to-test"]
               elif scheduled_run and production_chat:
-                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label", "--generate-image", "--send-image-to-chat"]
               else:
                   print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
               sys.argv = args

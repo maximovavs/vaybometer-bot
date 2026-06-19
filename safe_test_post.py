@@ -38,9 +38,13 @@ OTHER_CITIES_ALL = {
     "Troodos": (34.916, 32.823),
 }
 
-_CY_SAFE_IMAGE_CAPTIONS = {
+_CY_TEST_IMAGE_CAPTIONS = {
     "morning": "🧪 Визуальный вайб сегодняшнего утра на Кипре 🌊",
     "evening": "🧪 Визуальный вайб сегодняшнего вечера на Кипре 🌊",
+}
+_CY_CHAT_IMAGE_CAPTIONS = {
+    "morning": "Визуальный вайб сегодняшнего утра на Кипре 🌊",
+    "evening": "Визуальный вайб завтрашнего вечера на Кипре 🌊",
 }
 
 _DIR_RU = {
@@ -644,24 +648,46 @@ async def _build_safe_test_image(
     *,
     generate_image: bool,
     send_image_to_test: bool,
+    send_image_to_chat: bool,
+    image_chat_id: int | None,
 ) -> None:
+    if send_image_to_test and send_image_to_chat:
+        raise SystemExit(
+            "--send-image-to-test и --send-image-to-chat нельзя использовать вместе"
+        )
+
     if not generate_image:
-        if send_image_to_test:
+        if send_image_to_test or send_image_to_chat:
             raise SystemExit(
-                "--send-image-to-test требует --generate-image"
+                "Отправка изображения требует --generate-image"
             )
         return
 
-    image_chat = ""
+    image_chat: int | None = None
+    image_caption = ""
     if send_image_to_test:
-        image_chat = os.getenv("CHANNEL_ID_TEST", "").strip()
-        if not image_chat:
+        test_chat = os.getenv("CHANNEL_ID_TEST", "").strip()
+        if not test_chat:
             raise SystemExit(
                 "--send-image-to-test задан, но CHANNEL_ID_TEST не определён"
             )
+        try:
+            image_chat = int(test_chat)
+        except ValueError as exc:
+            raise SystemExit("CHANNEL_ID_TEST должен быть числом") from exc
+        image_caption = _CY_TEST_IMAGE_CAPTIONS[mode]
+    elif send_image_to_chat:
+        if image_chat_id is None:
+            raise SystemExit(
+                "--send-image-to-chat требует явно разрешённый --chat-id или --to-test"
+            )
+        image_chat = image_chat_id
+        image_caption = _CY_CHAT_IMAGE_CAPTIONS[mode]
+
+    if image_chat is not None:
         if not TOKEN:
             raise SystemExit(
-                "--send-image-to-test задан, но TELEGRAM_TOKEN не определён"
+                "Для отправки изображения TELEGRAM_TOKEN должен быть определён"
             )
 
     from image_prompt_cy_scene import build_cyprus_scene_prompt
@@ -696,16 +722,15 @@ async def _build_safe_test_image(
         print(f"CY_SAFE_IMAGE_PATH: {image_path.resolve()}")
         print(f"CY_SAFE_IMAGE_BYTES: {image_size}")
 
-        if send_image_to_test:
+        if image_chat is not None:
             image_bot = Bot(token=TOKEN)
-            caption = _CY_SAFE_IMAGE_CAPTIONS[mode]
             with image_path.open("rb") as photo:
                 await image_bot.send_photo(
-                    chat_id=int(image_chat),
+                    chat_id=image_chat,
                     photo=photo,
-                    caption=caption,
+                    caption=image_caption,
                 )
-            logging.info("CY SAFE IMAGE sent to test chat=%s", image_chat)
+            logging.info("CY SAFE IMAGE sent before text to chat=%s", image_chat)
     except Exception as exc:
         logging.exception(
             "CY SAFE IMAGE failed; existing text safe-test flow will continue: %s",
@@ -750,8 +775,18 @@ async def main() -> None:
     parser.add_argument("--send", action="store_true", help="Actually send to CHANNEL_ID_TEST / --chat-id. Omit for dry-run.")
     parser.add_argument("--generate-image", action="store_true", help="Generate a Cyprus safe-test image after final text is built.")
     parser.add_argument("--send-image-to-test", action="store_true", help="Send the generated image only to CHANNEL_ID_TEST.")
+    parser.add_argument("--send-image-to-chat", action="store_true", help="Send the generated image to the same explicitly resolved chat as the text post.")
     parser.add_argument("--no-test-label", action="store_true", help="Do not prepend the 'Test safe post' label when sending.")
     args = parser.parse_args()
+
+    if args.send_image_to_test and args.send_image_to_chat:
+        raise SystemExit(
+            "--send-image-to-test и --send-image-to-chat нельзя использовать вместе"
+        )
+    if args.send_image_to_chat and not args.generate_image:
+        raise SystemExit("--send-image-to-chat требует --generate-image")
+    if args.send_image_to_chat and not args.send:
+        raise SystemExit("--send-image-to-chat требует --send")
 
     mode = (args.mode or "evening").strip().lower()
     os.environ["POST_MODE"] = mode
@@ -811,11 +846,17 @@ async def main() -> None:
     print(final_result.text)
     print(f"\n===== {final_label} END =====\n")
 
+    resolved_text_chat_id: int | None = None
+    if args.send_image_to_chat:
+        resolved_text_chat_id = resolve_chat_id(args.chat_id, args.to_test)
+
     await _build_safe_test_image(
         final_result.text,
         mode,
         generate_image=args.generate_image,
         send_image_to_test=args.send_image_to_test,
+        send_image_to_chat=args.send_image_to_chat,
+        image_chat_id=resolved_text_chat_id,
     )
 
     if not args.send:
@@ -824,7 +865,11 @@ async def main() -> None:
 
     if not TOKEN:
         raise SystemExit("TELEGRAM_TOKEN не задан")
-    chat_id = resolve_chat_id(args.chat_id, args.to_test)
+    chat_id = (
+        resolved_text_chat_id
+        if resolved_text_chat_id is not None
+        else resolve_chat_id(args.chat_id, args.to_test)
+    )
     bot = Bot(token=TOKEN)
     for idx, chunk in enumerate(chunks, start=1):
         if args.no_test_label:
