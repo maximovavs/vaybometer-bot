@@ -2,11 +2,11 @@ name: Daily VayboMeter (Cyprus)
 
 on:
   schedule:
-    # Утренний пост: ~08:30 на Кипре летом / ~07:30 зимой (UTC only)
+    # Утренний пост: 02:30 UTC ≈ 05:30 на Кипре летом / 04:30 зимой
     - cron: '30 2 * * *'
-    # Вечерний пост: 14:00 UTC (≈17:00 на Кипре летом / 16:00 зимой)
+    # Вечерний пост: 11:00 UTC ≈ 14:00 на Кипре летом / 13:00 зимой
     - cron: '0 11 * * *'
-    # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
+    # Курсы валют: 07:00 UTC
     - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
@@ -29,6 +29,11 @@ on:
         description: "FORMAT_V2 для ручного теста/override; расписание morning/evening уже включает V2"
         type: boolean
         default: true
+        required: false
+      publish_to_prod:
+        description: "Публиковать в основной канал?"
+        type: boolean
+        default: false
         required: false
       work_date:
         description: "Переопределить дату (YYYY-MM-DD)"
@@ -83,6 +88,7 @@ env:
   TZ: Asia/Nicosia
   WORK_DATE: ${{ github.event.inputs.work_date || '' }}
   TO_TEST:   ${{ github.event.inputs.to_test || 'false' }}
+  PUBLISH_TO_PROD: ${{ github.event.inputs.publish_to_prod || 'false' }}
 
   # Постоянная папка кэша (fx_cache.json / fx_inter_cache.json и др.)
   VAYBOMETER_CACHE_DIR: ".cache"
@@ -98,7 +104,7 @@ jobs:
     name: Morning post (for today)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '30 5 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '30 2 * * *') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_morning == 'true')
     steps:
       - uses: actions/checkout@v4
@@ -139,6 +145,7 @@ jobs:
           scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
           format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           to_test = (os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on"))
+          publish_to_prod = (os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on"))
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           production_chat = (os.getenv("CHANNEL_ID") or "").strip()
           wd = (os.getenv("WORK_DATE") or "").strip()
@@ -153,8 +160,12 @@ jobs:
                   args += ["--to-test", "--send", "--generate-image", "--send-image-to-test"]
               elif scheduled_run and production_chat:
                   args += ["--chat-id", production_chat, "--send", "--no-test-label", "--generate-image", "--send-image-to-chat"]
+              elif publish_to_prod:
+                  if not production_chat:
+                      raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID не определён")
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label", "--generate-image", "--send-image-to-chat"]
               else:
-                  print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
+                  print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
               sys.argv = args
               runpy.run_path("safe_test_post.py", run_name="__main__")
               raise SystemExit(0)
@@ -166,6 +177,10 @@ jobs:
               args += ["--chat-id", chat_override]
           elif to_test:
               args.append("--to-test")
+          elif publish_to_prod:
+              if not production_chat:
+                  raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID не определён")
+              args += ["--chat-id", production_chat]
           sys.argv = args
           runpy.run_path("post_cy.py", run_name="__main__")
           PY
@@ -174,7 +189,7 @@ jobs:
     name: Evening post (for tomorrow)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 14 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 11 * * *') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_evening == 'true')
     steps:
       - uses: actions/checkout@v4
@@ -215,6 +230,7 @@ jobs:
           scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
           format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
+          publish_to_prod = (os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on"))
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           production_chat = (os.getenv("CHANNEL_ID") or "").strip()
           wd = (os.getenv("WORK_DATE") or "").strip()
@@ -229,8 +245,12 @@ jobs:
                   args += ["--to-test", "--send", "--generate-image", "--send-image-to-test"]
               elif scheduled_run and production_chat:
                   args += ["--chat-id", production_chat, "--send", "--no-test-label", "--generate-image", "--send-image-to-chat"]
+              elif publish_to_prod:
+                  if not production_chat:
+                      raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID не определён")
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label", "--generate-image", "--send-image-to-chat"]
               else:
-                  print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
+                  print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
               sys.argv = args
               runpy.run_path("safe_test_post.py", run_name="__main__")
               raise SystemExit(0)
@@ -242,9 +262,12 @@ jobs:
 
           if chat_override:
               args += ["--chat-id", chat_override]
-          else:
-              if to_test:
-                  args.append("--to-test")
+          elif to_test:
+              args.append("--to-test")
+          elif publish_to_prod:
+              if not production_chat:
+                  raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID не определён")
+              args += ["--chat-id", production_chat]
 
           sys.argv = args
           runpy.run_path("post_cy.py", run_name="__main__")
@@ -254,7 +277,7 @@ jobs:
     name: Noon FX only (12:00 MSK)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 7 * * *') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_noon_fx == 'true')
     steps:
       - uses: actions/checkout@v4
@@ -301,8 +324,14 @@ jobs:
               args += ["--chat-id", chat_override]
           else:
               to_test = (os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on"))
+              publish_to_prod = (os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on"))
+              production_chat = (os.getenv("CHANNEL_ID") or "").strip()
               if to_test:
                   args.append("--to-test")
+              elif publish_to_prod:
+                  if not production_chat:
+                      raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID не определён")
+                  args += ["--chat-id", production_chat]
 
           sys.argv = args
           runpy.run_path("post_cy_fx_market_pulse.py", run_name="__main__")
