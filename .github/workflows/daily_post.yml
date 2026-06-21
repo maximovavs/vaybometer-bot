@@ -4,8 +4,8 @@ on:
   schedule:
     # Утренний пост: 02:30 UTC ≈ 05:30 на Кипре летом / 04:30 зимой
     - cron: '30 2 * * *'
-    # Вечерний пост: 11:00 UTC ≈ 14:00 на Кипре летом / 13:00 зимой
-    - cron: '0 11 * * *'
+    # Вечерний пост: 13:00 UTC ≈ 16:00 на Кипре летом / 15:00 зимой
+    - cron: '0 13 * * *'
     # Курсы валют: 07:00 UTC
     - cron: '0 7 * * *'
   workflow_dispatch:
@@ -189,7 +189,7 @@ jobs:
     name: Evening post (for tomorrow)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 11 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 13 * * *') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_evening == 'true')
     steps:
       - uses: actions/checkout@v4
