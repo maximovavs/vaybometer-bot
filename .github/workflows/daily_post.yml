@@ -279,6 +279,8 @@ jobs:
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 7 * * *') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_noon_fx == 'true')
+    env:
+      FX_FORCE: "1"
     steps:
       - uses: actions/checkout@v4
 
