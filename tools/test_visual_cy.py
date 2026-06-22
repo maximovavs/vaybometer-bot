@@ -223,6 +223,45 @@ def cy_prompt_inland_only_when_no_coast() -> None:
     assert "coastal promenade" not in low
 
 
+def cy_prompt_controlled_variety_is_stable() -> None:
+    message = """
+    19.06.2026
+    Кипр: прогноз на завтра.
+    Лимассол +34°, Ларнака +35°.
+    Море спокойное, на побережье солнечно и жарко.
+    """
+    prompt_a, _ = build_cyprus_scene_prompt(message, post_type="evening")
+    prompt_b, _ = build_cyprus_scene_prompt(message, post_type="evening")
+    assert prompt_a == prompt_b
+    assert "controlled scene variant" in prompt_a.lower()
+    assert "controlled foreground variant" in prompt_a.lower()
+    assert "controlled composition variant" in prompt_a.lower()
+    assert "heat shimmer" in prompt_a.lower()
+    assert "baltic" not in prompt_a.lower()
+
+
+def cy_prompt_controlled_variety_changes_by_date() -> None:
+    scenario = """
+    Кипр: прогноз на завтра.
+    Пафос и Лимассол: дождь, местами гроза, порывы 13 м/с.
+    На побережье мокро, море неспокойное.
+    """
+    prompt_a, _ = build_cyprus_scene_prompt("19.06.2026\n" + scenario, post_type="evening")
+    prompt_b, _ = build_cyprus_scene_prompt("20.06.2026\n" + scenario, post_type="evening")
+    assert prompt_a != prompt_b
+    for prompt in (prompt_a, prompt_b):
+        low = prompt.lower()
+        assert "wet promenade" in low
+        assert "dramatic rain clouds" in low
+        assert "practical rain mood" in low
+        assert "baltic" not in low
+
+    morning, _ = build_cyprus_scene_prompt("20.06.2026\n" + scenario, post_type="morning")
+    low = morning.lower()
+    for forbidden in ("moon", "lunar", "crescent", "night", "evening", "sunset"):
+        assert not re.search(rf"\b{forbidden}\b", low)
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -237,6 +276,8 @@ TESTS = [
     cy_prompt_no_raw_source_hints,
     cy_prompt_coastal_priority_over_nicosia,
     cy_prompt_inland_only_when_no_coast,
+    cy_prompt_controlled_variety_is_stable,
+    cy_prompt_controlled_variety_changes_by_date,
 ]
 
 

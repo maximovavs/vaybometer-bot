@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 from visual_context_cy import VisualContextCY, parse_visual_context_cy
@@ -70,6 +71,42 @@ _INLAND_FOUNDATION = (
     "practical hot-weather mood",
 )
 
+_CY_COASTAL_SCENES = (
+    "seafront promenade",
+    "rocky Mediterranean coast",
+    "palm-lined coast",
+    "coast with a distant marina background",
+)
+_CY_INLAND_SCENES = (
+    "inland urban heat view with shaded stone streets",
+    "sun-baked inland urban depth",
+    "dry Nicosia street perspective with sparse shade",
+)
+_CY_FOREGROUNDS = (
+    "palms framing the foreground",
+    "warm stone foreground",
+    "promenade edge in the foreground",
+    "rocky foreground",
+    "sea surface close texture in the lower frame",
+)
+_CY_INLAND_FOREGROUNDS = (
+    "warm stone foreground",
+    "shaded pavement edge in the foreground",
+    "dry urban planting in the foreground",
+)
+_CY_COMPOSITIONS = (
+    "open horizon composition",
+    "diagonal shoreline composition",
+    "framed coastal view",
+    "distant marina composition",
+    "layered coast-and-sky composition",
+)
+_CY_INLAND_COMPOSITIONS = (
+    "layered street-and-sky composition",
+    "framed inland urban view",
+    "diagonal shaded-street composition",
+)
+
 
 def build_visual_context_cy(
     final_format_v2_message: str,
@@ -78,6 +115,42 @@ def build_visual_context_cy(
 ) -> VisualContextCY:
     """Compatibility-named deterministic context step for the scene pipeline."""
     return parse_visual_context_cy(final_format_v2_message, post_type=post_type)
+
+
+def _extract_date_key(text: str) -> str:
+    value = str(text or "")
+    match = re.search(r"\b(\d{2})[./-](\d{2})[./-](\d{4})\b", value)
+    if match:
+        return f"{match.group(3)}-{match.group(2)}-{match.group(1)}"
+    match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", value)
+    return match.group(0) if match else "undated"
+
+
+def _stable_variant(seed: str, dimension: str, options: tuple[str, ...]) -> str:
+    digest = hashlib.sha256(f"{seed}|{dimension}".encode("utf-8")).digest()
+    return options[int.from_bytes(digest[:8], "big") % len(options)]
+
+
+def _controlled_variety(message: str, ctx: VisualContextCY, post_type: str) -> list[str]:
+    seed = "|".join(
+        [
+            _extract_date_key(message),
+            post_type,
+            str(ctx.weather_main),
+            "none",
+            "none",
+            "cyprus",
+        ]
+    )
+    inland_only = ctx.inland_heat_focus and not ctx.coastal_focus
+    scenes = _CY_INLAND_SCENES if inland_only else _CY_COASTAL_SCENES
+    foregrounds = _CY_INLAND_FOREGROUNDS if inland_only else _CY_FOREGROUNDS
+    compositions = _CY_INLAND_COMPOSITIONS if inland_only else _CY_COMPOSITIONS
+    return [
+        "controlled scene variant: " + _stable_variant(seed, "scene", scenes),
+        "controlled foreground variant: " + _stable_variant(seed, "foreground", foregrounds),
+        "controlled composition variant: " + _stable_variant(seed, "composition", compositions),
+    ]
 
 
 def sanitize_cyprus_scene_prompt(prompt: str, *, post_type: str) -> str:
@@ -209,12 +282,12 @@ def build_cyprus_scene_prompt(
         _location_cue(final_format_v2_message, ctx),
         time_cue,
         *_weather_cues(ctx, scene),
+        *_controlled_variety(final_format_v2_message, ctx, mode),
     ]
     if ctx.coastal_focus or not ctx.inland_heat_focus:
         prompt_parts.extend(
             [
                 "palms and promenade integrated as environmental background",
-                "distant marina silhouettes as subtle non-focal background detail",
             ]
         )
     prompt = sanitize_cyprus_scene_prompt(
