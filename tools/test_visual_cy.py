@@ -15,6 +15,12 @@ from visual_rules_cy import apply_visual_rules_cy
 from image_prompt_cy_scene import build_cyprus_scene_prompt
 
 
+def _macro_scene_cue(prompt: str) -> str:
+    match = re.search(r"dominant macro scene variant: ([^;]+)", prompt, flags=re.I)
+    assert match is not None
+    return match.group(1).lower()
+
+
 def _all_cues(scene) -> str:
     values = [
         scene.base_scene,
@@ -150,7 +156,8 @@ def cy_prompt_morning_sanitized() -> None:
         "baltic", "kaliningrad",
     ):
         assert not re.search(rf"\b{forbidden}\b", low)
-    assert style == "cyprus_morning_mediterranean_landscape"
+    assert style.startswith("cyprus_morning_mediterranean_landscape_")
+    assert re.search(r"_[0-9a-f]{8}$", style)
 
 
 def cy_prompt_evening_dust_heat() -> None:
@@ -165,7 +172,8 @@ def cy_prompt_evening_dust_heat() -> None:
     assert "heat shimmer" in low
     assert "baltic" not in low
     assert "kaliningrad" not in low
-    assert style == "cyprus_evening_mediterranean_landscape"
+    assert style.startswith("cyprus_evening_mediterranean_landscape_")
+    assert re.search(r"_[0-9a-f]{8}$", style)
 
 
 def cy_prompt_rain_not_leisure() -> None:
@@ -233,11 +241,39 @@ def cy_prompt_controlled_variety_is_stable() -> None:
     prompt_a, _ = build_cyprus_scene_prompt(message, post_type="evening")
     prompt_b, _ = build_cyprus_scene_prompt(message, post_type="evening")
     assert prompt_a == prompt_b
-    assert "controlled scene variant" in prompt_a.lower()
+    assert "dominant macro scene variant" in prompt_a.lower()
     assert "controlled foreground variant" in prompt_a.lower()
     assert "controlled composition variant" in prompt_a.lower()
     assert "heat shimmer" in prompt_a.lower()
     assert "baltic" not in prompt_a.lower()
+
+
+def cy_prompt_morning_evening_same_date_differ() -> None:
+    message = """
+    20.06.2026
+    Кипр: прогноз.
+    Лимассол +34°, Ларнака +35°.
+    Море спокойное, на побережье солнечно и жарко.
+    """
+    morning, morning_style = build_cyprus_scene_prompt(message, post_type="morning")
+    evening, evening_style = build_cyprus_scene_prompt(message, post_type="evening")
+    assert morning != evening
+    assert morning_style != evening_style
+    assert "daylight" in morning.lower()
+    assert "late-day" in evening.lower() or "dusk" in evening.lower()
+    assert _macro_scene_cue(morning) != _macro_scene_cue(evening)
+
+
+def cy_prompt_adjacent_dates_change_macro_viewpoint() -> None:
+    scenario = """
+    Кипр: прогноз на завтра.
+    Лимассол +34°, Ларнака +35°.
+    Море спокойное, на побережье солнечно и жарко.
+    """
+    prompt_a, _ = build_cyprus_scene_prompt("20.06.2026\n" + scenario, post_type="morning")
+    prompt_b, _ = build_cyprus_scene_prompt("21.06.2026\n" + scenario, post_type="morning")
+    assert _macro_scene_cue(prompt_a) != _macro_scene_cue(prompt_b)
+    assert prompt_a != prompt_b
 
 
 def cy_prompt_controlled_variety_changes_by_date() -> None:
@@ -277,6 +313,8 @@ TESTS = [
     cy_prompt_coastal_priority_over_nicosia,
     cy_prompt_inland_only_when_no_coast,
     cy_prompt_controlled_variety_is_stable,
+    cy_prompt_morning_evening_same_date_differ,
+    cy_prompt_adjacent_dates_change_macro_viewpoint,
     cy_prompt_controlled_variety_changes_by_date,
 ]
 

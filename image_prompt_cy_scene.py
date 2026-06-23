@@ -55,12 +55,13 @@ _CITY_PATTERNS = (
 _COASTAL_FOUNDATION = (
     "pure full-frame Mediterranean landscape",
     "natural open sky",
-    "uninterrupted sea and coast",
+    "distinct Cyprus coastal geography filling the frame",
     "clean scenic composition",
     "human-made objects only distant and non-focal",
     "practical weather mood",
     "Mediterranean coastal weather mood",
-    "coastal promenade and palm silhouettes as background",
+    "local stone, sea, cliffs, marina edges, or coastal roads as the main structure",
+    "palms only optional and distant as background accents",
 )
 _INLAND_FOUNDATION = (
     "pure full-frame inland Cyprus landscape",
@@ -71,22 +72,36 @@ _INLAND_FOUNDATION = (
     "practical hot-weather mood",
 )
 
-_CY_COASTAL_SCENES = (
-    "seafront promenade",
-    "rocky Mediterranean coast",
-    "palm-lined coast",
-    "coast with a distant marina background",
+_CY_COASTAL_MORNING_SCENES = (
+    "dominant rocky Paphos coast with limestone shelves, clear blue morning water, and rugged shoreline geometry",
+    "dominant Larnaca seafront promenade in clean daylight, broad paved edge, low sea wall, and open calm water",
+    "dominant Limassol marina edge in crisp daylight, stone quay lines, reflective basin, and distant waterfront shapes",
+    "dominant Ayia Napa sea caves in daylight, sculpted pale rock arches, turquoise water, and cliff-shadow detail",
+    "dominant sea-view from a Cyprus hillside in clear morning air, terraced stone foreground and wide coastal drop",
+    "dominant coastal road viewpoint in daylight, curving asphalt edge, guardrail, rocky slope, and sea beyond",
+    "dominant open sea horizon with local stone architecture in the foreground, pale walls and clean morning sky",
+)
+_CY_COASTAL_EVENING_SCENES = (
+    "dominant rocky Paphos coast at dusk with limestone shelves, long shadows, and darkening Mediterranean water",
+    "dominant Larnaca seafront promenade in late-day light, broad paved edge, low sea wall, and warm reflections",
+    "dominant Limassol marina edge at dusk, stone quay lines, moored silhouettes kept distant, and warm water glow",
+    "dominant Ayia Napa sea caves in evening light, sculpted pale rock arches, turquoise water, and long cliff shadows",
+    "dominant sea-view from a Cyprus hillside in warm late-day air, terraced stone foreground and layered coast below",
+    "dominant coastal road viewpoint near dusk, curving asphalt edge, guardrail, rocky slope, and glowing sea beyond",
+    "dominant open sea horizon with local stone architecture in the foreground, pale walls and warm late-day sky",
 )
 _CY_INLAND_SCENES = (
     "inland urban heat view with shaded stone streets",
     "sun-baked inland urban depth",
     "dry Nicosia street perspective with sparse shade",
 )
-_CY_FOREGROUNDS = (
-    "palms framing the foreground",
+_CY_COASTAL_FOREGROUNDS = (
+    "rough limestone foreground",
     "warm stone foreground",
-    "promenade edge in the foreground",
-    "rocky foreground",
+    "low seawall and paved edge in the foreground",
+    "marina stone quay in the foreground",
+    "coastal road shoulder and rock cut in the foreground",
+    "terraced hillside stone in the foreground",
     "sea surface close texture in the lower frame",
 )
 _CY_INLAND_FOREGROUNDS = (
@@ -94,11 +109,13 @@ _CY_INLAND_FOREGROUNDS = (
     "shaded pavement edge in the foreground",
     "dry urban planting in the foreground",
 )
-_CY_COMPOSITIONS = (
+_CY_COASTAL_COMPOSITIONS = (
     "open horizon composition",
     "diagonal shoreline composition",
-    "framed coastal view",
-    "distant marina composition",
+    "cliff-led coastal view",
+    "marina-edge perspective",
+    "hillside overlook composition",
+    "roadside viewpoint composition",
     "layered coast-and-sky composition",
 )
 _CY_INLAND_COMPOSITIONS = (
@@ -131,8 +148,8 @@ def _stable_variant(seed: str, dimension: str, options: tuple[str, ...]) -> str:
     return options[int.from_bytes(digest[:8], "big") % len(options)]
 
 
-def _controlled_variety(message: str, ctx: VisualContextCY, post_type: str) -> list[str]:
-    seed = "|".join(
+def _variant_seed(message: str, ctx: VisualContextCY, post_type: str) -> str:
+    return "|".join(
         [
             _extract_date_key(message),
             post_type,
@@ -142,12 +159,25 @@ def _controlled_variety(message: str, ctx: VisualContextCY, post_type: str) -> l
             "cyprus",
         ]
     )
+
+
+def _controlled_variety(message: str, ctx: VisualContextCY, post_type: str) -> list[str]:
+    seed = _variant_seed(message, ctx, post_type)
     inland_only = ctx.inland_heat_focus and not ctx.coastal_focus
-    scenes = _CY_INLAND_SCENES if inland_only else _CY_COASTAL_SCENES
-    foregrounds = _CY_INLAND_FOREGROUNDS if inland_only else _CY_FOREGROUNDS
-    compositions = _CY_INLAND_COMPOSITIONS if inland_only else _CY_COMPOSITIONS
+    if inland_only:
+        scenes = _CY_INLAND_SCENES
+        foregrounds = _CY_INLAND_FOREGROUNDS
+        compositions = _CY_INLAND_COMPOSITIONS
+    else:
+        scenes = (
+            _CY_COASTAL_MORNING_SCENES
+            if post_type == "morning"
+            else _CY_COASTAL_EVENING_SCENES
+        )
+        foregrounds = _CY_COASTAL_FOREGROUNDS
+        compositions = _CY_COASTAL_COMPOSITIONS
     return [
-        "controlled scene variant: " + _stable_variant(seed, "scene", scenes),
+        "dominant macro scene variant: " + _stable_variant(seed, "scene", scenes),
         "controlled foreground variant: " + _stable_variant(seed, "foreground", foregrounds),
         "controlled composition variant: " + _stable_variant(seed, "composition", compositions),
     ]
@@ -207,17 +237,17 @@ def _location_cue(message: str, ctx: VisualContextCY) -> str:
         if "Paphos" in found:
             return "Paphos rocky Mediterranean coast as the geographic setting"
         if "Larnaca" in found:
-            return "Larnaca seafront promenade with palms and distant marina silhouettes"
+            return "Larnaca seafront promenade with low seawall, broad paving, and open water"
         if "Limassol" in found:
-            return "Limassol Mediterranean promenade with palms and distant marina silhouettes"
+            return "Limassol marina edge with stone quay, waterfront depth, and open sea nearby"
         if "Ayia Napa" in found:
-            return "Ayia Napa eastern Cyprus coast with clear Mediterranean shoreline"
-        return "Cyprus Mediterranean coast with palms and local stone architecture"
+            return "Ayia Napa sea caves and eastern Cyprus rocky shoreline"
+        return "Cyprus Mediterranean coast with local stone architecture and varied shoreline"
     if "Nicosia" in found and ctx.inland_heat_focus:
         return "Nicosia inland Cyprus with sun-baked stone streets and shaded urban depth"
     if ctx.inland_heat_focus:
         return "dry inland Cyprus urban setting with Nicosia character"
-    return "Cyprus Mediterranean coast with palms and local stone architecture"
+    return "Cyprus Mediterranean coast with local stone architecture and varied shoreline"
 
 
 def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
@@ -287,14 +317,15 @@ def build_cyprus_scene_prompt(
     if ctx.coastal_focus or not ctx.inland_heat_focus:
         prompt_parts.extend(
             [
-                "palms and promenade integrated as environmental background",
+                "palms may appear only as small background accents",
             ]
         )
     prompt = sanitize_cyprus_scene_prompt(
         "; ".join(part for part in prompt_parts if part),
         post_type=mode,
     )
-    style_name = f"cyprus_{mode}_mediterranean_landscape"
+    style_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8]
+    style_name = f"cyprus_{mode}_mediterranean_landscape_{style_digest}"
     return prompt, style_name
 
 
