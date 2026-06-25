@@ -24,7 +24,7 @@ from telegram import Bot, constants
 
 from utils        import compass, get_fact, kmh_to_ms, smoke_index
 from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
-from air          import get_air, get_sst, get_solar_wind
+from air          import get_air, get_air_for_cities, get_sst, get_solar_wind
 from pollen       import get_pollen
 from radiation    import get_radiation
 from gpt          import gpt_blurb, gpt_complete
@@ -1555,6 +1555,46 @@ def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]
     return "🏭 " + " • ".join(parts)
 
 
+def _air_by_city_line(city_pairs: list[tuple[str, tuple[float, float]]]) -> Optional[str]:
+    if os.getenv("CY_AIR_BY_CITY", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    preferred = ("Limassol", "Larnaca", "Nicosia", "Pafos", "Paphos", "Ayia Napa", "Protaras")
+    indexed: Dict[str, tuple[str, tuple[float, float]]] = {
+        name.lower(): (name, coords) for name, coords in city_pairs or []
+    }
+    selected: list[tuple[str, tuple[float, float]]] = []
+    seen: set[str] = set()
+    for name in preferred:
+        item = indexed.get(name.lower())
+        if not item:
+            continue
+        key = "Paphos" if name in ("Pafos", "Paphos") else name
+        if key in seen:
+            continue
+        selected.append(item)
+        seen.add(key)
+    if not selected:
+        return None
+
+    try:
+        city_air = get_air_for_cities(selected) or {}
+    except Exception:
+        return None
+
+    chunks: list[str] = []
+    for city, _coords in selected:
+        data = city_air.get(city)
+        if not data:
+            continue
+        label = data.get("clean_label")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        chunks.append(f"{_ru_city(city)} {label.strip()}")
+    if not chunks:
+        return None
+    return "🏙 Воздух по городам: " + "; ".join(chunks[:5]) + "."
+
+
 # ───────────── городская строка ─────────────
 def _deg_diff(a: float, b: float) -> float:
     return abs((a - b + 180) % 360 - 180)
@@ -2009,6 +2049,9 @@ def build_message(
         combo = _morning_combo_air_radiation_pollen(CY_LAT, CY_LON)
         if combo:
             P.append(combo)
+            by_city = _air_by_city_line(sea_pairs + other_pairs)
+            if by_city:
+                P.append(by_city)
             air_now = get_air(CY_LAT, CY_LON) or {}
             bad_air, tip = _is_air_bad(air_now)
             if bad_air and tip:

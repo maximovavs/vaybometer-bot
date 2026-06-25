@@ -307,7 +307,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     weather_line = _legacy_wind_pressure_line(lines) or _source_wind_pressure_line(date_s)
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌇",))
-    air = _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
+    air = _morning_pick(lines, ("🏭", "🏙", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     today_tips = _morning_pick(lines, ("✅ Сегодня",))
     tags = _hashtags(lines, "#Кипр #погода #здоровье #Никосия #Тродос")
@@ -322,8 +322,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append("⚠️ " + _compact_warning(warning))
     if uv:
         out.append(_clean_uv_line(uv[0]))
-    if air:
-        out.append(air[0])
+    for line in air:
+        if line not in out:
+            out.append(line)
     if space:
         out.append(_clean_kp_line(space[0]))
     if sun:
