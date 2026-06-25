@@ -27,6 +27,7 @@ from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
 from air          import get_air, get_air_for_cities, get_sst, get_solar_wind
 from pollen       import get_pollen
 from radiation    import get_radiation
+from earthquakes  import build_cyprus_quake_line, get_recent_earthquakes_cyprus
 from gpt          import gpt_blurb, gpt_complete
 from world_en.imagegen import generate_astro_image
 from image_prompt_cy   import build_cyprus_evening_prompt
@@ -1595,6 +1596,30 @@ def _air_by_city_line(city_pairs: list[tuple[str, tuple[float, float]]]) -> Opti
     return "🏙 Воздух по городам: " + "; ".join(chunks[:5]) + "."
 
 
+def _cyprus_quake_line_for_morning() -> Optional[str]:
+    if os.getenv("CY_QUAKES_24H", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    try:
+        hours = int(float(os.getenv("CY_QUAKE_HOURS", "24")))
+    except Exception:
+        hours = 24
+    try:
+        radius_km = float(os.getenv("CY_QUAKE_RADIUS_KM", "350"))
+    except Exception:
+        radius_km = 350.0
+    try:
+        min_mag = float(os.getenv("CY_QUAKE_MIN_MAG", "2.5"))
+    except Exception:
+        min_mag = 2.5
+    try:
+        events = get_recent_earthquakes_cyprus(hours=hours, radius_km=radius_km, min_mag=min_mag)
+        if events is None:
+            return None
+        return build_cyprus_quake_line(events, tz=os.getenv("TZ", "Asia/Nicosia"))
+    except Exception:
+        return None
+
+
 # ───────────── городская строка ─────────────
 def _deg_diff(a: float, b: float) -> float:
     return abs((a - b + 180) % 360 - 180)
@@ -2052,6 +2077,9 @@ def build_message(
             by_city = _air_by_city_line(sea_pairs + other_pairs)
             if by_city:
                 P.append(by_city)
+            quake_line = _cyprus_quake_line_for_morning()
+            if quake_line:
+                P.append(quake_line)
             air_now = get_air(CY_LAT, CY_LON) or {}
             bad_air, tip = _is_air_bad(air_now)
             if bad_air and tip:
