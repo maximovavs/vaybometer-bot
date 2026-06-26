@@ -73,6 +73,14 @@ def _city_names(lines: list[str]) -> list[str]:
     return names
 
 
+def _first_line_starts(lines: list[str], prefixes: tuple[str, ...]) -> str:
+    for line in lines:
+        s = line.strip()
+        if s.startswith(prefixes):
+            return s
+    return ""
+
+
 def _hashtags(lines: list[str], fallback: str) -> str:
     for line in reversed(lines):
         s = line.strip()
@@ -112,6 +120,125 @@ def _clean_kp_line(line: str) -> str:
     s = re.sub(r"(\b(?:Kp|Кр)\s*\d+(?:[\.,]\d+)?)\s*\([^)]*\)", r"\1", s, flags=re.I)
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
+
+
+def _clean_evening_astro(lines: list[str]) -> list[str]:
+    raw = _astro_lines(lines)
+    out: list[str] = []
+    for line in raw:
+        s = line.strip()
+        if s.startswith("🌇 Закат"):
+            continue
+        if s.startswith("✅"):
+            continue
+        if s.startswith(("🌅 Рассвет", "🌙", "🌘", "💚", "⚫️")):
+            out.append(s)
+        if len(out) >= 4:
+            break
+    return out
+
+
+def _has_any(text: str, words: tuple[str, ...]) -> bool:
+    low = _plain(text).lower()
+    return any(word in low for word in words)
+
+
+def _max_wind_ms(text: str) -> float | None:
+    values: list[float] = []
+    for m in re.finditer(r"(\d+(?:[\.,]\d+)?)\s*м/с", text, flags=re.I):
+        try:
+            values.append(float(m.group(1).replace(",", ".")))
+        except Exception:
+            continue
+    return max(values) if values else None
+
+
+def _max_temperature_c(text: str) -> float | None:
+    values: list[float] = []
+    for m in re.finditer(r"(-?\d+(?:[\.,]\d+)?)\s*/\s*-?\d+(?:[\.,]\d+)?\s*°C", text):
+        try:
+            values.append(float(m.group(1).replace(",", ".")))
+        except Exception:
+            continue
+    return max(values) if values else None
+
+
+def _evening_flags(lines: list[str]) -> dict[str, bool]:
+    text = "\n".join(lines)
+    max_wind = _max_wind_ms(text)
+    max_temp = _max_temperature_c(text)
+    return {
+        "storm": _has_any(text, ("шторм", "предупреждение")),
+        "rain": _has_any(text, ("дожд", "ливн", "гроза", "осад")),
+        "dust": _has_any(text, ("пыль", "dust", "песок", "дымк", "туман")),
+        "heat": _has_any(text, ("жара", "жарко", "перегрев")) or (isinstance(max_temp, (int, float)) and max_temp >= 33),
+        "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 7),
+        "local": _has_any(text, ("локаль", "местами", "неравномер", "по часам", "микросценар")),
+        "troodos": _has_any(text, ("тродос", "горы", "горн")),
+        "uv": _has_any(text, ("уф", "uv", "spf")),
+    }
+
+
+def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
+    low = (score_line or "").lower()
+    if flags["storm"]:
+        return "🧭 Главное завтра: главный фактор — предупреждение, ветер и порывы у моря."
+    if flags["rain"]:
+        return "🧭 Главное завтра: локальные осадки важнее средних цифр по острову."
+    if flags["dust"]:
+        return "🧭 Главное завтра: следи за дымкой/пылью и видимостью, особенно утром."
+    if flags["heat"] and flags["wind"]:
+        return "🧭 Главное завтра: жара внутри острова и порывы у моря задают режим дня."
+    if flags["heat"]:
+        return "🧭 Главное завтра: главная нагрузка — жара, активность лучше сместить на утро и вечер."
+    if flags["wind"]:
+        return "🧭 Главное завтра: основной фактор — ветер у моря и открытых участков."
+    if flags["troodos"]:
+        return "🧭 Главное завтра: заметен контраст побережья, центра острова и Тродоса."
+    if low:
+        reason = re.sub(r"^.*?—\s*", "", score_line).strip(" .")
+        return "🧭 Главное завтра: " + (reason[0].lower() + reason[1:] if reason else "день подходит для обычных дел") + "."
+    return "🧭 Главное завтра: спокойный день для обычных дел и прогулок."
+
+
+def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_inland: bool) -> str:
+    if flags["storm"]:
+        return "⚠️ Нюанс: у открытого моря и на трассах вдоль берега порывы лучше проверить утром."
+    if flags["rain"]:
+        return "⚠️ Нюанс: осадки могут идти локально — маршрут лучше держать гибким."
+    if flags["dust"]:
+        return "⚠️ Нюанс: при дымке/пыли чувствительным людям лучше сократить активность на улице."
+    if flags["heat"] and has_inland:
+        return "⚠️ Нюанс: в Никосии и внутри острова жарче, чем на побережье."
+    if flags["wind"] and has_sea:
+        return "⚠️ Нюанс: у моря ощущение меняют порывы, а не только температура."
+    if flags["uv"]:
+        return "⚠️ Нюанс: дневное солнце требует SPF, воды и тени."
+    if flags["troodos"] and has_inland:
+        return "⚠️ Нюанс: Тродос может ощущаться заметно прохладнее центра острова."
+    return ""
+
+
+def _evening_confidence_line(flags: dict[str, bool]) -> str:
+    if flags["storm"] or flags["rain"] or flags["local"]:
+        return "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром."
+    return ""
+
+
+def _evening_plan(flags: dict[str, bool]) -> str:
+    if flags["storm"]:
+        return "✅ План завтра: гибкий маршрут, проверка ветра утром и без лишнего риска у открытого моря."
+    if flags["rain"]:
+        return "✅ План завтра: держать запасной indoor-вариант и сверить осадки перед выездом."
+    if flags["heat"] and flags["wind"]:
+        return "✅ План завтра: основные дела утром/вечером, днём — вода и тень; у моря выбрать защищённое место."
+    if flags["heat"]:
+        return "✅ План завтра: активность до полудня или после заката, днём — вода, тень и SPF."
+    if flags["wind"]:
+        return "✅ План завтра: прогулки у моря — в защищённых местах, ветер перепроверить утром."
+    if flags["dust"]:
+        return "✅ План завтра: утром оценить видимость/воздух, прогулку сделать короче при дымке."
+    return "✅ План завтра: обычные дела и прогулки, с короткой проверкой ветра и солнца утром."
 
 
 def _clean_uv_line(line: str) -> str:
@@ -308,7 +435,6 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌇",))
     air = _morning_pick(lines, ("🏭", "🏙", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
-    quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     today_tips = _morning_pick(lines, ("✅ Сегодня",))
     tags = _hashtags(lines, "#Кипр #погода #здоровье #Никосия #Тродос")
@@ -324,9 +450,6 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if uv:
         out.append(_clean_uv_line(uv[0]))
     for line in air:
-        if line not in out:
-            out.append(line)
-    for line in quakes:
         if line not in out:
             out.append(line)
     if space:
@@ -350,31 +473,24 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     storm = _storm_line(lines)
     sea = _section_after(lines, "Морские города")
     inland = _section_after(lines, "Континентальные города")
-    astro = _astro_lines(lines)
-
-    sea_names = _city_names(sea)
-
-    has_storm = bool(storm)
-    has_troodos = any("Тродос" in x for x in inland)
-    has_nicosia = any("Никос" in x for x in inland)
+    astro = _clean_evening_astro(lines)
+    score = _first_line_starts(lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
+    flags = _evening_flags(lines)
+    if storm:
+        flags["storm"] = True
+    nuance = _evening_nuance(flags, bool(sea), bool(inland))
+    confidence = _evening_confidence_line(flags)
 
     title_date = f" ({date_s})" if date_s else ""
-    out: list[str] = [f"<b>🌅 Кипр завтра: прогноз с поправкой на остров{title_date}</b>", ""]
+    out: list[str] = [f"<b>🌅 Кипр завтра{title_date}</b>"]
 
-    out.append("🧭 <b>Главный сценарий</b>")
-    if has_storm:
-        out.append("Главный фактор дня — ветер и порывы. На побережье условия могут быстро меняться по часам, особенно у открытых пляжей, на пирсах и на трассах вдоль моря.")
-    else:
-        out.append("Остров живёт разными микросценариями: у моря мягче и ветренее, в Никосии заметно теплее, а Тродос держит отдельный горный режим.")
-    if has_nicosia and has_troodos:
-        out.append("Никосия — самый тёплый внутренний сценарий; Тродос — прохладнее и чувствительнее к ветру/облачности.")
-    out.append("")
-
-    out.append("🎯 <b>Уверенность прогноза</b>")
-    out.append("✅ Температура: высокая — общий диапазон по городам устойчивый.")
-    out.append("🟡 Ветер у моря: средняя — порывы и направление лучше проверить утром.")
-    out.append("🟡 Туман/дымка: локально, особенно утром и у моря.")
-    out.append("✅ Давление/общий фон: можно использовать для планирования дня.")
+    if score:
+        out.append(score)
+    out.append(_evening_main_scenario(flags, score))
+    if nuance:
+        out.append(nuance)
+    if confidence:
+        out.append(confidence)
     out.append("")
 
     if storm:
@@ -392,24 +508,12 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.extend(inland)
         out.append("")
 
-    out.append("🌊 <b>Островная поправка</b>")
-    if sea_names:
-        out.append("У моря смотри не только температуру, но и порывы: при одинаковых градусах ощущение в Ларнаке, Лимассоле, Айя-Напе и Пафосе может отличаться заметно.")
-    else:
-        out.append("На Кипре короткие расстояния не гарантируют одинаковую погоду: побережье, центр острова и горы часто расходятся по ветру и ощущаемой температуре.")
-    out.append("")
-
     if astro:
         out.append("☀️ <b>Солнце и ритм дня</b>")
         out.extend(astro)
         out.append("")
 
-    out.append("📌 <b>Вывод</b>")
-    if has_storm:
-        out.append("Планируй день гибко: прогулки у моря лучше переносить на более спокойные часы, а перед выездом перепроверить ветер и порывы.")
-    else:
-        out.append("Хороший день для обычных дел, но с поправкой на микроклимат: море, Никосия и Тродос завтра ощущаются как разные погодные зоны.")
-    out.append("")
+    out.append(_evening_plan(flags))
     out.append("#Кипр #погода #здоровье #Никосия #Тродос")
     return "\n".join(out).strip()
 
