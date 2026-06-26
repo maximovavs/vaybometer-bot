@@ -10,7 +10,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from format_v2 import build_evening_format_v2  # noqa: E402
+from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
+
+
+MORNING_WITH_QUAKE = """<b>🌅 Кипр: погода на сегодня (27.06.2026)</b>
+Доброе утро. Теплее всего — Никосия (32°), прохладнее — Тродос (24°).
+☀️ <b>УФ-индекс 7 (High)</b>: SPF, вода и тень.
+🏭 Воздух: 🟢 чисто.
+🌍 Сейсмика 24ч: спокойно — заметных землетрясений рядом с Кипром не было.
+🧲 Космопогода: Kp 2.0 (спокойно)
+🌇 Закат сегодня: 20:05
+✅ Сегодня: прогулка до полудня.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
 
 
 NORMAL_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
@@ -103,8 +115,15 @@ def cy_evening_title_is_compact() -> None:
     assert text.splitlines()[0] == "<b>🌅 Кипр завтра (27.06.2026)</b>"
 
 
+def cy_morning_preserves_quake_line() -> None:
+    text = build_morning_format_v2("Кипр", MORNING_WITH_QUAKE)
+    assert "🌍 Сейсмика 24ч: спокойно — заметных землетрясений рядом с Кипром не было." in text
+    assert text.index("🏭 Воздух:") < text.index("🌍 Сейсмика 24ч:") < text.index("🧲 Космопогода:")
+
+
 def main() -> None:
     checks = (
+        cy_morning_preserves_quake_line,
         cy_evening_normal_no_generic_confidence,
         cy_evening_normal_no_island_correction,
         cy_evening_no_old_conclusion_or_recommendations,

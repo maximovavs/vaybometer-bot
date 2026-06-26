@@ -435,6 +435,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌇",))
     air = _morning_pick(lines, ("🏭", "🏙", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
+    quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     today_tips = _morning_pick(lines, ("✅ Сегодня",))
     tags = _hashtags(lines, "#Кипр #погода #здоровье #Никосия #Тродос")
@@ -450,6 +451,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if uv:
         out.append(_clean_uv_line(uv[0]))
     for line in air:
+        if line not in out:
+            out.append(line)
+    for line in quakes:
         if line not in out:
             out.append(line)
     if space:
