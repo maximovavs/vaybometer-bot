@@ -4,13 +4,19 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+imghdr_stub = types.ModuleType("imghdr")
+imghdr_stub.what = lambda file, h=None: None
+sys.modules.setdefault("imghdr", imghdr_stub)
+
 from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
+from safe_test_post import _insert_main_nuance  # noqa: E402
 
 
 MORNING_WITH_QUAKE = """<b>🌅 Кипр: погода на сегодня (27.06.2026)</b>
@@ -58,6 +64,23 @@ RAIN_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)<
 🌅 Рассвет завтра: 05:35
 🌙 Убывающая Луна, ♐ (56%)
 💚 В плюсе: спокойные дела, восстановление.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+HEAT_WIND_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 6.9/10 — рабочий день; жара, порывы у моря.
+🏖 <b>Морские города</b>
+Лимассол: 33/24 °C • ясно • 💨 7 м/с • порывы до 14 м/с
+Ларнака: 34/24 °C • ясно • 💨 6 м/с • порывы до 13 м/с
+———
+🏞 <b>Континентальные города</b>
+Никосия: 37/23 °C • ясно
+Тродос: 29/20 °C • ясно
+———
+🌅 Рассвет завтра: 05:35
+🌙 Растущая Луна, ♏ (86%)
+💚 В плюсе: порядок, прогулки, мягкий режим.
 #Кипр #погода #здоровье #Никосия #Тродос
 """
 
@@ -121,9 +144,20 @@ def cy_morning_preserves_quake_line() -> None:
     assert text.index("🏭 Воздух:") < text.index("🌍 Сейсмика 24ч:") < text.index("🧲 Космопогода:")
 
 
+def cy_evening_polish_does_not_duplicate_nuance() -> None:
+    text = build_evening_format_v2("Кипр", HEAT_WIND_EVENING)
+    assert "⚠️ Нюанс:" in text
+    polished = _insert_main_nuance(text)
+    nuance_lines = [line for line in polished.splitlines() if line.startswith(("⚠️ Нюанс:", "⚠️ Главный нюанс:"))]
+    assert len(nuance_lines) == 1
+    assert "⚠️ Главный нюанс:" not in polished
+    assert polished.count("✅ План завтра:") == 1
+
+
 def main() -> None:
     checks = (
         cy_morning_preserves_quake_line,
+        cy_evening_polish_does_not_duplicate_nuance,
         cy_evening_normal_no_generic_confidence,
         cy_evening_normal_no_island_correction,
         cy_evening_no_old_conclusion_or_recommendations,

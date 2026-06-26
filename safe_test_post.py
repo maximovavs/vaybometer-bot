@@ -433,7 +433,9 @@ def _cyprus_main_nuance(v2_text: str) -> str:
 
 
 def _insert_main_nuance(v2_text: str) -> str:
-    if not _env_on("FORMAT_V2_MAIN_NUANCE") or "⚠️ Главный нюанс:" in v2_text:
+    if not _env_on("FORMAT_V2_MAIN_NUANCE"):
+        return v2_text
+    if "⚠️ Главный нюанс:" in v2_text or "⚠️ Нюанс:" in v2_text:
         return v2_text
     return _inject_after_anchor(v2_text, _cyprus_main_nuance(v2_text), ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
 
