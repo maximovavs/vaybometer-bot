@@ -114,14 +114,16 @@ def _to_float(x) -> Optional[float]:
         return None
 
 
-def _fmt_delta_arrow(d, digits: int = 2, eps: float = 0.005) -> str:
-    """↑0.34 / ↓0.12; пусто, если близко к нулю."""
+def _fmt_delta_arrow(d, digits: int = 2, eps: float = 0.005, *, show_zero: bool = True) -> str:
+    """ ↑0.34 / ↓0.12 / →0.00; пусто только если delta is unavailable."""
+    if d is None:
+        return ""
     try:
         x = float(d)
     except Exception:
         return ""
     if abs(x) < eps:
-        return ""
+        return f" →{0:.{digits}f}" if show_zero else ""
     s = f"{abs(x):.{digits}f}".rstrip("0").rstrip(".")
     return f" ↑{s}" if x > 0 else f" ↓{s}"
 
@@ -316,16 +318,18 @@ def _build_fx_message_eur(
             delta = None
             if prev and code in prev and _to_float(prev.get(code)) is not None:
                 delta = v - float(prev[code])  # натуральная дельта
-            piece = f"{code} {_fmt_num(v, 2)}"
-            d_piece = _fmt_delta_paren(delta, digits=2, eps=0.005) if delta is not None else ""
-            parts.append(piece + (f" {d_piece}" if d_piece else ""))
-        return f"{prefix} " + " • ".join(parts) if parts else ""
+            symbol = {"USD": "$", "GBP": "£", "TRY": "₺", "ILS": "₪"}.get(code, code)
+            piece = f"{symbol}{_fmt_num(v, 2)}"
+            d_piece = _fmt_delta_arrow(delta, digits=2, eps=0.005, show_zero=False) if delta is not None else ""
+            parts.append(piece + d_piece)
+        return f"{prefix} " + " · ".join(parts) if parts else ""
 
-    line_inter = _line_cross_with_delta("• Межрынок:", inter_today, inter_prev)
+    line_inter = _line_cross_with_delta("Межрынок:", inter_today, inter_prev)
 
     # ЕЦБ (последний и предыдущий рабочий день)
     ecb_latest, ecb_prev, d_latest, _d_prev = _fetch_ecb_latest_and_prev()
-    line_ecb = _line_cross_with_delta("• ЕЦБ:", ecb_latest, ecb_prev)
+    show_ecb = _env_true("FX_SHOW_ECB") or not bool(inter_today)
+    line_ecb = _line_cross_with_delta("ECB official:", ecb_latest, ecb_prev) if show_ecb else ""
 
     # ЦБ РФ (к рублю + дельта)
     cbr = _load_cbr_rates(date_local, tz)
@@ -336,13 +340,14 @@ def _build_fx_message_eur(
 
     cbr_bits = []
     if eur_val is not None:
-        cbr_bits.append(f"€→₽{NBSP}{_fmt_num(eur_val, 2)}{_fmt_delta_arrow(eur_dlt)}")
+        cbr_bits.append(f"€{float(eur_val):.2f} ₽{_fmt_delta_arrow(eur_dlt)}")
     if usd_val is not None:
-        cbr_bits.append(f"$→₽{NBSP}{_fmt_num(usd_val, 2)}{_fmt_delta_arrow(usd_dlt)}")
-    line_cbr = "• ЦБ РФ: " + " • ".join(cbr_bits) if cbr_bits else ""
+        cbr_bits.append(f"${float(usd_val):.2f} ₽{_fmt_delta_arrow(usd_dlt)}")
+    line_cbr = "К рублю: " + " · ".join(cbr_bits) if cbr_bits else ""
 
-    title = "💱 <b>Курсы валют (база EUR)</b>"
-    lines = [l for l in (line_inter, line_ecb, line_cbr) if l]
+    title = "💱 <b>Курсы валют | 1 EUR</b>"
+    summary = "🧭 EUR/USD к рублю выше; для поездок смотрим TRY и ILS." if line_cbr else ""
+    lines = [l for l in (line_inter, line_ecb, line_cbr, summary) if l]
     if not lines:
         lines = ["• Данные временно недоступны"]
 
