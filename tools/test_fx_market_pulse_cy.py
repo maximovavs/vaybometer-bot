@@ -37,7 +37,7 @@ class _Date:
         return "2026-06-27"
 
 
-def cy_fx_message_hides_ecb_when_intermarket_exists(tmp_path: Path | None = None) -> None:
+def _build_fx_text_with_ruble_deltas(eur_delta: float, usd_delta: float) -> str:
     post_cy._fetch_intermarket_eur_with_prev = lambda _today, _path: (
         {"USD": 1.14, "GBP": 0.86, "TRY": 53.14, "ILS": 3.41},
         {"USD": 1.14, "GBP": 0.86, "TRY": 52.96, "ILS": 3.39},
@@ -49,16 +49,35 @@ def cy_fx_message_hides_ecb_when_intermarket_exists(tmp_path: Path | None = None
         "2026-06-26",
     )
     post_cy._load_cbr_rates = lambda _date, _tz: {
-        "EUR": {"value": 87.40, "delta": 1.63},
-        "USD": {"value": 77.06, "delta": 1.43},
+        "EUR": {"value": 87.40, "delta": eur_delta},
+        "USD": {"value": 77.06, "delta": usd_delta},
     }
-
     text, _rates, _inter = post_cy._build_fx_message_eur(_Date(), None, Path("unused.json"))
+    return text
+
+
+def cy_fx_message_hides_ecb_when_intermarket_exists(tmp_path: Path | None = None) -> None:
+    text = _build_fx_text_with_ruble_deltas(1.63, 1.43)
     assert "💱 <b>Курсы валют | 1 EUR</b>" in text
     assert "ECB official:" not in text
     assert "Межрынок: $1.14 · £0.86 · ₺53.14 ↑0.18 · ₪3.41 ↑0.02" in text
     assert "К рублю: €87.40 ₽ ↑1.63 · $77.06 ₽ ↑1.43" in text
     assert "🧭 EUR/USD к рублю выше; для поездок смотрим TRY и ILS." in text
+
+
+def cy_fx_summary_positive_is_higher() -> None:
+    text = _build_fx_text_with_ruble_deltas(1.63, 1.43)
+    assert "🧭 EUR/USD к рублю выше; для поездок смотрим TRY и ILS." in text
+
+
+def cy_fx_summary_negative_is_lower() -> None:
+    text = _build_fx_text_with_ruble_deltas(-1.63, -1.43)
+    assert "🧭 EUR/USD к рублю ниже; для поездок смотрим TRY и ILS." in text
+
+
+def cy_fx_summary_mixed_is_mixed() -> None:
+    text = _build_fx_text_with_ruble_deltas(1.63, -1.43)
+    assert "🧭 Рублёвые пары смешанно; для поездок смотрим TRY и ILS." in text
 
 
 def cy_market_pulse_is_compact() -> None:
@@ -75,6 +94,9 @@ def cy_market_pulse_is_compact() -> None:
 def main() -> None:
     checks = (
         cy_fx_message_hides_ecb_when_intermarket_exists,
+        cy_fx_summary_positive_is_higher,
+        cy_fx_summary_negative_is_lower,
+        cy_fx_summary_mixed_is_mixed,
         cy_market_pulse_is_compact,
     )
     for check in checks:

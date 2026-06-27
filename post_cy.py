@@ -134,6 +134,16 @@ def _fmt_delta_paren(d, digits: int = 2, eps: float = 0.005) -> str:
     return f"({a.strip()})" if a else ""
 
 
+def _cbr_ruble_summary(eur_dlt, usd_dlt) -> str:
+    eur = _to_float(eur_dlt)
+    usd = _to_float(usd_dlt)
+    if eur is not None and usd is not None and eur > 0 and usd > 0:
+        return "🧭 EUR/USD к рублю выше; для поездок смотрим TRY и ILS."
+    if eur is not None and usd is not None and eur < 0 and usd < 0:
+        return "🧭 EUR/USD к рублю ниже; для поездок смотрим TRY и ILS."
+    return "🧭 Рублёвые пары смешанно; для поездок смотрим TRY и ILS."
+
+
 # —— кэш межрынка (вчера)
 def _read_inter_cache(path: Path) -> Tuple[Optional[str], Dict[str, float]]:
     try:
@@ -346,7 +356,7 @@ def _build_fx_message_eur(
     line_cbr = "К рублю: " + " · ".join(cbr_bits) if cbr_bits else ""
 
     title = "💱 <b>Курсы валют | 1 EUR</b>"
-    summary = "🧭 EUR/USD к рублю выше; для поездок смотрим TRY и ILS." if line_cbr else ""
+    summary = _cbr_ruble_summary(eur_dlt, usd_dlt) if line_cbr else ""
     lines = [l for l in (line_inter, line_ecb, line_cbr, summary) if l]
     if not lines:
         lines = ["• Данные временно недоступны"]
