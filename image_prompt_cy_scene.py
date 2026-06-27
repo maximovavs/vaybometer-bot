@@ -302,7 +302,7 @@ def build_cyprus_scene_prompt(
     scene = apply_visual_rules_cy(ctx)
 
     time_cue = (
-        "daylight Mediterranean morning with practical weather clarity"
+        "clear morning daylight, pale blue sky, fresh early sun, natural shadows, not golden sunset, not orange dusk, not cinematic evening light"
         if mode == "morning"
         else "warm Mediterranean late-day atmosphere with soft golden dusk light"
     )

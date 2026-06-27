@@ -151,6 +151,9 @@ def cy_prompt_morning_sanitized() -> None:
     low = prompt.lower()
     assert "mediterranean" in low
     assert "daylight" in low
+    assert "pale blue sky" in low
+    assert "fresh early sun" in low
+    assert "natural shadows" in low
     for forbidden in (
         "text", "logo", "poster", "card", "moon", "night", "sunset",
         "baltic", "kaliningrad",
@@ -260,6 +263,7 @@ def cy_prompt_morning_evening_same_date_differ() -> None:
     assert morning != evening
     assert morning_style != evening_style
     assert "daylight" in morning.lower()
+    assert "pale blue sky" in morning.lower()
     assert "late-day" in evening.lower() or "dusk" in evening.lower()
     assert _macro_scene_cue(morning) != _macro_scene_cue(evening)
 

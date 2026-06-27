@@ -134,9 +134,9 @@ def _base_negative_prompt(no_text: bool = True) -> str:
 
 def _weather_mood_snippet(m: MorningMetrics) -> str:
     if m.storm_warning:
-        return "dramatic windy morning, fast-moving clouds, dynamic light"
+        return "dramatic windy morning, fast-moving clouds, clear morning daylight, pale blue sky where visible, natural shadows"
     # If no storm, keep it calm & optimistic.
-    return "calm pleasant morning, soft sunlight, gentle breeze"
+    return "calm pleasant morning, clear morning daylight, pale blue sky, fresh early sun, natural shadows"
 
 
 def _palette_snippet(m: MorningMetrics) -> str:
@@ -145,10 +145,10 @@ def _palette_snippet(m: MorningMetrics) -> str:
     cool = m.cool_temp_c if isinstance(m.cool_temp_c, (int, float)) else None
 
     if warm is not None and warm >= 28:
-        return "warm golden palette, sunlit highlights, slightly tropical vibe"
+        return "fresh warm daytime palette, clean sunlit highlights, slightly tropical vibe"
     if cool is not None and cool <= 10:
         return "cool crisp palette, clear air, soft pastel sky"
-    return "soft sunrise palette, pastel sky, clean airy tones"
+    return "fresh morning palette, pale blue sky, clean airy tones"
 
 
 def _composition_snippet(style_id: int) -> str:
@@ -286,6 +286,7 @@ def build_cyprus_morning_prompt(
 
     prompt_parts += [
         "ultra clean, high quality, high detail, professional composition",
+        "morning tone constraints: clear morning daylight, pale blue sky, fresh early sun, natural shadows, not golden sunset, not orange dusk, not cinematic evening light",
         f"NEGATIVE: {neg}",
     ]
 

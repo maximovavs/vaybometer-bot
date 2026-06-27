@@ -241,6 +241,78 @@ def _evening_plan(flags: dict[str, bool]) -> str:
     return "✅ План завтра: обычные дела и прогулки, с короткой проверкой ветра и солнца утром."
 
 
+def _clean_air_line(line: str) -> str:
+    s = _plain(line).strip()
+    aqi_match = re.search(r"\bAQI\s*(\d+|н/д)", s, flags=re.I)
+    pm25_match = re.search(r"PM₂\.₅\s*(\d+)", s, flags=re.I)
+    pm10_match = re.search(r"PM₁₀\s*(\d+)", s, flags=re.I)
+    if not aqi_match:
+        return s
+
+    parts = [f"AQI {aqi_match.group(1)}"]
+    label_match = re.search(r"\bAQI\s*(?:\d+|н/д)\s*\(([^)]+)\)", s, flags=re.I)
+    if label_match:
+        parts[0] += f" ({label_match.group(1).strip()})"
+
+    pm_parts: list[str] = []
+    if pm25_match:
+        pm_parts.append(f"PM₂.₅ {pm25_match.group(1)}")
+    if pm10_match:
+        pm_parts.append(f"PM₁₀ {pm10_match.group(1)}")
+    if pm_parts:
+        parts.append(" / ".join(pm_parts))
+
+    city_bits = []
+    for chunk in re.split(r"\s*[;•]\s*", s):
+        if re.search(r"\b(Никос|Ларнак|Лимассол|Пафос|Айя|Тродос)\b", chunk, flags=re.I):
+            city_bits.append(chunk.strip())
+    main = "🏭 Воздух: " + " • ".join(parts)
+    if city_bits:
+        return main + "\n" + "🏙 По городам: " + "; ".join(city_bits[:3])
+    return main
+
+
+def _morning_sea_line(lines: list[str]) -> str:
+    text = "\n".join(lines)
+    if not re.search(r"море|вода|волна|побереж", text, flags=re.I):
+        return "🌊 Море: комфортно для купания; у берега жарко, лучше утром или ближе к закату."
+
+    water = None
+    sea_lines = [
+        _plain(line)
+        for line in lines
+        if not line.strip().startswith("<b>") and re.search(r"море|вода|волна|побереж", line, flags=re.I)
+    ]
+    sea_text = "\n".join(sea_lines)
+    for line in sea_lines:
+        for pattern in (
+            r"(?:вода|море)[^\d+-]{0,20}([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?",
+            r"([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?\s*(?:вода|море)",
+        ):
+            match = re.search(pattern, line, flags=re.I)
+            if match:
+                water = match.group(1).replace(",", ".")
+                break
+        if water:
+            break
+
+    wave = ""
+    low = sea_text.lower()
+    if re.search(r"спокойн|штиль|calm", low):
+        wave = "спокойная"
+    elif re.search(r"умерен|moderate|средн", low):
+        wave = "умеренная"
+    elif re.search(r"волн|wave|неспокой", low):
+        wave = "умеренная"
+
+    if water or wave:
+        water_part = f"вода {water}°C" if water else "вода комфортная"
+        wave_part = f"волна {wave}" if wave else "волна спокойная"
+        return f"🌊 Море: {water_part}; {wave_part}; лучше до 11:00 или после 18:30."
+
+    return "🌊 Море: комфортно для купания; у берега жарко, лучше утром или ближе к закату."
+
+
 def _clean_uv_line(line: str) -> str:
     s = _plain(line).strip()
     m = re.search(r"УФ-индекс\s*(\d+(?:[\.,]\d+)?)\s*\(([^)]+)\)\s*:\s*(.+)$", s, flags=re.I)
@@ -450,9 +522,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append("⚠️ " + _compact_warning(warning))
     if uv:
         out.append(_clean_uv_line(uv[0]))
-    for line in air:
-        if line not in out:
-            out.append(line)
+    if air:
+        out.extend(_clean_air_line(air[0]).splitlines())
+    out.append(_morning_sea_line(lines))
     for line in quakes:
         if line not in out:
             out.append(line)
