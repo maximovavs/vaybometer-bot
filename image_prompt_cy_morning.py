@@ -239,14 +239,14 @@ def build_cyprus_morning_prompt(
     if style_id == 1:
         flavor = (
             "modern minimalist background for a weather card; "
-            "soft gradient sunrise sky over Cyprus; subtle abstract shapes; "
+            "clear early morning daylight over Cyprus; pale blue morning sky; subtle abstract shapes; "
             "leave a clean translucent panel area (empty) for later overlay; "
             "high clarity, elegant, calm"
         )
     elif style_id == 2:
         flavor = (
-            "photorealistic cinematic sunrise in Cyprus, peaceful street or seafront, "
-            "natural light, gentle lens bloom, realistic textures"
+            "photorealistic fresh daylight in Cyprus, peaceful street or seafront, "
+            "pale blue morning sky, natural shadows, realistic textures"
         )
     elif style_id == 3:
         outfit = "light jacket"  # default
@@ -267,7 +267,7 @@ def build_cyprus_morning_prompt(
     elif style_id == 5:
         flavor = (
             "split-screen composition: left side Mediterranean coast, right side Troodos mountains; "
-            "consistent art style, soft sunrise lighting, gentle contrast"
+            "consistent art style, clear early morning daylight, natural shadows"
         )
     else:
         flavor = "Cyprus morning scenery"

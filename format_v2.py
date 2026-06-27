@@ -262,11 +262,26 @@ def _clean_air_line(line: str) -> str:
     if pm_parts:
         parts.append(" / ".join(pm_parts))
 
+    pollen = ""
+    pollen_match = re.search(r"🌿\s*пыльца\s*:\s*([^•;\n]+)", s, flags=re.I)
+    if pollen_match:
+        raw_pollen = pollen_match.group(1).strip().lower()
+        if raw_pollen.startswith(("низ", "low")):
+            pollen = "низкая"
+        elif raw_pollen.startswith(("умер", "сред", "moder")):
+            pollen = "умеренная"
+        elif raw_pollen.startswith(("выс", "high")):
+            pollen = "высокая"
+        else:
+            pollen = raw_pollen
+
     city_bits = []
     for chunk in re.split(r"\s*[;•]\s*", s):
         if re.search(r"\b(Никос|Ларнак|Лимассол|Пафос|Айя|Тродос)\b", chunk, flags=re.I):
             city_bits.append(chunk.strip())
     main = "🏭 Воздух: " + " • ".join(parts)
+    if pollen:
+        main += f" • 🌿 пыльца: {pollen}"
     if city_bits:
         return main + "\n" + "🏙 По городам: " + "; ".join(city_bits[:3])
     return main

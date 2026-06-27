@@ -36,9 +36,9 @@ MORNING_NO_SEA = """<b>Кипр: погода на сегодня (27.06.2026)</
 def cy_morning_adds_concise_sea_block_when_available() -> None:
     text = build_morning_format_v2("Кипр", MORNING_WITH_SEA)
     assert "🌊 Море: вода 28°C; волна спокойная; лучше до 11:00 или после 18:30." in text
-    assert "🏭 Воздух: AQI 58 (умеренный) • PM₂.₅ 14 / PM₁₀ 31" in text
+    assert "🏭 Воздух: AQI 58 (умеренный) • PM₂.₅ 14 / PM₁₀ 31 • 🌿 пыльца: низкая" in text
     assert "📟" not in text
-    assert "🌿 пыльца" not in text
+    assert "🌿 пыльца" in text
 
 
 def cy_morning_adds_sea_fallback_when_unavailable() -> None:
