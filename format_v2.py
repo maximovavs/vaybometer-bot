@@ -38,15 +38,45 @@ def _section_after(lines: list[str], marker: str) -> list[str]:
     return out
 
 
+_MOON_PHASE_PREFIXES = ("🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🌙")
+
+
+def _is_illumination_line(line: str) -> bool:
+    return line.startswith("✨") and ("%" in line or "освещ" in line.lower())
+
+
+def _is_general_background_line(line: str) -> bool:
+    return line.startswith(("✅", "⚠️", "➿")) and "общий фон" in line.lower()
+
+
+def _is_astro_candidate(line: str) -> bool:
+    return (
+        line.startswith(("🌅 Рассвет", "🌇 Закат"))
+        or line.startswith(_MOON_PHASE_PREFIXES)
+        or _is_illumination_line(line)
+        or _is_general_background_line(line)
+        or line.startswith(("💚 В плюсе", "⚫️"))
+    )
+
+
+def _first_matching(lines: list[str], predicate) -> str:
+    return next((line for line in lines if predicate(line)), "")
+
+
+def _append_unique(out: list[str], line: str) -> None:
+    if line and line not in out:
+        out.append(line)
+
+
 def _astro_lines(lines: list[str]) -> list[str]:
-    keep = []
+    keep: list[str] = []
     for line in lines:
         s = line.strip()
         if not s:
             continue
-        if s.startswith(("🌅 Рассвет", "🌇 Закат", "➿", "✅", "💚", "⚫️", "🌙", "🌘")):
+        if _is_astro_candidate(s):
             keep.append(s)
-    return keep[:4]
+    return keep
 
 
 def _storm_line(lines: list[str]) -> str:
@@ -125,17 +155,22 @@ def _clean_kp_line(line: str) -> str:
 def _clean_evening_astro(lines: list[str]) -> list[str]:
     raw = _astro_lines(lines)
     out: list[str] = []
-    for line in raw:
-        s = line.strip()
-        if s.startswith("🌇 Закат"):
-            continue
-        if s.startswith("✅"):
-            continue
-        if s.startswith(("🌅 Рассвет", "🌙", "🌘", "💚", "⚫️")):
-            out.append(s)
-        if len(out) >= 4:
-            break
-    return out
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith("🌅 Рассвет")))
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith(_MOON_PHASE_PREFIXES)))
+    _append_unique(out, _first_matching(raw, _is_illumination_line))
+    _append_unique(out, _first_matching(raw, _is_general_background_line))
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith(("💚 В плюсе", "⚫️"))))
+    return out[:5]
+
+
+def _clean_morning_astro(lines: list[str]) -> list[str]:
+    raw = _astro_lines(lines)
+    out: list[str] = []
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith(_MOON_PHASE_PREFIXES)))
+    _append_unique(out, _first_matching(raw, _is_illumination_line))
+    _append_unique(out, _first_matching(raw, _is_general_background_line))
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith(("💚 В плюсе", "⚫️"))))
+    return out[:5]
 
 
 def _has_any(text: str, words: tuple[str, ...]) -> bool:
@@ -524,6 +559,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     air = _morning_pick(lines, ("🏭", "🏙", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
     quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
+    astro = _clean_morning_astro(lines)
     today_tips = _morning_pick(lines, ("✅ Сегодня",))
     tags = _hashtags(lines, "#Кипр #погода #здоровье #Никосия #Тродос")
 
@@ -547,6 +583,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(_clean_kp_line(space[0]))
     if sun:
         out.append(sun[0])
+    if astro:
+        out.append("☀️ <b>Солнце и ритм дня</b>")
+        out.extend(astro)
 
     plan = _clean_today_tip(today_tips[0]) if today_tips else "вода, SPF, тень 11–16, прогулка до полудня"
     if warning:

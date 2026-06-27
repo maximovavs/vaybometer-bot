@@ -15,6 +15,15 @@ imghdr_stub = types.ModuleType("imghdr")
 imghdr_stub.what = lambda file, h=None: None
 sys.modules.setdefault("imghdr", imghdr_stub)
 
+pendulum_stub = types.ModuleType("pendulum")
+pendulum_stub.DateTime = object
+sys.modules.setdefault("pendulum", pendulum_stub)
+
+telegram_stub = types.ModuleType("telegram")
+telegram_stub.Bot = object
+telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
+sys.modules.setdefault("telegram", telegram_stub)
+
 from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
 from safe_test_post import _insert_main_nuance  # noqa: E402
 
@@ -85,6 +94,49 @@ HEAT_WIND_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2
 """
 
 
+RICH_ASTRO_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 8.2/10 — спокойный день.
+🏖 <b>Морские города</b>
+Лимассол: 29/22 °C • ясно • 💨 4 м/с
+———
+🏞 <b>Континентальные города</b>
+Никосия: 32/21 °C • ясно
+———
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — подходит для укрепления планов и постепенного роста.
+✨ 92% освещённости — эмоции ярче обычного, выбирай спокойный темп.
+✅ Общий фон: спокойнее решать дела по одному.
+💚 В плюсе: 🧭 планы, ✈️ дороги, 📚 обучение.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+NEW_MOON_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.1/10 — обычный день.
+🏖 <b>Морские города</b>
+Ларнака: 30/22 °C • ясно
+———
+🌅 Рассвет завтра: 05:37
+🌑 Новолуние в ♋ — лучше начинать мягко и без рывков.
+⚠️ Общий фон: не перегружай вечер решениями.
+⚫️ VoC: короткая пауза для рутины.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+MORNING_ASTRO = """<b>🌅 Кипр: погода на сегодня (27.06.2026)</b>
+Доброе утро. Теплее всего — Никосия (32°), прохладнее — Тродос (24°).
+☀️ <b>УФ-индекс 7 (High)</b>: SPF, вода и тень.
+🏭 Воздух: 🟢 чисто.
+🌙 Растущая Луна в ♐ — подходит для укрепления планов.
+✨ 92% освещённости — эмоции ярче обычного, выбирай спокойный темп.
+✅ Общий фон: держи спокойный ритм.
+🌇 Закат сегодня: 20:05
+✅ Сегодня: прогулка до полудня.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
 def cy_evening_normal_no_generic_confidence() -> None:
     text = build_evening_format_v2("Кипр", NORMAL_EVENING)
     assert "🎯 <b>Уверенность прогноза</b>" not in text
@@ -120,11 +172,37 @@ def cy_evening_preserves_compact_astro() -> None:
     text = build_evening_format_v2("Кипр", NORMAL_EVENING)
     lines = text.splitlines()
     start = lines.index("☀️ <b>Солнце и ритм дня</b>")
-    block = [line for line in lines[start:start + 5] if line.strip()]
+    block = [line for line in lines[start:start + 6] if line.strip()]
     assert "🌅 Рассвет завтра: 05:35" in block
     assert "🌙 Растущая Луна, ♏ (86%)" in block
     assert "💚 В плюсе: порядок, прогулки, мягкий режим." in block
-    assert len(block) <= 5
+    assert len(block) <= 6
+
+
+def cy_evening_preserves_moon_illumination_and_advice() -> None:
+    text = build_evening_format_v2("Кипр", RICH_ASTRO_EVENING)
+    assert "🌅 Рассвет завтра: 05:37" in text
+    assert "🌕 Полнолуние в ♐ — подходит для укрепления планов и постепенного роста." in text
+    assert "✨ 92% освещённости — эмоции ярче обычного, выбирай спокойный темп." in text
+    assert "✅ Общий фон: спокойнее решать дела по одному." in text
+    assert "💚 В плюсе: 🧭 планы, ✈️ дороги, 📚 обучение." in text
+    assert text.count("🌕 Полнолуние") == 1
+
+
+def cy_evening_preserves_new_moon_and_voc() -> None:
+    text = build_evening_format_v2("Кипр", NEW_MOON_EVENING)
+    assert "🌑 Новолуние в ♋ — лучше начинать мягко и без рывков." in text
+    assert "⚠️ Общий фон: не перегружай вечер решениями." in text
+    assert "⚫️ VoC: короткая пауза для рутины." in text
+    assert text.count("🌑 Новолуние") == 1
+
+
+def cy_morning_preserves_moon_and_illumination() -> None:
+    text = build_morning_format_v2("Кипр", MORNING_ASTRO)
+    assert "🌙 Растущая Луна в ♐ — подходит для укрепления планов." in text
+    assert "✨ 92% освещённости — эмоции ярче обычного, выбирай спокойный темп." in text
+    assert "✅ Общий фон: держи спокойный ритм." in text
+    assert text.count("🌙 Растущая Луна") == 1
 
 
 def cy_evening_uncertain_has_short_confidence_line() -> None:
@@ -164,6 +242,9 @@ def main() -> None:
         cy_evening_has_one_final_plan,
         cy_evening_preserves_weather_blocks,
         cy_evening_preserves_compact_astro,
+        cy_evening_preserves_moon_illumination_and_advice,
+        cy_evening_preserves_new_moon_and_voc,
+        cy_morning_preserves_moon_and_illumination,
         cy_evening_uncertain_has_short_confidence_line,
         cy_evening_title_is_compact,
     )
