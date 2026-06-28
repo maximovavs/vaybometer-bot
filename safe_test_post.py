@@ -449,21 +449,110 @@ def _apply_confidence_polish(v2_text: str) -> str:
     )
 
 
+_MOON_PHASE_PREFIXES = ("🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🌙")
+
+
+def _is_illumination_astro_line(line: str) -> bool:
+    return line.startswith("✨") and ("%" in line or "освещ" in line.lower())
+
+
+def _is_general_background_astro_line(line: str) -> bool:
+    return line.startswith(("✅", "⚠️", "➿")) and "общий фон" in line.lower()
+
+
+def _is_voc_astro_line(line: str) -> bool:
+    return line.startswith(("⚫️", "⚫")) and "voc" in line.lower()
+
+
+def _is_plus_astro_line(line: str) -> bool:
+    return line.startswith("💚 В плюсе")
+
+
+def _is_astro_candidate_line(line: str) -> bool:
+    return (
+        line.startswith(("🌅", "🌇"))
+        or line.startswith(_MOON_PHASE_PREFIXES)
+        or _is_illumination_astro_line(line)
+        or _is_general_background_astro_line(line)
+        or _is_plus_astro_line(line)
+        or _is_voc_astro_line(line)
+    )
+
+
+def _append_first_astro(out: list[str], lines: list[str], predicate) -> None:
+    for line in lines:
+        if predicate(line) and line not in out:
+            out.append(line)
+            return
+
+
+def _ordered_astro_details(candidates: list[str], fallback: list[str]) -> list[str]:
+    lines = list(candidates)
+    if not any(line.startswith(_MOON_PHASE_PREFIXES) for line in lines):
+        lines.extend(x for x in fallback if x not in lines)
+
+    out: list[str] = []
+    _append_first_astro(out, lines, lambda s: s.startswith(("🌅", "🌇")))
+    _append_first_astro(out, lines, lambda s: s.startswith(_MOON_PHASE_PREFIXES))
+    _append_first_astro(out, lines, _is_illumination_astro_line)
+    _append_first_astro(out, lines, _is_general_background_astro_line)
+    _append_first_astro(out, lines, lambda s: _is_plus_astro_line(s) or _is_voc_astro_line(s))
+    return out[:5]
+
+
+def _astro_fallback_candidates(v2_text: str) -> list[str]:
+    m = re.search(r"\((\d{2})\.(\d{2})\.(\d{4})\)", str(v2_text or ""))
+    if not m:
+        return []
+    try:
+        date_local = pendulum.parse(f"{m.group(3)}-{m.group(2)}-{m.group(1)}")
+        from post_common import build_astro_section
+
+        old_offset = os.environ.get("ASTRO_OFFSET")
+        os.environ["ASTRO_OFFSET"] = "0"
+        try:
+            section = build_astro_section(date_local=date_local, tz_local=TZ_STR)
+        finally:
+            if old_offset is None:
+                os.environ.pop("ASTRO_OFFSET", None)
+            else:
+                os.environ["ASTRO_OFFSET"] = old_offset
+    except Exception:
+        return []
+
+    out: list[str] = []
+    for raw in str(section or "").splitlines():
+        line = raw.strip()
+        if line and _is_astro_candidate_line(line):
+            out.append(line)
+    return out
+
+
 def _apply_astro_cleanup(v2_text: str) -> str:
     if not _env_on("FORMAT_V2_ASTRO_CLEANUP"):
         return v2_text
     lines = str(v2_text or "").splitlines()
     out: list[str] = []
     in_astro = False
-    astro_details = 0
+    candidates: list[str] = []
+    fallback = _astro_fallback_candidates(v2_text)
+
+    def flush_astro() -> None:
+        nonlocal candidates
+        if candidates:
+            out.extend(_ordered_astro_details(candidates, fallback))
+        candidates = []
+
     for line in lines:
         stripped = line.strip()
         if stripped.startswith(("☀️ <b>Солнце", "🌙 <b>Астроритм")):
+            if in_astro:
+                flush_astro()
             in_astro = True
-            astro_details = 0
             out.append(line)
             continue
-        if in_astro and stripped.startswith(("📌 <b>Вывод", "✅ <b>Рекомендации", "#")):
+        if in_astro and stripped.startswith(("📌 <b>Вывод", "✅ <b>Рекомендации", "✅ План", "🎯", "#")):
+            flush_astro()
             in_astro = False
         if in_astro and stripped:
             if stripped.endswith("для первых") or stripped.endswith("и вдо…"):
@@ -473,12 +562,14 @@ def _apply_astro_cleanup(v2_text: str) -> str:
             if stripped.startswith("✅ В целом:"):
                 line = "✅ Астроритм: благоприятный."
                 stripped = line
-            if not stripped.startswith(("🌅", "🌙", "✅", "💚")):
+            if not _is_astro_candidate_line(stripped):
                 continue
-            astro_details += 1
-            if astro_details > 4:
-                continue
+            if stripped not in candidates:
+                candidates.append(stripped)
+            continue
         out.append(line)
+    if in_astro:
+        flush_astro()
     return "\n".join(out)
 
 

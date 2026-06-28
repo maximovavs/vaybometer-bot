@@ -3,6 +3,7 @@
 """Regression checks for compact Cyprus FORMAT_V2 evening posts."""
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -24,8 +25,9 @@ telegram_stub.Bot = object
 telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
 sys.modules.setdefault("telegram", telegram_stub)
 
-from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
-from safe_test_post import _insert_main_nuance  # noqa: E402
+from format_v2 import build_evening_format_v2, build_format_v2, build_morning_format_v2  # noqa: E402
+from post_safety import sanitize_post_text  # noqa: E402
+from safe_test_post import _apply_astro_cleanup, _apply_format_v2_test_polish, _insert_main_nuance  # noqa: E402
 
 
 MORNING_WITH_QUAKE = """<b>🌅 Кипр: погода на сегодня (27.06.2026)</b>
@@ -124,6 +126,36 @@ NEW_MOON_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.20
 """
 
 
+SAFE_ASTRO_PIPELINE_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 8.2/10 — спокойный день.
+🏖 <b>Морские города</b>
+Лимассол: 29/22 °C • ясно • 💨 4 м/с
+———
+🏞 <b>Континентальные города</b>
+Никосия: 32/21 °C • ясно
+———
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+✨ 96% освещённости — эмоции ярче обычного.
+⚠️ Общий фон: не перегружать день.
+💚 В плюсе: 🧭 планы, ✈️ дороги, 📚 обучение.
+⚫️ VoC 12:00–13:20 — без новых стартов.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+SAFE_ASTRO_PIPELINE_NEW_MOON = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.1/10 — обычный день.
+🏖 <b>Морские города</b>
+Ларнака: 30/22 °C • ясно
+———
+🌅 Рассвет завтра: 05:37
+🌑 Новолуние в ♋ — лучше начинать мягко и без рывков.
+⚫️ VoC 12:00–13:20 — без новых стартов.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
 MORNING_ASTRO = """<b>🌅 Кипр: погода на сегодня (27.06.2026)</b>
 Доброе утро. Теплее всего — Никосия (32°), прохладнее — Тродос (24°).
 ☀️ <b>УФ-индекс 7 (High)</b>: SPF, вода и тень.
@@ -205,6 +237,43 @@ def cy_morning_preserves_moon_and_illumination() -> None:
     assert text.count("🌙 Растущая Луна") == 1
 
 
+def _safe_test_evening_pipeline(source: str) -> str:
+    env_names = ("FORMAT_V2", "FORMAT_V2_ASTRO_CLEANUP", "FORMAT_V2_TEST_POLISH", "FORMAT_V2_MAIN_NUANCE")
+    old_env = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        text = build_format_v2("Кипр", "evening", source)
+        text = _apply_format_v2_test_polish(text)
+        text = _insert_main_nuance(text)
+        text = _apply_astro_cleanup(text)
+        return sanitize_post_text(text).text
+    finally:
+        for name, value in old_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def cy_evening_safe_pipeline_preserves_moon_illumination_and_plus() -> None:
+    text = _safe_test_evening_pipeline(SAFE_ASTRO_PIPELINE_EVENING)
+    assert "🌕 Полнолуние" in text
+    assert "✨ 96% освещённости" in text
+    assert "💚 В плюсе: 🧭 планы, ✈️ дороги, 📚 обучение." in text
+    astro_lines = text.split("☀️ <b>Солнце и ритм дня</b>", 1)[1].split("✅ План завтра:", 1)[0].splitlines()
+    astro_lines = [line for line in astro_lines if line.strip()]
+    assert len(astro_lines) >= 4
+    assert len(astro_lines) <= 5
+    assert "🌅 Рассвет завтра: 05:37" in astro_lines
+
+
+def cy_evening_safe_pipeline_preserves_new_moon_and_voc() -> None:
+    text = _safe_test_evening_pipeline(SAFE_ASTRO_PIPELINE_NEW_MOON)
+    assert "🌑 Новолуние в ♋ — лучше начинать мягко и без рывков." in text
+    assert "⚫️ VoC 12:00–13:20 — без новых стартов." in text
+
+
 def cy_evening_uncertain_has_short_confidence_line() -> None:
     text = build_evening_format_v2("Кипр", RAIN_EVENING)
     assert "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром." in text
@@ -245,6 +314,8 @@ def main() -> None:
         cy_evening_preserves_moon_illumination_and_advice,
         cy_evening_preserves_new_moon_and_voc,
         cy_morning_preserves_moon_and_illumination,
+        cy_evening_safe_pipeline_preserves_moon_illumination_and_plus,
+        cy_evening_safe_pipeline_preserves_new_moon_and_voc,
         cy_evening_uncertain_has_short_confidence_line,
         cy_evening_title_is_compact,
     )
