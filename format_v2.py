@@ -39,6 +39,11 @@ def _section_after(lines: list[str], marker: str) -> list[str]:
 
 
 _MOON_PHASE_PREFIXES = ("🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🌙")
+_ZODIAC_SYMBOLS = "♈♉♊♋♌♍♎♏♐♑♒♓"
+
+
+def _normalize_zodiac_symbol_suffix(line: str) -> str:
+    return re.sub(rf"(в\s+[{_ZODIAC_SYMBOLS}])(?:[а-яё]+)\b", r"\1", str(line or ""), flags=re.I)
 
 
 def _is_illumination_line(line: str) -> bool:
@@ -75,7 +80,7 @@ def _astro_lines(lines: list[str]) -> list[str]:
         if not s:
             continue
         if _is_astro_candidate(s):
-            keep.append(s)
+            keep.append(_normalize_zodiac_symbol_suffix(s))
     return keep
 
 

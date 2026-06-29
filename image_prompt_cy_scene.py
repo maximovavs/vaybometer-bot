@@ -165,6 +165,39 @@ def _variant_seed(message: str, ctx: VisualContextCY, post_type: str) -> str:
     )
 
 
+def _lunar_illumination_percent(message: str) -> float | None:
+    for line in str(message or "").splitlines():
+        low = line.lower()
+        if not (
+            "освещ" in low
+            or "полнолу" in low
+            or "луна" in low
+            or "moon" in low
+            or line.strip().startswith(("🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🌙", "✨"))
+        ):
+            continue
+        match = re.search(r"\b(\d{1,3}(?:[.,]\d+)?)\s*%", line)
+        if not match:
+            continue
+        try:
+            value = float(match.group(1).replace(",", "."))
+        except Exception:
+            continue
+        if 0 <= value <= 100:
+            return value
+    return None
+
+
+def _has_full_moon_evening_context(message: str) -> bool:
+    text = str(message or "")
+    if re.search(r"полнолу", text, flags=re.I):
+        return True
+    if re.search(r"\b100\s*%\s*освещ", text, flags=re.I):
+        return True
+    illumination = _lunar_illumination_percent(text)
+    return illumination is not None and illumination >= 95
+
+
 def _controlled_variety(message: str, ctx: VisualContextCY, post_type: str) -> list[str]:
     seed = _variant_seed(message, ctx, post_type)
     inland_only = ctx.inland_heat_focus and not ctx.coastal_focus
@@ -304,12 +337,17 @@ def build_cyprus_scene_prompt(
 
     ctx = build_visual_context_cy(final_format_v2_message, post_type=mode)
     scene = apply_visual_rules_cy(ctx)
+    full_moon_evening = mode == "evening" and _has_full_moon_evening_context(final_format_v2_message)
 
-    time_cue = (
-        "clear early morning daylight, pale blue sky, fresh daylight, natural shadows, crisp clean daytime atmosphere"
-        if mode == "morning"
-        else "warm Mediterranean late-day atmosphere with soft golden dusk light"
-    )
+    if mode == "morning":
+        time_cue = "clear early morning daylight, pale blue sky, fresh daylight, natural shadows, crisp clean daytime atmosphere"
+    elif full_moon_evening:
+        time_cue = (
+            "Mediterranean blue-hour twilight, visible realistic full moon above the sea, "
+            "soft moonlit water, warm residual horizon glow"
+        )
+    else:
+        time_cue = "warm Mediterranean late-day atmosphere with soft golden dusk light"
     foundation = _COASTAL_FOUNDATION if ctx.coastal_focus or not ctx.inland_heat_focus else _INLAND_FOUNDATION
     prompt_parts = [
         *foundation,
@@ -322,6 +360,16 @@ def build_cyprus_scene_prompt(
         prompt_parts.extend(
             [
                 "palms may appear only as small background accents",
+            ]
+        )
+    if full_moon_evening:
+        prompt_parts.extend(
+            [
+                "moonrise blue-hour emphasis dominates over late-day warmth",
+                "visible realistic near-full moon if clouds allow",
+                "subtle moonlit reflection on Mediterranean water",
+                "realistic moon scale, not oversized, not fantasy supermoon",
+                "not sun-dominant",
             ]
         )
     prompt = sanitize_cyprus_scene_prompt(

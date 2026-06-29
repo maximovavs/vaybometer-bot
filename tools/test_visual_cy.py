@@ -307,6 +307,27 @@ def cy_prompt_controlled_variety_changes_by_date() -> None:
         assert not re.search(rf"\b{forbidden}\b", low)
 
 
+def cy_prompt_full_moon_evening_uses_blue_hour_moonlight() -> None:
+    message = """
+    27.06.2026
+    Кипр завтра.
+    Лимассол и Ларнака: тепло, море спокойное.
+    🌕 Полнолуние в ♑ — пик эмоций и результатов.
+    ✨ 100% освещённости — Луна яркая.
+    """
+    prompt, style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "visible realistic full moon" in low
+    assert "moonlit" in low
+    assert "blue-hour" in low
+    assert "soft golden dusk light" not in low
+    assert "not oversized" in low
+    assert "not fantasy supermoon" in low
+    assert "sun-dominant" in low
+    assert "baltic" not in low
+    assert style.startswith("cyprus_evening_mediterranean_landscape_")
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -325,6 +346,7 @@ TESTS = [
     cy_prompt_morning_evening_same_date_differ,
     cy_prompt_adjacent_dates_change_macro_viewpoint,
     cy_prompt_controlled_variety_changes_by_date,
+    cy_prompt_full_moon_evening_uses_blue_hour_moonlight,
 ]
 
 

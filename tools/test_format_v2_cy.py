@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -109,6 +110,19 @@ RICH_ASTRO_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.
 ✨ 92% освещённости — эмоции ярче обычного, выбирай спокойный темп.
 ✅ Общий фон: спокойнее решать дела по одному.
 💚 В плюсе: 🧭 планы, ✈️ дороги, 📚 обучение.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+MALFORMED_ZODIAC_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 8.2/10 — спокойный день.
+🏖 <b>Морские города</b>
+Лимассол: 29/22 °C • ясно • 💨 4 м/с
+———
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♑е — пик эмоций и результатов — лучше завершать, чем начинать.
+✨ 100% освещённости — эмоции ярче обычного.
+💚 В плюсе: завершение, договорённости.
 #Кипр #погода #здоровье #Никосия #Тродос
 """
 
@@ -234,6 +248,13 @@ def cy_evening_preserves_moon_illumination_and_advice() -> None:
     assert text.count("🌕 Полнолуние") == 1
 
 
+def cy_evening_normalizes_zodiac_symbol_suffix() -> None:
+    text = build_evening_format_v2("Кипр", MALFORMED_ZODIAC_EVENING)
+    assert "🌕 Полнолуние в ♑ — пик эмоций и результатов — лучше завершать, чем начинать." in text
+    assert "в ♑е" not in text
+    assert not re.search(r"в\s+[♈♉♊♋♌♍♎♏♐♑♒♓][а-яё]+", text, flags=re.I)
+
+
 def cy_evening_preserves_new_moon_and_voc() -> None:
     text = build_evening_format_v2("Кипр", NEW_MOON_EVENING)
     assert "🌑 Новолуние в ♋ — лучше начинать мягко и без рывков." in text
@@ -342,6 +363,7 @@ def main() -> None:
         cy_evening_preserves_weather_blocks,
         cy_evening_preserves_compact_astro,
         cy_evening_preserves_moon_illumination_and_advice,
+        cy_evening_normalizes_zodiac_symbol_suffix,
         cy_evening_preserves_new_moon_and_voc,
         cy_morning_preserves_moon_and_illumination,
         cy_morning_sea_summary_uses_coastal_rows_not_sunset,
