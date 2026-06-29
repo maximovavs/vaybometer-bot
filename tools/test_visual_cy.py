@@ -152,13 +152,18 @@ def cy_prompt_morning_sanitized() -> None:
     assert "mediterranean" in low
     assert "daylight" in low
     assert "pale blue sky" in low
-    assert "fresh early sun" in low
+    assert "fresh daylight" in low
     assert "natural shadows" in low
+    assert "clear early morning daylight" in low
     for forbidden in (
         "text", "logo", "poster", "card", "moon", "night", "sunset",
+        "dusk", "golden hour", "orange horizon", "cinematic evening light",
         "baltic", "kaliningrad",
     ):
-        assert not re.search(rf"\b{forbidden}\b", low)
+        if " " in forbidden:
+            assert forbidden not in low
+        else:
+            assert not re.search(rf"\b{forbidden}\b", low)
     assert style.startswith("cyprus_morning_mediterranean_landscape_")
     assert re.search(r"_[0-9a-f]{8}$", style)
 

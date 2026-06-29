@@ -160,9 +160,22 @@ MORNING_ASTRO = """<b>🌅 Кипр: погода на сегодня (27.06.202
 Доброе утро. Теплее всего — Никосия (32°), прохладнее — Тродос (24°).
 ☀️ <b>УФ-индекс 7 (High)</b>: SPF, вода и тень.
 🏭 Воздух: 🟢 чисто.
-🌙 Растущая Луна в ♐ — подходит для укрепления планов.
-✨ 92% освещённости — эмоции ярче обычного, выбирай спокойный темп.
+🌕 Почти полная Луна в ♐ — подходит для укрепления планов.
+✨ 99% освещённости — эмоции ярче обычного, выбирай спокойный темп.
 ✅ Общий фон: держи спокойный ритм.
+🌇 Закат сегодня: 20:05
+✅ Сегодня: прогулка до полудня.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+MORNING_SEA_ROWS = """<b>🌅 Кипр: погода на сегодня (27.06.2026)</b>
+Доброе утро. Теплее всего — Никосия (37°), прохладнее — Пафос (28°).
+☀️ <b>УФ-индекс 9 (Very High)</b>: SPF 50, тень 11–16.
+🏭 Воздух: 🟢 чисто.
+Ларнака: 31/24 °C • ☁️ обл • 💨 3.4 м/с • 🌊 27
+Лимассол: 31/23 °C • ☁️ обл • 💨 2.3 м/с • 🌊 27 • 0.2 м
+Айя-Напа: 30/23 °C • 🌫 туман • 💨 2.5 м/с • 🌊 27
 🌇 Закат сегодня: 20:05
 ✅ Сегодня: прогулка до полудня.
 #Кипр #погода #здоровье #Никосия #Тродос
@@ -231,10 +244,17 @@ def cy_evening_preserves_new_moon_and_voc() -> None:
 
 def cy_morning_preserves_moon_and_illumination() -> None:
     text = build_morning_format_v2("Кипр", MORNING_ASTRO)
-    assert "🌙 Растущая Луна в ♐ — подходит для укрепления планов." in text
-    assert "✨ 92% освещённости — эмоции ярче обычного, выбирай спокойный темп." in text
+    assert "🌕 Почти полная Луна в ♐ — 99% освещённости." in text
+    assert "✨ 99% освещённости" not in text
     assert "✅ Общий фон: держи спокойный ритм." in text
-    assert text.count("🌙 Растущая Луна") == 1
+    assert text.count("🌕 Почти полная Луна") == 1
+
+
+def cy_morning_sea_summary_uses_coastal_rows_not_sunset() -> None:
+    text = build_morning_format_v2("Кипр", MORNING_SEA_ROWS)
+    assert "🌊 Море: вода 27°C; волна спокойная; лучше до 11:00 или после 18:30." in text
+    assert "🌊 Море: вода 20°C" not in text
+    assert "20:05" in text
 
 
 def _safe_test_evening_pipeline(source: str) -> str:
@@ -301,6 +321,16 @@ def cy_evening_polish_does_not_duplicate_nuance() -> None:
     assert polished.count("✅ План завтра:") == 1
 
 
+def cy_workflow_morning_schedule_is_earlier() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "daily_post.yml").read_text(encoding="utf-8")
+    assert "cron: '0 1 * * *'" in workflow
+    assert "github.event.schedule == '0 1 * * *'" in workflow
+    assert "01:00 UTC ≈ 04:00 на Кипре летом / 03:00 зимой" in workflow
+    assert "cron: '0 13 * * *'" in workflow
+    assert "cron: '0 7 * * *'" in workflow
+    assert "github.event.schedule == '30 2 * * *'" not in workflow
+
+
 def main() -> None:
     checks = (
         cy_morning_preserves_quake_line,
@@ -314,10 +344,12 @@ def main() -> None:
         cy_evening_preserves_moon_illumination_and_advice,
         cy_evening_preserves_new_moon_and_voc,
         cy_morning_preserves_moon_and_illumination,
+        cy_morning_sea_summary_uses_coastal_rows_not_sunset,
         cy_evening_safe_pipeline_preserves_moon_illumination_and_plus,
         cy_evening_safe_pipeline_preserves_new_moon_and_voc,
         cy_evening_uncertain_has_short_confidence_line,
         cy_evening_title_is_compact,
+        cy_workflow_morning_schedule_is_earlier,
     )
     for check in checks:
         check()

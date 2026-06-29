@@ -165,12 +165,28 @@ def _clean_evening_astro(lines: list[str]) -> list[str]:
 
 def _clean_morning_astro(lines: list[str]) -> list[str]:
     raw = _astro_lines(lines)
+    moon = _first_matching(raw, lambda s: s.startswith(_MOON_PHASE_PREFIXES))
+    illum = _first_matching(raw, _is_illumination_line)
     out: list[str] = []
-    _append_unique(out, _first_matching(raw, lambda s: s.startswith(_MOON_PHASE_PREFIXES)))
-    _append_unique(out, _first_matching(raw, _is_illumination_line))
+    _append_unique(out, _compact_morning_moon_line(moon, illum))
     _append_unique(out, _first_matching(raw, _is_general_background_line))
     _append_unique(out, _first_matching(raw, lambda s: s.startswith(("💚 В плюсе", "⚫️"))))
     return out[:5]
+
+
+def _compact_morning_moon_line(moon_line: str, illumination_line: str) -> str:
+    moon = str(moon_line or "").strip()
+    if not moon:
+        return ""
+    if re.search(r"\b\d{1,3}%\s+освещ", moon, flags=re.I):
+        return moon
+    m = re.search(r"(\d{1,3})\s*%", str(illumination_line or ""))
+    if not m:
+        return moon
+    moon = moon.rstrip(" .")
+    if "—" in moon:
+        moon = moon.split("—", 1)[0].strip()
+    return f"{moon} — {m.group(1)}% освещённости."
 
 
 def _has_any(text: str, words: tuple[str, ...]) -> bool:
@@ -324,14 +340,34 @@ def _clean_air_line(line: str) -> str:
 
 def _morning_sea_line(lines: list[str]) -> str:
     text = "\n".join(lines)
-    if not re.search(r"море|вода|волна|побереж", text, flags=re.I):
+    if not re.search(r"море|вода|волна|побереж|🌊", text, flags=re.I):
         return "🌊 Море: комфортно для купания; у берега жарко, лучше утром или ближе к закату."
 
     water = None
+    wave_value = None
+
+    for line in lines:
+        s = _plain(line).replace("\u00a0", " ").strip()
+        if "🌊" not in s or "закат" in s.lower() or "рассвет" in s.lower():
+            continue
+        tail = s.split("🌊", 1)[1]
+        nums: list[float] = []
+        for raw_num in re.findall(r"([+-]?\d+(?:[\.,]\d+)?)", tail):
+            try:
+                nums.append(float(raw_num.replace(",", ".")))
+            except Exception:
+                continue
+        if water is None and nums and 5 <= nums[0] <= 35:
+            water = f"{nums[0]:.0f}" if nums[0].is_integer() else f"{nums[0]:.1f}"
+        if wave_value is None and len(nums) >= 2 and 0 <= nums[1] <= 5:
+            wave_value = nums[1]
+        if water is not None:
+            break
+
     sea_lines = [
         _plain(line)
         for line in lines
-        if not line.strip().startswith("<b>") and re.search(r"море|вода|волна|побереж", line, flags=re.I)
+        if not line.strip().startswith("<b>") and re.search(r"море|вода|волна|побереж|🌊", line, flags=re.I)
     ]
     sea_text = "\n".join(sea_lines)
     for line in sea_lines:
@@ -347,12 +383,14 @@ def _morning_sea_line(lines: list[str]) -> str:
             break
 
     wave = ""
+    if isinstance(wave_value, (int, float)):
+        wave = "спокойная" if wave_value < 0.5 else "умеренная"
     low = sea_text.lower()
-    if re.search(r"спокойн|штиль|calm", low):
+    if not wave and re.search(r"спокойн|штиль|calm", low):
         wave = "спокойная"
-    elif re.search(r"умерен|moderate|средн", low):
+    elif not wave and re.search(r"умерен|moderate|средн", low):
         wave = "умеренная"
-    elif re.search(r"волн|wave|неспокой", low):
+    elif not wave and re.search(r"волн|wave|неспокой", low):
         wave = "умеренная"
 
     if water or wave:

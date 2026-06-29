@@ -2,8 +2,8 @@ name: Daily VayboMeter (Cyprus)
 
 on:
   schedule:
-    # Утренний пост: 02:30 UTC ≈ 05:30 на Кипре летом / 04:30 зимой
-    - cron: '30 2 * * *'
+    # Утренний пост: 01:00 UTC ≈ 04:00 на Кипре летом / 03:00 зимой
+    - cron: '0 1 * * *'
     # Вечерний пост: 13:00 UTC ≈ 16:00 на Кипре летом / 15:00 зимой
     - cron: '0 13 * * *'
     # Курсы валют: 07:00 UTC
@@ -109,7 +109,7 @@ jobs:
     name: Morning post (for today)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '30 2 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 1 * * *') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_morning == 'true')
     steps:
       - uses: actions/checkout@v4

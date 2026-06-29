@@ -36,6 +36,10 @@ _MORNING_TRIGGER_PATTERNS = (
     r"\bnight\b",
     r"\bevening\b",
     r"\bsunset\b",
+    r"\bdusk\b",
+    r"\bgolden\s+hour\b",
+    r"\borange\s+horizon\b",
+    r"\bcinematic\s+evening\s+light\b",
 )
 _FOCAL_OBJECT_PATTERNS = (
     r"\bboats?\b",
@@ -302,7 +306,7 @@ def build_cyprus_scene_prompt(
     scene = apply_visual_rules_cy(ctx)
 
     time_cue = (
-        "clear morning daylight, pale blue sky, fresh early sun, natural shadows, not golden sunset, not orange dusk, not cinematic evening light"
+        "clear early morning daylight, pale blue sky, fresh daylight, natural shadows, crisp clean daytime atmosphere"
         if mode == "morning"
         else "warm Mediterranean late-day atmosphere with soft golden dusk light"
     )
