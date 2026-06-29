@@ -60,35 +60,40 @@ def cy_fx_message_hides_ecb_when_intermarket_exists(tmp_path: Path | None = None
     text = _build_fx_text_with_ruble_deltas(1.63, 1.43)
     assert "💱 <b>Курсы валют | 1 EUR</b>" in text
     assert "ECB official:" not in text
-    assert "Межрынок: $1.14 · £0.86 · ₺53.14 ↑0.18 · ₪3.41 ↑0.02" in text
-    assert "К рублю: €87.40 ₽ ↑1.63 · $77.06 ₽ ↑1.43" in text
-    assert "🧭 EUR/USD к рублю выше; для поездок смотрим TRY и ILS." in text
+    assert "EUR: USD 1.14 · GBP 0.86 · TRY 53.14 ↑0.18 · ILS 3.41 ↑0.02" in text
+    assert "К ₽: EUR 87.40 ↑1.63 · USD 77.06 ↑1.43" in text
+    assert "🧭 € и $ к ₽ выше; для поездок по региону смотрим TRY/ILS." in text
+    assert "#Кипр #курсы_валют #рынки" in text
+    assert "EUR/USD к рублю выше" not in text
 
 
 def cy_fx_summary_positive_is_higher() -> None:
     text = _build_fx_text_with_ruble_deltas(1.63, 1.43)
-    assert "🧭 EUR/USD к рублю выше; для поездок смотрим TRY и ILS." in text
+    assert "🧭 € и $ к ₽ выше; для поездок по региону смотрим TRY/ILS." in text
 
 
 def cy_fx_summary_negative_is_lower() -> None:
     text = _build_fx_text_with_ruble_deltas(-1.63, -1.43)
-    assert "🧭 EUR/USD к рублю ниже; для поездок смотрим TRY и ILS." in text
+    assert "🧭 € и $ к ₽ ниже; для поездок по региону смотрим TRY/ILS." in text
 
 
 def cy_fx_summary_mixed_is_mixed() -> None:
     text = _build_fx_text_with_ruble_deltas(1.63, -1.43)
-    assert "🧭 Рублёвые пары смешанно; для поездок смотрим TRY и ILS." in text
+    assert "🧭 Рублёвые пары смешанно; для поездок по региону смотрим TRY/ILS." in text
 
 
 def cy_market_pulse_is_compact() -> None:
     pulse._fetch_crypto = lambda: ["24ч: BTC $60.3K ↑1.2% · ETH $1.6K ↑2.0%"]
-    pulse._fetch_gold = lambda: ["Gold/oz: $4.1K"]
+    pulse._fetch_gold = lambda: ["Gold/oz $4.1K"]
     block = pulse.build_market_pulse_block()
     assert "📊 <b>Пульс рынков</b>" in block
     assert "24ч: BTC $60.3K ↑1.2% · ETH $1.6K ↑2.0%" in block
-    assert "Gold/oz: $4.1K" in block
+    assert "Gold/oz $4.1K" in block
+    assert "Gold/oz:" not in block
     assert "Инфо-ориентир, не инвестрекомендация." in block
     assert "(" not in block
+    text = pulse.inject_market_pulse("💱 <b>Курсы валют | 1 EUR</b>\n\n#Кипр #курсы_валют", block)
+    assert "#Кипр #курсы_валют #рынки" in text
 
 
 def main() -> None:

@@ -138,10 +138,10 @@ def _cbr_ruble_summary(eur_dlt, usd_dlt) -> str:
     eur = _to_float(eur_dlt)
     usd = _to_float(usd_dlt)
     if eur is not None and usd is not None and eur > 0 and usd > 0:
-        return "🧭 EUR/USD к рублю выше; для поездок смотрим TRY и ILS."
+        return "🧭 € и $ к ₽ выше; для поездок по региону смотрим TRY/ILS."
     if eur is not None and usd is not None and eur < 0 and usd < 0:
-        return "🧭 EUR/USD к рублю ниже; для поездок смотрим TRY и ILS."
-    return "🧭 Рублёвые пары смешанно; для поездок смотрим TRY и ILS."
+        return "🧭 € и $ к ₽ ниже; для поездок по региону смотрим TRY/ILS."
+    return "🧭 Рублёвые пары смешанно; для поездок по региону смотрим TRY/ILS."
 
 
 # —— кэш межрынка (вчера)
@@ -328,13 +328,12 @@ def _build_fx_message_eur(
             delta = None
             if prev and code in prev and _to_float(prev.get(code)) is not None:
                 delta = v - float(prev[code])  # натуральная дельта
-            symbol = {"USD": "$", "GBP": "£", "TRY": "₺", "ILS": "₪"}.get(code, code)
-            piece = f"{symbol}{_fmt_num(v, 2)}"
+            piece = f"{code} {_fmt_num(v, 2)}"
             d_piece = _fmt_delta_arrow(delta, digits=2, eps=0.005, show_zero=False) if delta is not None else ""
             parts.append(piece + d_piece)
         return f"{prefix} " + " · ".join(parts) if parts else ""
 
-    line_inter = _line_cross_with_delta("Межрынок:", inter_today, inter_prev)
+    line_inter = _line_cross_with_delta("EUR:", inter_today, inter_prev)
 
     # ЕЦБ (последний и предыдущий рабочий день)
     ecb_latest, ecb_prev, d_latest, _d_prev = _fetch_ecb_latest_and_prev()
@@ -350,10 +349,10 @@ def _build_fx_message_eur(
 
     cbr_bits = []
     if eur_val is not None:
-        cbr_bits.append(f"€{float(eur_val):.2f} ₽{_fmt_delta_arrow(eur_dlt)}")
+        cbr_bits.append(f"EUR {float(eur_val):.2f}{_fmt_delta_arrow(eur_dlt)}")
     if usd_val is not None:
-        cbr_bits.append(f"${float(usd_val):.2f} ₽{_fmt_delta_arrow(usd_dlt)}")
-    line_cbr = "К рублю: " + " · ".join(cbr_bits) if cbr_bits else ""
+        cbr_bits.append(f"USD {float(usd_val):.2f}{_fmt_delta_arrow(usd_dlt)}")
+    line_cbr = "К ₽: " + " · ".join(cbr_bits) if cbr_bits else ""
 
     title = "💱 <b>Курсы валют | 1 EUR</b>"
     summary = _cbr_ruble_summary(eur_dlt, usd_dlt) if line_cbr else ""
@@ -361,7 +360,7 @@ def _build_fx_message_eur(
     if not lines:
         lines = ["• Данные временно недоступны"]
 
-    text = f"{title}\n" + "\n".join(lines) + "\n\n#Кипр #курсы_валют"
+    text = f"{title}\n" + "\n".join(lines) + "\n\n#Кипр #курсы_валют #рынки"
 
     # для кэша межрынка сохраняем «сегодня»
     return text, cbr, inter_today

@@ -149,8 +149,8 @@ def _fetch_gold() -> list[str]:
             if price is not None:
                 break
     if price is not None:
-        return [f"Gold/oz: {_fmt_usd_compact(price)}"]
-    return ["Gold/oz: н/д"]
+        return [f"Gold/oz {_fmt_usd_compact(price)}"]
+    return ["Gold/oz н/д"]
 
 
 def build_market_pulse_block() -> str:
@@ -163,6 +163,8 @@ def build_market_pulse_block() -> str:
 def inject_market_pulse(fx_text: str, block: str) -> str:
     if not block or "<b>Market Pulse</b>" in fx_text or "<b>Пульс рынков</b>" in fx_text:
         return fx_text
+    if "#Кипр #курсы_валют" in fx_text and "#рынки" not in fx_text:
+        fx_text = fx_text.replace("#Кипр #курсы_валют", "#Кипр #курсы_валют #рынки", 1)
     marker = "\n\n#"
     if marker in fx_text:
         return fx_text.replace(marker, "\n\n" + block + marker, 1)
