@@ -94,6 +94,14 @@ def cy_market_pulse_is_compact() -> None:
     assert "(" not in block
     text = pulse.inject_market_pulse("💱 <b>Курсы валют | 1 EUR</b>\n\n#Кипр #курсы_валют", block)
     assert "#Кипр #курсы_валют #рынки" in text
+    assert text.rstrip().endswith("#Кипр #курсы_валют #рынки")
+
+
+def cy_fx_market_hashtag_survives_empty_or_existing_pulse() -> None:
+    base = "💱 <b>Курсы валют | 1 EUR</b>\nEUR: USD 1.14\n\n#Кипр #курсы_валют"
+    assert pulse.inject_market_pulse(base, "").rstrip().endswith("#Кипр #курсы_валют #рынки")
+    existing = base.replace("\n\n#", "\n\n📊 <b>Пульс рынков</b>\n24ч: BTC $60.3K ↑1.2%\n\n#")
+    assert pulse.inject_market_pulse(existing, "ignored").rstrip().endswith("#Кипр #курсы_валют #рынки")
 
 
 def main() -> None:
@@ -103,6 +111,7 @@ def main() -> None:
         cy_fx_summary_negative_is_lower,
         cy_fx_summary_mixed_is_mixed,
         cy_market_pulse_is_compact,
+        cy_fx_market_hashtag_survives_empty_or_existing_pulse,
     )
     for check in checks:
         check()
