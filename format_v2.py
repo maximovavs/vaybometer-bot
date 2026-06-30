@@ -50,6 +50,14 @@ def _is_illumination_line(line: str) -> bool:
     return line.startswith("✨") and ("%" in line or "освещ" in line.lower())
 
 
+def _is_moon_text_line(line: str) -> bool:
+    s = str(line or "").strip()
+    return bool(
+        re.search(r"\b(?:полнолуние|луна|новолуние)\b", s, flags=re.I)
+        or re.search(r"\b(?:full moon|moon|new moon)\b", s, flags=re.I)
+    )
+
+
 def _is_general_background_line(line: str) -> bool:
     return line.startswith(("✅", "⚠️", "➿")) and "общий фон" in line.lower()
 
@@ -58,6 +66,7 @@ def _is_astro_candidate(line: str) -> bool:
     return (
         line.startswith(("🌅 Рассвет", "🌇 Закат"))
         or line.startswith(_MOON_PHASE_PREFIXES)
+        or _is_moon_text_line(line)
         or _is_illumination_line(line)
         or _is_general_background_line(line)
         or line.startswith(("💚 В плюсе", "⚫️"))
@@ -170,7 +179,7 @@ def _clean_evening_astro(lines: list[str]) -> list[str]:
 
 def _clean_morning_astro(lines: list[str]) -> list[str]:
     raw = _astro_lines(lines)
-    moon = _first_matching(raw, lambda s: s.startswith(_MOON_PHASE_PREFIXES))
+    moon = _first_matching(raw, lambda s: s.startswith(_MOON_PHASE_PREFIXES) or (_is_moon_text_line(s) and not _is_illumination_line(s)))
     illum = _first_matching(raw, _is_illumination_line)
     out: list[str] = []
     _append_unique(out, _compact_morning_moon_line(moon, illum))
@@ -181,16 +190,22 @@ def _clean_morning_astro(lines: list[str]) -> list[str]:
 
 def _compact_morning_moon_line(moon_line: str, illumination_line: str) -> str:
     moon = str(moon_line or "").strip()
+    m = re.search(r"(\d{1,3})\s*%", str(illumination_line or ""))
     if not moon:
+        if m:
+            pct = int(m.group(1))
+            if pct >= 95:
+                return f"🌕 Луна: полнолуние, {pct}% освещённости."
         return ""
     if re.search(r"\b\d{1,3}%\s+освещ", moon, flags=re.I):
         return moon
-    m = re.search(r"(\d{1,3})\s*%", str(illumination_line or ""))
     if not m:
-        return moon
+        return moon if moon.startswith(_MOON_PHASE_PREFIXES) else "🌕 " + moon
     moon = moon.rstrip(" .")
     if "—" in moon:
         moon = moon.split("—", 1)[0].strip()
+    if not moon.startswith(_MOON_PHASE_PREFIXES):
+        moon = "🌕 " + moon
     return f"{moon} — {m.group(1)}% освещённости."
 
 

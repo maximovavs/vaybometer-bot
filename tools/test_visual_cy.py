@@ -152,12 +152,16 @@ def cy_prompt_morning_sanitized() -> None:
     assert "mediterranean" in low
     assert "daylight" in low
     assert "pale blue sky" in low
-    assert "fresh daylight" in low
-    assert "natural shadows" in low
+    assert "cool fresh morning atmosphere" in low
+    assert "soft neutral sunlight" in low
+    assert "crisp daytime visibility" in low
+    assert "natural daytime shadows" in low
     assert "clear early morning daylight" in low
     for forbidden in (
         "text", "logo", "poster", "card", "moon", "night", "sunset",
-        "dusk", "golden hour", "orange horizon", "cinematic evening light",
+        "sunrise", "dusk", "golden", "golden hour", "orange",
+        "orange horizon", "orange sky", "evening", "evening warmth",
+        "cinematic dusk", "cinematic evening light",
         "baltic", "kaliningrad",
     ):
         if " " in forbidden:

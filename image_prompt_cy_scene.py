@@ -36,9 +36,16 @@ _MORNING_TRIGGER_PATTERNS = (
     r"\bnight\b",
     r"\bevening\b",
     r"\bsunset\b",
+    r"\bsunrise\b",
     r"\bdusk\b",
     r"\bgolden\s+hour\b",
+    r"\bgolden\b",
     r"\borange\s+horizon\b",
+    r"\borange\s+sky\b",
+    r"\borange\b",
+    r"\blow\s+sun\b",
+    r"\bevening\s+warmth\b",
+    r"\bcinematic\s+dusk\b",
     r"\bcinematic\s+evening\s+light\b",
 )
 _FOCAL_OBJECT_PATTERNS = (
@@ -340,7 +347,10 @@ def build_cyprus_scene_prompt(
     full_moon_evening = mode == "evening" and _has_full_moon_evening_context(final_format_v2_message)
 
     if mode == "morning":
-        time_cue = "clear early morning daylight, pale blue sky, fresh daylight, natural shadows, crisp clean daytime atmosphere"
+        time_cue = (
+            "clear early morning daylight, pale blue sky, cool fresh morning atmosphere, "
+            "soft neutral sunlight, crisp daytime visibility, natural daytime shadows"
+        )
     elif full_moon_evening:
         time_cue = (
             "Mediterranean blue-hour twilight, visible realistic full moon above the sea, "

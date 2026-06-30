@@ -33,6 +33,17 @@ MORNING_NO_SEA = """<b>Кипр: погода на сегодня (27.06.2026)</
 """
 
 
+MORNING_FULL_MOON = """<b>Кипр: погода на сегодня (27.06.2026)</b>
+👋 Доброе утро! Теплее всего — Никосия (32°), прохладнее — Тродос (24°).
+🏭 AQI 42 (низкий) • PM₂.₅ 9 / PM₁₀ 18
+🌇 Закат сегодня: 20:05
+Полнолуние в ♑ — пик эмоций и результатов.
+✨ 100% освещённости — Луна яркая.
+✅ Сегодня: вода, SPF.
+#Кипр #погода #здоровье
+"""
+
+
 def cy_morning_adds_concise_sea_block_when_available() -> None:
     text = build_morning_format_v2("Кипр", MORNING_WITH_SEA)
     assert "🌊 Море: вода 28°C; волна спокойная; лучше до 11:00 или после 18:30." in text
@@ -46,10 +57,19 @@ def cy_morning_adds_sea_fallback_when_unavailable() -> None:
     assert "🌊 Море: комфортно для купания; у берега жарко, лучше утром или ближе к закату." in text
 
 
+def cy_morning_preserves_full_moon_line_without_illumination_duplicate() -> None:
+    text = build_morning_format_v2("Кипр", MORNING_FULL_MOON)
+    assert "🌕 Полнолуние в ♑ — 100% освещённости." in text
+    assert "✨ 100% освещённости" not in text
+    assert text.index("🌇 Закат сегодня: 20:05") < text.index("🌕 Полнолуние")
+    assert text.index("🌕 Полнолуние") < text.index("✅ План:")
+
+
 def main() -> None:
     checks = (
         cy_morning_adds_concise_sea_block_when_available,
         cy_morning_adds_sea_fallback_when_unavailable,
+        cy_morning_preserves_full_moon_line_without_illumination_duplicate,
     )
     for check in checks:
         check()
