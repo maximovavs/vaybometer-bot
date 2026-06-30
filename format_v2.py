@@ -170,11 +170,13 @@ def _clean_evening_astro(lines: list[str]) -> list[str]:
     raw = _astro_lines(lines)
     out: list[str] = []
     _append_unique(out, _first_matching(raw, lambda s: s.startswith("🌅 Рассвет")))
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith("🌇 Закат")))
     _append_unique(out, _first_matching(raw, lambda s: s.startswith(_MOON_PHASE_PREFIXES)))
     _append_unique(out, _first_matching(raw, _is_illumination_line))
     _append_unique(out, _first_matching(raw, _is_general_background_line))
-    _append_unique(out, _first_matching(raw, lambda s: s.startswith(("💚 В плюсе", "⚫️"))))
-    return out[:5]
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith("💚 В плюсе")))
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith("⚫️")))
+    return out[:7]
 
 
 def _clean_morning_astro(lines: list[str]) -> list[str]:
@@ -247,7 +249,45 @@ def _evening_flags(lines: list[str]) -> dict[str, bool]:
         "local": _has_any(text, ("локаль", "местами", "неравномер", "по часам", "микросценар")),
         "troodos": _has_any(text, ("тродос", "горы", "горн")),
         "uv": _has_any(text, ("уф", "uv", "spf")),
+        "astro_unfavorable": _has_any(text, ("неблагоприят", "не перегруж", "напряж", "сложн", "осторожнее")),
     }
+
+
+def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
+    s = str(score_line or "").strip()
+    if not s:
+        return ""
+    caution_count = sum(
+        1
+        for key in ("storm", "rain", "dust", "heat", "wind", "astro_unfavorable")
+        if flags.get(key)
+    )
+    should_soften = (
+        "хорошо" in s.lower()
+        and (
+            (flags.get("heat") and flags.get("wind"))
+            or flags.get("storm")
+            or flags.get("rain")
+            or flags.get("astro_unfavorable")
+            or caution_count >= 2
+        )
+    )
+    if not should_soften:
+        return s
+
+    m = re.match(r"^(✨\s*VayboMeter(?:\s+завтра)?:\s*\d+(?:[\.,]\d+)?/10)\s*[—-]\s*", s)
+    prefix = m.group(1) if m else re.sub(r"\s*[—-]\s*.*$", "", s).strip()
+    if flags.get("heat") and flags.get("wind"):
+        reason = "жара и порывы у моря"
+    elif flags.get("astro_unfavorable"):
+        reason = "астрофон требует мягкого режима"
+    elif flags.get("rain") or flags.get("storm"):
+        reason = "осадки и порывы требуют гибкого плана"
+    elif flags.get("dust"):
+        reason = "дымка/пыль требуют проверки воздуха"
+    else:
+        reason = "есть несколько факторов осторожности"
+    return f"{prefix} — с оговорками; {reason}."
 
 
 def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
@@ -666,6 +706,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     flags = _evening_flags(lines)
     if storm:
         flags["storm"] = True
+    score = _polish_evening_score(score, flags)
     nuance = _evening_nuance(flags, bool(sea), bool(inland))
     confidence = _evening_confidence_line(flags)
 
@@ -697,7 +738,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append("")
 
     if astro:
-        out.append("☀️ <b>Солнце и ритм дня</b>")
+        out.append("☀️ <b>Солнце, Луна и ритм завтра</b>")
         out.extend(astro)
         out.append("")
 

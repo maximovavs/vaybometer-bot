@@ -54,6 +54,10 @@ _FOCAL_OBJECT_PATTERNS = (
     r"\byachts?\b",
     r"\bmasts?\b",
 )
+_EVENING_TEXT_GUARD = (
+    "No visible text anywhere, no tiny white bottom text, no pseudo-caption, "
+    "no watermark, no artist signature, no letters, no logo, no brand marks."
+)
 
 _CITY_PATTERNS = (
     ("Paphos", (r"\bpaphos\b", r"\bpafos\b", r"пафос")),
@@ -354,7 +358,7 @@ def build_cyprus_scene_prompt(
     elif full_moon_evening:
         time_cue = (
             "Mediterranean blue-hour twilight, visible realistic full moon above the sea, "
-            "soft moonlit water, warm residual horizon glow"
+            "soft moonlit water, residual warm horizon glow, natural moonrise balance"
         )
     else:
         time_cue = "warm Mediterranean late-day atmosphere with soft golden dusk light"
@@ -376,16 +380,22 @@ def build_cyprus_scene_prompt(
         prompt_parts.extend(
             [
                 "moonrise blue-hour emphasis dominates over late-day warmth",
-                "visible realistic near-full moon if clouds allow",
+                "visible realistic full moon if clouds allow",
                 "subtle moonlit reflection on Mediterranean water",
-                "realistic moon scale, not oversized, not fantasy supermoon",
-                "not sun-dominant",
+                "realistic moon scale and natural position, not oversized moon",
+                "not a sun-dominant scene",
+                "no bright golden sunset",
+                "no oversized moon",
+                "no fantasy planet",
+                "no fantasy supermoon",
             ]
         )
     prompt = sanitize_cyprus_scene_prompt(
         "; ".join(part for part in prompt_parts if part),
         post_type=mode,
     )
+    if mode == "evening" and _EVENING_TEXT_GUARD.lower() not in prompt.lower():
+        prompt = prompt.rstrip(" .;") + ". " + _EVENING_TEXT_GUARD
     style_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8]
     style_name = f"cyprus_{mode}_mediterranean_landscape_{style_digest}"
     return prompt, style_name

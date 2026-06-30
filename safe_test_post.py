@@ -492,12 +492,14 @@ def _ordered_astro_details(candidates: list[str], fallback: list[str]) -> list[s
         lines.extend(x for x in fallback if x not in lines)
 
     out: list[str] = []
-    _append_first_astro(out, lines, lambda s: s.startswith(("🌅", "🌇")))
+    _append_first_astro(out, lines, lambda s: s.startswith("🌅"))
+    _append_first_astro(out, lines, lambda s: s.startswith("🌇"))
     _append_first_astro(out, lines, lambda s: s.startswith(_MOON_PHASE_PREFIXES))
     _append_first_astro(out, lines, _is_illumination_astro_line)
     _append_first_astro(out, lines, _is_general_background_astro_line)
-    _append_first_astro(out, lines, lambda s: _is_plus_astro_line(s) or _is_voc_astro_line(s))
-    return out[:5]
+    _append_first_astro(out, lines, _is_plus_astro_line)
+    _append_first_astro(out, lines, _is_voc_astro_line)
+    return out[:7]
 
 
 def _astro_fallback_candidates(v2_text: str) -> list[str]:

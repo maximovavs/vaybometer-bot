@@ -97,6 +97,25 @@ HEAT_WIND_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2
 """
 
 
+CAUTION_SCORE_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.4/10 — хорошо; сильная жара, порывы у моря.
+🏖 <b>Морские города</b>
+Лимассол: 35/25 °C • ясно • 💨 7 м/с • порывы до 15 м/с
+Ларнака: 36/25 °C • ясно • 💨 8 м/с • порывы до 14 м/с
+———
+🏞 <b>Континентальные города</b>
+Никосия: 39/27 °C • ясно
+———
+🌅 Рассвет завтра: 05:35
+🌇 Закат завтра: 20:05
+🌕 Полнолуние в ♑ — пик эмоций и результатов.
+✨ 100% освещённости — эмоции ярче обычного.
+⚠️ Общий фон: не перегружать день.
+💚 В плюсе: завершение, договорённости.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
 RICH_ASTRO_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
 ✨ VayboMeter завтра: 8.2/10 — спокойный день.
 🏖 <b>Морские города</b>
@@ -230,12 +249,23 @@ def cy_evening_preserves_weather_blocks() -> None:
 def cy_evening_preserves_compact_astro() -> None:
     text = build_evening_format_v2("Кипр", NORMAL_EVENING)
     lines = text.splitlines()
-    start = lines.index("☀️ <b>Солнце и ритм дня</b>")
-    block = [line for line in lines[start:start + 6] if line.strip()]
+    start = lines.index("☀️ <b>Солнце, Луна и ритм завтра</b>")
+    block = [line for line in lines[start:start + 7] if line.strip()]
     assert "🌅 Рассвет завтра: 05:35" in block
+    assert "🌇 Закат завтра: 20:05" in block
     assert "🌙 Растущая Луна, ♏ (86%)" in block
     assert "💚 В плюсе: порядок, прогулки, мягкий режим." in block
-    assert len(block) <= 6
+    assert len(block) <= 7
+
+
+def cy_evening_caution_score_softens_good_wording() -> None:
+    text = build_evening_format_v2("Кипр", CAUTION_SCORE_EVENING)
+    assert "✨ VayboMeter завтра: 7.4/10 — с оговорками; жара и порывы у моря." in text
+    assert "7.4/10" in text
+    assert "хорошо; сильная жара" not in text
+    assert "☀️ <b>Солнце, Луна и ритм завтра</b>" in text
+    assert "🌇 Закат завтра: 20:05" in text
+    assert [line for line in text.splitlines() if line.strip()][-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
 
 
 def cy_evening_preserves_moon_illumination_and_advice() -> None:
@@ -302,11 +332,12 @@ def cy_evening_safe_pipeline_preserves_moon_illumination_and_plus() -> None:
     assert "🌕 Полнолуние" in text
     assert "✨ 96% освещённости" in text
     assert "💚 В плюсе: 🧭 планы, ✈️ дороги, 📚 обучение." in text
-    astro_lines = text.split("☀️ <b>Солнце и ритм дня</b>", 1)[1].split("✅ План завтра:", 1)[0].splitlines()
+    astro_lines = text.split("☀️ <b>Солнце, Луна и ритм завтра</b>", 1)[1].split("✅ План завтра:", 1)[0].splitlines()
     astro_lines = [line for line in astro_lines if line.strip()]
     assert len(astro_lines) >= 4
-    assert len(astro_lines) <= 5
+    assert len(astro_lines) <= 6
     assert "🌅 Рассвет завтра: 05:37" in astro_lines
+    assert "⚫️ VoC 12:00–13:20 — без новых стартов." in astro_lines
 
 
 def cy_evening_safe_pipeline_preserves_new_moon_and_voc() -> None:
@@ -362,6 +393,7 @@ def main() -> None:
         cy_evening_has_one_final_plan,
         cy_evening_preserves_weather_blocks,
         cy_evening_preserves_compact_astro,
+        cy_evening_caution_score_softens_good_wording,
         cy_evening_preserves_moon_illumination_and_advice,
         cy_evening_normalizes_zodiac_symbol_suffix,
         cy_evening_preserves_new_moon_and_voc,

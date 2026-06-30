@@ -322,12 +322,19 @@ def cy_prompt_full_moon_evening_uses_blue_hour_moonlight() -> None:
     prompt, style = build_cyprus_scene_prompt(message, post_type="evening")
     low = prompt.lower()
     assert "visible realistic full moon" in low
-    assert "moonlit" in low
+    assert "soft moonlit water" in low
     assert "blue-hour" in low
+    assert "residual warm horizon glow" in low
     assert "soft golden dusk light" not in low
-    assert "not oversized" in low
-    assert "not fantasy supermoon" in low
-    assert "sun-dominant" in low
+    assert "not a sun-dominant scene" in low
+    assert "no bright golden sunset" in low
+    assert "no oversized moon" in low
+    assert "no fantasy planet" in low
+    assert "no fantasy supermoon" in low
+    assert "no visible text anywhere" in low
+    assert "no pseudo-caption" in low
+    assert "no watermark" in low
+    assert "no artist signature" in low
     assert "baltic" not in low
     assert style.startswith("cyprus_evening_mediterranean_landscape_")
 
