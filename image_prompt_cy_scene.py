@@ -353,15 +353,20 @@ def build_cyprus_scene_prompt(
     if mode == "morning":
         time_cue = (
             "clear early morning daylight, pale blue sky, cool fresh morning atmosphere, "
-            "soft neutral sunlight, crisp daytime visibility, natural daytime shadows"
+            "soft neutral sunlight from the left side of frame, sun from left, "
+            "crisp daytime visibility, natural daytime shadows"
         )
     elif full_moon_evening:
         time_cue = (
             "Mediterranean blue-hour twilight, visible realistic full moon above the sea, "
-            "soft moonlit water, residual warm horizon glow, natural moonrise balance"
+            "soft moonlit water, residual warm horizon glow on the right side of frame, "
+            "natural moonrise balance"
         )
     else:
-        time_cue = "warm Mediterranean late-day atmosphere with soft golden dusk light"
+        time_cue = (
+            "warm Mediterranean late-day atmosphere with soft golden dusk light, "
+            "right-side horizon glow, sun or horizon glow from the right side of frame"
+        )
     foundation = _COASTAL_FOUNDATION if ctx.coastal_focus or not ctx.inland_heat_focus else _INLAND_FOUNDATION
     prompt_parts = [
         *foundation,

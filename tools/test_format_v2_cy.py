@@ -3,9 +3,11 @@
 """Regression checks for compact Cyprus FORMAT_V2 evening posts."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -303,7 +305,7 @@ def cy_morning_preserves_moon_and_illumination() -> None:
 
 def cy_morning_sea_summary_uses_coastal_rows_not_sunset() -> None:
     text = build_morning_format_v2("Кипр", MORNING_SEA_ROWS)
-    assert "🌊 Море: вода 27°C; волна спокойная; лучше до 11:00 или после 18:30." in text
+    assert "🌊 Море: средняя вода 27°C; у берега жарко, лучше утром или ближе к закату." in text
     assert "🌊 Море: вода 20°C" not in text
     assert "20:05" in text
 
@@ -373,6 +375,29 @@ def cy_evening_polish_does_not_duplicate_nuance() -> None:
     assert polished.count("✅ План завтра:") == 1
 
 
+def cy_evening_recent_safecast_adds_compact_private_sensor_line() -> None:
+    old_file = os.environ.get("CY_SAFECAST_FILE")
+    old_age = os.environ.get("CY_SAFECAST_MAX_AGE_HOURS")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "safecast_cy.json"
+        path.write_text(json.dumps({"radiation_usvh": 0.08, "pm25": 28, "pm10": 63}), encoding="utf-8")
+        try:
+            os.environ["CY_SAFECAST_FILE"] = str(path)
+            os.environ["CY_SAFECAST_MAX_AGE_HOURS"] = "24"
+            text = build_evening_format_v2("Кипр", NORMAL_EVENING)
+        finally:
+            if old_file is None:
+                os.environ.pop("CY_SAFECAST_FILE", None)
+            else:
+                os.environ["CY_SAFECAST_FILE"] = old_file
+            if old_age is None:
+                os.environ.pop("CY_SAFECAST_MAX_AGE_HOURS", None)
+            else:
+                os.environ["CY_SAFECAST_MAX_AGE_HOURS"] = old_age
+    assert "🧪 Частный датчик: фон в норме; смотрим динамику." in text
+    assert "PM₂.₅ 28" not in text
+
+
 def cy_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post.yml").read_text(encoding="utf-8")
     assert "cron: '0 1 * * *'" in workflow
@@ -387,6 +412,7 @@ def main() -> None:
     checks = (
         cy_morning_preserves_quake_line,
         cy_evening_polish_does_not_duplicate_nuance,
+        cy_evening_recent_safecast_adds_compact_private_sensor_line,
         cy_evening_normal_no_generic_confidence,
         cy_evening_normal_no_island_correction,
         cy_evening_no_old_conclusion_or_recommendations,

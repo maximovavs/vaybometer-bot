@@ -154,6 +154,8 @@ def cy_prompt_morning_sanitized() -> None:
     assert "pale blue sky" in low
     assert "cool fresh morning atmosphere" in low
     assert "soft neutral sunlight" in low
+    assert "sun from left" in low
+    assert "left side of frame" in low
     assert "crisp daytime visibility" in low
     assert "natural daytime shadows" in low
     assert "clear early morning daylight" in low
@@ -274,6 +276,8 @@ def cy_prompt_morning_evening_same_date_differ() -> None:
     assert "daylight" in morning.lower()
     assert "pale blue sky" in morning.lower()
     assert "late-day" in evening.lower() or "dusk" in evening.lower()
+    assert "right-side horizon glow" in evening.lower()
+    assert "right side of frame" in evening.lower()
     assert _macro_scene_cue(morning) != _macro_scene_cue(evening)
 
 
@@ -325,6 +329,7 @@ def cy_prompt_full_moon_evening_uses_blue_hour_moonlight() -> None:
     assert "soft moonlit water" in low
     assert "blue-hour" in low
     assert "residual warm horizon glow" in low
+    assert "right side of frame" in low
     assert "soft golden dusk light" not in low
     assert "not a sun-dominant scene" in low
     assert "no bright golden sunset" in low

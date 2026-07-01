@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 import re
+from pathlib import Path
 
 CY_LAT, CY_LON = 34.707, 33.022
 
@@ -186,8 +189,9 @@ def _clean_morning_astro(lines: list[str]) -> list[str]:
     out: list[str] = []
     _append_unique(out, _compact_morning_moon_line(moon, illum))
     _append_unique(out, _first_matching(raw, _is_general_background_line))
-    _append_unique(out, _first_matching(raw, lambda s: s.startswith(("💚 В плюсе", "⚫️"))))
-    return out[:5]
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith("💚 В плюсе")))
+    _append_unique(out, _first_matching(raw, lambda s: s.startswith("⚫️")))
+    return out[:6]
 
 
 def _compact_morning_moon_line(moon_line: str, illumination_line: str) -> str:
@@ -398,31 +402,54 @@ def _clean_air_line(line: str) -> str:
     return main
 
 
+def _air_health_recommendation(line: str) -> str:
+    s = _plain(line).strip()
+    values: dict[str, float] = {}
+    for key, pattern in {
+        "aqi": r"\bAQI\s*(\d+(?:[\.,]\d+)?)",
+        "pm25": r"PM₂\.₅\s*(\d+(?:[\.,]\d+)?)",
+        "pm10": r"PM₁₀\s*(\d+(?:[\.,]\d+)?)",
+    }.items():
+        match = re.search(pattern, s, flags=re.I)
+        if match:
+            try:
+                values[key] = float(match.group(1).replace(",", "."))
+            except Exception:
+                pass
+    if values.get("aqi", 0) >= 100 or values.get("pm25", 0) >= 20 or values.get("pm10", 0) >= 50:
+        return "😷 Воздух неидеален: активность на улице короче, окна лучше держать закрытыми в часы пыли/дымки."
+    return ""
+
+
+def _fmt_temp(value: float) -> str:
+    return f"{value:.0f}" if float(value).is_integer() else f"{value:.1f}"
+
+
 def _morning_sea_line(lines: list[str]) -> str:
     text = "\n".join(lines)
     if not re.search(r"море|вода|волна|побереж|🌊", text, flags=re.I):
         return "🌊 Море: комфортно для купания; у берега жарко, лучше утром или ближе к закату."
 
-    water = None
+    waters: list[float] = []
     wave_value = None
 
     for line in lines:
         s = _plain(line).replace("\u00a0", " ").strip()
-        if "🌊" not in s or "закат" in s.lower() or "рассвет" in s.lower():
+        low = s.lower()
+        if "закат" in low or "рассвет" in low:
             continue
-        tail = s.split("🌊", 1)[1]
-        nums: list[float] = []
-        for raw_num in re.findall(r"([+-]?\d+(?:[\.,]\d+)?)", tail):
-            try:
-                nums.append(float(raw_num.replace(",", ".")))
-            except Exception:
-                continue
-        if water is None and nums and 5 <= nums[0] <= 35:
-            water = f"{nums[0]:.0f}" if nums[0].is_integer() else f"{nums[0]:.1f}"
-        if wave_value is None and len(nums) >= 2 and 0 <= nums[1] <= 5:
-            wave_value = nums[1]
-        if water is not None:
-            break
+        if "🌊" in s:
+            tail = s.split("🌊", 1)[1]
+            nums: list[float] = []
+            for raw_num in re.findall(r"([+-]?\d+(?:[\.,]\d+)?)", tail):
+                try:
+                    nums.append(float(raw_num.replace(",", ".")))
+                except Exception:
+                    continue
+            if nums and 5 <= nums[0] <= 35:
+                waters.append(nums[0])
+            if wave_value is None and len(nums) >= 2 and 0 <= nums[1] <= 5:
+                wave_value = nums[1]
 
     sea_lines = [
         _plain(line)
@@ -437,10 +464,13 @@ def _morning_sea_line(lines: list[str]) -> str:
         ):
             match = re.search(pattern, line, flags=re.I)
             if match:
-                water = match.group(1).replace(",", ".")
+                try:
+                    value = float(match.group(1).replace(",", "."))
+                    if 5 <= value <= 35:
+                        waters.append(value)
+                except Exception:
+                    pass
                 break
-        if water:
-            break
 
     wave = ""
     if isinstance(wave_value, (int, float)):
@@ -453,9 +483,17 @@ def _morning_sea_line(lines: list[str]) -> str:
     elif not wave and re.search(r"волн|wave|неспокой", low):
         wave = "умеренная"
 
-    if water or wave:
-        water_part = f"вода {water}°C" if water else "вода комфортная"
+    if waters or wave:
+        if len(waters) >= 2:
+            avg = sum(waters) / len(waters)
+            water_part = f"средняя вода {_fmt_temp(avg)}°C"
+        elif waters:
+            water_part = f"вода {_fmt_temp(waters[0])}°C"
+        else:
+            water_part = "вода комфортная"
         wave_part = f"волна {wave}" if wave else "волна спокойная"
+        if len(waters) >= 2:
+            return f"🌊 Море: {water_part}; у берега жарко, лучше утром или ближе к закату."
         return f"🌊 Море: {water_part}; {wave_part}; лучше до 11:00 или после 18:30."
 
     return "🌊 Море: комфортно для купания; у берега жарко, лучше утром или ближе к закату."
@@ -642,6 +680,54 @@ def _legacy_wind_pressure_line(lines: list[str]) -> str:
     return ""
 
 
+def _find_numeric_key(value, wanted: tuple[str, ...]) -> float | None:
+    if isinstance(value, dict):
+        for key, raw in value.items():
+            key_norm = str(key).lower().replace("-", "_")
+            if key_norm in wanted:
+                try:
+                    return float(raw)
+                except Exception:
+                    pass
+        for raw in value.values():
+            found = _find_numeric_key(raw, wanted)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_numeric_key(item, wanted)
+            if found is not None:
+                return found
+    return None
+
+
+def _safecast_private_sensor_line() -> str:
+    path = Path(os.getenv("CY_SAFECAST_FILE", "data/safecast_cy.json"))
+    if not path.exists():
+        return ""
+    try:
+        max_age_h = float(os.getenv("CY_SAFECAST_MAX_AGE_HOURS", "18"))
+    except Exception:
+        max_age_h = 18.0
+    try:
+        age_h = (dt.datetime.now(dt.timezone.utc).timestamp() - path.stat().st_mtime) / 3600.0
+        if age_h > max_age_h:
+            return ""
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    radiation = _find_numeric_key(data, ("radiation_usvh", "radiation_μsvh", "usvh", "u_svh", "microsievert_h"))
+    cpm = _find_numeric_key(data, ("cpm", "radiation_cpm"))
+    if radiation is None and cpm is None:
+        return ""
+    if (radiation is not None and radiation >= 1.0) or (cpm is not None and cpm >= 500):
+        return "🧪 Частный датчик: высокий фон; сверяем с официальными сообщениями."
+    if (radiation is not None and radiation >= 0.2) or (cpm is not None and cpm >= 80):
+        return "🧪 Частный датчик: выше обычной точки; смотрим динамику."
+    return "🧪 Частный датчик: фон в норме; смотрим динамику."
+
+
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     """Compact morning post: only actionable weather, air, UV, valid Kp, wind/pressure and short plan."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
@@ -673,6 +759,12 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(_clean_uv_line(uv[0]))
     if air:
         out.extend(_clean_air_line(air[0]).splitlines())
+        air_plan = _air_health_recommendation(air[0])
+        if air_plan:
+            out.append(air_plan)
+    safecast_line = _safecast_private_sensor_line()
+    if safecast_line:
+        out.append(safecast_line)
     out.append(_morning_sea_line(lines))
     for line in quakes:
         if line not in out:
@@ -735,6 +827,11 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if inland:
         out.append("🏙 <b>Центр и горы</b>")
         out.extend(inland)
+        out.append("")
+
+    safecast_line = _safecast_private_sensor_line()
+    if safecast_line:
+        out.append(safecast_line)
         out.append("")
 
     if astro:
