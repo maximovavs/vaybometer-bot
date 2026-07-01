@@ -105,7 +105,7 @@ def cy_morning_poor_air_adds_health_recommendation() -> None:
     assert "окна лучше держать закрытыми" in text
 
 
-def cy_morning_recent_safecast_adds_compact_private_sensor_line() -> None:
+def cy_morning_recent_safecast_elevated_is_omitted() -> None:
     old_file = os.environ.get("CY_SAFECAST_FILE")
     old_age = os.environ.get("CY_SAFECAST_MAX_AGE_HOURS")
     with tempfile.TemporaryDirectory() as tmp:
@@ -124,7 +124,9 @@ def cy_morning_recent_safecast_adds_compact_private_sensor_line() -> None:
                 os.environ.pop("CY_SAFECAST_MAX_AGE_HOURS", None)
             else:
                 os.environ["CY_SAFECAST_MAX_AGE_HOURS"] = old_age
-    assert "🧪 Частный датчик: выше обычной точки; смотрим динамику." in text
+    assert "🧪" not in text
+    assert "Частный датчик" not in text
+    assert "Safecast CY" not in text
     assert "PM₂.₅" in text
 
 
@@ -135,7 +137,7 @@ def main() -> None:
         cy_morning_adds_sea_fallback_when_unavailable,
         cy_morning_preserves_full_moon_line_without_illumination_duplicate,
         cy_morning_poor_air_adds_health_recommendation,
-        cy_morning_recent_safecast_adds_compact_private_sensor_line,
+        cy_morning_recent_safecast_elevated_is_omitted,
     )
     for check in checks:
         check()

@@ -30,7 +30,12 @@ sys.modules.setdefault("telegram", telegram_stub)
 
 from format_v2 import build_evening_format_v2, build_format_v2, build_morning_format_v2  # noqa: E402
 from post_safety import sanitize_post_text  # noqa: E402
-from safe_test_post import _apply_astro_cleanup, _apply_format_v2_test_polish, _insert_main_nuance  # noqa: E402
+from safe_test_post import (  # noqa: E402
+    _apply_astro_cleanup,
+    _apply_cyprus_sensor_cleanup,
+    _apply_format_v2_test_polish,
+    _insert_main_nuance,
+)
 
 
 MORNING_WITH_QUAKE = """<b>🌅 Кипр: погода на сегодня (27.06.2026)</b>
@@ -191,6 +196,40 @@ SAFE_ASTRO_PIPELINE_NEW_MOON = """<b>🌅 Кипр: погода на завтр
 """
 
 
+AIR_SENSOR_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.0/10 — обычный день.
+🏖 <b>Морские города</b>
+Лимассол: 29/22 °C • ясно
+———
+🏞 <b>Континентальные города</b>
+Никосия: 32/21 °C • ясно
+———
+🏭 Воздух: AQI 125 (высокий) • PM₂.₅ 20 / PM₁₀ 69
+🏭 Воздух по городам: Никосия 🟠 PM₁₀ · Лимассол 🟡 · Ларнака 🟡 · Пафос 🟢
+🧪 Частный датчик: выше обычной точки; смотрим динамику.
+🧪 Safecast CY: 0.18 μSv/h — выше обычного, но без тревоги.
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+✨ 96% освещённости — эмоции ярче обычного.
+✅ Общий фон: спокойнее решать дела по одному.
+💚 В плюсе: 🧭 планы, ✈️ дороги, 📚 обучение.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+CRITICAL_SAFECAST_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 6.8/10 — обычный день.
+🏖 <b>Морские города</b>
+Ларнака: 30/22 °C • ясно
+———
+🧪 Safecast CY: 🔴 alert 0.42 μSv/h — проверить официальные сообщения.
+🌅 Рассвет завтра: 05:37
+🌑 Новолуние в ♋ — лучше начинать мягко и без рывков.
+💚 В плюсе: дом, забота.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
 MORNING_ASTRO = """<b>🌅 Кипр: погода на сегодня (27.06.2026)</b>
 Доброе утро. Теплее всего — Никосия (32°), прохладнее — Тродос (24°).
 ☀️ <b>УФ-индекс 7 (High)</b>: SPF, вода и тень.
@@ -320,6 +359,7 @@ def _safe_test_evening_pipeline(source: str) -> str:
         text = _apply_format_v2_test_polish(text)
         text = _insert_main_nuance(text)
         text = _apply_astro_cleanup(text)
+        text = _apply_cyprus_sensor_cleanup(text)
         return sanitize_post_text(text).text
     finally:
         for name, value in old_env.items():
@@ -346,6 +386,26 @@ def cy_evening_safe_pipeline_preserves_new_moon_and_voc() -> None:
     text = _safe_test_evening_pipeline(SAFE_ASTRO_PIPELINE_NEW_MOON)
     assert "🌑 Новолуние в ♋ — лучше начинать мягко и без рывков." in text
     assert "⚫️ VoC 12:00–13:20 — без новых стартов." in text
+
+
+def cy_evening_air_replaces_generic_sensor_focus() -> None:
+    text = _safe_test_evening_pipeline(AIR_SENSOR_EVENING)
+    assert "🏭 Воздух: AQI 125 (высокий) • PM₂.₅ 20 / PM₁₀ 69" in text
+    assert "🏭 Воздух по городам: Никосия 🟠 PM₁₀ · Лимассол 🟡 · Ларнака 🟡 · Пафос 🟢" in text
+    assert "😷 Воздух неидеален:" in text
+    assert "Частный датчик" not in text
+    assert "Safecast CY: 0.18" not in text
+    assert "🧪" not in text
+    assert "🌕 Полнолуние" in text
+    assert "✨ 96% освещённости" in text
+    assert "✅ Общий фон:" in text
+    assert "💚 В плюсе:" in text
+
+
+def cy_evening_critical_safecast_is_explicitly_labeled() -> None:
+    text = _safe_test_evening_pipeline(CRITICAL_SAFECAST_EVENING)
+    assert "🧪 Safecast CY: 🔴 alert 0.42 μSv/h — проверить официальные сообщения." in text
+    assert "Частный датчик" not in text
 
 
 def cy_evening_uncertain_has_short_confidence_line() -> None:
@@ -375,7 +435,7 @@ def cy_evening_polish_does_not_duplicate_nuance() -> None:
     assert polished.count("✅ План завтра:") == 1
 
 
-def cy_evening_recent_safecast_adds_compact_private_sensor_line() -> None:
+def cy_evening_recent_safecast_normal_is_omitted() -> None:
     old_file = os.environ.get("CY_SAFECAST_FILE")
     old_age = os.environ.get("CY_SAFECAST_MAX_AGE_HOURS")
     with tempfile.TemporaryDirectory() as tmp:
@@ -394,7 +454,9 @@ def cy_evening_recent_safecast_adds_compact_private_sensor_line() -> None:
                 os.environ.pop("CY_SAFECAST_MAX_AGE_HOURS", None)
             else:
                 os.environ["CY_SAFECAST_MAX_AGE_HOURS"] = old_age
-    assert "🧪 Частный датчик: фон в норме; смотрим динамику." in text
+    assert "🧪" not in text
+    assert "Частный датчик" not in text
+    assert "Safecast CY" not in text
     assert "PM₂.₅ 28" not in text
 
 
@@ -412,7 +474,7 @@ def main() -> None:
     checks = (
         cy_morning_preserves_quake_line,
         cy_evening_polish_does_not_duplicate_nuance,
-        cy_evening_recent_safecast_adds_compact_private_sensor_line,
+        cy_evening_recent_safecast_normal_is_omitted,
         cy_evening_normal_no_generic_confidence,
         cy_evening_normal_no_island_correction,
         cy_evening_no_old_conclusion_or_recommendations,
@@ -427,6 +489,8 @@ def main() -> None:
         cy_morning_sea_summary_uses_coastal_rows_not_sunset,
         cy_evening_safe_pipeline_preserves_moon_illumination_and_plus,
         cy_evening_safe_pipeline_preserves_new_moon_and_voc,
+        cy_evening_air_replaces_generic_sensor_focus,
+        cy_evening_critical_safecast_is_explicitly_labeled,
         cy_evening_uncertain_has_short_confidence_line,
         cy_evening_title_is_compact,
         cy_workflow_morning_schedule_is_earlier,

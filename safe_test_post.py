@@ -575,6 +575,25 @@ def _apply_astro_cleanup(v2_text: str) -> str:
     return "\n".join(out)
 
 
+def _apply_cyprus_sensor_cleanup(v2_text: str) -> str:
+    out: list[str] = []
+    for line in str(v2_text or "").splitlines():
+        stripped = line.strip()
+        low = stripped.lower()
+        if "частный датчик" in low or "радиационный фон" in low:
+            continue
+        if stripped.startswith("🧪") or "safecast" in low:
+            critical = bool(re.search(r"critical|alert|опасн|критич|🔴", stripped, flags=re.I))
+            if not critical:
+                continue
+            body = re.sub(r"^🧪\s*", "", stripped).strip()
+            body = re.sub(r"^Safecast(?:\s*CY)?\s*:?\s*", "", body, flags=re.I).strip()
+            out.append("🧪 Safecast CY: " + body)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _apply_compact(v2_text: str) -> str:
     if not _env_on("FORMAT_V2_COMPACT"):
         return v2_text
@@ -919,6 +938,7 @@ async def main() -> None:
         v2_raw = _apply_confidence_polish(v2_raw)
         v2_raw = _insert_main_nuance(v2_raw)
         v2_raw = _apply_astro_cleanup(v2_raw)
+        v2_raw = _apply_cyprus_sensor_cleanup(v2_raw)
         v2_raw = _apply_score_conclusion(v2_raw)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         v2_raw = _apply_compact(v2_raw)

@@ -1482,48 +1482,38 @@ def _aqi_bucket_label(aqi: Optional[float]) -> Optional[str]:
     return "очень высокий"
 
 
-def _is_air_bad(air_now: Dict[str, Any]) -> tuple[bool, str]:
+def _air_metric_values(air_now: Dict[str, Any]) -> tuple[Optional[float], Optional[float], Optional[float]]:
     aqi = air_now.get("aqi")
     try:
         aqi_f = float(aqi) if aqi is not None else None
     except Exception:
         aqi_f = None
-    if aqi_f is None:
-        return False, ""
-    if aqi_f <= 50:
+    try:
+        pm25_f = float(air_now.get("pm25")) if air_now.get("pm25") is not None else None
+    except Exception:
+        pm25_f = None
+    try:
+        pm10_f = float(air_now.get("pm10")) if air_now.get("pm10") is not None else None
+    except Exception:
+        pm10_f = None
+    return aqi_f, pm25_f, pm10_f
+
+
+def _is_air_bad(air_now: Dict[str, Any]) -> tuple[bool, str]:
+    aqi_f, pm25_f, pm10_f = _air_metric_values(air_now)
+    bad = (
+        (isinstance(aqi_f, (int, float)) and aqi_f >= 100)
+        or (isinstance(pm25_f, (int, float)) and pm25_f >= 20)
+        or (isinstance(pm10_f, (int, float)) and pm10_f >= 50)
+    )
+    if not bad:
         return False, "🟢 воздух в норме"
-    if aqi_f <= 100:
-        return True, "🟡 воздух умеренный — избегайте интенсивных тренировок на улице"
-    return True, "🟠 воздух неблагоприятный — тренировки лучше перенести в помещение"
+    return True, "😷 Воздух неидеален: активность на улице короче, окна лучше держать закрытыми в часы пыли/дымки."
 
 
-def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]:
-    air = get_air(lat, lon) or {}
-    aqi = air.get("aqi")
-    try:
-        aqi_f = float(aqi) if aqi is not None else None
-    except Exception:
-        aqi_f = None
-
+def _air_quality_line_from_data(air: Dict[str, Any], *, include_pollen: bool = False) -> Optional[str]:
+    aqi_f, pm25_f, pm10_f = _air_metric_values(air)
     lbl = _aqi_bucket_label(aqi_f)
-
-    pm25 = air.get("pm25")
-    pm10 = air.get("pm10")
-    try:
-        pm25_i = int(round(float(pm25))) if pm25 is not None else None
-    except Exception:
-        pm25_i = None
-    try:
-        pm10_i = int(round(float(pm10))) if pm10 is not None else None
-    except Exception:
-        pm10_i = None
-
-    data_rad = get_radiation(lat, lon) or {}
-    dose = data_rad.get("dose")
-    dose_line = f"📟 {float(dose):.2f} μSv/h" if isinstance(dose, (int, float)) else None
-
-    p = get_pollen() or {}
-    risk = p.get("risk")
 
     parts: list[str] = []
 
@@ -1533,33 +1523,49 @@ def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]
     parts.append(aqi_part)
 
     pm_part: list[str] = []
-    if isinstance(pm25_i, int):
-        pm_part.append(f"PM₂.₅ {pm25_i}")
-    if isinstance(pm10_i, int):
-        pm_part.append(f"PM₁₀ {pm10_i}")
+    if isinstance(pm25_f, (int, float)):
+        pm_part.append(f"PM₂.₅ {int(round(pm25_f))}")
+    if isinstance(pm10_f, (int, float)):
+        pm_part.append(f"PM₁₀ {int(round(pm10_f))}")
     if pm_part:
         parts.append(" / ".join(pm_part))
 
-    em_sm, lbl_sm = smoke_index(pm25, pm10)
+    em_sm, lbl_sm = smoke_index(pm25_f, pm10_f)
     if isinstance(lbl_sm, str) and lbl_sm.lower() not in ("низкое", "низкий", "нет", "н/д"):
         parts.append(f"😮‍💨 задымление: {lbl_sm}")
 
-    if dose_line:
-        parts.append(dose_line)
-
-    if isinstance(risk, str) and risk:
-        parts.append(f"🌿 пыльца: {risk}")
+    if include_pollen:
+        p = get_pollen() or {}
+        risk = p.get("risk")
+        if isinstance(risk, str) and risk:
+            parts.append(f"🌿 пыльца: {risk}")
 
     if not parts:
         return None
 
-    return "🏭 " + " • ".join(parts)
+    return "🏭 Воздух: " + " • ".join(parts)
+
+
+def _morning_combo_air_radiation_pollen(lat: float, lon: float) -> Optional[str]:
+    return _air_quality_line_from_data(get_air(lat, lon) or {}, include_pollen=True)
+
+
+def _daily_air_quality_line(lat: float, lon: float) -> Optional[str]:
+    return _air_quality_line_from_data(get_air(lat, lon) or {}, include_pollen=False)
+
+
+def _compact_city_air_label(label: str) -> str:
+    s = " ".join(str(label or "").split())
+    if not s:
+        return ""
+    s = s.replace("чисто", "").replace("нормально", "").strip()
+    return s or str(label).split()[0]
 
 
 def _air_by_city_line(city_pairs: list[tuple[str, tuple[float, float]]]) -> Optional[str]:
-    if os.getenv("CY_AIR_BY_CITY", "").strip().lower() not in ("1", "true", "yes", "on"):
+    if os.getenv("CY_AIR_BY_CITY", "1").strip().lower() in ("0", "false", "no", "off"):
         return None
-    preferred = ("Limassol", "Larnaca", "Nicosia", "Pafos", "Paphos", "Ayia Napa", "Protaras")
+    preferred = ("Nicosia", "Limassol", "Larnaca", "Pafos", "Paphos", "Ayia Napa", "Protaras", "Troodos")
     indexed: Dict[str, tuple[str, tuple[float, float]]] = {
         name.lower(): (name, coords) for name, coords in city_pairs or []
     }
@@ -1590,10 +1596,13 @@ def _air_by_city_line(city_pairs: list[tuple[str, tuple[float, float]]]) -> Opti
         label = data.get("clean_label")
         if not isinstance(label, str) or not label.strip():
             continue
-        chunks.append(f"{_ru_city(city)} {label.strip()}")
+        compact = _compact_city_air_label(label)
+        if not compact:
+            continue
+        chunks.append(f"{_ru_city(city)} {compact}")
     if not chunks:
         return None
-    return "🏙 Воздух по городам: " + "; ".join(chunks[:5]) + "."
+    return "🏭 Воздух по городам: " + " · ".join(chunks[:5])
 
 
 def _cyprus_quake_line_for_morning() -> Optional[str]:
@@ -2176,6 +2185,18 @@ def build_message(
         oth_rows.sort(key=lambda x: x[0], reverse=True)
         for _, text in oth_rows:
             P.append(text)
+        P.append("———")
+
+    air_now = get_air(CY_LAT, CY_LON) or {}
+    air_line = _air_quality_line_from_data(air_now, include_pollen=False)
+    if air_line:
+        P.append(air_line)
+        by_city = _air_by_city_line(sea_pairs + other_pairs)
+        if by_city:
+            P.append(by_city)
+        bad_air, tip = _is_air_bad(air_now)
+        if bad_air and tip:
+            P.append(tip)
         P.append("———")
 
     la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)

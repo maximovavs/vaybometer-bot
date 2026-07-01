@@ -358,9 +358,11 @@ def _evening_plan(flags: dict[str, bool]) -> str:
 
 def _clean_air_line(line: str) -> str:
     s = _plain(line).strip()
+    if "воздух по городам" in s.lower():
+        return s
     aqi_match = re.search(r"\bAQI\s*(\d+|н/д)", s, flags=re.I)
-    pm25_match = re.search(r"PM₂\.₅\s*(\d+)", s, flags=re.I)
-    pm10_match = re.search(r"PM₁₀\s*(\d+)", s, flags=re.I)
+    pm25_match = re.search(r"(?:PM₂\.₅|PM2\.?5)\s*(\d+)", s, flags=re.I)
+    pm10_match = re.search(r"(?:PM₁₀|PM10)\s*(\d+)", s, flags=re.I)
     if not aqi_match:
         return s
 
@@ -407,8 +409,8 @@ def _air_health_recommendation(line: str) -> str:
     values: dict[str, float] = {}
     for key, pattern in {
         "aqi": r"\bAQI\s*(\d+(?:[\.,]\d+)?)",
-        "pm25": r"PM₂\.₅\s*(\d+(?:[\.,]\d+)?)",
-        "pm10": r"PM₁₀\s*(\d+(?:[\.,]\d+)?)",
+        "pm25": r"(?:PM₂\.₅|PM2\.?5)\s*(\d+(?:[\.,]\d+)?)",
+        "pm10": r"(?:PM₁₀|PM10)\s*(\d+(?:[\.,]\d+)?)",
     }.items():
         match = re.search(pattern, s, flags=re.I)
         if match:
@@ -423,6 +425,50 @@ def _air_health_recommendation(line: str) -> str:
 
 def _fmt_temp(value: float) -> str:
     return f"{value:.0f}" if float(value).is_integer() else f"{value:.1f}"
+
+
+def _air_lines(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    for line in lines:
+        s = line.strip()
+        low = s.lower()
+        if not s.startswith(("🏭", "🏙")):
+            continue
+        if "частный датчик" in low or "safecast" in low or "радиа" in low:
+            continue
+        if "aqi" not in low and "воздух по городам" not in low:
+            continue
+        cleaned = _clean_air_line(s)
+        for part in cleaned.splitlines():
+            part = part.strip()
+            if part and part not in out:
+                out.append(part)
+    return out[:2]
+
+
+def _air_is_poor(lines: list[str]) -> bool:
+    return any(_air_health_recommendation(line) for line in lines)
+
+
+def _poor_air_advice_line() -> str:
+    return "😷 Воздух неидеален: активность на улице короче, окна лучше держать закрытыми в часы пыли/дымки."
+
+
+def _critical_safecast_cy_line(lines: list[str]) -> str:
+    for line in lines:
+        s = line.strip()
+        low = s.lower()
+        if "safecast" not in low and "радиа" not in low and "частный датчик" not in low:
+            continue
+        critical = bool(re.search(r"critical|alert|опасн|критич|🔴", s, flags=re.I))
+        if not critical:
+            continue
+        if "safecast" not in low:
+            continue
+        body = re.sub(r"^🧪\s*", "", s).strip()
+        body = re.sub(r"^Safecast(?:\s*CY)?\s*:?\s*", "", body, flags=re.I).strip()
+        return "🧪 Safecast CY: " + body
+    return ""
 
 
 def _morning_sea_line(lines: list[str]) -> str:
@@ -722,10 +768,10 @@ def _safecast_private_sensor_line() -> str:
     if radiation is None and cpm is None:
         return ""
     if (radiation is not None and radiation >= 1.0) or (cpm is not None and cpm >= 500):
-        return "🧪 Частный датчик: высокий фон; сверяем с официальными сообщениями."
-    if (radiation is not None and radiation >= 0.2) or (cpm is not None and cpm >= 80):
-        return "🧪 Частный датчик: выше обычной точки; смотрим динамику."
-    return "🧪 Частный датчик: фон в норме; смотрим динамику."
+        if radiation is not None:
+            return f"🧪 Safecast CY: 🔴 {radiation:.2f} μSv/h — проверь официальные сообщения."
+        return f"🧪 Safecast CY: 🔴 {cpm:.0f} CPM — проверь официальные сообщения."
+    return ""
 
 
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
@@ -740,7 +786,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     weather_line = _legacy_wind_pressure_line(lines) or _source_wind_pressure_line(date_s)
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌇",))
-    air = _morning_pick(lines, ("🏭", "🏙", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
+    air = _air_lines(lines) or _morning_pick(lines, ("🏭", "🏙", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
+    poor_air = _air_is_poor(air)
+    radiation = _critical_safecast_cy_line(lines) or _safecast_private_sensor_line()
     quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     astro = _clean_morning_astro(lines)
@@ -758,13 +806,10 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if uv:
         out.append(_clean_uv_line(uv[0]))
     if air:
-        out.extend(_clean_air_line(air[0]).splitlines())
-        air_plan = _air_health_recommendation(air[0])
-        if air_plan:
-            out.append(air_plan)
-    safecast_line = _safecast_private_sensor_line()
-    if safecast_line:
-        out.append(safecast_line)
+        for item in air[:2]:
+            out.extend(_clean_air_line(item).splitlines())
+    if radiation:
+        out.append(radiation)
     out.append(_morning_sea_line(lines))
     for line in quakes:
         if line not in out:
@@ -782,6 +827,8 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append("✅ План: " + plan + "; у моря ориентируйся на фактический ветер.")
     else:
         out.append("✅ План: " + plan + ".")
+    if poor_air:
+        out.append(_poor_air_advice_line())
 
     out.append(tags)
     return "\n".join(out).strip()
@@ -793,6 +840,9 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     storm = _storm_line(lines)
     sea = _section_after(lines, "Морские города")
     inland = _section_after(lines, "Континентальные города")
+    air = _air_lines(lines)
+    poor_air = _air_is_poor(air)
+    radiation = _critical_safecast_cy_line(lines) or _safecast_private_sensor_line()
     astro = _clean_evening_astro(lines)
     score = _first_line_starts(lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
     flags = _evening_flags(lines)
@@ -829,9 +879,13 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.extend(inland)
         out.append("")
 
-    safecast_line = _safecast_private_sensor_line()
-    if safecast_line:
-        out.append(safecast_line)
+    if air:
+        out.extend(air)
+        if radiation:
+            out.append(radiation)
+        out.append("")
+    elif radiation:
+        out.append(radiation)
         out.append("")
 
     if astro:
@@ -840,6 +894,8 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append("")
 
     out.append(_evening_plan(flags))
+    if poor_air:
+        out.append(_poor_air_advice_line())
     out.append("#Кипр #погода #здоровье #Никосия #Тродос")
     return "\n".join(out).strip()
 
