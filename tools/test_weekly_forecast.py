@@ -87,9 +87,10 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     assert "SUP:" in text
     assert "Кайт/винг:" in text
     assert "Серф:" in text
-    assert "SUP: осторожно" in text
+    assert "SUP: короткие утренние окна в защищённых бухтах." in text
     assert "идеально" not in text.lower()
-    assert "Кайт/винг: есть рабочие окна, но проверять порывы по месту." in text
+    assert "Кайт/винг: рабочие окна только для уверенных; порывы проверять по споту." in text
+    assert "Серф: зависит от фактической волны; скорее не главный сценарий недели." in text
     assert "🏭 Воздух" in text
     assert "🧲 Космопогода" in text
     assert "сильных бурь не видно" in text
@@ -129,10 +130,27 @@ def test_weekly_forecast_includes_curated_astro_events() -> None:
     assert "проверять факты" in text
 
 
+def test_weekly_forecast_keeps_stronger_kite_warning_for_high_gusts() -> None:
+    weather = json.loads(json.dumps(WEATHER))
+    weather["daily"]["wind_gusts_10m_max"] = [16, 17, 18, 16, 17, 18, 16]
+    text = build_weekly_forecast(
+        date(2026, 7, 1),
+        weather_payload=weather,
+        air_data=AIR,
+        sea_temps=[27.2, 28.1, 27.6],
+        kp_tuple=KP,
+        lunar_data=LUNAR,
+        astro_events_paths=[Path("__missing_astro_events.json")],
+    )
+    assert "Кайт/винг: только опытным; порывы могут быть резкими." in text
+    assert text.splitlines()[-1] == "#Кипр #вайбнедели #погода #море #астропогода"
+
+
 def main() -> None:
     checks = (
         test_weekly_forecast_structure_without_optional_config,
         test_weekly_forecast_includes_curated_astro_events,
+        test_weekly_forecast_keeps_stronger_kite_warning_for_high_gusts,
     )
     for check in checks:
         check()

@@ -246,45 +246,19 @@ def _sea_line(sea_temps: list[float] | None) -> str:
 
 
 def _water_sport_lines(metrics: dict[str, Any]) -> list[str]:
-    wind = metrics.get("wind_max")
     gust = metrics.get("gust_max")
-    wave = metrics.get("wave_max")
-    rainy = bool(metrics.get("rain"))
-    has_wind = isinstance(wind, (int, float))
     has_gust = isinstance(gust, (int, float))
-    has_wave = isinstance(wave, (int, float))
-    rough_wave = has_wave and wave >= 0.6
 
-    if not has_wind and not has_gust and not has_wave:
-        return [
-            "SUP: лучше утром в защищённых бухтах.",
-            "Кайт/винг: смотреть фактический ветер по споту.",
-            "Серф: зависит от волны, не главный сценарий недели.",
-        ]
-
-    if has_wind and has_gust and wind <= 4 and gust <= 7 and not rough_wave and not rainy:
-        sup = "SUP: лучше утром; условия спокойные."
-    elif has_wind and has_gust and wind <= 6 and gust <= 10 and not rainy:
-        sup = "SUP: только в защищённых бухтах/променадах и лучше утром."
-    else:
-        sup = "SUP: осторожно; выбирать короткие окна и защищённые места."
-
+    sup = "SUP: короткие утренние окна в защищённых бухтах."
     if has_gust and gust > 15:
         kite = "Кайт/винг: только опытным; порывы могут быть резкими."
-    elif has_wind and has_gust and wind >= 6 and 9 <= gust <= 15:
-        kite = "Кайт/винг: есть рабочие окна, но проверять порывы по месту."
-    elif has_wind and wind < 5:
-        kite = "Кайт/винг: ветра может не хватить."
     else:
-        kite = "Кайт/винг: смотреть фактический ветер по споту."
-
-    if has_wave and wave >= 0.6:
-        surf = "Серф: возможны окна по волне; смотреть фактический прогноз спотов."
-    elif has_wave:
-        surf = "Серф: волна слабая; скорее прогулочный формат."
-    else:
-        surf = "Серф: зависит от фактической волны; чаще это не главный сценарий недели."
-    return [sup, kite, surf]
+        kite = "Кайт/винг: рабочие окна только для уверенных; порывы проверять по споту."
+    return [
+        sup,
+        kite,
+        "Серф: зависит от фактической волны; скорее не главный сценарий недели.",
+    ]
 
 
 def _air_line(air_data: dict[str, Any]) -> tuple[str, bool]:
