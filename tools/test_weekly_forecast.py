@@ -83,6 +83,13 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     assert "🌊 Море" in text
     assert "Море: средняя вода" not in text
     assert "Средняя вода" in text
+    assert "🏄 Вода и спорт" in text
+    assert "SUP:" in text
+    assert "Кайт/винг:" in text
+    assert "Серф:" in text
+    assert "SUP: осторожно" in text
+    assert "идеально" not in text.lower()
+    assert "Кайт/винг: есть рабочие окна, но проверять порывы по месту." in text
     assert "🏭 Воздух" in text
     assert "🧲 Космопогода" in text
     assert "сильных бурь не видно" in text
@@ -94,6 +101,7 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     assert "03.07 03.07" not in text
     assert "01.07 19:13–21:33" in text
     assert "03.07 16:15–04.07 00:00" in text
+    assert "море планировать утром или ближе к закату." in text
     assert text.splitlines()[-1] == "#Кипр #вайбнедели #погода #море #астропогода"
     assert not any(phrase in text.lower() for phrase in FORBIDDEN)
     _Parser().feed(text)

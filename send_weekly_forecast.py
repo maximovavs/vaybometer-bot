@@ -151,6 +151,7 @@ def _daily_rows(weather_payload: dict[str, Any], start: date) -> list[dict[str, 
         "tmin": ("temperature_2m_min",),
         "wind": ("wind_speed_10m_max", "windspeed_10m_max"),
         "gust": ("wind_gusts_10m_max", "windgusts_10m_max"),
+        "wave": ("wave_height_max", "wave_height", "wave_max"),
         "rain_prob": ("precipitation_probability_max",),
         "code": ("weathercode", "weather_code"),
         "uv": ("uv_index_max",),
@@ -186,6 +187,7 @@ def _weather_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     tmin = [_num(row.get("tmin")) for row in rows]
     wind = [_num(row.get("wind")) for row in rows]
     gust = [_num(row.get("gust")) for row in rows]
+    wave = [_num(row.get("wave")) for row in rows]
     uv = [_num(row.get("uv")) for row in rows]
     rain_prob = [_num(row.get("rain_prob")) for row in rows]
     codes = [_num(row.get("code")) for row in rows]
@@ -196,6 +198,7 @@ def _weather_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "tmin_min": min(clean(tmin), default=None),
         "wind_max": max(clean(wind), default=None),
         "gust_max": max(clean(gust), default=None),
+        "wave_max": max(clean(wave), default=None),
         "uv_max": max(clean(uv), default=None),
         "rain": any((x or 0) >= 40 for x in rain_prob if x is not None)
         or any(int(x) in RAIN_CODES for x in codes if x is not None),
@@ -240,6 +243,48 @@ def _sea_line(sea_temps: list[float] | None) -> str:
             return f"Средняя вода около {_fmt_num(sum(values) / len(values))}°C; лучше утром или ближе к закату."
         return f"Средняя вода {_fmt_num(low)}–{_fmt_num(high)}°C; лучше утром или ближе к закату."
     return "Данные по воде обновятся ближе к неделе; у берега комфортнее утром и вечером."
+
+
+def _water_sport_lines(metrics: dict[str, Any]) -> list[str]:
+    wind = metrics.get("wind_max")
+    gust = metrics.get("gust_max")
+    wave = metrics.get("wave_max")
+    rainy = bool(metrics.get("rain"))
+    has_wind = isinstance(wind, (int, float))
+    has_gust = isinstance(gust, (int, float))
+    has_wave = isinstance(wave, (int, float))
+    rough_wave = has_wave and wave >= 0.6
+
+    if not has_wind and not has_gust and not has_wave:
+        return [
+            "SUP: лучше утром в защищённых бухтах.",
+            "Кайт/винг: смотреть фактический ветер по споту.",
+            "Серф: зависит от волны, не главный сценарий недели.",
+        ]
+
+    if has_wind and has_gust and wind <= 4 and gust <= 7 and not rough_wave and not rainy:
+        sup = "SUP: лучше утром; условия спокойные."
+    elif has_wind and has_gust and wind <= 6 and gust <= 10 and not rainy:
+        sup = "SUP: только в защищённых бухтах/променадах и лучше утром."
+    else:
+        sup = "SUP: осторожно; выбирать короткие окна и защищённые места."
+
+    if has_gust and gust > 15:
+        kite = "Кайт/винг: только опытным; порывы могут быть резкими."
+    elif has_wind and has_gust and wind >= 6 and 9 <= gust <= 15:
+        kite = "Кайт/винг: есть рабочие окна, но проверять порывы по месту."
+    elif has_wind and wind < 5:
+        kite = "Кайт/винг: ветра может не хватить."
+    else:
+        kite = "Кайт/винг: смотреть фактический ветер по споту."
+
+    if has_wave and wave >= 0.6:
+        surf = "Серф: возможны окна по волне; смотреть фактический прогноз спотов."
+    elif has_wave:
+        surf = "Серф: волна слабая; скорее прогулочный формат."
+    else:
+        surf = "Серф: зависит от фактической волны; чаще это не главный сценарий недели."
+    return [sup, kite, surf]
 
 
 def _air_line(air_data: dict[str, Any]) -> tuple[str, bool]:
@@ -384,7 +429,7 @@ def _plan_lines(metrics: dict[str, Any], poor_air: bool, elevated_kp: bool, luna
         lines.append("• при пыли/дымке сокращать активность на улице;")
     if elevated_kp or any("VoC" in line for line in lunar_lines):
         lines.append("• не перегружать дни с нестабильным фоном, важное подтверждать дважды;")
-    lines.append("• море оставлять на утро или ближе к закату.")
+    lines.append("• море планировать утром или ближе к закату.")
     return lines[:5]
 
 
@@ -412,6 +457,7 @@ def build_weekly_forecast(
     space, elevated_kp = _space_line(kp_tuple)
     lunar = _lunar_lines(start, lunar_data, astro_events)
     plan = _plan_lines(metrics, poor_air, elevated_kp, lunar)
+    water_sport = _water_sport_lines(metrics)
 
     lines = [
         f"🗓 Вайб недели: {_fmt_week_range(start)}",
@@ -424,6 +470,9 @@ def build_weekly_forecast(
         "",
         "🌊 Море",
         _sea_line(sea_temps),
+        "",
+        "🏄 Вода и спорт",
+        *water_sport,
         "",
         "🏭 Воздух и самочувствие",
         air,
