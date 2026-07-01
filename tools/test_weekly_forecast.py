@@ -20,13 +20,13 @@ from send_weekly_forecast import build_weekly_forecast  # noqa: E402
 WEATHER = {
     "daily": {
         "time": [
+            "2026-07-01",
+            "2026-07-02",
+            "2026-07-03",
+            "2026-07-04",
+            "2026-07-05",
             "2026-07-06",
             "2026-07-07",
-            "2026-07-08",
-            "2026-07-09",
-            "2026-07-10",
-            "2026-07-11",
-            "2026-07-12",
         ],
         "temperature_2m_max": [32, 34, 36, 35, 33, 31, 30],
         "temperature_2m_min": [24, 25, 26, 25, 24, 23, 23],
@@ -42,13 +42,17 @@ AIR = {"aqi": 125, "pm25": 20, "pm10": 69}
 KP = (2.3, "спокойно", 123456, "fixture")
 LUNAR = {
     "days": {
-        "2026-07-06": {"phase_name": "Растущая Луна", "percent": 75},
-        "2026-07-07": {
+        "2026-07-01": {
             "phase_name": "Полнолуние",
-            "percent": 96,
-            "void_of_course": {"start": "07.07 12:00", "end": "07.07 13:20"},
+            "percent": 99,
+            "void_of_course": {"start": "01.07 19:13", "end": "01.07 21:33"},
         },
-        "2026-07-12": {"phase_name": "Убывающая Луна", "percent": 70},
+        "2026-07-03": {
+            "phase_name": "Убывающая Луна",
+            "percent": 92,
+            "void_of_course": {"start": "03.07 16:15", "end": "04.07 00:00"},
+        },
+        "2026-07-07": {"phase_name": "Убывающая Луна", "percent": 75},
     }
 }
 
@@ -61,7 +65,7 @@ class _Parser(HTMLParser):
 
 def _base_text(extra_paths: list[Path] | None = None) -> str:
     return build_weekly_forecast(
-        date(2026, 7, 6),
+        date(2026, 7, 1),
         weather_payload=WEATHER,
         air_data=AIR,
         sea_temps=[27.2, 28.1, 27.6],
@@ -77,12 +81,19 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     assert "✨ Главный фон недели" in text
     assert "🌦 Погода" in text
     assert "🌊 Море" in text
+    assert "Море: средняя вода" not in text
+    assert "Средняя вода" in text
     assert "🏭 Воздух" in text
     assert "🧲 Космопогода" in text
+    assert "сильных бурь не видно" in text
     assert "🌙 Луна" in text
     assert "✅ Как прожить неделю" in text
     assert "Воздух неидеален" in text
     assert "🌕" in text and "Полнолуние" in text
+    assert "01.07 01.07" not in text
+    assert "03.07 03.07" not in text
+    assert "01.07 19:13–21:33" in text
+    assert "03.07 16:15–04.07 00:00" in text
     assert text.splitlines()[-1] == "#Кипр #вайбнедели #погода #море #астропогода"
     assert not any(phrase in text.lower() for phrase in FORBIDDEN)
     _Parser().feed(text)
