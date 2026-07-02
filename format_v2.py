@@ -91,6 +91,8 @@ def _astro_lines(lines: list[str]) -> list[str]:
         s = line.strip()
         if not s:
             continue
+        if s.startswith("<b>"):
+            continue
         if _is_astro_candidate(s):
             keep.append(_normalize_zodiac_symbol_suffix(s))
     return keep
@@ -472,18 +474,18 @@ def _critical_safecast_cy_line(lines: list[str]) -> str:
 
 
 def _morning_sea_line(lines: list[str]) -> str:
-    text = "\n".join(lines)
-    if not re.search(r"море|вода|волна|побереж|🌊", text, flags=re.I):
-        return "🌊 Море: комфортно для купания; у берега жарко, лучше утром или ближе к закату."
-
     waters: list[float] = []
     wave_value = None
+    sea_lines: list[str] = []
 
     for line in lines:
         s = _plain(line).replace("\u00a0", " ").strip()
         low = s.lower()
-        if "закат" in low or "рассвет" in low:
+        if "закат" in low or "рассвет" in low or re.search(r"\b(?:aqi|pm₂|pm2|pm₁|pm10|гпа|hpa|давл|ветер|уф)\b", low, flags=re.I):
             continue
+        if not re.search(r"🌊|\bвода\b|\bsea\b|\bволна\b", s, flags=re.I):
+            continue
+        sea_lines.append(s)
         if "🌊" in s:
             tail = s.split("🌊", 1)[1]
             nums: list[float] = []
@@ -492,27 +494,22 @@ def _morning_sea_line(lines: list[str]) -> str:
                     nums.append(float(raw_num.replace(",", ".")))
                 except Exception:
                     continue
-            if nums and 5 <= nums[0] <= 35:
+            if nums and 12 <= nums[0] <= 35:
                 waters.append(nums[0])
             if wave_value is None and len(nums) >= 2 and 0 <= nums[1] <= 5:
                 wave_value = nums[1]
 
-    sea_lines = [
-        _plain(line)
-        for line in lines
-        if not line.strip().startswith("<b>") and re.search(r"море|вода|волна|побереж|🌊", line, flags=re.I)
-    ]
     sea_text = "\n".join(sea_lines)
     for line in sea_lines:
         for pattern in (
-            r"(?:вода|море)[^\d+-]{0,20}([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?",
-            r"([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?\s*(?:вода|море)",
+            r"(?:\bвода\b|\bsea\b)[^\d+-]{0,12}([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?",
+            r"([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?\s*(?:\bвода\b|\bsea\b)",
         ):
             match = re.search(pattern, line, flags=re.I)
             if match:
                 try:
                     value = float(match.group(1).replace(",", "."))
-                    if 5 <= value <= 35:
+                    if 12 <= value <= 35:
                         waters.append(value)
                 except Exception:
                     pass
@@ -529,7 +526,7 @@ def _morning_sea_line(lines: list[str]) -> str:
     elif not wave and re.search(r"волн|wave|неспокой", low):
         wave = "умеренная"
 
-    if waters or wave:
+    if waters:
         if len(waters) >= 2:
             avg = sum(waters) / len(waters)
             water_part = f"средняя вода {_fmt_temp(avg)}°C"
@@ -539,10 +536,10 @@ def _morning_sea_line(lines: list[str]) -> str:
             water_part = "вода комфортная"
         wave_part = f"волна {wave}" if wave else "волна спокойная"
         if len(waters) >= 2:
-            return f"🌊 Море: {water_part}; у берега жарко, лучше утром или ближе к закату."
+            return f"🌊 Море: {water_part}; лучше до 11:00 или после 18:30."
         return f"🌊 Море: {water_part}; {wave_part}; лучше до 11:00 или после 18:30."
 
-    return "🌊 Море: комфортно для купания; у берега жарко, лучше утром или ближе к закату."
+    return "🌊 Море: комфортно для купания; лучше до 11:00 или после 18:30."
 
 
 def _clean_uv_line(line: str) -> str:
@@ -816,11 +813,14 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
             out.append(line)
     if space:
         out.append(_clean_kp_line(space[0]))
-    if sun:
-        out.append(sun[0])
     if astro:
-        out.append("☀️ <b>Солнце и ритм дня</b>")
+        out.append("☀️ <b>Солнце, Луна и ритм дня</b>")
+        if sun:
+            out.append(sun[0])
         out.extend(astro)
+    elif sun:
+        out.append("☀️ <b>Солнце, Луна и ритм дня</b>")
+        out.append(sun[0])
 
     plan = _clean_today_tip(today_tips[0]) if today_tips else "вода, SPF, тень 11–16, прогулка до полудня"
     if warning:

@@ -594,6 +594,108 @@ def _apply_cyprus_sensor_cleanup(v2_text: str) -> str:
     return "\n".join(out)
 
 
+def _fmt_cy_temp(value: float) -> str:
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def _cy_morning_sea_line_from_source(source_text: str) -> str:
+    waters: list[float] = []
+    for raw in str(source_text or "").splitlines():
+        s = _plain(raw).replace("\u00a0", " ").strip()
+        low = s.lower()
+        if "закат" in low or "рассвет" in low or re.search(r"\b(?:aqi|pm₂|pm2|pm₁|pm10|гпа|hpa|давл|ветер|уф)\b", low, flags=re.I):
+            continue
+        if not re.search(r"🌊|\bвода\b|\bsea\b", s, flags=re.I):
+            continue
+        if "🌊" in s:
+            tail = s.split("🌊", 1)[1]
+            m = re.search(r"([+-]?\d+(?:[\.,]\d+)?)", tail)
+            if m:
+                try:
+                    value = float(m.group(1).replace(",", "."))
+                    if 12 <= value <= 35:
+                        waters.append(value)
+                except Exception:
+                    pass
+        for pattern in (
+            r"(?:\bвода\b|\bsea\b)[^\d+-]{0,12}([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?",
+            r"([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?\s*(?:\bвода\b|\bsea\b)",
+        ):
+            m = re.search(pattern, s, flags=re.I)
+            if not m:
+                continue
+            try:
+                value = float(m.group(1).replace(",", "."))
+                if 12 <= value <= 35:
+                    waters.append(value)
+            except Exception:
+                pass
+            break
+    if len(waters) >= 2:
+        avg = sum(waters) / len(waters)
+        return f"🌊 Море: средняя вода {_fmt_cy_temp(avg)}°C; лучше до 11:00 или после 18:30."
+    if len(waters) == 1:
+        return f"🌊 Море: вода {_fmt_cy_temp(waters[0])}°C; волна спокойная; лучше до 11:00 или после 18:30."
+    return ""
+
+
+def _replace_cy_morning_sea_line(v2_text: str, sea_line: str) -> str:
+    if not sea_line:
+        return v2_text
+    lines = [line for line in str(v2_text or "").splitlines() if not line.strip().startswith("🌊 Море:")]
+    return _insert_before_anchor(
+        "\n".join(lines),
+        sea_line,
+        ("🌍 Сейсмика 24ч:", "🧲", "☀️ <b>Солнце", "🌇", "✅ План:", "#"),
+    )
+
+
+def _cy_morning_astro_block_from_source(source_text: str, fallback_text: str) -> list[str]:
+    raw_lines = [line.strip() for line in str(source_text or "").splitlines() if line.strip()]
+    candidates = [line for line in raw_lines if _is_astro_candidate_line(line)]
+    if not candidates:
+        candidates = [line for line in str(fallback_text or "").splitlines() if _is_astro_candidate_line(line.strip())]
+    details = _ordered_astro_details(candidates, [])
+    has_moon = any(line.startswith(_MOON_PHASE_PREFIXES) or "луна" in line.lower() or "полнолуние" in line.lower() for line in details)
+    if not has_moon:
+        return []
+    return ["☀️ <b>Солнце, Луна и ритм дня</b>", *details[:5]]
+
+
+def _replace_cy_morning_astro_block(v2_text: str, astro_block: list[str]) -> str:
+    if not astro_block:
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    in_astro = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("☀️ <b>Солнце"):
+            in_astro = True
+            continue
+        if in_astro and stripped.startswith(("✅ План:", "😷", "#")):
+            in_astro = False
+        if in_astro:
+            continue
+        if _is_astro_candidate_line(stripped):
+            continue
+        out.append(line)
+    return _insert_before_anchor("\n".join(out), "\n".join(astro_block), ("✅ План:", "😷", "#"))
+
+
+def _apply_cyprus_morning_raw_context(v2_text: str, raw_msg: str, legacy_text: str, mode: str) -> str:
+    if not mode.startswith("morn"):
+        return v2_text
+    out = v2_text
+    sea_line = _cy_morning_sea_line_from_source(raw_msg) or _cy_morning_sea_line_from_source(legacy_text)
+    if sea_line:
+        out = _replace_cy_morning_sea_line(out, sea_line)
+    astro_block = _cy_morning_astro_block_from_source(raw_msg, legacy_text)
+    if astro_block:
+        out = _replace_cy_morning_astro_block(out, astro_block)
+    return out
+
+
 def _apply_compact(v2_text: str) -> str:
     if not _env_on("FORMAT_V2_COMPACT"):
         return v2_text
@@ -938,6 +1040,7 @@ async def main() -> None:
         v2_raw = _apply_confidence_polish(v2_raw)
         v2_raw = _insert_main_nuance(v2_raw)
         v2_raw = _apply_astro_cleanup(v2_raw)
+        v2_raw = _apply_cyprus_morning_raw_context(v2_raw, raw_msg, legacy_result.text, mode)
         v2_raw = _apply_cyprus_sensor_cleanup(v2_raw)
         v2_raw = _apply_score_conclusion(v2_raw)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)

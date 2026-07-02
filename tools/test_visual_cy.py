@@ -151,11 +151,15 @@ def cy_prompt_morning_sanitized() -> None:
     low = prompt.lower()
     assert "mediterranean" in low
     assert "daylight" in low
+    assert "fresh morning daylight" in low
+    assert "neutral daylight" in low
     assert "pale blue sky" in low
     assert "cool fresh morning atmosphere" in low
     assert "soft neutral sunlight" in low
     assert "sun from left" in low
+    assert "light direction from left" in low
     assert "left side of frame" in low
+    assert "no visible sun disk" in low
     assert "crisp daytime visibility" in low
     assert "natural daytime shadows" in low
     assert "clear early morning daylight" in low
@@ -163,7 +167,8 @@ def cy_prompt_morning_sanitized() -> None:
         "text", "logo", "poster", "card", "moon", "night", "sunset",
         "sunrise", "dusk", "golden", "golden hour", "orange",
         "orange horizon", "orange sky", "evening", "evening warmth",
-        "cinematic dusk", "cinematic evening light",
+        "cinematic dusk", "cinematic evening light", "amber",
+        "warm horizon glow", "sun from right", "sunset-like lighting",
         "baltic", "kaliningrad",
     ):
         if " " in forbidden:

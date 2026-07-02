@@ -43,6 +43,11 @@ _MORNING_TRIGGER_PATTERNS = (
     r"\borange\s+horizon\b",
     r"\borange\s+sky\b",
     r"\borange\b",
+    r"\bamber(?:\s+light)?\b",
+    r"\bwarm\s+horizon\s+glow\b",
+    r"\bsun\s+from\s+right\b",
+    r"\bright-side\s+(?:sun|light|horizon\s+glow)\b",
+    r"\bsunset-like\s+lighting\b",
     r"\blow\s+sun\b",
     r"\bevening\s+warmth\b",
     r"\bcinematic\s+dusk\b",
@@ -352,9 +357,10 @@ def build_cyprus_scene_prompt(
 
     if mode == "morning":
         time_cue = (
-            "clear early morning daylight, pale blue sky, cool fresh morning atmosphere, "
-            "soft neutral sunlight from the left side of frame, sun from left, "
-            "crisp daytime visibility, natural daytime shadows"
+            "fresh morning daylight, clear early morning daylight, pale blue sky, neutral daylight, "
+            "cool fresh morning atmosphere, crisp visibility, crisp daytime visibility, "
+            "soft natural light from the left side of frame, soft neutral sunlight from the left side of frame, "
+            "sun from left, light direction from left, no visible sun disk, natural daytime shadows"
         )
     elif full_moon_evening:
         time_cue = (
