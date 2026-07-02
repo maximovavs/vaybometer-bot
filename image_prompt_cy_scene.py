@@ -361,6 +361,15 @@ def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
             )
             if ctx.gust_max is not None and ctx.gust_max >= 12:
                 cues.append("occasional small whitecaps")
+            if scene.diagnostics.get("severe_wind_rule"):
+                cues.extend(
+                    [
+                        "strong dry coastal wind response",
+                        "frequent small whitecaps on textured Mediterranean water",
+                        "visibly bent palm fronds and coastal grass",
+                        "dry promenade and dry coastal surfaces",
+                    ]
+                )
 
     if scene.diagnostics.get("dust_rule"):
         cues.append("dust haze with muted beige-gold atmospheric depth")
@@ -368,7 +377,7 @@ def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
         cues.append("visible heat shimmer above sun-warmed stone and dry air")
         if ctx.coastal_focus and ctx.post_type == "evening":
             cues.append("clear hot Cyprus evening air")
-    if ctx.uv_level in {"high", "extreme"}:
+    if ctx.post_type == "morning" and ctx.uv_level in {"high", "extreme"}:
         cues.append("strong direct sunlight with crisp daylight contrast")
     if ctx.humidity_hint in {"high", "present"}:
         cues.append("soft humid sea haze along the coast")
@@ -456,9 +465,9 @@ def build_cyprus_scene_prompt(
                 "residual right-side horizon glow",
                 "not a sun-dominant scene",
                 "no bright golden sunset",
-                "no perfect full moon",
-                "no oversized moon",
-                "no fantasy supermoon",
+                "avoid exact circular full-moon disk",
+                "natural-scale moon only",
+                "no surreal lunar scale",
             ]
         )
     prompt = sanitize_cyprus_scene_prompt(
@@ -482,9 +491,9 @@ def build_cyprus_scene_prompt(
                     "blue-hour or late twilight",
                     "residual right-side horizon glow",
                     "small-to-medium natural moon scale",
-                    "no perfect full moon",
-                    "no oversized moon",
-                    "no fantasy supermoon",
+                    "avoid exact circular full-moon disk",
+                    "natural-scale moon only",
+                    "no surreal lunar scale",
                 ]
             )
         )

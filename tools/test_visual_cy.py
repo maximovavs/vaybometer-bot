@@ -137,7 +137,55 @@ def cy_visual_gust_17_without_storm_word_is_storm() -> None:
     Лимассол: ясно, ветер 7 м/с, порывы до 17 м/с.
     """
     ctx = parse_visual_context_cy(text, post_type="evening")
+    scene = apply_visual_rules_cy(ctx)
     assert ctx.weather_main == "storm"
+    assert ctx.severe_wind is True
+    assert ctx.actual_precipitation is False
+    assert scene.diagnostics["severe_wind_rule"] is True
+    assert scene.diagnostics["wet_rule"] is False
+
+
+def cy_visual_gust_17_with_rain_is_wet_and_severe() -> None:
+    text = """
+    Кипр: прогноз на завтра.
+    Лимассол: местами дождь, ветер 7 м/с, порывы до 17 м/с.
+    На побережье мокро.
+    """
+    ctx = parse_visual_context_cy(text, post_type="evening")
+    scene = apply_visual_rules_cy(ctx)
+    assert ctx.severe_wind is True
+    assert ctx.actual_precipitation is True
+    assert scene.diagnostics["severe_wind_rule"] is True
+    assert scene.diagnostics["wet_rule"] is True
+
+
+def cy_visual_ordinary_haze_is_not_dust() -> None:
+    text = """
+    Кипр: прогноз на завтра.
+    Ларнака: локальная утренняя дымка/туман, AQI 40, море у побережья.
+    """
+    ctx = parse_visual_context_cy(text, post_type="evening")
+    scene = apply_visual_rules_cy(ctx)
+    cues = _all_cues(scene)
+    assert ctx.visibility_haze is True
+    assert not ctx.dust_hint
+    assert scene.diagnostics["dust_rule"] is False
+    assert "soft humid" in cues
+    assert "beige-gold" not in cues
+    assert "suspended dust" not in cues
+
+
+def cy_visual_dust_haze_is_dust() -> None:
+    text = """
+    Кипр: прогноз на завтра.
+    Ларнака: пылевая дымка, AQI 110, море у побережья.
+    """
+    ctx = parse_visual_context_cy(text, post_type="evening")
+    scene = apply_visual_rules_cy(ctx)
+    cues = _all_cues(scene)
+    assert ctx.dust_hint
+    assert scene.diagnostics["dust_rule"] is True
+    assert "beige-gold" in cues or "suspended dust" in cues
 
 
 def cy_no_baltic_leak() -> None:
@@ -261,6 +309,79 @@ def cy_prompt_gust_13_has_whitecaps_without_flat_water() -> None:
     assert "occasional small whitecaps" in low
     assert "no mirror-flat water" in low
     assert "no completely still vegetation" in low
+
+
+def cy_prompt_dry_gust_17_does_not_create_rain() -> None:
+    message = """
+    27.06.2026
+    Кипр завтра.
+    Лимассол: ясно, ветер 7 м/с, порывы до 17 м/с, море у побережья.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "strongly textured mediterranean water surface" in low
+    assert "frequent small whitecaps" in low
+    assert "visibly bent palm fronds and coastal grass" in low
+    assert "dry promenade" in low
+    assert "dry coastal" in low
+    assert "dramatic rain clouds" not in low
+    assert "wet promenade" not in low
+    assert "rain-darkened coast" not in low
+
+
+def cy_prompt_evening_high_uv_has_no_direct_sun_cue() -> None:
+    message = """
+    27.06.2026
+    Кипр завтра.
+    Ларнака: тепло, УФ-индекс 9, море спокойное.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "strong direct sunlight" not in low
+    assert "strong sun cue" not in low
+    assert "strong sunlight cue" not in low
+
+
+def cy_prompt_morning_high_uv_keeps_direct_sun_cue() -> None:
+    message = """
+    27.06.2026
+    Кипр сегодня.
+    Ларнака: ясно, УФ-индекс 9, море спокойное.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="morning")
+    low = prompt.lower()
+    assert "strong direct sunlight with crisp daylight contrast" in low
+
+
+def cy_prompt_real_evening_wind_moon_haze_has_no_rain_or_dust_contradictions() -> None:
+    message = """
+    27.06.2026
+    Кипр завтра.
+    Никосия: жара до 37°, УФ-индекс 9.
+    Ларнака: локальная утренняя дымка/туман, AQI 40, PM₂.₅ 8 / PM₁₀ 14.
+    Лимассол: ясно, ветер 7 м/с, порывы до 17 м/с, море у побережья.
+    🌖 Убывающая Луна в ♐ — мягкий вечерний ритм.
+    ✨ 92% освещённости — Луна яркая.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "realistic waning gibbous moon, 92% illuminated" in low
+    assert "blue-hour or late twilight" in low
+    assert "visible wind response in palm fronds and coastal grass" in low
+    assert "textured mediterranean water surface" in low
+    assert "frequent small whitecaps" in low
+    assert "dry promenade" in low
+    assert "dry coastal" in low
+    assert "dramatic rain clouds" not in low
+    assert "wet promenade" not in low
+    assert "rain-darkened coast" not in low
+    assert "strong direct sunlight" not in low
+    assert "beige-gold dust" not in low
+    assert "suspended dust" not in low
+    assert "perfect full moon" not in low
+    assert "oversized moon" not in low
+    assert "fantasy supermoon" not in low
+    assert "natural-scale moon only" in low
 
 
 def cy_prompt_no_raw_source_hints() -> None:
@@ -415,9 +536,10 @@ def cy_prompt_waning_92_uses_near_full_moon_context() -> None:
     assert "realistic waning gibbous moon, 92% illuminated" in low
     assert "blue-hour or late twilight" in low
     assert "residual right-side horizon glow" in low
-    assert "no perfect full moon" in low
-    assert "no oversized moon" in low
-    assert "no fantasy supermoon" in low
+    assert "perfect full moon" not in low
+    assert "oversized moon" not in low
+    assert "fantasy supermoon" not in low
+    assert "natural-scale moon only" in low
 
 
 TESTS = [
@@ -429,12 +551,19 @@ TESTS = [
     cy_coastal_wind,
     cy_visual_negated_storm_phrase_is_not_storm,
     cy_visual_gust_17_without_storm_word_is_storm,
+    cy_visual_gust_17_with_rain_is_wet_and_severe,
+    cy_visual_ordinary_haze_is_not_dust,
+    cy_visual_dust_haze_is_dust,
     cy_no_baltic_leak,
     cy_prompt_morning_sanitized,
     cy_prompt_evening_dust_heat,
     cy_prompt_rain_not_leisure,
     cy_prompt_generic_warning_gust_10_is_windy_not_storm,
     cy_prompt_gust_13_has_whitecaps_without_flat_water,
+    cy_prompt_dry_gust_17_does_not_create_rain,
+    cy_prompt_evening_high_uv_has_no_direct_sun_cue,
+    cy_prompt_morning_high_uv_keeps_direct_sun_cue,
+    cy_prompt_real_evening_wind_moon_haze_has_no_rain_or_dust_contradictions,
     cy_prompt_no_raw_source_hints,
     cy_prompt_coastal_priority_over_nicosia,
     cy_prompt_inland_only_when_no_coast,
