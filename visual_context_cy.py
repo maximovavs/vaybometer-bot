@@ -50,12 +50,37 @@ _STORM_NEGATION_RE = re.compile(
     re.I,
 )
 _STORM_POSITIVE_RE = re.compile(r"\b(?:шторм\w*|шквал\w*|гроз\w*)\b|thunderstorm|squall|storm", re.I)
-_PRECIP_RE = re.compile(r"дожд\w*|ливн\w*|осад\w*|мокр\w*|rain|showers?|wet\b", re.I)
+_PRECIP_FACTUAL_RE = re.compile(r"дожд\w*|ливн\w*|морос\w*|rain|showers?", re.I)
+_PRECIP_WET_RE = re.compile(r"мокр\w*|wet\b", re.I)
+_PRECIP_EXPLICIT_RE = re.compile(
+    r"осад\w*\s+(?:прогнозир\w*|ожида\w*)|ожида\w*\s+осад\w*|местами\s+осад\w*",
+    re.I,
+)
+_PRECIP_NEGATION_RE = re.compile(
+    r"осад\w*\s+не\s+ожида|без\s+осад\w*|дожд\w*\s+не\s+буд|вероятност\w*\s+осад\w*\s+низк",
+    re.I,
+)
+_PRECIP_UNCERTAINTY_RE = re.compile(
+    r"ветер\s*/\s*осад\w*\s+лучше\s+провер|осад\w*\s+лучше\s+провер|осад\w*\s+уточн|проверить\s+осад\w*|осад\w*\s+и\s+порыв\w*\s+требу\w*\s+гибк",
+    re.I,
+)
 _DUST_RE = re.compile(
     r"пыл\w*|сахар\w+\s+пыл\w*|задымлен\w*|\bдым\s*/\s*смог\b|(?<![а-яё])дым(?!к|[а-яё])|(?<![а-яё])смог(?![а-яё])|dust|smoke|smog",
     re.I,
 )
 _HAZE_RE = re.compile(r"дымк\w*|туман\w*|fog|haze", re.I)
+_MOON_PHASE_PREFIXES = ("🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🌙")
+_DERIVED_SUMMARY_PREFIXES = (
+    "✨ VayboMeter",
+    "🧭 Главное",
+    "⚠️ Нюанс",
+    "💬 Настрой",
+    "🎯 Уверенность",
+    "✅ План",
+    "☀️",
+    "💚",
+    "⚫️",
+)
 
 
 @dataclass
@@ -173,9 +198,19 @@ def _has_actual_storm_signal(line: str, gust_max: Optional[float]) -> bool:
     return bool(_STORM_POSITIVE_RE.search(str(line or "")))
 
 
+def _is_derived_summary_line(line: str) -> bool:
+    stripped = str(line or "").strip()
+    return stripped.startswith(_DERIVED_SUMMARY_PREFIXES) or stripped.startswith(_MOON_PHASE_PREFIXES)
+
+
 def _has_actual_precipitation(line: str) -> bool:
-    low = str(line or "").lower()
-    if _PRECIP_RE.search(low):
+    text = str(line or "")
+    low = text.lower()
+    if _is_derived_summary_line(text):
+        return False
+    if _PRECIP_NEGATION_RE.search(low) or _PRECIP_UNCERTAINTY_RE.search(low):
+        return False
+    if _PRECIP_FACTUAL_RE.search(low) or _PRECIP_EXPLICIT_RE.search(low) or _PRECIP_WET_RE.search(low):
         return True
     if "гроз" in low and any(token in low for token in ("дожд", "лив", "осад", "мокр", "rain", "wet")):
         return True
