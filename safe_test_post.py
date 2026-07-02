@@ -465,7 +465,7 @@ def _cyprus_voice_conditions(v2_text: str) -> dict[str, object]:
     explicit_poor_air = "воздух неидеален" in text
     explicit_dust = bool(
         re.search(
-            r"пыль\s*/\s*дымк|пыль\s+в\s+воздухе|пылев\w+|задымлен\w*|дымка",
+            r"пыль\s+в\s+воздухе|пылев\w+\s+дымк\w*|задымлен\w*|\bдым\s*/\s*смог\b|(?<![а-яё])дым(?!к|[а-яё])|(?<![а-яё])смог(?![а-яё])",
             text_without_pollen,
             flags=re.I,
         )

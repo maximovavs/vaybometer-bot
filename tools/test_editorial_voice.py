@@ -99,6 +99,28 @@ SAFE_POOR_AIR_MORNING = """<b>🌅 Кипр сегодня (27.06.2026)</b>
 #Кипр #погода #здоровье
 """
 
+SAFE_VISIBILITY_HAZE_MORNING = """<b>🌅 Кипр сегодня (27.06.2026)</b>
+✨ VayboMeter: 8.0/10 — хорошо.
+⚠️ Главный нюанс: локальная утренняя дымка/туман.
+🌡 Теплее всего — Никосия (29°), прохладнее — Тродос (22°).
+💨 Ветер: 3.0 м/с • порывы до 5 м/с.
+☀️ УФ 7 — высокий.
+🏭 Воздух: AQI 31 (низкий) • PM₂.₅ 8 / PM₁₀ 14
+✅ План: утром сверить видимость, днём — SPF и вода.
+#Кипр #погода #здоровье
+"""
+
+SAFE_DUST_HAZE_MORNING = """<b>🌅 Кипр сегодня (27.06.2026)</b>
+✨ VayboMeter: 7.0/10 — с оговорками.
+🌡 Теплее всего — Никосия (29°), прохладнее — Тродос (22°).
+💨 Ветер: 3.0 м/с • порывы до 5 м/с.
+☀️ УФ 5 — умеренный.
+🏭 Воздух: AQI 45 (низкий) • PM₂.₅ 10 / PM₁₀ 15
+⚠️ Нюанс: пылевая дымка у берега.
+✅ План: прогулку сделать короче.
+#Кипр #погода #здоровье
+"""
+
 WEATHER = {
     "daily": {
         "time": ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06", "2026-07-07"],
@@ -187,6 +209,25 @@ def test_safe_bad_air_selects_poor_air() -> None:
     assert "AQI 125" in text and "PM₁₀ 69" in text
 
 
+def test_safe_visibility_haze_does_not_select_poor_air() -> None:
+    text = _apply_editorial_voice(SAFE_VISIBILITY_HAZE_MORNING, "morning")
+    line = _voice_line(text, "💬 По ощущениям дня:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase not in _phrases(CYPRUS_MORNING_VARIANTS, "POOR_AIR")
+    assert "воздух сегодня не самый лёгкий" not in text
+    assert "при чувствительности к пыли" not in text
+    assert "качество воздуха" not in text
+    assert "локальная утренняя дымка/туман" in text
+
+
+def test_safe_dust_haze_selects_poor_air() -> None:
+    text = _apply_editorial_voice(SAFE_DUST_HAZE_MORNING, "morning")
+    line = _voice_line(text, "💬 По ощущениям дня:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(CYPRUS_MORNING_VARIANTS, "POOR_AIR")
+    assert "пылевая дымка" in text
+
+
 def test_evening_output_has_one_human_line_and_keeps_facts() -> None:
     text = build_evening_format_v2("Кипр", EVENING)
     assert text.count("💬 Настрой на завтра:") == 1
@@ -229,6 +270,8 @@ def main() -> None:
         test_morning_output_has_one_human_line_and_keeps_facts,
         test_safe_pollen_low_does_not_select_poor_air,
         test_safe_bad_air_selects_poor_air,
+        test_safe_visibility_haze_does_not_select_poor_air,
+        test_safe_dust_haze_selects_poor_air,
         test_evening_output_has_one_human_line_and_keeps_facts,
         test_weekly_output_contains_meaning_block_and_keeps_facts,
     )
