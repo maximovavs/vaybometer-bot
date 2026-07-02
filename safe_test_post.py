@@ -287,7 +287,8 @@ def _cyprus_evening_score_line(v2_text: str) -> str:
     score = max(1.0, min(10.0, score))
     label = _score_label(score)
     if reasons:
-        return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
+        cleaned = _dedupe_score_reasons(reasons[:3])
+        return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; " + _format_reason_list(cleaned) + "."
     return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
 
 
@@ -312,6 +313,53 @@ def _fmt_ms(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
 
 
+def _format_reason_list(reasons: list[str]) -> str:
+    if len(reasons) <= 1:
+        return reasons[0] if reasons else ""
+    if len(reasons) == 2:
+        return f"{reasons[0]} и {reasons[1]}"
+    return ", ".join(reasons[:-1]) + " и " + reasons[-1]
+
+
+def _dedupe_score_reasons(reasons: list[str]) -> list[str]:
+    out: list[str] = []
+    by_key: dict[str, int] = {}
+
+    def key_for(reason: str) -> str:
+        low = reason.lower()
+        if "порыв" in low or ("ветер" in low and "мор" in low):
+            return "wind_sea"
+        if "жара" in low or "тепло" in low:
+            return "heat"
+        if "дым" in low or "туман" in low:
+            return "visibility"
+        if "предупреж" in low or "шторм" in low:
+            return "warning"
+        return low
+
+    def better(new: str, old: str) -> bool:
+        new_low, old_low = new.lower(), old.lower()
+        if "сильная жара" in new_low and "сильная жара" not in old_low:
+            return True
+        if "порыв" in new_low and "порыв" not in old_low:
+            return True
+        return False
+
+    for raw in reasons:
+        reason = re.sub(r"\s+", " ", str(raw or "")).strip(" .;—-")
+        if not reason:
+            continue
+        key = key_for(reason)
+        if key in by_key:
+            idx = by_key[key]
+            if better(reason, out[idx]):
+                out[idx] = reason
+            continue
+        by_key[key] = len(out)
+        out.append(reason)
+    return out
+
+
 def _downgrade_sup_lines(text: str) -> str:
     lines = str(text or "").splitlines()
     out: list[str] = []
@@ -332,11 +380,75 @@ def _downgrade_sup_lines(text: str) -> str:
     return "\n".join(out)
 
 
+def _surf_thresholds() -> tuple[float, float, float]:
+    def read(name: str, default: str) -> float:
+        try:
+            return float(os.getenv(name, default))
+        except Exception:
+            return float(default)
+
+    return (
+        read("SURF_WAVE_GOOD_MIN", "0.9"),
+        read("SURF_WAVE_GOOD_MAX", "2.5"),
+        read("SURF_WIND_MAX", "10"),
+    )
+
+
+def _wave_from_city_line(line: str) -> float | None:
+    s = str(line or "")
+    m = re.search(r"(?:волна|wave)[^\d]{0,16}(\d+(?:[\.,]\d+)?)\s*м", s, flags=re.I)
+    if m:
+        return float(m.group(1).replace(",", "."))
+    if "🌊" in s:
+        tail = s.split("🌊", 1)[1]
+        nums = [float(x.replace(",", ".")) for x in re.findall(r"(\d+(?:[\.,]\d+)?)", tail)]
+        if len(nums) >= 2 and 0 <= nums[1] <= 5:
+            return nums[1]
+    m = re.search(r"(?:^|[•;])\s*(\d+(?:[\.,]\d+)?)\s*м\b", s)
+    if m:
+        value = float(m.group(1).replace(",", "."))
+        if 0 <= value <= 5:
+            return value
+    return None
+
+
+def _wind_from_city_line(line: str) -> float | None:
+    return _num(r"💨\s*(\d+(?:[\.,]\d+)?)\s*м/с", line)
+
+
+def _polish_surf_lines(text: str) -> str:
+    lines = str(text or "").splitlines()
+    out: list[str] = []
+    last_wave: float | None = None
+    last_wind: float | None = None
+    good_min, good_max, wind_max = _surf_thresholds()
+    for line in lines:
+        wave = _wave_from_city_line(line)
+        wind = _wind_from_city_line(line)
+        if wave is not None:
+            last_wave = wave
+        if wind is not None:
+            last_wind = wind
+
+        if "Отлично:" in line and re.search(r"\b(?:Серф|Сёрф|Surf)\b", line, flags=re.I):
+            if last_wave is None:
+                out.append("🏄 Серф: возможны отдельные окна; проверить фактическую волну и ветер по споту.")
+                continue
+            if good_min <= last_wave <= good_max and (last_wind is None or last_wind <= wind_max):
+                out.append("🏄 Серф: есть рабочие окна по волне; проверить конкретный спот.")
+                continue
+            out.append("🏄 Серф: возможны отдельные окна; проверить фактическую волну и ветер по споту.")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _apply_format_v2_test_polish(v2_text: str) -> str:
     if not _env_any("FORMAT_V2_POLISH", "FORMAT_V2_TEST_POLISH"):
         return v2_text
     text = _translate_shore_notes(v2_text)
     text = _downgrade_sup_lines(text)
+    text = _polish_surf_lines(text)
     text = re.sub(r"\s+,", ",", text)
     text = re.sub(r"🌙\s+🌙", "🌙", text)
     return text

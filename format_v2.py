@@ -244,14 +244,113 @@ def _max_temperature_c(text: str) -> float | None:
     return max(values) if values else None
 
 
+def _air_quality_values(text: str) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for key, pattern in {
+        "aqi": r"\bAQI\s*(\d+(?:[\.,]\d+)?)",
+        "pm25": r"(?:PM₂\.₅|PM2\.?5)\s*(\d+(?:[\.,]\d+)?)",
+        "pm10": r"(?:PM₁₀|PM10)\s*(\d+(?:[\.,]\d+)?)",
+    }.items():
+        m = re.search(pattern, text, flags=re.I)
+        if not m:
+            continue
+        try:
+            values[key] = float(m.group(1).replace(",", "."))
+        except Exception:
+            pass
+    return values
+
+
+def _has_poor_air_signal(text: str) -> bool:
+    values = _air_quality_values(text)
+    if values.get("aqi", 0) >= 100 or values.get("pm25", 0) >= 20 or values.get("pm10", 0) >= 50:
+        return True
+    low = re.sub(r"\bпыльца\w*", "", _plain(text).lower(), flags=re.I)
+    return bool(
+        re.search(
+            r"воздух\s+неидеален|пыль\s+в\s+воздухе|пылев\w+\s+дымк\w*|задымлен\w*|\bдым\s*/\s*смог\b|(?<![а-яё])дым(?!к|[а-яё])|(?<![а-яё])смог(?![а-яё])|air-quality\s+alert",
+            low,
+            flags=re.I,
+        )
+    )
+
+
+def _has_visibility_haze(text: str) -> bool:
+    return bool(re.search(r"дымк|туман|fog|haze", _plain(text), flags=re.I))
+
+
+def _format_reason_list(reasons: list[str]) -> str:
+    if not reasons:
+        return ""
+    if len(reasons) == 1:
+        return reasons[0]
+    if len(reasons) == 2:
+        return f"{reasons[0]} и {reasons[1]}"
+    return ", ".join(reasons[:-1]) + " и " + reasons[-1]
+
+
+def _normalize_reason_list(reasons: list[str]) -> list[str]:
+    out: list[str] = []
+    by_key: dict[str, int] = {}
+
+    def key_for(reason: str) -> str:
+        low = reason.lower()
+        if "порыв" in low or ("ветер" in low and "мор" in low):
+            return "wind_sea"
+        if "жара" in low or "тепло" in low:
+            return "heat"
+        if "пыль" in low or "дым" in low or "aqi" in low or "воздух" in low:
+            return "air"
+        if "дожд" in low or "осад" in low or "гроз" in low:
+            return "rain"
+        return low
+
+    def better(new: str, old: str) -> bool:
+        new_low, old_low = new.lower(), old.lower()
+        if "сильная жара" in new_low and "сильная жара" not in old_low:
+            return True
+        if "порыв" in new_low and "порыв" not in old_low:
+            return True
+        return False
+
+    for raw in reasons:
+        reason = re.sub(r"\s+", " ", str(raw or "")).strip(" .;—-")
+        if not reason:
+            continue
+        key = key_for(reason)
+        if key in by_key:
+            idx = by_key[key]
+            if better(reason, out[idx]):
+                out[idx] = reason
+            continue
+        by_key[key] = len(out)
+        out.append(reason)
+    return out
+
+
+def _normalize_evening_score_reasons(score_line: str) -> str:
+    s = str(score_line or "").strip()
+    if ";" not in s:
+        return s
+    prefix, tail = s.split(";", 1)
+    reasons = [x.strip() for x in re.split(r"\s*,\s*|\s+и\s+", tail.strip(" .")) if x.strip()]
+    normalized = _normalize_reason_list(reasons)
+    if not normalized:
+        return prefix.rstrip(" .") + "."
+    return f"{prefix.rstrip()} ; {_format_reason_list(normalized)}.".replace(" ;", ";")
+
+
 def _evening_flags(lines: list[str]) -> dict[str, bool]:
     text = "\n".join(lines)
     max_wind = _max_wind_ms(text)
     max_temp = _max_temperature_c(text)
+    poor_air = _has_poor_air_signal(text)
+    visibility_haze = _has_visibility_haze(text)
     return {
         "storm": _has_any(text, ("шторм", "предупреждение")),
         "rain": _has_any(text, ("дожд", "ливн", "гроза", "осад")),
-        "dust": _has_any(text, ("пыль", "dust", "песок", "дымк", "туман")),
+        "dust": poor_air,
+        "visibility_haze": visibility_haze and not poor_air,
         "heat": _has_any(text, ("жара", "жарко", "перегрев")) or (isinstance(max_temp, (int, float)) and max_temp >= 33),
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 7),
         "local": _has_any(text, ("локаль", "местами", "неравномер", "по часам", "микросценар")),
@@ -281,7 +380,7 @@ def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
         )
     )
     if not should_soften:
-        return s
+        return _normalize_evening_score_reasons(s)
 
     m = re.match(r"^(✨\s*VayboMeter(?:\s+завтра)?:\s*\d+(?:[\.,]\d+)?/10)\s*[—-]\s*", s)
     prefix = m.group(1) if m else re.sub(r"\s*[—-]\s*.*$", "", s).strip()
@@ -295,7 +394,7 @@ def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
         reason = "дымка/пыль требуют проверки воздуха"
     else:
         reason = "есть несколько факторов осторожности"
-    return f"{prefix} — с оговорками; {reason}."
+    return _normalize_evening_score_reasons(f"{prefix} — с оговорками; {reason}.")
 
 
 def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
@@ -305,7 +404,9 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
     if flags["rain"]:
         return "🧭 Главное завтра: локальные осадки важнее средних цифр по острову."
     if flags["dust"]:
-        return "🧭 Главное завтра: следи за дымкой/пылью и видимостью, особенно утром."
+        return "🧭 Главное завтра: пыль/дымка влияют на воздух и видимость; утром лучше сверить AQI/PM."
+    if flags.get("visibility_haze"):
+        return "🧭 Главное завтра: утром местами дымка/туман; на дороге и у побережья лучше проверить видимость."
     if flags["heat"] and flags["wind"]:
         return "🧭 Главное завтра: жара внутри острова и порывы у моря задают режим дня."
     if flags["heat"]:
@@ -326,7 +427,9 @@ def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_inland: bool) -> 
     if flags["rain"]:
         return "⚠️ Нюанс: осадки могут идти локально — маршрут лучше держать гибким."
     if flags["dust"]:
-        return "⚠️ Нюанс: при дымке/пыли чувствительным людям лучше сократить активность на улице."
+        return "⚠️ Нюанс: при пыли/дыме чувствительным людям лучше сократить активность на улице."
+    if flags.get("visibility_haze"):
+        return "⚠️ Нюанс: воздух по текущим данным чистый, но локальная дымка может ухудшать видимость."
     if flags["heat"] and has_inland:
         return "⚠️ Нюанс: в Никосии и внутри острова жарче, чем на побережье."
     if flags["wind"] and has_sea:
@@ -357,13 +460,15 @@ def _evening_plan(flags: dict[str, bool]) -> str:
         return "✅ План завтра: прогулки у моря — в защищённых местах, ветер перепроверить утром."
     if flags["dust"]:
         return "✅ План завтра: утром оценить видимость/воздух, прогулку сделать короче при дымке."
+    if flags.get("visibility_haze"):
+        return "✅ План завтра: утром проверить видимость, особенно для дороги и побережья."
     return "✅ План завтра: обычные дела и прогулки, с короткой проверкой ветра и солнца утром."
 
 
 def _clean_air_line(line: str) -> str:
     s = _plain(line).strip()
     if "воздух по городам" in s.lower():
-        return s
+        return _clean_city_air_line(s)
     aqi_match = re.search(r"\bAQI\s*(\d+|н/д)", s, flags=re.I)
     pm25_match = re.search(r"(?:PM₂\.₅|PM2\.?5)\s*(\d+)", s, flags=re.I)
     pm10_match = re.search(r"(?:PM₁₀|PM10)\s*(\d+)", s, flags=re.I)
@@ -406,6 +511,21 @@ def _clean_air_line(line: str) -> str:
     if city_bits:
         return main + "\n" + "🏙 По городам: " + "; ".join(city_bits[:3])
     return main
+
+
+def _clean_city_air_line(line: str) -> str:
+    body = re.sub(r"^🏭\s*Воздух по городам\s*:\s*", "", _plain(line).strip(), flags=re.I)
+    city_re = r"Никосия|Лимассол|Ларнака|Пафос|Айя-Напа|Тродос"
+    pollutant_re = r"PM₂\.₅|PM2\.?5|PM₁₀|PM10|NO₂|NO2|O₃|O3|SO₂|SO2|CO"
+    chunks: list[str] = []
+    for m in re.finditer(rf"({city_re})\s+([🟢🟡🟠🔴])(?:\s+({pollutant_re}))?", body, flags=re.I):
+        city, marker, pollutant = m.group(1), m.group(2), m.group(3) or ""
+        pollutant = pollutant.replace("PM10", "PM₁₀").replace("PM2.5", "PM₂.₅").replace("PM25", "PM₂.₅")
+        pollutant = pollutant.replace("NO2", "NO₂").replace("O3", "O₃").replace("SO2", "SO₂")
+        chunks.append(f"{city} {marker}" + (f" ({pollutant})" if pollutant else ""))
+    if chunks:
+        return "🏭 Воздух по городам: " + " · ".join(chunks[:6])
+    return "🏭 Воздух по городам: " + body
 
 
 def _air_health_recommendation(line: str) -> str:

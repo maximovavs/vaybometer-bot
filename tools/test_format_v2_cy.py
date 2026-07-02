@@ -216,6 +216,84 @@ AIR_SENSOR_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.
 #Кипр #погода #здоровье #Никосия #Тродос
 """
 
+SCORE_DUP_REASONS_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 6.4/10 — с оговорками; сильная жара, порывы у моря, ветер у моря.
+🏖 <b>Морские города</b>
+Лимассол: 33/25 °C • ясно • 💨 6 м/с • порывы до 14 м/с
+———
+🏞 <b>Континентальные города</b>
+Никосия: 36/25 °C • ясно
+———
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+LOW_AQI_FOG_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.1/10 — обычный день.
+🏖 <b>Морские города</b>
+Ларнака: 29/23 °C • 🌫 локальная утренняя дымка/туман • 💨 3 м/с
+———
+🏞 <b>Континентальные города</b>
+Никосия: 31/22 °C • ясно
+———
+🏭 Воздух: AQI 48 (низкий) • PM₂.₅ 12 / PM₁₀ 19
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+DUST_HAZE_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 6.9/10 — обычный день.
+🏖 <b>Морские города</b>
+Ларнака: 29/23 °C • пылевая дымка • 💨 3 м/с
+———
+🏭 Воздух: AQI 125 (высокий) • PM₂.₅ 20 / PM₁₀ 69
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+SURF_NO_WAVE_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.1/10 — обычный день.
+🏖 <b>Морские города</b>
+Лимассол: 29/23 °C • ясно • 💨 5 м/с (W/cross) • 🌊 27
+🧜‍♂️ Отлично: Серф (западный ветер, вдоль берега)
+———
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+SURF_WITH_WAVE_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.1/10 — обычный день.
+🏖 <b>Морские города</b>
+Лимассол: 29/23 °C • ясно • 💨 5 м/с (W/cross) • 🌊 27 • 1.2 м
+🧜‍♂️ Отлично: Серф (западный ветер, вдоль берега)
+———
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+CITY_AIR_BROKEN_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.0/10 — обычный день.
+🏖 <b>Морские города</b>
+Ларнака: 29/23 °C • ясно
+———
+🏭 Воздух: AQI 48 (низкий) • PM₂.₅ 12 / PM₁₀ 19
+🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟡 PM₁₀ Пафос 🟢 · Айя-Напа 🟡 PM₁₀
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
 
 CRITICAL_SAFECAST_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
 ✨ VayboMeter завтра: 6.8/10 — обычный день.
@@ -309,6 +387,15 @@ def cy_evening_caution_score_softens_good_wording() -> None:
     assert [line for line in text.splitlines() if line.strip()][-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
 
 
+def cy_evening_score_reasons_are_semantically_deduped() -> None:
+    text = build_evening_format_v2("Кипр", SCORE_DUP_REASONS_EVENING)
+    assert "✨ VayboMeter завтра: 6.4/10 — с оговорками; сильная жара и порывы у моря." in text
+    score_line = next(line for line in text.splitlines() if line.startswith("✨ VayboMeter"))
+    assert score_line.count("порывы у моря") == 1
+    assert "ветер у моря" not in score_line
+    assert "6.4/10" in score_line
+
+
 def cy_evening_preserves_moon_illumination_and_advice() -> None:
     text = build_evening_format_v2("Кипр", RICH_ASTRO_EVENING)
     assert "🌅 Рассвет завтра: 05:37" in text
@@ -391,7 +478,7 @@ def cy_evening_safe_pipeline_preserves_new_moon_and_voc() -> None:
 def cy_evening_air_replaces_generic_sensor_focus() -> None:
     text = _safe_test_evening_pipeline(AIR_SENSOR_EVENING)
     assert "🏭 Воздух: AQI 125 (высокий) • PM₂.₅ 20 / PM₁₀ 69" in text
-    assert "🏭 Воздух по городам: Никосия 🟠 PM₁₀ · Лимассол 🟡 · Ларнака 🟡 · Пафос 🟢" in text
+    assert "🏭 Воздух по городам: Никосия 🟠 (PM₁₀) · Лимассол 🟡 · Ларнака 🟡 · Пафос 🟢" in text
     assert "😷 Воздух неидеален:" in text
     assert "Частный датчик" not in text
     assert "Safecast CY: 0.18" not in text
@@ -400,6 +487,45 @@ def cy_evening_air_replaces_generic_sensor_focus() -> None:
     assert "✨ 96% освещённости" in text
     assert "✅ Общий фон:" in text
     assert "💚 В плюсе:" in text
+
+
+def cy_evening_low_aqi_haze_is_visibility_not_poor_air() -> None:
+    text = build_evening_format_v2("Кипр", LOW_AQI_FOG_EVENING)
+    assert "🧭 Главное завтра: утром местами дымка/туман; на дороге и у побережья лучше проверить видимость." in text
+    assert "⚠️ Нюанс: воздух по текущим данным чистый, но локальная дымка может ухудшать видимость." in text
+    assert "при дымке/пыли чувствительным людям" not in text
+    assert "сократить активность на улице" not in text
+    assert "😷 Воздух неидеален" not in text
+    assert text.splitlines()[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
+
+
+def cy_evening_dust_haze_keeps_poor_air_warning() -> None:
+    text = build_evening_format_v2("Кипр", DUST_HAZE_EVENING)
+    assert "🧭 Главное завтра: пыль/дымка влияют на воздух и видимость; утром лучше сверить AQI/PM." in text
+    assert "⚠️ Нюанс: при пыли/дыме чувствительным людям лучше сократить активность на улице." in text
+    assert "😷 Воздух неидеален:" in text
+
+
+def cy_evening_surf_without_wave_is_not_excellent() -> None:
+    text = _safe_test_evening_pipeline(SURF_NO_WAVE_EVENING)
+    assert "Отлично: Серф" not in text
+    assert "Отлично: Сёрф" not in text
+    assert "🏄 Серф: возможны отдельные окна; проверить фактическую волну и ветер по споту." in text
+    assert text.splitlines()[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
+
+
+def cy_evening_surf_with_valid_wave_is_cautiously_positive() -> None:
+    text = _safe_test_evening_pipeline(SURF_WITH_WAVE_EVENING)
+    assert "Отлично: Серф" not in text
+    assert "🏄 Серф: есть рабочие окна по волне; проверить конкретный спот." in text
+
+
+def cy_evening_city_air_line_is_compact_and_parenthesized() -> None:
+    text = _safe_test_evening_pipeline(CITY_AIR_BROKEN_EVENING)
+    expected = "🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟡 (PM₁₀) · Пафос 🟢 · Айя-Напа 🟡 (PM₁₀)"
+    assert expected in text
+    assert "Ларнака 🟡 PM₁₀ Пафос" not in text
+    assert text.count("🏭 Воздух по городам:") == 1
 
 
 def cy_evening_critical_safecast_is_explicitly_labeled() -> None:
@@ -482,6 +608,7 @@ def main() -> None:
         cy_evening_preserves_weather_blocks,
         cy_evening_preserves_compact_astro,
         cy_evening_caution_score_softens_good_wording,
+        cy_evening_score_reasons_are_semantically_deduped,
         cy_evening_preserves_moon_illumination_and_advice,
         cy_evening_normalizes_zodiac_symbol_suffix,
         cy_evening_preserves_new_moon_and_voc,
@@ -490,6 +617,11 @@ def main() -> None:
         cy_evening_safe_pipeline_preserves_moon_illumination_and_plus,
         cy_evening_safe_pipeline_preserves_new_moon_and_voc,
         cy_evening_air_replaces_generic_sensor_focus,
+        cy_evening_low_aqi_haze_is_visibility_not_poor_air,
+        cy_evening_dust_haze_keeps_poor_air_warning,
+        cy_evening_surf_without_wave_is_not_excellent,
+        cy_evening_surf_with_valid_wave_is_cautiously_positive,
+        cy_evening_city_air_line_is_compact_and_parenthesized,
         cy_evening_critical_safecast_is_explicitly_labeled,
         cy_evening_uncertain_has_short_confidence_line,
         cy_evening_title_is_compact,
