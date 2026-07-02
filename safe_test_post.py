@@ -456,15 +456,30 @@ def _without_editorial_voice(v2_text: str) -> list[str]:
 
 def _cyprus_voice_conditions(v2_text: str) -> dict[str, object]:
     c = _cyprus_conditions(v2_text)
-    text = _plain(v2_text).lower()
+    plain = _plain(v2_text)
+    text = plain.lower()
+    text_without_pollen = re.sub(r"\bпыльца\w*", "", text, flags=re.I)
+    pm25 = _num(r"(?:PM₂\.₅|PM2\.?5)\s*(\d+(?:[\.,]\d+)?)", plain)
+    pm10 = _num(r"(?:PM₁₀|PM10)\s*(\d+(?:[\.,]\d+)?)", plain)
+    aqi = c.get("aqi")
+    explicit_poor_air = "воздух неидеален" in text
+    explicit_dust = bool(
+        re.search(
+            r"пыль\s*/\s*дымк|пыль\s+в\s+воздухе|пылев\w+|задымлен\w*|дымка",
+            text_without_pollen,
+            flags=re.I,
+        )
+    )
     return {
         "max_temp": c.get("warm_t"),
         "uv": c.get("uv"),
         "uv_high": isinstance(c.get("uv"), (int, float)) and c["uv"] >= 6,
         "wind": isinstance(c.get("wind"), (int, float)) and c["wind"] >= 6,
         "gust": c.get("gust"),
-        "aqi": c.get("aqi"),
-        "poor_air": "воздух неидеален" in text or "пыль" in text or "дымк" in text,
+        "aqi": aqi,
+        "pm25": pm25,
+        "pm10": pm10,
+        "poor_air": explicit_poor_air or explicit_dust,
     }
 
 

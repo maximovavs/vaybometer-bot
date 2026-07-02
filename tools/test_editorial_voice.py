@@ -3,7 +3,9 @@
 """Regression checks for Cyprus deterministic editorial voice."""
 from __future__ import annotations
 
+import re
 import sys
+import types
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
@@ -12,8 +14,22 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from editorial_voice import CYPRUS_MORNING_VARIANTS, deterministic_variant  # noqa: E402
+imghdr_stub = types.ModuleType("imghdr")
+imghdr_stub.what = lambda file, h=None: None
+sys.modules.setdefault("imghdr", imghdr_stub)
+
+pendulum_stub = types.ModuleType("pendulum")
+pendulum_stub.DateTime = object
+sys.modules.setdefault("pendulum", pendulum_stub)
+
+telegram_stub = types.ModuleType("telegram")
+telegram_stub.Bot = object
+telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
+sys.modules.setdefault("telegram", telegram_stub)
+
+from editorial_voice import CYPRUS_EVENING_VARIANTS, CYPRUS_MORNING_VARIANTS, deterministic_variant  # noqa: E402
 from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
+from safe_test_post import _apply_editorial_voice  # noqa: E402
 from send_weekly_forecast import build_weekly_forecast  # noqa: E402
 
 
@@ -62,6 +78,27 @@ EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
 #Кипр #погода #здоровье #Никосия #Тродос
 """
 
+SAFE_POLLEN_MORNING = """<b>🌅 Кипр сегодня (27.06.2026)</b>
+✨ VayboMeter: 8.1/10 — хорошо.
+⚠️ Главный нюанс: высокий УФ днём.
+🌡 Теплее всего — Никосия (29°), прохладнее — Тродос (22°).
+💨 Ветер: 3.0 м/с • порывы до 5 м/с.
+☀️ УФ 7 — высокий.
+🏭 Воздух: AQI 31 (низкий) • PM₂.₅ 10 / PM₁₀ 15 • 🌿 Пыльца: низкая
+✅ План: вода, SPF и тень.
+#Кипр #погода #здоровье
+"""
+
+SAFE_POOR_AIR_MORNING = """<b>🌅 Кипр сегодня (27.06.2026)</b>
+✨ VayboMeter: 7.0/10 — с оговорками.
+🌡 Теплее всего — Никосия (30°), прохладнее — Тродос (22°).
+💨 Ветер: 3.0 м/с • порывы до 5 м/с.
+☀️ УФ 5 — умеренный.
+🏭 Воздух: AQI 125 (высокий) • PM₂.₅ 18 / PM₁₀ 69
+✅ План: обычные дела утром.
+#Кипр #погода #здоровье
+"""
+
 WEATHER = {
     "daily": {
         "time": ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06", "2026-07-07"],
@@ -94,6 +131,19 @@ def _assert_clean(text: str) -> None:
     _Parser().feed(text)
 
 
+def _voice_line(text: str, prefix: str) -> str:
+    return next(line for line in text.splitlines() if line.startswith(prefix))
+
+
+def _phrases(bank: dict[str, list[str]], scenario: str | None = None) -> set[str]:
+    if scenario:
+        return set(bank[scenario])
+    out: set[str] = set()
+    for values in bank.values():
+        out.update(values)
+    return out
+
+
 def test_deterministic_variant_is_stable_and_rotates() -> None:
     variants = CYPRUS_MORNING_VARIANTS["HOT_UV"]
     first = deterministic_variant("Кипр", "2026-07-01", "HOT_UV", variants)
@@ -119,9 +169,31 @@ def test_morning_output_has_one_human_line_and_keeps_facts() -> None:
     _assert_clean(text)
 
 
+def test_safe_pollen_low_does_not_select_poor_air() -> None:
+    text = _apply_editorial_voice(SAFE_POLLEN_MORNING, "morning")
+    line = _voice_line(text, "💬 По ощущениям дня:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(CYPRUS_MORNING_VARIANTS, "HOT_UV")
+    assert phrase not in _phrases(CYPRUS_MORNING_VARIANTS, "POOR_AIR")
+    assert "воздух сегодня не самый лёгкий" not in text
+    assert "Пыльца: низкая" in text
+
+
+def test_safe_bad_air_selects_poor_air() -> None:
+    text = _apply_editorial_voice(SAFE_POOR_AIR_MORNING, "morning")
+    line = _voice_line(text, "💬 По ощущениям дня:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(CYPRUS_MORNING_VARIANTS, "POOR_AIR")
+    assert "AQI 125" in text and "PM₁₀ 69" in text
+
+
 def test_evening_output_has_one_human_line_and_keeps_facts() -> None:
     text = build_evening_format_v2("Кипр", EVENING)
     assert text.count("💬 Настрой на завтра:") == 1
+    line = _voice_line(text, "💬 Настрой на завтра:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(CYPRUS_EVENING_VARIANTS)
+    assert not re.search(r"(?<![А-Яа-яЁё])сегодня(?![А-Яа-яЁё])", line, flags=re.I)
     assert "Никосия: 35/24 °C" in text
     assert "Лимассол: 31/24 °C" in text
     assert "AQI 75" in text
@@ -155,6 +227,8 @@ def main() -> None:
     checks = (
         test_deterministic_variant_is_stable_and_rotates,
         test_morning_output_has_one_human_line_and_keeps_facts,
+        test_safe_pollen_low_does_not_select_poor_air,
+        test_safe_bad_air_selects_poor_air,
         test_evening_output_has_one_human_line_and_keeps_facts,
         test_weekly_output_contains_meaning_block_and_keeps_facts,
     )
