@@ -77,7 +77,12 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     if wet:
         sea_cue = "rain-darkened coast and a wet promenade; active unsettled sea"
     elif windy:
-        sea_cue = "visible sea breeze across the promenade, palms and water surface"
+        sea_cue = (
+            "textured Mediterranean water surface with small wind-driven ripples; "
+            "visible wind response in palm fronds and coastal grass"
+        )
+        if ctx.gust_max is not None and ctx.gust_max >= 12:
+            sea_cue += "; occasional small whitecaps"
     elif ctx.coastal_focus:
         if ctx.sea_state_hint == "calm":
             sea_cue = "calm warm sea surface beside a Cyprus coastal promenade"
@@ -104,7 +109,7 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     if wet:
         activity_cue = "sheltered pedestrians on a wet promenade; no beach leisure mood"
     elif windy:
-        activity_cue = "coastal walking scene with palms responding to the sea breeze"
+        activity_cue = "coastal walking scene with visible moving vegetation and wind-aware posture"
     elif ctx.coastal_focus:
         activity_cue = "practical coastal promenade activity, relaxed but weather-aware"
     elif ctx.inland_heat_focus:
@@ -131,7 +136,15 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     if wet:
         must_show.extend(["wet promenade surfaces", "dramatic rain clouds"])
     if windy:
-        must_show.append("visible wind response in palms or water")
+        must_show.extend(
+            [
+                "visible wind response in palm fronds and coastal grass",
+                "textured Mediterranean water surface",
+                "small wind-driven ripples",
+            ]
+        )
+        if ctx.gust_max is not None and ctx.gust_max >= 12:
+            must_show.append("occasional small whitecaps")
     if dusty:
         must_show.append("hazy muted beige-gold atmosphere")
     if hot:
@@ -151,6 +164,8 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         must_avoid.extend(["sunset", "night", "moon-led scene"])
     if wet:
         must_avoid.extend(["beach leisure mood", "sunbathing", "carefree swimming scene"])
+    elif windy:
+        must_avoid.extend(["mirror-flat water", "completely still vegetation"])
     if not ctx.inland_heat_focus:
         must_avoid.append("Troodos or inland mountains without explicit relevance")
 

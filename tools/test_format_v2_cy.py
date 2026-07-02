@@ -34,6 +34,7 @@ from safe_test_post import (  # noqa: E402
     _apply_astro_cleanup,
     _apply_cyprus_sensor_cleanup,
     _apply_format_v2_test_polish,
+    _cyprus_evening_score_line,
     _insert_main_nuance,
 )
 
@@ -295,6 +296,57 @@ CITY_AIR_BROKEN_EVENING = """<b>🌅 Кипр: погода на завтра (2
 """
 
 
+GENERIC_UV_WARNING_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 8.1/10 — хорошо для обычных дел.
+⚠️ Предупреждение: высокий УФ.
+🏖 <b>Морские города</b>
+Лимассол: 30/23 °C • ясно • 💨 5 м/с • порывы до 10 м/с
+———
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+RAIN_WARNING_NO_STORM_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.0/10 — рабочий день.
+⚠️ Предупреждение: местами дождь.
+🏖 <b>Морские города</b>
+Пафос: 27/21 °C • местами дождь • 💨 5 м/с • порывы до 9 м/с
+———
+🌅 Рассвет завтра: 05:37
+🌙 Растущая Луна в ♐ — спокойный ритм.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+GUST_STORM_NO_WORD_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 6.8/10 — рабочий день.
+🏖 <b>Морские города</b>
+Лимассол: 29/22 °C • ясно • 💨 7 м/с • порывы до 17 м/с
+———
+🌅 Рассвет завтра: 05:37
+🌙 Растущая Луна в ♐ — спокойный ритм.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+NEGATED_STORM_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.8/10 — хорошо для обычных дел.
+⚠️ Предупреждение о плохой видимости: штормовых предупреждений нет.
+🏖 <b>Морские города</b>
+Ларнака: 29/23 °C • ясно • 💨 5 м/с • порывы до 8 м/с
+———
+🌅 Рассвет завтра: 05:37
+🌙 Растущая Луна в ♐ — спокойный ритм.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
 CRITICAL_SAFECAST_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
 ✨ VayboMeter завтра: 6.8/10 — обычный день.
 🏖 <b>Морские города</b>
@@ -528,6 +580,39 @@ def cy_evening_city_air_line_is_compact_and_parenthesized() -> None:
     assert text.count("🏭 Воздух по городам:") == 1
 
 
+def cy_evening_generic_warning_does_not_trigger_storm() -> None:
+    text = build_evening_format_v2("Кипр", GENERIC_UV_WARNING_EVENING)
+    score_line = _cyprus_evening_score_line(GENERIC_UV_WARNING_EVENING)
+    assert "главный фактор — предупреждение" not in text
+    assert "гибкий маршрут, проверка ветра утром" not in text
+    assert "⚠️ <b>Предупреждение</b>" not in text
+    assert "предупреждение" not in score_line.lower()
+    assert "шторм" not in text.lower()
+
+
+def cy_evening_rain_warning_is_rain_not_storm() -> None:
+    text = build_evening_format_v2("Кипр", RAIN_WARNING_NO_STORM_EVENING)
+    assert "🧭 Главное завтра: локальные осадки важнее средних цифр по острову." in text
+    assert "✅ План завтра: держать запасной indoor-вариант" in text
+    assert "главный фактор — предупреждение" not in text
+    assert "гибкий маршрут, проверка ветра утром" not in text
+    assert "⚠️ <b>Предупреждение</b>" not in text
+
+
+def cy_evening_gust_17_triggers_storm_without_word() -> None:
+    text = build_evening_format_v2("Кипр", GUST_STORM_NO_WORD_EVENING)
+    assert "🧭 Главное завтра: главный фактор — предупреждение, ветер и порывы у моря." in text
+    assert "✅ План завтра: гибкий маршрут, проверка ветра утром" in text
+    assert "⚠️ <b>Предупреждение</b>" in text
+
+
+def cy_evening_negated_storm_phrase_is_nonstorm() -> None:
+    text = build_evening_format_v2("Кипр", NEGATED_STORM_EVENING)
+    assert "главный фактор — предупреждение" not in text
+    assert "гибкий маршрут, проверка ветра утром" not in text
+    assert "⚠️ <b>Предупреждение</b>" not in text
+
+
 def cy_evening_critical_safecast_is_explicitly_labeled() -> None:
     text = _safe_test_evening_pipeline(CRITICAL_SAFECAST_EVENING)
     assert "🧪 Safecast CY: 🔴 alert 0.42 μSv/h — проверить официальные сообщения." in text
@@ -622,6 +707,10 @@ def main() -> None:
         cy_evening_surf_without_wave_is_not_excellent,
         cy_evening_surf_with_valid_wave_is_cautiously_positive,
         cy_evening_city_air_line_is_compact_and_parenthesized,
+        cy_evening_generic_warning_does_not_trigger_storm,
+        cy_evening_rain_warning_is_rain_not_storm,
+        cy_evening_gust_17_triggers_storm_without_word,
+        cy_evening_negated_storm_phrase_is_nonstorm,
         cy_evening_critical_safecast_is_explicitly_labeled,
         cy_evening_uncertain_has_short_confidence_line,
         cy_evening_title_is_compact,

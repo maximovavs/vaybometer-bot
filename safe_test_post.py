@@ -81,6 +81,24 @@ def _plain(text: str) -> str:
     return re.sub(r"</?b>", "", str(text or "")).strip()
 
 
+_CY_STORM_NEGATION_RE = re.compile(
+    r"шторм\w*\s+не\s+ожида|без\s+шторма|штормов\w*\s+предупрежден\w*\s+нет|риск\s+шторма\s+низк",
+    re.I,
+)
+_CY_STORM_POSITIVE_RE = re.compile(r"\b(?:шторм\w*|шквал\w*)\b", re.I)
+
+
+def _has_actual_cyprus_storm_signal(text: str, gust_max: float | None = None) -> bool:
+    if isinstance(gust_max, (int, float)) and gust_max >= 15:
+        return True
+    for line in str(text or "").splitlines():
+        if _CY_STORM_NEGATION_RE.search(line):
+            continue
+        if _CY_STORM_POSITIVE_RE.search(line):
+            return True
+    return False
+
+
 def _num(pattern: str, text: str) -> float | None:
     m = re.search(pattern, _plain(text), flags=re.I)
     if not m:
@@ -279,8 +297,8 @@ def _cyprus_evening_score_line(v2_text: str) -> str:
         score -= 0.4; reasons.append("ветер у моря")
     if has_real_mist:
         score -= 0.3; reasons.append("дымка/туман")
-    if "шторм" in low or "предупреждение" in low:
-        score -= 1.0; reasons.append("предупреждение")
+    if _has_actual_cyprus_storm_signal(text, max_gust):
+        score -= 1.0; reasons.append("штормовые порывы")
     if "микросценар" in low:
         score -= 0.2; reasons.append("разные зоны острова")
 
@@ -483,7 +501,9 @@ def _cyprus_reason_conclusion(score: float, reasons: str, v2_text: str) -> str:
     heat = any(x in low for x in ("жара", "тепло", "перегрев"))
     wind = any(x in low for x in ("порыв", "ветер"))
     mist = any(x in low for x in ("туман", "дымк"))
-    warning = any(x in low for x in ("шторм", "предупреждение"))
+    gusts = _numbers(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", v2_text)
+    max_gust = max(gusts) if gusts else None
+    warning = _has_actual_cyprus_storm_signal(v2_text, max_gust)
     if warning:
         return "День лучше планировать гибко: держать запасной сценарий, сверять предупреждения утром и не перегружать поездки к морю."
     if heat and wind:

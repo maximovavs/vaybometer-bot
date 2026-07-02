@@ -115,7 +115,29 @@ def cy_coastal_wind() -> None:
     scene = apply_visual_rules_cy(ctx)
     assert ctx.coastal_focus is True
     assert ctx.wind_max is not None and ctx.wind_max >= 8
-    assert "sea breeze" in _all_cues(scene)
+    cues = _all_cues(scene)
+    assert "textured mediterranean water surface" in cues
+    assert "visible wind response in palm fronds and coastal grass" in cues
+    assert "occasional small whitecaps" in cues
+
+
+def cy_visual_negated_storm_phrase_is_not_storm() -> None:
+    text = """
+    Кипр: прогноз на завтра.
+    Штормовых предупреждений нет, риск шторма низкий.
+    Ларнака: ясно, ветер 5 м/с, порывы до 8 м/с.
+    """
+    ctx = parse_visual_context_cy(text, post_type="evening")
+    assert ctx.weather_main != "storm"
+
+
+def cy_visual_gust_17_without_storm_word_is_storm() -> None:
+    text = """
+    Кипр: прогноз на завтра.
+    Лимассол: ясно, ветер 7 м/с, порывы до 17 м/с.
+    """
+    ctx = parse_visual_context_cy(text, post_type="evening")
+    assert ctx.weather_main == "storm"
 
 
 def cy_no_baltic_leak() -> None:
@@ -208,6 +230,37 @@ def cy_prompt_rain_not_leisure() -> None:
     assert "practical rain mood" in low
     for forbidden in ("beach leisure", "party", "vacation", "poster"):
         assert forbidden not in low
+
+
+def cy_prompt_generic_warning_gust_10_is_windy_not_storm() -> None:
+    message = """
+    27.06.2026
+    Кипр завтра.
+    ⚠️ Предупреждение: высокий УФ.
+    Ларнака: ясно, ветер 6 м/с, порывы до 10 м/с, море у побережья.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "visible wind response in palm fronds and coastal grass" in low
+    assert "textured mediterranean water surface" in low
+    assert "small wind-driven ripples" in low
+    assert "dramatic rain clouds" not in low
+    assert "storm" not in low
+
+
+def cy_prompt_gust_13_has_whitecaps_without_flat_water() -> None:
+    message = """
+    27.06.2026
+    Кипр завтра.
+    Лимассол: ясно, ветер 7 м/с, порывы до 13 м/с, море у побережья.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "textured mediterranean water surface" in low
+    assert "visible wind response in palm fronds and coastal grass" in low
+    assert "occasional small whitecaps" in low
+    assert "no mirror-flat water" in low
+    assert "no completely still vegetation" in low
 
 
 def cy_prompt_no_raw_source_hints() -> None:
@@ -349,6 +402,24 @@ def cy_prompt_full_moon_evening_uses_blue_hour_moonlight() -> None:
     assert style.startswith("cyprus_evening_mediterranean_landscape_")
 
 
+def cy_prompt_waning_92_uses_near_full_moon_context() -> None:
+    message = """
+    27.06.2026
+    Кипр завтра.
+    Лимассол и Ларнака: тепло, море спокойное.
+    🌖 Убывающая Луна в ♐ — мягкий вечерний ритм.
+    ✨ 92% освещённости — Луна яркая.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    low = prompt.lower()
+    assert "realistic waning gibbous moon, 92% illuminated" in low
+    assert "blue-hour or late twilight" in low
+    assert "residual right-side horizon glow" in low
+    assert "no perfect full moon" in low
+    assert "no oversized moon" in low
+    assert "no fantasy supermoon" in low
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -356,10 +427,14 @@ TESTS = [
     cy_evening_rain,
     cy_inland_heat_nicosia,
     cy_coastal_wind,
+    cy_visual_negated_storm_phrase_is_not_storm,
+    cy_visual_gust_17_without_storm_word_is_storm,
     cy_no_baltic_leak,
     cy_prompt_morning_sanitized,
     cy_prompt_evening_dust_heat,
     cy_prompt_rain_not_leisure,
+    cy_prompt_generic_warning_gust_10_is_windy_not_storm,
+    cy_prompt_gust_13_has_whitecaps_without_flat_water,
     cy_prompt_no_raw_source_hints,
     cy_prompt_coastal_priority_over_nicosia,
     cy_prompt_inland_only_when_no_coast,
@@ -368,6 +443,7 @@ TESTS = [
     cy_prompt_adjacent_dates_change_macro_viewpoint,
     cy_prompt_controlled_variety_changes_by_date,
     cy_prompt_full_moon_evening_uses_blue_hour_moonlight,
+    cy_prompt_waning_92_uses_near_full_moon_context,
 ]
 
 

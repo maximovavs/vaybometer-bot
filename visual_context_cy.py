@@ -45,6 +45,11 @@ _AQI_RE = re.compile(rf"\baqi\b\D{{0,12}}({_NUMBER})", re.I)
 _SEA_TEMP_RE = re.compile(
     rf"(?:море|вода|температура воды|sea)\D{{0,25}}({_NUMBER})\s*°", re.I
 )
+_STORM_NEGATION_RE = re.compile(
+    r"шторм\w*\s+не\s+ожида|без\s+шторма|штормов\w*\s+предупрежден\w*\s+нет|риск\s+шторма\s+низк",
+    re.I,
+)
+_STORM_POSITIVE_RE = re.compile(r"\b(?:шторм\w*|шквал\w*|гроз\w*)\b|thunderstorm|squall|storm", re.I)
 
 
 @dataclass
@@ -140,6 +145,8 @@ def _normalized_sea_state(lines: list[str]) -> Optional[str]:
     low = " ".join(lines).lower()
     if not low:
         return None
+    if _STORM_NEGATION_RE.search(low):
+        low = _STORM_NEGATION_RE.sub(" ", low)
     if any(token in low for token in ("шторм", "бурн", "сильн", "неспокойн", "прибой")):
         return "rough"
     if any(token in low for token in ("волн", "бриз")):
@@ -147,6 +154,14 @@ def _normalized_sea_state(lines: list[str]) -> Optional[str]:
     if any(token in low for token in ("штиль", "спокойн")):
         return "calm"
     return "present"
+
+
+def _has_actual_storm_signal(line: str, gust_max: Optional[float]) -> bool:
+    if isinstance(gust_max, (int, float)) and gust_max >= 15:
+        return True
+    if _STORM_NEGATION_RE.search(str(line or "")):
+        return False
+    return bool(_STORM_POSITIVE_RE.search(str(line or "")))
 
 
 def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> VisualContextCY:
@@ -219,9 +234,11 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
             evidence["wind_candidates"].append(
                 {"line": line, "kind": "wind", "value_ms": round(value, 2)}
             )
+        line_gusts: list[float] = []
         for match in _GUST_RE.finditer(line):
             value = _to_ms(match.group(1), match.group(2))
             gusts.append(value)
+            line_gusts.append(value)
             evidence["wind_candidates"].append(
                 {"line": line, "kind": "gust", "value_ms": round(value, 2)}
             )
@@ -245,7 +262,7 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
             dust_lines.append(line)
             evidence["dust_lines"].append(line)
 
-        if any(x in low for x in ("гроз", "шторм", "шквал")):
+        if _has_actual_storm_signal(line, max(line_gusts) if line_gusts else None):
             weather_hits.add("storm")
         if any(x in low for x in ("дожд", "лив", "осад")):
             weather_hits.add("rain")

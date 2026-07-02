@@ -107,6 +107,37 @@ def _storm_line(lines: list[str]) -> str:
     return ""
 
 
+_STORM_NEGATION_RE = re.compile(
+    r"шторм\w*\s+не\s+ожида|без\s+шторма|штормов\w*\s+предупрежден\w*\s+нет|риск\s+шторма\s+низк",
+    re.I,
+)
+_STORM_POSITIVE_RE = re.compile(r"\b(?:шторм\w*|шквал\w*)\b", re.I)
+
+
+def _line_has_actual_storm_signal(line: str) -> bool:
+    text = _plain(line)
+    if _STORM_NEGATION_RE.search(text):
+        return False
+    return bool(_STORM_POSITIVE_RE.search(text))
+
+
+def _has_actual_storm_signal(text: str, gust_max: float | None = None) -> bool:
+    if isinstance(gust_max, (int, float)) and gust_max >= 15:
+        return True
+    return any(_line_has_actual_storm_signal(line) for line in str(text or "").splitlines())
+
+
+def _evening_storm_line(lines: list[str]) -> str:
+    for line in lines:
+        if _line_has_actual_storm_signal(line):
+            return line.strip()
+    for line in lines:
+        gust = _max_gust_ms(line)
+        if isinstance(gust, (int, float)) and gust >= 15:
+            return line.strip()
+    return ""
+
+
 def _compact_warning(line: str) -> str:
     s = str(line or "").strip()
     s = re.sub(r"^⚠️\s*", "", s)
@@ -234,6 +265,16 @@ def _max_wind_ms(text: str) -> float | None:
     return max(values) if values else None
 
 
+def _max_gust_ms(text: str) -> float | None:
+    values: list[float] = []
+    for m in re.finditer(r"(?:порыв\w*|gust\w*)\D{0,18}(\d+(?:[\.,]\d+)?)\s*м/с", text, flags=re.I):
+        try:
+            values.append(float(m.group(1).replace(",", ".")))
+        except Exception:
+            continue
+    return max(values) if values else None
+
+
 def _max_temperature_c(text: str) -> float | None:
     values: list[float] = []
     for m in re.finditer(r"(-?\d+(?:[\.,]\d+)?)\s*/\s*-?\d+(?:[\.,]\d+)?\s*°C", text):
@@ -343,11 +384,12 @@ def _normalize_evening_score_reasons(score_line: str) -> str:
 def _evening_flags(lines: list[str]) -> dict[str, bool]:
     text = "\n".join(lines)
     max_wind = _max_wind_ms(text)
+    max_gust = _max_gust_ms(text)
     max_temp = _max_temperature_c(text)
     poor_air = _has_poor_air_signal(text)
     visibility_haze = _has_visibility_haze(text)
     return {
-        "storm": _has_any(text, ("шторм", "предупреждение")),
+        "storm": _has_actual_storm_signal(text, max_gust),
         "rain": _has_any(text, ("дожд", "ливн", "гроза", "осад")),
         "dust": poor_air,
         "visibility_haze": visibility_haze and not poor_air,
@@ -995,7 +1037,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines()]
     date_s = _date_from_title(safe_legacy_text)
-    storm = _storm_line(lines)
+    storm = _evening_storm_line(lines)
     sea = _section_after(lines, "Морские города")
     inland = _section_after(lines, "Континентальные города")
     air = _air_lines(lines)

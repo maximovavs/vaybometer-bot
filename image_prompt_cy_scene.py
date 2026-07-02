@@ -214,6 +214,33 @@ def _has_full_moon_evening_context(message: str) -> bool:
     return illumination is not None and illumination >= 95
 
 
+def _moon_phase_direction(message: str) -> str:
+    text = str(message or "").lower()
+    if re.search(r"убыва|waning", text, flags=re.I):
+        return "waning"
+    if re.search(r"растущ|waxing", text, flags=re.I):
+        return "waxing"
+    return "waxing"
+
+
+def _evening_moon_visual_context(message: str) -> dict[str, object]:
+    text = str(message or "")
+    illumination = _lunar_illumination_percent(text)
+    has_full_word = bool(re.search(r"полнолу|full moon", text, flags=re.I))
+    if illumination is not None:
+        if 90 <= illumination < 97:
+            return {
+                "kind": "near_full",
+                "illumination": illumination,
+                "direction": _moon_phase_direction(text),
+            }
+        if illumination >= 97:
+            return {"kind": "full", "illumination": illumination}
+    if has_full_word or re.search(r"\b100\s*%\s*освещ", text, flags=re.I):
+        return {"kind": "full", "illumination": illumination}
+    return {"kind": "", "illumination": illumination}
+
+
 def _controlled_variety(message: str, ctx: VisualContextCY, post_type: str) -> list[str]:
     seed = _variant_seed(message, ctx, post_type)
     inland_only = ctx.inland_heat_focus and not ctx.coastal_focus
@@ -323,7 +350,17 @@ def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
     else:
         cues.append(scene.mood_cue)
         if scene.diagnostics.get("wind_rule"):
-            cues.append("visible sea breeze moving palm fronds and lightly rippling the water")
+            cues.extend(
+                [
+                    "visible wind response in palm fronds and coastal grass",
+                    "textured Mediterranean water surface",
+                    "small wind-driven ripples",
+                    "no mirror-flat water",
+                    "no completely still vegetation",
+                ]
+            )
+            if ctx.gust_max is not None and ctx.gust_max >= 12:
+                cues.append("occasional small whitecaps")
 
     if scene.diagnostics.get("dust_rule"):
         cues.append("dust haze with muted beige-gold atmospheric depth")
@@ -353,7 +390,9 @@ def build_cyprus_scene_prompt(
 
     ctx = build_visual_context_cy(final_format_v2_message, post_type=mode)
     scene = apply_visual_rules_cy(ctx)
-    full_moon_evening = mode == "evening" and _has_full_moon_evening_context(final_format_v2_message)
+    moon_context = _evening_moon_visual_context(final_format_v2_message) if mode == "evening" else {}
+    full_moon_evening = moon_context.get("kind") == "full"
+    near_full_moon_evening = moon_context.get("kind") == "near_full"
 
     if mode == "morning":
         time_cue = (
@@ -361,6 +400,13 @@ def build_cyprus_scene_prompt(
             "cool fresh morning atmosphere, crisp visibility, crisp daytime visibility, "
             "soft natural light from the left side of frame, soft neutral sunlight from the left side of frame, "
             "sun from left, light direction from left, no visible sun disk, natural daytime shadows"
+        )
+    elif near_full_moon_evening:
+        direction = str(moon_context.get("direction") or "waxing")
+        time_cue = (
+            f"Mediterranean blue-hour or late twilight, visible realistic {direction} gibbous Moon "
+            "above the sea, residual warm horizon glow on the right side of frame, "
+            "small-to-medium natural moon scale"
         )
     elif full_moon_evening:
         time_cue = (
@@ -401,10 +447,47 @@ def build_cyprus_scene_prompt(
                 "no fantasy supermoon",
             ]
         )
+    elif near_full_moon_evening:
+        direction = str(moon_context.get("direction") or "waxing")
+        prompt_parts.extend(
+            [
+                f"realistic {direction} gibbous Moon at small-to-medium natural scale",
+                "blue-hour or late twilight moon context",
+                "residual right-side horizon glow",
+                "not a sun-dominant scene",
+                "no bright golden sunset",
+                "no perfect full moon",
+                "no oversized moon",
+                "no fantasy supermoon",
+            ]
+        )
     prompt = sanitize_cyprus_scene_prompt(
         "; ".join(part for part in prompt_parts if part),
         post_type=mode,
     )
+    if near_full_moon_evening:
+        direction = str(moon_context.get("direction") or "waxing")
+        illumination = moon_context.get("illumination")
+        if isinstance(illumination, (int, float)):
+            pct = f"{illumination:.0f}" if float(illumination).is_integer() else f"{illumination:.1f}"
+            near_full_cue = f"realistic {direction} gibbous Moon, {pct}% illuminated"
+        else:
+            near_full_cue = f"realistic {direction} gibbous Moon"
+        prompt = (
+            prompt.rstrip(" .;")
+            + ". "
+            + "; ".join(
+                [
+                    near_full_cue,
+                    "blue-hour or late twilight",
+                    "residual right-side horizon glow",
+                    "small-to-medium natural moon scale",
+                    "no perfect full moon",
+                    "no oversized moon",
+                    "no fantasy supermoon",
+                ]
+            )
+        )
     if mode == "evening" and _EVENING_TEXT_GUARD.lower() not in prompt.lower():
         prompt = prompt.rstrip(" .;") + ". " + _EVENING_TEXT_GUARD
     style_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8]
