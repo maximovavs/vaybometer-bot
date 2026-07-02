@@ -17,6 +17,7 @@ import re
 import pendulum
 from telegram import Bot, constants
 
+from editorial_voice import build_evening_human_line, build_morning_human_line
 from post_common import build_message
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
 
@@ -438,6 +439,58 @@ def _insert_main_nuance(v2_text: str) -> str:
     if "⚠️ Главный нюанс:" in v2_text or "⚠️ Нюанс:" in v2_text:
         return v2_text
     return _inject_after_anchor(v2_text, _cyprus_main_nuance(v2_text), ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
+
+
+def _date_from_text(v2_text: str) -> str:
+    m = re.search(r"\((\d{2}\.\d{2}\.\d{4})\)", str(v2_text or ""))
+    return m.group(1) if m else ""
+
+
+def _without_editorial_voice(v2_text: str) -> list[str]:
+    return [
+        line
+        for line in str(v2_text or "").splitlines()
+        if not line.strip().startswith(("💬 По ощущениям дня:", "💬 Настрой на завтра:"))
+    ]
+
+
+def _cyprus_voice_conditions(v2_text: str) -> dict[str, object]:
+    c = _cyprus_conditions(v2_text)
+    text = _plain(v2_text).lower()
+    return {
+        "max_temp": c.get("warm_t"),
+        "uv": c.get("uv"),
+        "uv_high": isinstance(c.get("uv"), (int, float)) and c["uv"] >= 6,
+        "wind": isinstance(c.get("wind"), (int, float)) and c["wind"] >= 6,
+        "gust": c.get("gust"),
+        "aqi": c.get("aqi"),
+        "poor_air": "воздух неидеален" in text or "пыль" in text or "дымк" in text,
+    }
+
+
+def _insert_editorial_after(lines: list[str], line_to_add: str, prefixes: tuple[str, ...]) -> str:
+    if not line_to_add:
+        return "\n".join(lines)
+    insert_at = None
+    for idx, line in enumerate(lines):
+        if line.strip().startswith(prefixes):
+            insert_at = idx
+    if insert_at is None:
+        insert_at = 0
+    out = list(lines)
+    out.insert(insert_at + 1, line_to_add)
+    return "\n".join(out)
+
+
+def _apply_editorial_voice(v2_text: str, mode: str) -> str:
+    lines = _without_editorial_voice(v2_text)
+    date_s = _date_from_text(v2_text)
+    conditions = _cyprus_voice_conditions(v2_text)
+    if mode.startswith("morn"):
+        line = build_morning_human_line("Кипр", date_s or "today", conditions)
+        return _insert_editorial_after(lines, line, ("⚠️ Главный нюанс:", "✨ VayboMeter:"))
+    line = build_evening_human_line("Кипр", date_s or "tomorrow", conditions)
+    return _insert_editorial_after(lines, line, ("⚠️ Нюанс:", "⚠️ Главный нюанс:", "🧭 Главное завтра:", "✨ VayboMeter завтра:", "✨ VayboMeter:"))
 
 
 def _apply_confidence_polish(v2_text: str) -> str:
@@ -1042,6 +1095,7 @@ async def main() -> None:
         v2_raw = _apply_astro_cleanup(v2_raw)
         v2_raw = _apply_cyprus_morning_raw_context(v2_raw, raw_msg, legacy_result.text, mode)
         v2_raw = _apply_cyprus_sensor_cleanup(v2_raw)
+        v2_raw = _apply_editorial_voice(v2_raw, mode)
         v2_raw = _apply_score_conclusion(v2_raw)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         v2_raw = _apply_compact(v2_raw)

@@ -9,6 +9,8 @@ import os
 import re
 from pathlib import Path
 
+from editorial_voice import build_evening_human_line, build_morning_human_line
+
 CY_LAT, CY_LON = 34.707, 33.022
 
 
@@ -456,6 +458,39 @@ def _poor_air_advice_line() -> str:
     return "😷 Воздух неидеален: активность на улице короче, окна лучше держать закрытыми в часы пыли/дымки."
 
 
+def _first_number(pattern: str, text: str) -> float | None:
+    m = re.search(pattern, text, flags=re.I)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except Exception:
+        return None
+
+
+def _cyprus_voice_conditions(lines: list[str], *, poor_air: bool = False, flags: dict[str, bool] | None = None) -> dict[str, object]:
+    text = "\n".join(lines)
+    uv = _first_number(r"\b(?:УФ|UV)\s*:?\s*(\d+(?:[\.,]\d+)?)", text)
+    aqi = _first_number(r"\bAQI\s*(\d+(?:[\.,]\d+)?)", text)
+    pm25 = _first_number(r"(?:PM₂\.₅|PM2\.?5)\s*(\d+(?:[\.,]\d+)?)", text)
+    pm10 = _first_number(r"(?:PM₁₀|PM10)\s*(\d+(?:[\.,]\d+)?)", text)
+    max_wind = _max_wind_ms(text)
+    max_temp = _max_temperature_c(text)
+    source_flags = flags or {}
+    return {
+        "max_temp": max_temp,
+        "uv": uv,
+        "uv_high": isinstance(uv, (int, float)) and uv >= 6 or bool(source_flags.get("uv")),
+        "heat": bool(source_flags.get("heat")),
+        "wind": bool(source_flags.get("wind")) or isinstance(max_wind, (int, float)) and max_wind >= 6,
+        "gust": max_wind,
+        "poor_air": poor_air or bool(source_flags.get("dust")),
+        "aqi": aqi,
+        "pm25": pm25,
+        "pm10": pm10,
+    }
+
+
 def _critical_safecast_cy_line(lines: list[str]) -> str:
     for line in lines:
         s = line.strip()
@@ -796,6 +831,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     if temp_note:
         out.append(temp_note)
+    human_line = build_morning_human_line("Кипр", date_s or "today", _cyprus_voice_conditions(lines, poor_air=poor_air))
+    if human_line:
+        out.append(human_line)
     if weather_line:
         out.append(weather_line)
     if warning:
@@ -860,6 +898,9 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     out.append(_evening_main_scenario(flags, score))
     if nuance:
         out.append(nuance)
+    human_line = build_evening_human_line("Кипр", date_s or "tomorrow", _cyprus_voice_conditions(lines, poor_air=poor_air, flags=flags))
+    if human_line:
+        out.append(human_line)
     if confidence:
         out.append(confidence)
     out.append("")
