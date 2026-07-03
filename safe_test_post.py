@@ -800,6 +800,10 @@ def _fmt_cy_temp(value: float) -> str:
 
 def _cy_morning_sea_line_from_source(source_text: str) -> str:
     waters: list[float] = []
+
+    def _valid_sea_temp(value: float) -> bool:
+        return 22 <= value <= 34
+
     for raw in str(source_text or "").splitlines():
         s = _plain(raw).replace("\u00a0", " ").strip()
         low = s.lower()
@@ -813,7 +817,7 @@ def _cy_morning_sea_line_from_source(source_text: str) -> str:
             if m:
                 try:
                     value = float(m.group(1).replace(",", "."))
-                    if 12 <= value <= 35:
+                    if _valid_sea_temp(value):
                         waters.append(value)
                 except Exception:
                     pass
@@ -826,7 +830,7 @@ def _cy_morning_sea_line_from_source(source_text: str) -> str:
                 continue
             try:
                 value = float(m.group(1).replace(",", "."))
-                if 12 <= value <= 35:
+                if _valid_sea_temp(value):
                     waters.append(value)
             except Exception:
                 pass

@@ -408,7 +408,8 @@ def build_cyprus_scene_prompt(
             "fresh morning daylight, clear early morning daylight, pale blue sky, neutral daylight, "
             "cool fresh morning atmosphere, crisp visibility, crisp daytime visibility, "
             "soft natural light from the left side of frame, soft neutral sunlight from the left side of frame, "
-            "sun from left, light direction from left, no visible sun disk, natural daytime shadows"
+            "sun from left, light direction from left, no visible sun disk, natural daytime shadows, "
+            "no bright illumination from the right side of frame, no warm low-angle glow"
         )
     elif near_full_moon_evening:
         direction = str(moon_context.get("direction") or "waxing")

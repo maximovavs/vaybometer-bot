@@ -675,6 +675,9 @@ def _morning_sea_line(lines: list[str]) -> str:
     wave_value = None
     sea_lines: list[str] = []
 
+    def _valid_sea_temp(value: float) -> bool:
+        return 22 <= value <= 34
+
     for line in lines:
         s = _plain(line).replace("\u00a0", " ").strip()
         low = s.lower()
@@ -691,7 +694,7 @@ def _morning_sea_line(lines: list[str]) -> str:
                     nums.append(float(raw_num.replace(",", ".")))
                 except Exception:
                     continue
-            if nums and 12 <= nums[0] <= 35:
+            if nums and _valid_sea_temp(nums[0]):
                 waters.append(nums[0])
             if wave_value is None and len(nums) >= 2 and 0 <= nums[1] <= 5:
                 wave_value = nums[1]
@@ -706,7 +709,7 @@ def _morning_sea_line(lines: list[str]) -> str:
             if match:
                 try:
                     value = float(match.group(1).replace(",", "."))
-                    if 12 <= value <= 35:
+                    if _valid_sea_temp(value):
                         waters.append(value)
                 except Exception:
                     pass
@@ -736,7 +739,7 @@ def _morning_sea_line(lines: list[str]) -> str:
             return f"🌊 Море: {water_part}; лучше до 11:00 или после 18:30."
         return f"🌊 Море: {water_part}; {wave_part}; лучше до 11:00 или после 18:30."
 
-    return "🌊 Море: комфортно для купания; лучше до 11:00 или после 18:30."
+    return "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30."
 
 
 def _clean_uv_line(line: str) -> str:

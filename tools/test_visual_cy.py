@@ -252,6 +252,8 @@ def cy_prompt_morning_sanitized() -> None:
     assert "light direction from left" in low
     assert "left side of frame" in low
     assert "no visible sun disk" in low
+    assert "no bright illumination from the right side of frame" in low
+    assert "no warm low-angle glow" in low
     assert "crisp daytime visibility" in low
     assert "natural daytime shadows" in low
     assert "clear early morning daylight" in low

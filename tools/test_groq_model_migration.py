@@ -1,15 +1,39 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Groq migration and Cyprus factual fallback regression checks."""
 from __future__ import annotations
 
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 PRIMARY_MODEL = "openai/gpt-oss-120b"
 FALLBACK_MODEL = "openai/gpt-oss-20b"
+
+telegram_stub = types.ModuleType("telegram")
+telegram_stub.Bot = object
+telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
+sys.modules.setdefault("telegram", telegram_stub)
+
+pendulum_stub = types.ModuleType("pendulum")
+pendulum_stub.DateTime = object
+sys.modules.setdefault("pendulum", pendulum_stub)
+
+imghdr_stub = types.ModuleType("imghdr")
+imghdr_stub.what = lambda *args, **kwargs: None
+sys.modules.setdefault("imghdr", imghdr_stub)
+
+from format_v2 import build_morning_format_v2  # noqa: E402
+from post_safety import sanitize_post_text  # noqa: E402
+from safe_test_post import _apply_cyprus_morning_raw_context, _apply_cyprus_sensor_cleanup  # noqa: E402
 
 
 def _deprecated_model_ids() -> tuple[str, str]:
@@ -55,7 +79,6 @@ def _import_gpt_fresh():
         "GROQ_FALLBACK_MODEL",
     ):
         os.environ.pop(name, None)
-    sys.path.insert(0, str(ROOT))
     sys.modules.pop("gpt", None)
     import gpt  # type: ignore
 
@@ -129,12 +152,70 @@ def test_total_groq_failure_uses_local_blurb_fallback() -> None:
     assert all(isinstance(tip, str) and tip for tip in tips)
 
 
+RAW_WITH_COASTAL_SEA = """<b>Кипр: погода, жара и море (27.06.2026)</b>
+👋 Доброе утро! Теплее всего — Никосия (37°), прохладнее — Пафос (30°).
+☀️ <b>УФ-индекс 9 (Very High)</b>: тень 11–16.
+🏭 AQI 58 (умеренный) • PM₂.₅ 14 / PM₁₀ 31
+💨 Ветер: 3.0 м/с • 🔹 1009 гПа →
+Ларнака: 34/25 °C • ☀️ ясно • 🌊 28
+Лимассол: 35/26 °C • ☀️ ясно • 🌊 26
+Айя-Напа: 35/26 °C • ☀️ ясно • 🌊 28
+Пафос: 31/23 °C • ☀️ ясно • 🌊 26
+🌇 Закат сегодня: 20:05
+✅ Сегодня: вода, SPF, тень.
+#Кипр #погода #здоровье
+"""
+
+LEGACY_WITHOUT_SEA = """<b>Кипр: погода, жара и море (27.06.2026)</b>
+👋 Доброе утро! Теплее всего — Никосия (37°), прохладнее — Пафос (30°).
+☀️ <b>УФ-индекс 9 (Very High)</b>: тень 11–16.
+🏭 AQI 58 (умеренный) • PM₂.₅ 14 / PM₁₀ 31
+💨 Ветер: 3.0 м/с • 🔹 1009 гПа →
+🌇 Закат сегодня: 20:05
+✅ Сегодня: вода, SPF, тень.
+#Кипр #погода #здоровье
+"""
+
+NO_MARINE_DATA = """<b>Кипр: погода, жара и море (27.06.2026)</b>
+👋 Доброе утро! Теплее всего — Никосия (37°), прохладнее — Пафос (30°).
+☀️ <b>УФ-индекс 9 (Very High)</b>: тень 11–16.
+🏭 AQI 58 (умеренный) • PM₂.₅ 14 / PM₁₀ 31
+💨 Ветер 6 м/с, давление 1009 гПа.
+🌇 Закат сегодня: 20:05
+✨ 96% освещённости — Луна яркая.
+✅ Сегодня: вода, SPF, тень.
+#Кипр #погода #здоровье
+"""
+
+
+def cy_real_path_uses_only_marine_numbers_for_sea() -> None:
+    legacy = sanitize_post_text(LEGACY_WITHOUT_SEA)
+    text = build_morning_format_v2("Кипр", legacy.text)
+    text = _apply_cyprus_morning_raw_context(text, RAW_WITH_COASTAL_SEA, legacy.text, "morning")
+    text = _apply_cyprus_sensor_cleanup(text)
+    text = sanitize_post_text(text).text
+
+    assert "🌊 Море: средняя вода 27°C; лучше до 11:00 или после 18:30." in text
+    assert "🌊 Море: вода 20°C" not in text
+    assert "🌇 Закат сегодня: 20:05" in text
+    assert text.splitlines()[-1] == "#Кипр #погода #здоровье"
+
+
+def cy_missing_marine_data_is_transparent() -> None:
+    text = build_morning_format_v2("Кипр", NO_MARINE_DATA)
+    assert "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30." in text
+    assert "🌊 Море: вода 20°C" not in text
+    assert "🌊 Море: вода 31°C" not in text
+
+
 def main() -> None:
     tests = [
         test_no_deprecated_model_ids_in_runtime_files,
         test_default_groq_model_config,
         test_primary_failure_attempts_fallback_model,
         test_total_groq_failure_uses_local_blurb_fallback,
+        cy_real_path_uses_only_marine_numbers_for_sea,
+        cy_missing_marine_data_is_transparent,
     ]
     for test in tests:
         test()
