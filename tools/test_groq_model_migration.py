@@ -187,6 +187,25 @@ NO_MARINE_DATA = """<b>Кипр: погода, жара и море (27.06.2026)
 #Кипр #погода #здоровье
 """
 
+RAW_WINTER_WITH_SEA = """<b>Кипр: погода и море (15.01.2026)</b>
+👋 Доброе утро! Теплее всего — Ларнака (19°), прохладнее — Тродос (8°).
+🏭 AQI 42 (низкий) • PM₂.₅ 9 / PM₁₀ 18
+💨 Ветер: 3.0 м/с • 🔹 1014 гПа →
+Море у Ларнаки: вода 19°C, волна спокойная.
+🌇 Закат сегодня: 17:02
+✅ Сегодня: прогулка у моря, слой от ветра.
+#Кипр #погода #здоровье
+"""
+
+LEGACY_WINTER_WITHOUT_SEA = """<b>Кипр: погода и море (15.01.2026)</b>
+👋 Доброе утро! Теплее всего — Ларнака (19°), прохладнее — Тродос (8°).
+🏭 AQI 42 (низкий) • PM₂.₅ 9 / PM₁₀ 18
+💨 Ветер: 3.0 м/с • 🔹 1014 гПа →
+🌇 Закат сегодня: 19:05
+✅ Сегодня: прогулка у моря, слой от ветра.
+#Кипр #погода #здоровье
+"""
+
 
 def cy_real_path_uses_only_marine_numbers_for_sea() -> None:
     legacy = sanitize_post_text(LEGACY_WITHOUT_SEA)
@@ -208,6 +227,25 @@ def cy_missing_marine_data_is_transparent() -> None:
     assert "🌊 Море: вода 31°C" not in text
 
 
+def cy_winter_raw_path_accepts_explicit_marine_temperature() -> None:
+    legacy = sanitize_post_text(LEGACY_WINTER_WITHOUT_SEA)
+    text = build_morning_format_v2("Кипр", legacy.text)
+    text = _apply_cyprus_morning_raw_context(text, RAW_WINTER_WITH_SEA, legacy.text, "morning")
+    text = sanitize_post_text(text).text
+
+    assert "🌊 Море: вода 19°C; волна спокойная; лучше до 11:00 или после 18:30." in text
+
+
+def cy_winter_raw_path_does_not_use_sunset_time_as_sea() -> None:
+    legacy = sanitize_post_text(LEGACY_WINTER_WITHOUT_SEA)
+    text = build_morning_format_v2("Кипр", legacy.text)
+    text = _apply_cyprus_morning_raw_context(text, LEGACY_WINTER_WITHOUT_SEA, legacy.text, "morning")
+    text = sanitize_post_text(text).text
+
+    assert "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30." in text
+    assert "🌊 Море: вода 19°C" not in text
+
+
 def main() -> None:
     tests = [
         test_no_deprecated_model_ids_in_runtime_files,
@@ -216,6 +254,8 @@ def main() -> None:
         test_total_groq_failure_uses_local_blurb_fallback,
         cy_real_path_uses_only_marine_numbers_for_sea,
         cy_missing_marine_data_is_transparent,
+        cy_winter_raw_path_accepts_explicit_marine_temperature,
+        cy_winter_raw_path_does_not_use_sunset_time_as_sea,
     ]
     for test in tests:
         test()

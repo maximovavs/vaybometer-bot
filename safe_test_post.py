@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as dt
 import logging
 import os
 from pathlib import Path
@@ -798,11 +799,29 @@ def _fmt_cy_temp(value: float) -> str:
     return f"{value:.1f}".rstrip("0").rstrip(".")
 
 
+def _cy_date_from_text(text: str) -> str:
+    m = re.search(r"\((\d{2}\.\d{2}\.\d{4})\)", str(text or ""))
+    return m.group(1) if m else ""
+
+
+def _cy_sea_temp_bounds(date_s: str) -> tuple[float, float]:
+    try:
+        month = dt.datetime.strptime(date_s, "%d.%m.%Y").month
+    except Exception:
+        month = 7
+    if 6 <= month <= 10:
+        return 22.0, 34.0
+    return 15.0, 29.0
+
+
+def _valid_cy_sea_temp(value: float, date_s: str) -> bool:
+    low, high = _cy_sea_temp_bounds(date_s)
+    return low <= value <= high
+
+
 def _cy_morning_sea_line_from_source(source_text: str) -> str:
     waters: list[float] = []
-
-    def _valid_sea_temp(value: float) -> bool:
-        return 22 <= value <= 34
+    date_s = _cy_date_from_text(source_text)
 
     for raw in str(source_text or "").splitlines():
         s = _plain(raw).replace("\u00a0", " ").strip()
@@ -817,7 +836,7 @@ def _cy_morning_sea_line_from_source(source_text: str) -> str:
             if m:
                 try:
                     value = float(m.group(1).replace(",", "."))
-                    if _valid_sea_temp(value):
+                    if _valid_cy_sea_temp(value, date_s):
                         waters.append(value)
                 except Exception:
                     pass
@@ -830,7 +849,7 @@ def _cy_morning_sea_line_from_source(source_text: str) -> str:
                 continue
             try:
                 value = float(m.group(1).replace(",", "."))
-                if _valid_sea_temp(value):
+                if _valid_cy_sea_temp(value, date_s):
                     waters.append(value)
             except Exception:
                 pass

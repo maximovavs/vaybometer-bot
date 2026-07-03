@@ -28,6 +28,21 @@ def _date_from_title(text: str) -> str:
     return m.group(1) if m else ""
 
 
+def _cy_sea_temp_bounds(date_s: str) -> tuple[float, float]:
+    try:
+        month = dt.datetime.strptime(date_s, "%d.%m.%Y").month
+    except Exception:
+        month = 7
+    if 6 <= month <= 10:
+        return 22.0, 34.0
+    return 15.0, 29.0
+
+
+def _valid_cy_sea_temp(value: float, date_s: str) -> bool:
+    low, high = _cy_sea_temp_bounds(date_s)
+    return low <= value <= high
+
+
 def _section_after(lines: list[str], marker: str) -> list[str]:
     out: list[str] = []
     capture = False
@@ -674,9 +689,7 @@ def _morning_sea_line(lines: list[str]) -> str:
     waters: list[float] = []
     wave_value = None
     sea_lines: list[str] = []
-
-    def _valid_sea_temp(value: float) -> bool:
-        return 22 <= value <= 34
+    date_s = _date_from_title("\n".join(lines))
 
     for line in lines:
         s = _plain(line).replace("\u00a0", " ").strip()
@@ -694,7 +707,7 @@ def _morning_sea_line(lines: list[str]) -> str:
                     nums.append(float(raw_num.replace(",", ".")))
                 except Exception:
                     continue
-            if nums and _valid_sea_temp(nums[0]):
+            if nums and _valid_cy_sea_temp(nums[0], date_s):
                 waters.append(nums[0])
             if wave_value is None and len(nums) >= 2 and 0 <= nums[1] <= 5:
                 wave_value = nums[1]
@@ -709,7 +722,7 @@ def _morning_sea_line(lines: list[str]) -> str:
             if match:
                 try:
                     value = float(match.group(1).replace(",", "."))
-                    if _valid_sea_temp(value):
+                    if _valid_cy_sea_temp(value, date_s):
                         waters.append(value)
                 except Exception:
                     pass

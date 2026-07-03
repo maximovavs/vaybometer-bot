@@ -82,6 +82,25 @@ MORNING_NON_MARINE_NUMBERS = """<b>Кипр: погода, жара и море 
 #Кипр #погода #здоровье
 """
 
+MORNING_WINTER_WITH_SEA = """<b>Кипр: погода и море (15.01.2026)</b>
+👋 Доброе утро! Теплее всего — Ларнака (19°), прохладнее — Тродос (8°).
+🏭 AQI 42 (низкий) • PM₂.₅ 9 / PM₁₀ 18
+💨 Ветер: 3.0 м/с • 🔹 1014 гПа →
+Море у Ларнаки: вода 19°C, волна спокойная.
+🌇 Закат сегодня: 17:02
+✅ Сегодня: прогулка у моря, слой от ветра.
+#Кипр #погода #здоровье
+"""
+
+MORNING_WINTER_NON_MARINE_NUMBERS = """<b>Кипр: погода и море (15.01.2026)</b>
+👋 Доброе утро! Теплее всего — Ларнака (19°), прохладнее — Тродос (8°).
+🏭 AQI 42 (низкий) • PM₂.₅ 9 / PM₁₀ 18
+💨 Ветер: 3.0 м/с • 🔹 1014 гПа →
+🌇 Закат сегодня: 19:05
+✅ Сегодня: прогулка у моря, слой от ветра.
+#Кипр #погода #здоровье
+"""
+
 REAL_RAW_MORNING_WITH_SEA_ASTRO = """<b>Кипр: погода, жара и море (27.06.2026)</b>
 👋 Доброе утро! Теплее всего — Никосия (37°), прохладнее — Пафос (30°).
 ☀️ <b>УФ-индекс 9 (Very High)</b>: тень 11–16.
@@ -159,6 +178,17 @@ def cy_morning_rejects_non_marine_numbers_for_sea() -> None:
     assert "🌊 Море: вода 31°C" not in text
 
 
+def cy_morning_accepts_winter_explicit_sea_temperature() -> None:
+    text = build_morning_format_v2("Кипр", MORNING_WINTER_WITH_SEA)
+    assert "🌊 Море: вода 19°C; волна спокойная; лучше до 11:00 или после 18:30." in text
+
+
+def cy_morning_winter_sunset_time_is_not_sea_temperature() -> None:
+    text = build_morning_format_v2("Кипр", MORNING_WINTER_NON_MARINE_NUMBERS)
+    assert "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30." in text
+    assert "🌊 Море: вода 19°C" not in text
+
+
 def cy_morning_preserves_full_moon_line_without_illumination_duplicate() -> None:
     text = build_morning_format_v2("Кипр", MORNING_FULL_MOON)
     assert "🌕 Полнолуние в ♑ — 100% освещённости." in text
@@ -225,6 +255,8 @@ def main() -> None:
         cy_morning_averages_coastal_sea_rows,
         cy_morning_adds_sea_fallback_when_unavailable,
         cy_morning_rejects_non_marine_numbers_for_sea,
+        cy_morning_accepts_winter_explicit_sea_temperature,
+        cy_morning_winter_sunset_time_is_not_sea_temperature,
         cy_morning_preserves_full_moon_line_without_illumination_duplicate,
         cy_morning_poor_air_adds_health_recommendation,
         cy_morning_recent_safecast_elevated_is_omitted,
