@@ -999,7 +999,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     air = _air_lines(lines) or _morning_pick(lines, ("🏭", "🏙", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
     poor_air = _air_is_poor(air)
     radiation = _critical_safecast_cy_line(lines) or _safecast_private_sensor_line()
-    quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
+    quakes = _morning_pick(lines, ("🌍 Сейсмика",))
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     astro = _clean_morning_astro(lines)
     today_tips = _morning_pick(lines, ("✅ Сегодня",))

@@ -1617,16 +1617,15 @@ def _cyprus_quake_line_for_morning() -> Optional[str]:
     except Exception:
         radius_km = 350.0
     try:
-        min_mag = float(os.getenv("CY_QUAKE_MIN_MAG", "2.5"))
+        min_mag = float(os.getenv("CY_QUAKE_MIN_MAG", "0.9"))
     except Exception:
-        min_mag = 2.5
+        min_mag = 0.9
     try:
         events = get_recent_earthquakes_cyprus(hours=hours, radius_km=radius_km, min_mag=min_mag)
-        if events is None:
-            return None
         return build_cyprus_quake_line(events, tz=os.getenv("TZ", "Asia/Nicosia"))
     except Exception:
-        return None
+        logging.warning("CY quakes: all source handling failed", exc_info=True)
+        return build_cyprus_quake_line(None, tz=os.getenv("TZ", "Asia/Nicosia"))
 
 
 # ───────────── городская строка ─────────────

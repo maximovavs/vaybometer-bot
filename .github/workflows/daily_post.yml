@@ -90,7 +90,7 @@ env:
   CY_QUAKES_24H: "1"
   CY_QUAKE_HOURS: "24"
   CY_QUAKE_RADIUS_KM: "350"
-  CY_QUAKE_MIN_MAG: "2.5"
+  CY_QUAKE_MIN_MAG: "0.9"
 
   TZ: Asia/Nicosia
   WORK_DATE: ${{ github.event.inputs.work_date || '' }}
