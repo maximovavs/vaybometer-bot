@@ -127,34 +127,48 @@ jobs:
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
 
-      - name: Restore Cyprus visual history
-        id: cyprus-visual-history-cache
+      - name: Restore Cyprus visual history (prod)
+        id: cyprus-visual-history-prod-cache
         uses: actions/cache@v4
         with:
           path: .cache/cyprus_visual_history_prod.json
-          key: cyprus-visual-history-prod-${{ github.run_id }}-${{ github.run_attempt }}
+          key: cyprus-visual-history-prod-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           restore-keys: |
             cyprus-visual-history-prod-
+
+      - name: Restore Cyprus visual history (test)
+        id: cyprus-visual-history-test-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/cyprus_visual_history_test.json
+          key: cyprus-visual-history-test-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            cyprus-visual-history-test-
 
       - name: Inspect Cyprus visual history
         shell: bash
         run: |
           mkdir -p .cache
-          echo "Cyprus visual history cache restored: ${{ steps.cyprus-visual-history-cache.outputs.cache-hit }}"
+          echo "Cyprus visual history prod exact-key hit: ${{ steps.cyprus-visual-history-prod-cache.outputs.cache-hit }}"
+          echo "Cyprus visual history test exact-key hit: ${{ steps.cyprus-visual-history-test-cache.outputs.cache-hit }}"
           python - <<'PY'
           import json
           import os
           from pathlib import Path
 
-          path = Path(os.environ["CYPRUS_VISUAL_HISTORY_PATH"])
-          try:
-              data = json.loads(path.read_text("utf-8"))
-              count = len(data) if isinstance(data, list) else 0
-          except Exception as exc:
-              print(f"Cyprus visual history read issue before generation: {exc}")
-              count = 0
-          print(f"Cyprus visual history path: {path}")
-          print(f"Cyprus visual history entries before generation: {count}")
+          for label, env_name in (
+              ("prod", "CYPRUS_VISUAL_HISTORY_PROD_PATH"),
+              ("test", "CYPRUS_VISUAL_HISTORY_TEST_PATH"),
+          ):
+              path = Path(os.environ[env_name])
+              try:
+                  data = json.loads(path.read_text("utf-8"))
+                  count = len(data) if isinstance(data, list) else 0
+              except Exception as exc:
+                  print(f"Cyprus visual history {label} read issue before generation: {exc}")
+                  count = 0
+              print(f"Cyprus visual history {label} path: {path}")
+              print(f"Cyprus visual history {label} entries before generation: {count}")
           PY
 
       - name: Time debug
@@ -228,9 +242,13 @@ jobs:
   evening:
     name: Evening post (for tomorrow)
     runs-on: ubuntu-latest
+    needs: morning
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 13 * * *') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_evening == 'true')
+      always() &&
+      (
+        (github.event_name == 'schedule' && github.event.schedule == '0 13 * * *') ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.run_evening == 'true')
+      )
     steps:
       - uses: actions/checkout@v4
 
@@ -242,34 +260,48 @@ jobs:
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
 
-      - name: Restore Cyprus visual history
-        id: cyprus-visual-history-cache
+      - name: Restore Cyprus visual history (prod)
+        id: cyprus-visual-history-prod-cache
         uses: actions/cache@v4
         with:
           path: .cache/cyprus_visual_history_prod.json
-          key: cyprus-visual-history-prod-${{ github.run_id }}-${{ github.run_attempt }}
+          key: cyprus-visual-history-prod-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           restore-keys: |
             cyprus-visual-history-prod-
+
+      - name: Restore Cyprus visual history (test)
+        id: cyprus-visual-history-test-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/cyprus_visual_history_test.json
+          key: cyprus-visual-history-test-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            cyprus-visual-history-test-
 
       - name: Inspect Cyprus visual history
         shell: bash
         run: |
           mkdir -p .cache
-          echo "Cyprus visual history cache restored: ${{ steps.cyprus-visual-history-cache.outputs.cache-hit }}"
+          echo "Cyprus visual history prod exact-key hit: ${{ steps.cyprus-visual-history-prod-cache.outputs.cache-hit }}"
+          echo "Cyprus visual history test exact-key hit: ${{ steps.cyprus-visual-history-test-cache.outputs.cache-hit }}"
           python - <<'PY'
           import json
           import os
           from pathlib import Path
 
-          path = Path(os.environ["CYPRUS_VISUAL_HISTORY_PATH"])
-          try:
-              data = json.loads(path.read_text("utf-8"))
-              count = len(data) if isinstance(data, list) else 0
-          except Exception as exc:
-              print(f"Cyprus visual history read issue before generation: {exc}")
-              count = 0
-          print(f"Cyprus visual history path: {path}")
-          print(f"Cyprus visual history entries before generation: {count}")
+          for label, env_name in (
+              ("prod", "CYPRUS_VISUAL_HISTORY_PROD_PATH"),
+              ("test", "CYPRUS_VISUAL_HISTORY_TEST_PATH"),
+          ):
+              path = Path(os.environ[env_name])
+              try:
+                  data = json.loads(path.read_text("utf-8"))
+                  count = len(data) if isinstance(data, list) else 0
+              except Exception as exc:
+                  print(f"Cyprus visual history {label} read issue before generation: {exc}")
+                  count = 0
+              print(f"Cyprus visual history {label} path: {path}")
+              print(f"Cyprus visual history {label} entries before generation: {count}")
           PY
 
       - name: Time debug
