@@ -1129,34 +1129,108 @@ async def _build_safe_test_image(
                 "Для отправки изображения TELEGRAM_TOKEN должен быть определён"
             )
 
-    from image_prompt_cy_scene import build_cyprus_scene_prompt
-
-    prompt, style_name = build_cyprus_scene_prompt(final_text, post_type=mode)
-    print("\nCY_SAFE_IMAGE_PROMPT_BEGIN")
-    print(prompt)
-    print("CY_SAFE_IMAGE_PROMPT_END")
-    print(f"CY_SAFE_IMAGE_STYLE: {style_name}")
-
     try:
+        from cyprus_visual_dedup import (
+            evaluate_cyprus_visual_candidate,
+            record_cyprus_visual_publication,
+        )
+        from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata
         from world_en.imagegen import generate_astro_image
 
-        requested_path = _cy_safe_image_output_path(style_name)
-        requested_path.parent.mkdir(parents=True, exist_ok=True)
-        generated = generate_astro_image(prompt, str(requested_path))
-        if not generated:
-            raise RuntimeError("image backend returned no file")
-
-        image_path = Path(generated)
-        if not image_path.is_file():
-            raise RuntimeError(f"generated image does not exist: {image_path}")
-
-        image_size = image_path.stat().st_size
+        selected_candidate = None
+        least_similar_candidate = None
         minimum = _cy_safe_image_min_bytes()
-        if image_size <= minimum:
-            raise RuntimeError(
-                f"generated image is too small: {image_size} bytes; "
-                f"must be greater than {minimum}"
+
+        for visual_attempt in range(3):
+            prompt, style_name, metadata = build_cyprus_scene_prompt_with_metadata(
+                final_text,
+                post_type=mode,
+                variation_attempt=visual_attempt,
             )
+            cache_key = metadata["cache_key"]
+            print(f"\nCY_SAFE_IMAGE_ATTEMPT: {visual_attempt + 1}/3")
+            print("CY_SAFE_IMAGE_PROMPT_BEGIN")
+            print(prompt)
+            print("CY_SAFE_IMAGE_PROMPT_END")
+            print(f"CY_SAFE_IMAGE_STYLE: {style_name}")
+            print(f"CY_SAFE_IMAGE_CACHE_KEY: {cache_key}")
+            logging.info("Cyprus visual cache key: %s", cache_key)
+
+            requested_path = _cy_safe_image_output_path(style_name)
+            requested_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_state = "hit" if requested_path.exists() else "miss"
+            print(f"CY_SAFE_IMAGE_CACHE_STATUS: {cache_state}")
+            logging.info("Cyprus visual cache hit/miss: %s", cache_state)
+
+            if cache_state == "hit":
+                generated = str(requested_path)
+            else:
+                generated = generate_astro_image(prompt, str(requested_path))
+                if not generated:
+                    raise RuntimeError("image backend returned no file")
+
+            image_path = Path(generated)
+            if not image_path.is_file():
+                raise RuntimeError(f"generated image does not exist: {image_path}")
+
+            image_size = image_path.stat().st_size
+            if image_size <= minimum:
+                raise RuntimeError(
+                    f"generated image is too small: {image_size} bytes; "
+                    f"must be greater than {minimum}"
+                )
+
+            duplicate_result = evaluate_cyprus_visual_candidate(
+                image_path,
+                date_value=metadata["forecast_date"],
+                post_type=mode,
+                selected_scene=metadata["selected_scene"],
+                prompt_version=metadata["prompt_version"],
+            )
+            print(
+                "CY_SAFE_IMAGE_DEDUP: "
+                f"{duplicate_result.reason}; sha256={duplicate_result.sha256[:12]}; "
+                f"dhash={duplicate_result.perceptual_hash or 'n/a'}; "
+                f"min_distance={duplicate_result.min_distance}"
+            )
+
+            candidate = (
+                prompt,
+                style_name,
+                metadata,
+                image_path,
+                image_size,
+                duplicate_result,
+            )
+            if duplicate_result.accepted:
+                selected_candidate = candidate
+                break
+            logging.warning(
+                "Cyprus visual candidate rejected: reason=%s scene=%s attempt=%s",
+                duplicate_result.reason,
+                metadata["selected_scene"],
+                visual_attempt,
+            )
+            if duplicate_result.reason != "exact_duplicate":
+                if least_similar_candidate is None:
+                    least_similar_candidate = candidate
+                else:
+                    previous_distance = least_similar_candidate[5].min_distance
+                    current_distance = duplicate_result.min_distance
+                    if (current_distance or -1) > (previous_distance or -1):
+                        least_similar_candidate = candidate
+
+        if selected_candidate is None:
+            if least_similar_candidate is None:
+                raise RuntimeError("all Cyprus visual attempts were exact duplicates")
+            selected_candidate = least_similar_candidate
+            logging.warning(
+                "Cyprus visual dedup: all attempts were near-duplicates; "
+                "using least similar candidate with distance=%s",
+                selected_candidate[5].min_distance,
+            )
+
+        prompt, style_name, metadata, image_path, image_size, duplicate_result = selected_candidate
 
         print(f"CY_SAFE_IMAGE_PATH: {image_path.resolve()}")
         print(f"CY_SAFE_IMAGE_BYTES: {image_size}")
@@ -1169,6 +1243,15 @@ async def _build_safe_test_image(
                     photo=photo,
                     caption=image_caption,
                 )
+            record_cyprus_visual_publication(
+                date_value=metadata["forecast_date"],
+                post_type=mode,
+                image_path=image_path,
+                selected_scene=metadata["selected_scene"],
+                prompt_version=metadata["prompt_version"],
+                cache_key=metadata["cache_key"],
+                style_name=style_name,
+            )
             logging.info("CY SAFE IMAGE sent before text to chat=%s", image_chat)
     except Exception as exc:
         logging.exception(

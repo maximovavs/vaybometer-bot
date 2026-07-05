@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import date, timedelta
 import re
 import sys
 
@@ -12,7 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from visual_context_cy import parse_visual_context_cy
 from visual_rules_cy import apply_visual_rules_cy
-from image_prompt_cy_scene import build_cyprus_scene_prompt
+from image_prompt_cy_scene import (
+    CYPRUS_VISUAL_PROMPT_VERSION,
+    build_cyprus_scene_prompt,
+    build_cyprus_scene_prompt_with_metadata,
+    build_cyprus_visual_cache_key,
+)
 from format_v2 import build_evening_format_v2
 
 
@@ -257,18 +263,25 @@ def cy_prompt_morning_sanitized() -> None:
     assert "crisp daytime visibility" in low
     assert "natural daytime shadows" in low
     assert "clear early morning daylight" in low
-    for forbidden in (
-        "text", "logo", "poster", "card", "moon", "night", "sunset",
-        "sunrise", "dusk", "golden", "golden hour", "orange",
-        "orange horizon", "orange sky", "evening", "evening warmth",
-        "cinematic dusk", "cinematic evening light", "amber",
-        "warm horizon glow", "sun from right", "sunset-like lighting",
-        "baltic", "kaliningrad",
-    ):
-        if " " in forbidden:
-            assert forbidden not in low
-        else:
-            assert not re.search(rf"\b{forbidden}\b", low)
+    assert "weather card" not in low
+    assert "baltic sunset" not in low
+    assert "no text" in low
+    assert "no watermark" in low
+    assert "no logo" in low
+    assert "no poster" in low
+    assert "no painting" in low
+    assert "no illustration" in low
+    assert "no digital art" in low
+    assert "no watercolor" in low
+    assert "no fantasy landscape" in low
+    assert "no sunset" in low
+    assert "no golden hour" in low
+    assert "no orange horizon" in low
+    assert "no low sun on the right" in low
+    assert "no evening glow" in low
+    assert "no dusk" in low
+    for forbidden in ("sunrise", "baltic", "kaliningrad"):
+        assert not re.search(rf"\b{forbidden}\b", low)
     assert style.startswith("cyprus_morning_mediterranean_landscape_")
     assert re.search(r"_[0-9a-f]{8}$", style)
 
@@ -300,8 +313,9 @@ def cy_prompt_rain_not_leisure() -> None:
     assert "wet promenade" in low
     assert "dramatic rain clouds" in low
     assert "practical rain mood" in low
-    for forbidden in ("beach leisure", "party", "vacation", "poster"):
+    for forbidden in ("beach leisure", "party", "vacation", "carefree swimming"):
         assert forbidden not in low
+    assert "no poster" in low
 
 
 def cy_prompt_generic_warning_gust_10_is_windy_not_storm() -> None:
@@ -402,9 +416,9 @@ def cy_prompt_real_evening_wind_moon_haze_has_no_rain_or_dust_contradictions() -
     assert "strong direct sunlight" not in low
     assert "beige-gold dust" not in low
     assert "suspended dust" not in low
-    assert "perfect full moon" not in low
-    assert "oversized moon" not in low
-    assert "fantasy supermoon" not in low
+    assert "no perfect full moon" in low
+    assert "no oversized moon" in low
+    assert "no fantasy supermoon" in low
     assert "natural-scale moon only" in low
 
 
@@ -573,8 +587,10 @@ def cy_prompt_controlled_variety_changes_by_date() -> None:
 
     morning, _ = build_cyprus_scene_prompt("20.06.2026\n" + scenario, post_type="morning")
     low = morning.lower()
-    for forbidden in ("moon", "lunar", "crescent", "night", "evening", "sunset"):
+    for forbidden in ("lunar", "crescent", "night"):
         assert not re.search(rf"\b{forbidden}\b", low)
+    assert "no sunset" in low
+    assert "no evening glow" in low
 
 
 def cy_prompt_full_moon_evening_uses_blue_hour_moonlight() -> None:
@@ -619,10 +635,116 @@ def cy_prompt_waning_92_uses_near_full_moon_context() -> None:
     assert "realistic waning gibbous moon, 92% illuminated" in low
     assert "blue-hour or late twilight" in low
     assert "residual right-side horizon glow" in low
-    assert "perfect full moon" not in low
-    assert "oversized moon" not in low
-    assert "fantasy supermoon" not in low
+    assert "no perfect full moon" in low
+    assert "no oversized moon" in low
+    assert "no fantasy supermoon" in low
     assert "natural-scale moon only" in low
+
+
+def cy_visual_cache_key_contains_identity_fields() -> None:
+    scenario = """
+    Кипр: прогноз.
+    Лимассол +34°, Ларнака +35°.
+    Море спокойно, ветер 6 м/с, порывы до 10 м/с.
+    🌖 Убывающая Луна в ♐.
+    ✨ 92% освещённости.
+    """
+    key_a = build_cyprus_visual_cache_key(
+        "2026-07-04\n" + scenario,
+        post_type="evening",
+    )
+    key_b = build_cyprus_visual_cache_key(
+        "2026-07-05\n" + scenario,
+        post_type="evening",
+    )
+    assert key_a != key_b
+    assert "forecast_date=2026-07-04" in key_a
+    assert "forecast_date=2026-07-05" in key_b
+    assert "post_type=evening" in key_a
+    assert "target_date=tomorrow" in key_a
+    assert f"prompt_version={CYPRUS_VISUAL_PROMPT_VERSION}" in key_a
+    assert "selected_scene=" in key_a
+    assert "weather_scenario=" in key_a
+    assert "wind_gust_category=" in key_a
+    assert "cloud_haze_category=" in key_a
+    assert "lunar_phase=waning_near_full" in key_a
+    assert "lunar_illumination=92" in key_a
+
+
+def cy_scene_rotation_week_has_no_obvious_repeats() -> None:
+    scenario = """
+    Кипр: прогноз.
+    Лимассол +34°, Ларнака +35°.
+    Море спокойно, на побережье солнечно и жарко.
+    """
+    families: list[str] = []
+    morning_compositions: list[str] = []
+    previous_morning = ""
+    previous_evening = ""
+    for offset in range(7):
+        day = (date(2026, 7, 1) + timedelta(days=offset)).isoformat()
+        morning_prompt, _ms, morning_meta = build_cyprus_scene_prompt_with_metadata(
+            day + "\n" + scenario,
+            post_type="morning",
+        )
+        _ep, _es, evening_meta = build_cyprus_scene_prompt_with_metadata(
+            day + "\n" + scenario,
+            post_type="evening",
+        )
+        morning_scene = morning_meta["selected_scene"]
+        evening_scene = evening_meta["selected_scene"]
+        assert morning_scene != evening_scene
+        if previous_morning:
+            assert morning_scene != previous_morning
+        if previous_evening:
+            assert evening_scene != previous_evening
+        families.extend([morning_scene, evening_scene])
+        composition = re.search(
+            r"controlled composition variant: ([^;]+)",
+            morning_prompt,
+            flags=re.I,
+        )
+        assert composition is not None
+        morning_compositions.append(composition.group(1).lower())
+        previous_morning = morning_scene
+        previous_evening = evening_scene
+    assert len(set(families)) >= 5
+    for index, composition in enumerate(morning_compositions):
+        assert composition not in morning_compositions[max(0, index - 5):index]
+
+
+def cy_scene_retry_rotates_scene_family() -> None:
+    scenario = """
+    2026-07-05
+    Кипр: прогноз.
+    Лимассол +34°, Ларнака +35°.
+    Море спокойно, на побережье солнечно и жарко.
+    """
+    _p0, _s0, meta0 = build_cyprus_scene_prompt_with_metadata(
+        scenario,
+        post_type="evening",
+        variation_attempt=0,
+    )
+    _p1, _s1, meta1 = build_cyprus_scene_prompt_with_metadata(
+        scenario,
+        post_type="evening",
+        variation_attempt=1,
+    )
+    assert meta0["selected_scene"] != meta1["selected_scene"]
+    assert meta0["cache_key"] != meta1["cache_key"]
+
+
+def cy_prompt_cloudy_uses_cloud_cover_without_blazing_sun() -> None:
+    message = """
+    27.06.2026
+    Кипр сегодня.
+    Ларнака: облачно, ветер 4 м/с, море у побережья.
+    """
+    prompt, _style = build_cyprus_scene_prompt(message, post_type="morning")
+    low = prompt.lower()
+    assert "layered mediterranean cloud cover" in low
+    assert "blazing" not in low
+    assert "strong direct sunlight" not in low
 
 
 TESTS = [
@@ -659,6 +781,10 @@ TESTS = [
     cy_prompt_controlled_variety_changes_by_date,
     cy_prompt_full_moon_evening_uses_blue_hour_moonlight,
     cy_prompt_waning_92_uses_near_full_moon_context,
+    cy_visual_cache_key_contains_identity_fields,
+    cy_scene_rotation_week_has_no_obvious_repeats,
+    cy_scene_retry_rotates_scene_family,
+    cy_prompt_cloudy_uses_cloud_cover_without_blazing_sun,
 ]
 
 
