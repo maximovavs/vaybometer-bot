@@ -1131,11 +1131,28 @@ async def _build_safe_test_image(
 
     try:
         from cyprus_visual_dedup import (
+            cyprus_visual_history_path,
+            ensure_pillow_for_visual_dedup,
             evaluate_cyprus_visual_candidate,
+            load_cyprus_visual_history,
             record_cyprus_visual_publication,
         )
         from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata
         from world_en.imagegen import generate_astro_image
+
+        history_namespace = "test" if send_image_to_test else "prod" if send_image_to_chat else "test"
+        history_path = cyprus_visual_history_path(history_namespace)
+        ensure_pillow_for_visual_dedup()
+        before_history_count = len(load_cyprus_visual_history(history_path))
+        print(f"CY_SAFE_IMAGE_HISTORY_NAMESPACE: {history_namespace}")
+        print(f"CY_SAFE_IMAGE_HISTORY_PATH: {history_path}")
+        print(f"CY_SAFE_IMAGE_HISTORY_COUNT_BEFORE: {before_history_count}")
+        logging.info(
+            "Cyprus visual history count before generation: namespace=%s path=%s count=%s",
+            history_namespace,
+            history_path,
+            before_history_count,
+        )
 
         selected_candidate = None
         least_similar_candidate = None
@@ -1186,6 +1203,7 @@ async def _build_safe_test_image(
                 post_type=mode,
                 selected_scene=metadata["selected_scene"],
                 prompt_version=metadata["prompt_version"],
+                history_path=history_path,
             )
             print(
                 "CY_SAFE_IMAGE_DEDUP: "
@@ -1251,6 +1269,15 @@ async def _build_safe_test_image(
                 prompt_version=metadata["prompt_version"],
                 cache_key=metadata["cache_key"],
                 style_name=style_name,
+                history_path=history_path,
+            )
+            after_history_count = len(load_cyprus_visual_history(history_path))
+            print(f"CY_SAFE_IMAGE_HISTORY_COUNT_AFTER: {after_history_count}")
+            logging.info(
+                "Cyprus visual history count after publication: namespace=%s path=%s count=%s",
+                history_namespace,
+                history_path,
+                after_history_count,
             )
             logging.info("CY SAFE IMAGE sent before text to chat=%s", image_chat)
     except Exception as exc:

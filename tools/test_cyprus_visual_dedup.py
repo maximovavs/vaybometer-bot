@@ -9,14 +9,18 @@ import shutil
 import sys
 import tempfile
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from cyprus_visual_dedup import (
     CYPRUS_VISUAL_DHASH_THRESHOLD,
+    cyprus_visual_history_path,
     dhash_file,
+    ensure_pillow_for_visual_dedup,
     evaluate_cyprus_visual_candidate,
     hamming_distance_hex,
     load_cyprus_visual_history,
+    pillow_available,
     record_cyprus_visual_publication,
 )
 
@@ -169,11 +173,158 @@ def cy_dedup_history_is_persisted_and_read() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def cy_dedup_history_namespaces_are_separate() -> None:
+    assert cyprus_visual_history_path("prod").name == "cyprus_visual_history_prod.json"
+    assert cyprus_visual_history_path("test").name == "cyprus_visual_history_test.json"
+
+
+def cy_dedup_record_is_atomic_and_dedupes_same_publication() -> None:
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        image = root / "image.ppm"
+        _write_ppm(image, mode="coast_a")
+        for _ in range(2):
+            record_cyprus_visual_publication(
+                date_value="2026-07-05",
+                post_type="morning",
+                image_path=image,
+                selected_scene="small_harbour",
+                prompt_version="cyprus_visual_v_test",
+                cache_key="cache=repeat",
+                style_name="style_repeat",
+                history_path=history,
+            )
+        loaded = load_cyprus_visual_history(history)
+        assert len(loaded) == 1
+
+        record_cyprus_visual_publication(
+            date_value="2026-07-05",
+            post_type="evening",
+            image_path=image,
+            selected_scene="small_harbour",
+            prompt_version="cyprus_visual_v_test",
+            cache_key="cache=evening",
+            style_name="style_evening",
+            history_path=history,
+        )
+        loaded = load_cyprus_visual_history(history)
+        assert len(loaded) == 2
+        assert {entry["post_type"] for entry in loaded} == {"morning", "evening"}
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_dedup_malformed_history_keeps_backup() -> None:
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        history.write_text("{not valid json", "utf-8")
+        loaded = load_cyprus_visual_history(history)
+        assert loaded == []
+        backups = list(root.glob("history.json.malformed.*.bak"))
+        assert backups
+        assert backups[0].read_text("utf-8") == "{not valid json"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_dedup_fresh_run_restore_simulation() -> None:
+    root = _tmpdir()
+    try:
+        run1 = root / "run1"
+        run2 = root / "run2"
+        run3 = root / "run3"
+        run4 = root / "run4"
+        for folder in (run1, run2, run3, run4):
+            folder.mkdir()
+
+        image_a = run1 / "a.ppm"
+        _write_ppm(image_a, mode="coast_a")
+        history1 = run1 / "cyprus_visual_history_prod.json"
+        record_cyprus_visual_publication(
+            date_value="2026-07-01",
+            post_type="morning",
+            image_path=image_a,
+            selected_scene="rocky_cove_overlook",
+            prompt_version="cyprus_visual_v_test",
+            cache_key="cache=a",
+            style_name="style_a",
+            history_path=history1,
+        )
+
+        history2 = run2 / history1.name
+        shutil.copy2(history1, history2)
+        image_a2 = run2 / "a.ppm"
+        shutil.copy2(image_a, image_a2)
+        exact = _evaluate(image_a2, history2, date_value="2026-07-02")
+        assert exact.accepted is False
+        assert exact.reason == "exact_duplicate"
+
+        history3 = run3 / history1.name
+        shutil.copy2(history1, history3)
+        near_image = run3 / "near.ppm"
+        _write_ppm(near_image, mode="coast_a_cropped", tint=8)
+        near = _evaluate(near_image, history3, date_value="2026-07-03")
+        assert near.accepted is False
+        assert near.reason == "near_duplicate"
+
+        history4 = run4 / history1.name
+        shutil.copy2(history1, history4)
+        image_b = run4 / "b.ppm"
+        _write_ppm(image_b, mode="coast_b")
+        different = _evaluate(image_b, history4, date_value="2026-07-04")
+        assert different.accepted is True
+        record_cyprus_visual_publication(
+            date_value="2026-07-04",
+            post_type="morning",
+            image_path=image_b,
+            selected_scene="long_sandy_beach",
+            prompt_version="cyprus_visual_v_test",
+            cache_key="cache=b",
+            style_name="style_b",
+            history_path=history4,
+        )
+        assert len(load_cyprus_visual_history(history4)) == 2
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_dedup_png_jpg_hashes_when_pillow_available() -> None:
+    if not pillow_available():
+        requirements = (ROOT / "requirements.txt").read_text("utf-8")
+        assert "Pillow>=10,<12" in requirements
+        assert ensure_pillow_for_visual_dedup() is False
+        return
+
+    from PIL import Image
+
+    root = _tmpdir()
+    try:
+        png = root / "sample.png"
+        jpg = root / "sample.jpg"
+        image = Image.new("RGB", (32, 32), color=(80, 140, 200))
+        image.save(png)
+        image.save(jpg)
+        for path in (png, jpg):
+            digest = dhash_file(path)
+            assert digest is not None
+            assert len(digest) == 16
+            int(digest, 16)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 TESTS = [
     cy_dedup_exact_sha_is_rejected,
     cy_dedup_near_duplicate_recolor_crop_is_rejected,
     cy_dedup_genuinely_different_image_is_accepted,
     cy_dedup_history_is_persisted_and_read,
+    cy_dedup_history_namespaces_are_separate,
+    cy_dedup_record_is_atomic_and_dedupes_same_publication,
+    cy_dedup_malformed_history_keeps_backup,
+    cy_dedup_fresh_run_restore_simulation,
+    cy_dedup_png_jpg_hashes_when_pillow_available,
 ]
 
 

@@ -99,6 +99,9 @@ env:
 
   # Постоянная папка кэша (fx_cache.json / fx_inter_cache.json и др.)
   VAYBOMETER_CACHE_DIR: ".cache"
+  CYPRUS_VISUAL_HISTORY_PATH: ".cache/cyprus_visual_history_prod.json"
+  CYPRUS_VISUAL_HISTORY_PROD_PATH: ".cache/cyprus_visual_history_prod.json"
+  CYPRUS_VISUAL_HISTORY_TEST_PATH: ".cache/cyprus_visual_history_test.json"
 
   # Утренние картинки: 5 стилей, авто-ротация по дате
   CY_IMG_ENABLED: "1"
@@ -123,6 +126,36 @@ jobs:
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
+
+      - name: Restore Cyprus visual history
+        id: cyprus-visual-history-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/cyprus_visual_history_prod.json
+          key: cyprus-visual-history-prod-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            cyprus-visual-history-prod-
+
+      - name: Inspect Cyprus visual history
+        shell: bash
+        run: |
+          mkdir -p .cache
+          echo "Cyprus visual history cache restored: ${{ steps.cyprus-visual-history-cache.outputs.cache-hit }}"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["CYPRUS_VISUAL_HISTORY_PATH"])
+          try:
+              data = json.loads(path.read_text("utf-8"))
+              count = len(data) if isinstance(data, list) else 0
+          except Exception as exc:
+              print(f"Cyprus visual history read issue before generation: {exc}")
+              count = 0
+          print(f"Cyprus visual history path: {path}")
+          print(f"Cyprus visual history entries before generation: {count}")
+          PY
 
       - name: Time debug
         run: |
@@ -208,6 +241,36 @@ jobs:
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
+
+      - name: Restore Cyprus visual history
+        id: cyprus-visual-history-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/cyprus_visual_history_prod.json
+          key: cyprus-visual-history-prod-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            cyprus-visual-history-prod-
+
+      - name: Inspect Cyprus visual history
+        shell: bash
+        run: |
+          mkdir -p .cache
+          echo "Cyprus visual history cache restored: ${{ steps.cyprus-visual-history-cache.outputs.cache-hit }}"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["CYPRUS_VISUAL_HISTORY_PATH"])
+          try:
+              data = json.loads(path.read_text("utf-8"))
+              count = len(data) if isinstance(data, list) else 0
+          except Exception as exc:
+              print(f"Cyprus visual history read issue before generation: {exc}")
+              count = 0
+          print(f"Cyprus visual history path: {path}")
+          print(f"Cyprus visual history entries before generation: {count}")
+          PY
 
       - name: Time debug
         run: |

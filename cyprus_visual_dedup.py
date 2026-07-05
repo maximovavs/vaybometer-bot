@@ -15,7 +15,13 @@ from typing import Any
 
 
 CYPRUS_VISUAL_HISTORY_PATH = Path(
-    os.getenv("CYPRUS_VISUAL_HISTORY_PATH", ".cache/cyprus_visual_history.json")
+    os.getenv("CYPRUS_VISUAL_HISTORY_PATH", ".cache/cyprus_visual_history_prod.json")
+)
+CYPRUS_VISUAL_HISTORY_PROD_PATH = Path(
+    os.getenv("CYPRUS_VISUAL_HISTORY_PROD_PATH", ".cache/cyprus_visual_history_prod.json")
+)
+CYPRUS_VISUAL_HISTORY_TEST_PATH = Path(
+    os.getenv("CYPRUS_VISUAL_HISTORY_TEST_PATH", ".cache/cyprus_visual_history_test.json")
 )
 CYPRUS_VISUAL_EXACT_DAYS = 30
 CYPRUS_VISUAL_NEAR_DAYS = 14
@@ -60,6 +66,29 @@ def _within_days(entry: dict[str, Any], current: date, days: int) -> bool:
     return current - timedelta(days=days) <= entry_date <= current
 
 
+def cyprus_visual_history_path(namespace: str = "prod") -> Path:
+    value = str(namespace or "prod").strip().lower()
+    if value in {"prod", "production"}:
+        return CYPRUS_VISUAL_HISTORY_PROD_PATH
+    if value in {"test", "safe_test"}:
+        return CYPRUS_VISUAL_HISTORY_TEST_PATH
+    if value in {"dry", "dry_run", "none"}:
+        return CYPRUS_VISUAL_HISTORY_TEST_PATH
+    raise ValueError("namespace must be 'prod' or 'test'")
+
+
+def _backup_malformed_history(path: Path) -> None:
+    if not path.exists():
+        return
+    stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    backup = path.with_name(f"{path.name}.malformed.{stamp}.bak")
+    try:
+        backup.write_bytes(path.read_bytes())
+        logging.warning("Cyprus visual malformed history backed up to %s", backup)
+    except Exception as exc:
+        logging.warning("Cyprus visual malformed history backup failed: %s", exc)
+
+
 def load_cyprus_visual_history(
     path: str | Path = CYPRUS_VISUAL_HISTORY_PATH,
 ) -> list[dict[str, Any]]:
@@ -70,8 +99,11 @@ def load_cyprus_visual_history(
         data = json.loads(history_path.read_text("utf-8"))
     except Exception as exc:
         logging.warning("Cyprus visual history read failed: %s", exc)
+        _backup_malformed_history(history_path)
         return []
     if not isinstance(data, list):
+        logging.warning("Cyprus visual history is not a list: %s", history_path)
+        _backup_malformed_history(history_path)
         return []
     return [entry for entry in data if isinstance(entry, dict)]
 
@@ -101,6 +133,22 @@ def hamming_distance_hex(left: str | None, right: str | None) -> int | None:
     if not left or not right:
         return None
     return _hamming_hex(left, right)
+
+
+def pillow_available() -> bool:
+    try:
+        import PIL  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def ensure_pillow_for_visual_dedup() -> bool:
+    available = pillow_available()
+    if not available:
+        logging.error("Cyprus visual near-duplicate detection unavailable: Pillow missing.")
+    return available
 
 
 def _dhash_from_pixels(
@@ -194,10 +242,7 @@ def dhash_file(path: str | Path, *, hash_size: int = 8) -> str | None:
     except Exception:
         ppm = _read_ppm_or_pgm(image_path)
         if ppm is None:
-            logging.warning(
-                "Cyprus visual perceptual hash unavailable for %s; install Pillow for JPG/PNG support",
-                image_path,
-            )
+            logging.error("Cyprus visual near-duplicate detection unavailable: Pillow missing.")
             return None
         pixels, width, height = ppm
         return _dhash_from_pixels(pixels, width, height, hash_size=hash_size)
@@ -276,6 +321,8 @@ def record_cyprus_visual_publication(
     history_path: str | Path = CYPRUS_VISUAL_HISTORY_PATH,
 ) -> dict[str, Any]:
     current = _parse_date(date_value) or _today()
+    # Reload immediately before recording so concurrent morning/evening runs keep
+    # whichever history the cache restored in this runner.
     entries = [
         entry
         for entry in load_cyprus_visual_history(history_path)
@@ -292,7 +339,23 @@ def record_cyprus_visual_publication(
         "style_name": style_name,
         "path": str(Path(image_path)),
     }
-    entries.append(entry)
+    dedup_key = (entry["date"], entry["post_type"], entry["sha256"])
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for existing in entries:
+        key = (
+            str(existing.get("date") or ""),
+            str(existing.get("post_type") or ""),
+            str(existing.get("sha256") or ""),
+        )
+        if key == dedup_key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(existing)
+    merged.append(entry)
+    entries = merged
     save_cyprus_visual_history(entries, history_path)
     return entry
 
@@ -301,12 +364,17 @@ __all__ = [
     "CYPRUS_VISUAL_DHASH_THRESHOLD",
     "CYPRUS_VISUAL_EXACT_DAYS",
     "CYPRUS_VISUAL_HISTORY_PATH",
+    "CYPRUS_VISUAL_HISTORY_PROD_PATH",
+    "CYPRUS_VISUAL_HISTORY_TEST_PATH",
     "CYPRUS_VISUAL_NEAR_DAYS",
     "CyprusVisualDuplicateResult",
+    "cyprus_visual_history_path",
     "dhash_file",
+    "ensure_pillow_for_visual_dedup",
     "evaluate_cyprus_visual_candidate",
     "hamming_distance_hex",
     "load_cyprus_visual_history",
+    "pillow_available",
     "record_cyprus_visual_publication",
     "save_cyprus_visual_history",
     "sha256_file",
