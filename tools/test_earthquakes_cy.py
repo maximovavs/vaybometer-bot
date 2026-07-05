@@ -17,9 +17,104 @@ import earthquakes  # noqa: E402
 from format_v2 import build_format_v2  # noqa: E402
 
 
+class _FakeDate:
+    year = 2026
+
+    def add(self, days: int = 0):
+        return self
+
+    def format(self, _fmt: str) -> str:
+        return "05.07.2026"
+
+    def date(self):
+        return self
+
+
+class _FakeTZ:
+    def __init__(self, name: str = "Asia/Nicosia") -> None:
+        self.name = name
+
+
 def assert_true(name: str, cond: bool, detail: str = "") -> None:
     if not cond:
         raise AssertionError(f"{name}: {detail or 'assertion failed'}")
+
+
+def _import_post_common():
+    sys.modules.setdefault("imghdr", types.SimpleNamespace(what=lambda *_args, **_kwargs: None))
+    pendulum_stub = sys.modules.get("pendulum")
+    if pendulum_stub is None:
+        pendulum_stub = types.ModuleType("pendulum")
+        sys.modules["pendulum"] = pendulum_stub
+    pendulum_stub.DateTime = getattr(pendulum_stub, "DateTime", object)
+    pendulum_stub.Timezone = getattr(pendulum_stub, "Timezone", object)
+    pendulum_stub.timezone = lambda name: _FakeTZ(str(name))
+    pendulum_stub.today = lambda *_args, **_kwargs: _FakeDate()
+    pendulum_stub.now = lambda *_args, **_kwargs: _FakeDate()
+    telegram_stub = sys.modules.get("telegram")
+    if telegram_stub is None:
+        telegram_stub = types.ModuleType("telegram")
+        sys.modules["telegram"] = telegram_stub
+    telegram_stub.Bot = getattr(telegram_stub, "Bot", object)
+    telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
+    return __import__("post_common")
+
+
+def _build_morning_with_quake(combo_line: str | None, quake_line: str) -> str:
+    post_common = _import_post_common()
+    old_values = {
+        "get_weather": post_common.get_weather,
+        "storm_flags_for_today": post_common.storm_flags_for_today,
+        "_city_detail_line": post_common._city_detail_line,
+        "get_fact": post_common.get_fact,
+        "_uv_warning_line_for_morning": post_common._uv_warning_line_for_morning,
+        "_choose_sun_coords": post_common._choose_sun_coords,
+        "sun_line_for_mode": post_common.sun_line_for_mode,
+        "_morning_combo_air_radiation_pollen": post_common._morning_combo_air_radiation_pollen,
+        "_air_by_city_line": post_common._air_by_city_line,
+        "get_air": post_common.get_air,
+        "_is_air_bad": post_common._is_air_bad,
+        "_cyprus_quake_line_for_morning": post_common._cyprus_quake_line_for_morning,
+        "USE_WORLD_KP": post_common.USE_WORLD_KP,
+        "get_solar_wind": post_common.get_solar_wind,
+        "_kp_status_label": post_common._kp_status_label,
+        "hashtags_line": post_common.hashtags_line,
+    }
+
+    def fake_city_detail(city, *_args, **_kwargs):
+        temps = {"Limassol": 31.0, "Nicosia": 36.0}
+        tmax = temps.get(city, 30.0)
+        return tmax, f"{city}: {tmax:.0f}/22 °C"
+
+    try:
+        post_common.get_weather = lambda *_args, **_kwargs: {}
+        post_common.storm_flags_for_today = lambda *_args, **_kwargs: {"warning": False}
+        post_common._city_detail_line = fake_city_detail
+        post_common.get_fact = lambda *_args, **_kwargs: ""
+        post_common._uv_warning_line_for_morning = lambda *_args, **_kwargs: None
+        post_common._choose_sun_coords = lambda *_args, **_kwargs: (35.0, 33.0)
+        post_common.sun_line_for_mode = lambda *_args, **_kwargs: "🌇 Закат сегодня: 20:05"
+        post_common._morning_combo_air_radiation_pollen = lambda *_args, **_kwargs: combo_line
+        post_common._air_by_city_line = lambda *_args, **_kwargs: "🏭 Воздух по городам: Лимассол 🟢"
+        post_common.get_air = lambda *_args, **_kwargs: {}
+        post_common._is_air_bad = lambda *_args, **_kwargs: (False, "")
+        post_common._cyprus_quake_line_for_morning = lambda: quake_line
+        post_common.USE_WORLD_KP = False
+        post_common.get_solar_wind = lambda: {}
+        post_common._kp_status_label = lambda *_args, **_kwargs: "н/д"
+        post_common.hashtags_line = lambda *_args, **_kwargs: "#Кипр #погода #здоровье"
+        return post_common.build_message(
+            "Кипр",
+            "Морские города",
+            [("Limassol", (34.707, 33.022))],
+            "Континентальные города",
+            [("Nicosia", (35.17, 33.36))],
+            "Asia/Nicosia",
+            mode="morning",
+        )
+    finally:
+        for name, value in old_values.items():
+            setattr(post_common, name, value)
 
 
 def _event(
@@ -171,6 +266,39 @@ def test_regional_failure_does_not_claim_no_m09_events() -> None:
     print("PASS regional_failure_does_not_claim_no_m09_events")
 
 
+def test_regional_failure_preserves_usgs_m4_warning() -> None:
+    line = earthquakes.build_cyprus_quake_line(
+        _events(
+            [_event(4.2, place="Paphos, Cyprus", lat=34.80, lon=32.20, depth=18.0, source="USGS", event_id="usgs42")],
+            regional_ok=False,
+            usgs_ok=True,
+        )
+    )
+    assert_true("regional_m4", "региональные данные" in line, line)
+    assert_true("regional_m4", "⚠️ M4.2" in line, line)
+    assert_true("regional_m4", "глубина 18 км" in line, line)
+    assert_true("regional_m4", len(line.splitlines()) <= 2, line)
+    print("PASS regional_failure_preserves_usgs_m4_warning")
+
+
+def test_generic_cyprus_region_prefers_nearest_city() -> None:
+    event = _event(2.2, place="CYPRUS REGION", lat=34.6155, lon=32.9487, event_id="generic_region")
+    event["nearest_city"] = "Лимассол"
+    event["distance_km"] = 12.2
+    line = earthquakes.build_cyprus_quake_line(_events([event]))
+    assert_true("generic_region", "сильнейшее M2.2, 12 км от Лимассола" in line, line)
+    assert_true("generic_region", "M2.2 в районе Кипра" not in line, line)
+    print("PASS generic_cyprus_region_prefers_nearest_city")
+
+
+def test_precise_akrotiri_label_is_preserved() -> None:
+    line = earthquakes.build_cyprus_quake_line(
+        _events([_event(2.2, place="Akrotiri, Limassol", lat=34.58, lon=32.98, event_id="akrotiri")])
+    )
+    assert_true("akrotiri", "сильнейшее M2.2 в районе Акротири, рядом с Лимассолом" in line, line)
+    print("PASS precise_akrotiri_label_is_preserved")
+
+
 def test_two_source_duplicate_counts_once() -> None:
     base = _event(1.4, event_id="emsc1", source="EMSC", minutes_ago=10)
     duplicate = _event(1.5, event_id="usgs1", source="USGS", minutes_ago=11, status="automatic")
@@ -253,17 +381,7 @@ def test_format_v2_preserves_quake_line() -> None:
 
 
 def test_post_common_source_failure_line() -> None:
-    sys.modules.setdefault("imghdr", types.SimpleNamespace(what=lambda *_args, **_kwargs: None))
-    pendulum_stub = types.ModuleType("pendulum")
-    pendulum_stub.DateTime = object
-    pendulum_stub.now = lambda *_args, **_kwargs: None
-    pendulum_stub.today = lambda *_args, **_kwargs: None
-    sys.modules.setdefault("pendulum", pendulum_stub)
-    telegram_stub = types.ModuleType("telegram")
-    telegram_stub.Bot = object
-    telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
-    sys.modules.setdefault("telegram", telegram_stub)
-    import post_common
+    post_common = _import_post_common()
 
     old_env = post_common.os.environ.get("CY_QUAKES_24H")
     old_get = post_common.get_recent_earthquakes_cyprus
@@ -282,6 +400,24 @@ def test_post_common_source_failure_line() -> None:
     print("PASS post_common_source_failure_line")
 
 
+def test_morning_message_keeps_quake_when_air_unavailable() -> None:
+    quake_line = "🌍 Сейсмика 24ч: 1 слабое событие; сильнейшее M2.2, 12 км от Лимассола."
+    out = _build_morning_with_quake(None, quake_line)
+    assert_true("morning_no_air", out.count("M2.2") == 1, out)
+    assert_true("morning_no_air", quake_line in out, out)
+    print("PASS morning_message_keeps_quake_when_air_unavailable")
+
+
+def test_morning_message_appends_quake_once_with_air() -> None:
+    quake_line = "🌍 Сейсмика 24ч: 1 слабое событие; сильнейшее M2.2, 12 км от Лимассола."
+    air_line = "🏭 Воздух: AQI 40 (низкий) • PM₂.₅ 8 / PM₁₀ 14"
+    out = _build_morning_with_quake(air_line, quake_line)
+    assert_true("morning_air", out.count("M2.2") == 1, out)
+    assert_true("morning_air", out.count("🌍 Сейсмика") == 1, out)
+    assert_true("morning_air", out.index(air_line) < out.index("🏭 Воздух по городам") < out.index(quake_line), out)
+    print("PASS morning_message_appends_quake_once_with_air")
+
+
 TESTS = [
     test_m09_included_m08_excluded,
     test_micro_events_are_aggregated,
@@ -292,12 +428,17 @@ TESTS = [
     test_no_events_threshold_aware_not_absolute,
     test_complete_source_failure_is_not_calm_claim,
     test_regional_failure_does_not_claim_no_m09_events,
+    test_regional_failure_preserves_usgs_m4_warning,
+    test_generic_cyprus_region_prefers_nearest_city,
+    test_precise_akrotiri_label_is_preserved,
     test_two_source_duplicate_counts_once,
     test_two_distinct_events_count_separately,
     test_quarry_blast_explosion_excluded,
     test_default_fetch_uses_m09,
     test_format_v2_preserves_quake_line,
     test_post_common_source_failure_line,
+    test_morning_message_keeps_quake_when_air_unavailable,
+    test_morning_message_appends_quake_once_with_air,
 ]
 
 

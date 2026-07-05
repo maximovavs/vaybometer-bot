@@ -2085,15 +2085,15 @@ def build_message(
             by_city = _air_by_city_line(sea_pairs + other_pairs)
             if by_city:
                 P.append(by_city)
-            quake_line = _cyprus_quake_line_for_morning()
-            if quake_line:
-                P.append(quake_line)
             air_now = get_air(CY_LAT, CY_LON) or {}
-            bad_air, tip = _is_air_bad(air_now)
-            if bad_air and tip:
-                P.append(f"ℹ️ {tip}")
         else:
             air_now = get_air(CY_LAT, CY_LON) or {}
+        quake_line = _cyprus_quake_line_for_morning()
+        if quake_line and quake_line not in P:
+            P.append(quake_line)
+        bad_air, tip = _is_air_bad(air_now)
+        if bad_air and tip:
+            P.append(f"ℹ️ {tip}")
 
         kp_val = None
         kp_age = None

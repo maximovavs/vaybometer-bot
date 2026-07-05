@@ -612,12 +612,14 @@ def _weak_location_phrase(event: Dict[str, Any]) -> str:
     area = _area_from_place(place)
     if area == "Акротири":
         return "в районе Акротири, рядом с Лимассолом"
-    if area and area != "район Кипра":
-        return f"в районе {area}"
-    if area == "район Кипра":
-        return "в районе Кипра"
     dist = event.get("distance_km")
     city = event.get("nearest_city")
+    if area == "район Кипра" and isinstance(dist, (int, float)) and city:
+        return f"{int(round(float(dist)))} км от {_city_genitive(city)}"
+    if area == "район Кипра" and city:
+        return f"рядом с {_city_genitive(city)}"
+    if area and area != "район Кипра":
+        return f"в районе {area}"
     if isinstance(dist, (int, float)) and city:
         return f"{int(round(float(dist)))} км от {_city_genitive(city)}"
     if city:
@@ -626,13 +628,13 @@ def _weak_location_phrase(event: Dict[str, Any]) -> str:
 
 
 def _strong_location_phrase(event: Dict[str, Any]) -> str:
+    area = _area_from_place(str(event.get("place") or ""))
+    if area == "Акротири":
+        return "в районе Акротири, рядом с Лимассолом"
     dist = event.get("distance_km")
     city = event.get("nearest_city")
     if isinstance(dist, (int, float)) and city:
         return f"{int(round(float(dist)))} км от {_city_genitive(city)}"
-    area = _area_from_place(str(event.get("place") or ""))
-    if area == "Акротири":
-        return "в районе Акротири, рядом с Лимассолом"
     if area and area != "район Кипра":
         return f"в районе {area}"
     return "рядом с Кипром"
@@ -668,6 +670,27 @@ def _regional_failed_usgs_succeeded(events: Any) -> bool:
     return not regional_ok and usgs_ok
 
 
+def _usgs_fallback_part(event: Dict[str, Any]) -> str:
+    mag = float(event.get("mag") or 0)
+    if mag >= 4.0:
+        city, dist_txt = _warning_location(event)
+        depth = event.get("depth_km")
+        depth_part = f", глубина {int(round(float(depth)))} км" if isinstance(depth, (int, float)) else ""
+        return f" По USGS: ⚠️ {_format_mag(mag)} у {city}, {dist_txt}{depth_part}."
+    if mag >= 3.0:
+        return f" По USGS: сильнейшее событие {_format_mag(mag)}, {_strong_location_phrase(event)}."
+    if mag >= 2.0:
+        return f" По USGS: слабое событие {_format_mag(mag)}{_weak_location_suffix(event)}."
+    return " По USGS: только микрособытия; региональный каталог нужен для проверки слабых событий."
+
+
+def _weak_location_suffix(event: Dict[str, Any]) -> str:
+    phrase = _weak_location_phrase(event)
+    if phrase.startswith(("в районе", "рядом")):
+        return " " + phrase
+    return ", " + phrase
+
+
 def build_cyprus_quake_line(
     events: Optional[List[Dict[str, Any]]],
     tz: str = "Asia/Nicosia",
@@ -682,7 +705,7 @@ def build_cyprus_quake_line(
     if _regional_failed_usgs_succeeded(events):
         if events:
             strongest = max(events, key=lambda item: float(item.get("mag") or 0))
-            usgs_part = f" По USGS: сильнейшее {_format_mag(strongest.get('mag'))}, {_strong_location_phrase(strongest)}."
+            usgs_part = _usgs_fallback_part(strongest)
         else:
             usgs_part = " По каталогу USGS событий M2.5+ за 24 часа не найдено."
         return "🌍 Сейсмика: региональные данные по слабым событиям временно не обновились." + usgs_part
@@ -727,7 +750,7 @@ def build_cyprus_quake_line(
         return (
             "🌍 Сейсмика 24ч: "
             + " и ".join(parts)
-            + f"; сильнейшее {_format_mag(strongest_mag)} {_weak_location_phrase(strongest)}."
+            + f"; сильнейшее {_format_mag(strongest_mag)}{_weak_location_suffix(strongest)}."
         )
 
     micro_count = len(micro)
