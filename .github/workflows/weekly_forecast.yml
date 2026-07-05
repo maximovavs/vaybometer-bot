@@ -3,9 +3,11 @@ name: Weekly VayboMeter Forecast
 on:
   schedule:
     # 22:00 Asia/Nicosia: 19:00 UTC in summer, 20:00 UTC in winter.
-    # The schedule guard below publishes only when local time is Saturday 22:00.
     - cron: "0 19 * * 6"
     - cron: "0 20 * * 6"
+    # One-time recovery trigger: 2026-07-05 14:00 Asia/Nicosia.
+    # Protected by an explicit year/date guard; safe if the cron remains temporarily.
+    - cron: "0 11 5 7 *"
   workflow_dispatch:
     inputs:
       date:
@@ -48,6 +50,7 @@ env:
   SEND_TO_TEST: ${{ github.event.inputs.send_to_test }}
   PUBLISH_TO_PROD: ${{ github.event.inputs.publish_to_prod }}
   DRY_RUN: ${{ github.event.inputs.dry_run }}
+  SCHEDULE_EXPR: ${{ github.event.schedule }}
   AIRVISUAL_KEY: ${{ secrets.AIRVISUAL_KEY }}
   OWM_KEY: ${{ secrets.OWM_KEY }}
   TZ: Asia/Nicosia
@@ -65,15 +68,74 @@ jobs:
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "recovery_run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Scheduled local time: $(TZ="$TZ" date)"
-          if [ "$(TZ="$TZ" date +%u)" = "6" ] && [ "$(TZ="$TZ" date +%H)" = "22" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          echo "Weekly schedule expression: ${SCHEDULE_EXPR:-}"
+
+          if [ "${SCHEDULE_EXPR:-}" = "0 11 5 7 *" ]; then
+            local_date="$(TZ="$TZ" date +%F)"
+            if [ "$local_date" = "2026-07-05" ]; then
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "recovery_run=true" >> "$GITHUB_OUTPUT"
+              echo "Accepted one-time Cyprus weekly recovery run."
+            else
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "recovery_run=false" >> "$GITHUB_OUTPUT"
+              echo "Skipping expired one-time recovery cron."
+            fi
+            exit 0
+          fi
+
+          offset="$(TZ="$TZ" date +%z)"
+          echo "Current Cyprus UTC offset: $offset"
+          case "${SCHEDULE_EXPR:-}|$offset" in
+            "0 19 * * 6|+0300"|"0 20 * * 6|+0200")
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "recovery_run=false" >> "$GITHUB_OUTPUT"
+              echo "Scheduled weekly run accepted despite runner delay."
+              ;;
+            *)
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "recovery_run=false" >> "$GITHUB_OUTPUT"
+              echo "Skipping inactive seasonal weekly cron."
+              ;;
+          esac
+
+      - name: Resolve scheduled weekly date
+        id: weekly_date
+        if: steps.schedule_guard.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "${{ steps.schedule_guard.outputs.recovery_run }}" = "true" ]; then
+            echo "week_start=2026-07-06" >> "$GITHUB_OUTPUT"
+            echo "Weekly forecast recovery target: production"
+            echo "Scheduled weekly range starts Monday: 2026-07-06"
+            echo "Recovery schedule requested for 2026-07-05 14:00 Asia/Nicosia"
+            exit 0
+          fi
+
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            week_start="$(python - <<'PY'
+          import os
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+
+          tz = ZoneInfo(os.environ["TZ"])
+          today = datetime.now(tz).date()
+          days_since_saturday = (today.weekday() - 5) % 7
+          scheduled_saturday = today - timedelta(days=days_since_saturday)
+          week_start = scheduled_saturday + timedelta(days=2)
+          print(week_start.isoformat())
+          PY
+          )"
+            echo "week_start=$week_start" >> "$GITHUB_OUTPUT"
+            echo "Scheduled weekly range starts Monday: $week_start"
           else
-            echo "Skipping schedule outside Saturday 22:00 local time."
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "week_start=${WEEK_START_DATE:-}" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/checkout@v4
@@ -99,11 +161,18 @@ jobs:
 
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
             CHANNEL_ID_OVERRIDE=""
-            WEEK_START_DATE=""
+            WEEK_START_DATE="${{ steps.weekly_date.outputs.week_start }}"
             SEND_TO_TEST="false"
             PUBLISH_TO_PROD="true"
             DRY_RUN="false"
-            echo "Weekly forecast target: scheduled production"
+            if [ "${{ steps.schedule_guard.outputs.recovery_run }}" = "true" ]; then
+              echo "Weekly forecast recovery target: production"
+              echo "Scheduled weekly range starts Monday: $WEEK_START_DATE"
+              echo "Recovery schedule requested for 2026-07-05 14:00 Asia/Nicosia"
+            else
+              echo "Weekly forecast target: scheduled production"
+              echo "Scheduled weekly range starts Monday: $WEEK_START_DATE"
+            fi
           fi
 
           args=("send_weekly_forecast.py")
