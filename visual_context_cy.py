@@ -97,6 +97,9 @@ class VisualContextCY:
     dust_hint: Optional[str] = None
     visibility_haze: bool = False
     actual_precipitation: bool = False
+    coastal_precipitation: bool = False
+    inland_precipitation: bool = False
+    inland_thunder_risk: bool = False
     severe_wind: bool = False
     sea_temp: Optional[float] = None
     sea_state_hint: Optional[str] = None
@@ -242,6 +245,13 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
         "dust_lines": [],
         "haze_lines": [],
         "precipitation_lines": [],
+        "coastal_precipitation_lines": [],
+        "inland_precipitation_lines": [],
+        "generic_precipitation_lines": [],
+        "inland_thunder_lines": [],
+        "coastal_storm_lines": [],
+        "inland_storm_lines": [],
+        "generic_storm_lines": [],
         "sea_lines": [],
         "ignored_lines": [],
     }
@@ -259,6 +269,9 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
     dust_lines: list[str] = []
     haze_lines: list[str] = []
     actual_precipitation = False
+    coastal_precipitation = False
+    inland_precipitation = False
+    inland_thunder_risk = False
     weather_hits: set[str] = set()
     nicosia_hot = False
     troodos_relevant = False
@@ -327,10 +340,20 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
         line_has_precipitation = _has_actual_precipitation(line)
         line_has_dust = _has_dust_signal(line)
         line_has_haze = _has_visibility_haze(line)
+        is_troodos_or_mountain = "troodos" in cities or any(x in low for x in ("тродос", "горы", "горн", "mountain"))
 
         if line_has_precipitation:
             actual_precipitation = True
             evidence["precipitation_lines"].append(line)
+            if is_coastal:
+                coastal_precipitation = True
+                evidence["coastal_precipitation_lines"].append(line)
+            elif cities or is_troodos_or_mountain:
+                inland_precipitation = True
+                evidence["inland_precipitation_lines"].append(line)
+            else:
+                coastal_precipitation = True
+                evidence["generic_precipitation_lines"].append(line)
 
         if line_has_dust:
             dust_lines.append(line)
@@ -339,8 +362,15 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
             haze_lines.append(line)
             evidence["haze_lines"].append(line)
 
-        if _has_actual_storm_signal(line, max(line_gusts) if line_gusts else None):
-            weather_hits.add("storm")
+        line_has_storm = _has_actual_storm_signal(line, max(line_gusts) if line_gusts else None)
+        if line_has_storm:
+            if is_coastal:
+                evidence["coastal_storm_lines"].append(line)
+            elif cities or is_troodos_or_mountain:
+                inland_thunder_risk = True
+                evidence["inland_storm_lines"].append(line)
+            else:
+                evidence["generic_storm_lines"].append(line)
         if line_has_precipitation:
             weather_hits.add("rain")
         if line_has_dust:
@@ -360,6 +390,12 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
     temp_min = min(temps) if temps else None
     if temp_max is not None and temp_max >= 33:
         weather_hits.add("hot")
+
+    coastal_focus = bool(coastal_lines)
+    if evidence["coastal_storm_lines"] or evidence["generic_storm_lines"] or (evidence["inland_storm_lines"] and not coastal_focus):
+        weather_hits.add("storm")
+    elif evidence["inland_storm_lines"] and coastal_focus:
+        weather_hits.add("cloudy")
 
     if "storm" in weather_hits:
         weather_main = "storm"
@@ -416,7 +452,6 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
     elif any("влаж" in line.lower() for line in evidence["weather_lines"]):
         humidity_hint = "present"
 
-    coastal_focus = bool(coastal_lines)
     inland_heat_candidate = nicosia_hot or (
         temp_max is not None
         and temp_max >= 33
@@ -431,7 +466,9 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
     gust_max = max(gusts) if gusts else None
     severe_wind = (
         (gust_max is not None and gust_max >= 15)
-        or any(_has_actual_storm_signal(line, None) for line in evidence["weather_lines"])
+        or bool(evidence["coastal_storm_lines"])
+        or bool(evidence["generic_storm_lines"])
+        or (bool(evidence["inland_storm_lines"]) and not coastal_focus)
     )
 
     return VisualContextCY(
@@ -447,6 +484,9 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
         dust_hint="; ".join(dust_lines) if dust_lines else None,
         visibility_haze=bool(haze_lines),
         actual_precipitation=actual_precipitation,
+        coastal_precipitation=coastal_precipitation,
+        inland_precipitation=inland_precipitation,
+        inland_thunder_risk=inland_thunder_risk,
         severe_wind=severe_wind,
         sea_temp=max(sea_temps) if sea_temps else None,
         sea_state_hint=_normalized_sea_state(sea_state_lines),

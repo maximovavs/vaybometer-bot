@@ -441,12 +441,32 @@ def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
 
     m = re.match(r"^(✨\s*VayboMeter(?:\s+завтра)?:\s*\d+(?:[\.,]\d+)?/10)\s*[—-]\s*", s)
     prefix = m.group(1) if m else re.sub(r"\s*[—-]\s*.*$", "", s).strip()
+    score_match = re.search(r"(\d+(?:[\.,]\d+)?)\s*/\s*10", prefix)
+    if score_match:
+        try:
+            source_score = float(score_match.group(1).replace(",", "."))
+        except Exception:
+            source_score = None
+        if isinstance(source_score, (int, float)):
+            penalty = 0.0
+            if flags.get("rain"):
+                penalty += 0.6
+            if flags.get("wind"):
+                penalty += 0.4
+            if flags.get("heat"):
+                penalty += 0.3
+            if flags.get("dust"):
+                penalty += 0.4
+            if flags.get("storm"):
+                penalty += 0.8
+            target_score = max(5.5, min(source_score, source_score - penalty))
+            prefix = re.sub(r"\d+(?:[\.,]\d+)?\s*/\s*10", f"{target_score:.1f}/10", prefix, count=1)
     if flags.get("heat") and flags.get("wind"):
         reason = "жара и порывы у моря"
     elif flags.get("astro_unfavorable"):
         reason = "астрофон требует мягкого режима"
     elif flags.get("rain") or flags.get("storm"):
-        reason = "осадки и порывы требуют гибкого плана"
+        reason = "переменная погода требует гибкого плана"
     elif flags.get("dust"):
         reason = "дымка/пыль требуют проверки воздуха"
     else:
@@ -457,9 +477,9 @@ def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
 def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
     low = (score_line or "").lower()
     if flags["storm"]:
-        return "🧭 Главное завтра: главный фактор — предупреждение, ветер и порывы у моря."
+        return "🧭 Главное завтра: сильные порывы у моря задают режим дня."
     if flags["rain"]:
-        return "🧭 Главное завтра: локальные осадки важнее средних цифр по острову."
+        return "🧭 Главное завтра: день неоднородный по острову; маршрут лучше держать гибким."
     if flags["dust"]:
         return "🧭 Главное завтра: пыль/дымка влияют на воздух и видимость; утром лучше сверить AQI/PM."
     if flags.get("visibility_haze"):
@@ -480,9 +500,11 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
 
 def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_inland: bool) -> str:
     if flags["storm"]:
-        return "⚠️ Нюанс: у открытого моря и на трассах вдоль берега порывы лучше проверить утром."
+        return "⚠️ Нюанс: у открытого моря и на трассах вдоль берега порывы могут быть сильнее средних значений."
     if flags["rain"]:
-        return "⚠️ Нюанс: осадки могут идти локально — маршрут лучше держать гибким."
+        if flags.get("troodos") and has_sea:
+            return "⚠️ Главный нюанс: осадки возможны локально, особенно в горах; у моря жарко и порывисто."
+        return "⚠️ Главный нюанс: осадки возможны локально; по маршруту лучше оставить запасной вариант."
     if flags["dust"]:
         return "⚠️ Нюанс: при пыли/дыме чувствительным людям лучше сократить активность на улице."
     if flags.get("visibility_haze"):
@@ -500,15 +522,19 @@ def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_inland: bool) -> 
 
 def _evening_confidence_line(flags: dict[str, bool]) -> str:
     if flags["storm"] or flags["rain"] or flags["local"]:
-        return "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром."
+        if flags["rain"] and flags["wind"]:
+            return "🎯 Уверенность: температура надёжна; по горам и порывам возможны уточнения утром."
+        if flags["rain"]:
+            return "🎯 Уверенность: температура надёжна; по локальной погоде возможны уточнения утром."
+        return "🎯 Уверенность: температура надёжна; порывы лучше перепроверить утром."
     return ""
 
 
 def _evening_plan(flags: dict[str, bool]) -> str:
     if flags["storm"]:
-        return "✅ План завтра: гибкий маршрут, проверка ветра утром и без лишнего риска у открытого моря."
+        return "✅ План завтра: гибкий маршрут и без лишнего риска у открытого моря."
     if flags["rain"]:
-        return "✅ План завтра: держать запасной indoor-вариант и сверить осадки перед выездом."
+        return "✅ План завтра: запасной indoor-вариант; радар — перед выездом."
     if flags["heat"] and flags["wind"]:
         return "✅ План завтра: основные дела утром/вечером, днём — вода и тень; у моря выбрать защищённое место."
     if flags["heat"]:
@@ -662,6 +688,9 @@ def _cyprus_voice_conditions(lines: list[str], *, poor_air: bool = False, flags:
         "wind": bool(source_flags.get("wind")) or isinstance(max_wind, (int, float)) and max_wind >= 6,
         "gust": max_wind,
         "poor_air": poor_air or bool(source_flags.get("dust")),
+        "rain": bool(source_flags.get("rain")),
+        "local": bool(source_flags.get("local")),
+        "troodos": bool(source_flags.get("troodos")),
         "aqi": aqi,
         "pm25": pm25,
         "pm10": pm10,

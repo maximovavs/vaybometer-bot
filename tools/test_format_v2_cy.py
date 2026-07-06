@@ -282,6 +282,29 @@ SURF_WITH_WAVE_EVENING = """<b>🌅 Кипр: погода на завтра (27
 #Кипр #погода #здоровье #Никосия #Тродос
 """
 
+
+INTEGRATED_LOCAL_RAIN_GUSTS_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 8.1/10 — хорошо для обычных дел.
+🏖 <b>Морские города</b>
+Ларнака: 30/25 °C • переменная облачность • 💨 7 м/с • порывы до 12 м/с
+Лимассол: 30/23 °C • переменная облачность • 💨 8 м/с • порывы до 11 м/с
+Айя-Напа: 29/25 °C • облачно с прояснениями • 💨 6 м/с • порывы до 10 м/с
+Пафос: 28/24 °C • переменная облачность • 💨 6 м/с • порывы до 9 м/с
+🧜‍♂️ Отлично: Серф (западный ветер, вдоль берега)
+———
+🏞 <b>Континентальные города</b>
+Никосия: 33/24 °C • жарко
+Тродос: 25/18 °C • возможна гроза в горах
+———
+🏭 Воздух: AQI 48 (низкий) • PM₂.₅ 12 / PM₁₀ 19
+🌅 Рассвет завтра: 05:37
+🌇 Закат завтра: 20:05
+🌖 Убывающая Луна в ♐ — мягкий вечерний ритм.
+✨ 92% освещённости — Луна яркая.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
 CITY_AIR_BROKEN_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
 ✨ VayboMeter завтра: 7.0/10 — обычный день.
 🏖 <b>Морские города</b>
@@ -431,8 +454,8 @@ def cy_evening_preserves_compact_astro() -> None:
 
 def cy_evening_caution_score_softens_good_wording() -> None:
     text = build_evening_format_v2("Кипр", CAUTION_SCORE_EVENING)
-    assert "✨ VayboMeter завтра: 7.4/10 — с оговорками; жара и порывы у моря." in text
-    assert "7.4/10" in text
+    assert "✨ VayboMeter завтра: 5.9/10 — с оговорками; жара и порывы у моря." in text
+    assert "7.4/10" not in text
     assert "хорошо; сильная жара" not in text
     assert "☀️ <b>Солнце, Луна и ритм завтра</b>" in text
     assert "🌇 Закат завтра: 20:05" in text
@@ -562,7 +585,7 @@ def cy_evening_surf_without_wave_is_not_excellent() -> None:
     text = _safe_test_evening_pipeline(SURF_NO_WAVE_EVENING)
     assert "Отлично: Серф" not in text
     assert "Отлично: Сёрф" not in text
-    assert "🏄 Серф: возможны отдельные окна; проверить фактическую волну и ветер по споту." in text
+    assert "🏄 Серф: данных для уверенной оценки недостаточно; проверить спот перед выездом." in text
     assert text.splitlines()[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
 
 
@@ -580,6 +603,27 @@ def cy_evening_city_air_line_is_compact_and_parenthesized() -> None:
     assert text.count("🏭 Воздух по городам:") == 1
 
 
+def cy_evening_integrated_guidance_is_not_repetitive() -> None:
+    text = _safe_test_evening_pipeline(INTEGRATED_LOCAL_RAIN_GUSTS_EVENING)
+    lines = text.splitlines()
+    score_line = next(line for line in lines if line.startswith("✨ VayboMeter"))
+    assert score_line.count(";") == 1
+    assert "8.1/10" not in score_line
+    assert "6." in score_line or "7." in score_line
+    assert text.count("⚠️ Главный нюанс:") + text.count("⚠️ Нюанс:") == 1
+    assert text.count("🎯 Уверенность:") == 1
+    assert text.count("✅ План завтра:") == 1
+    assert text.count("осадки возможны локально") == 1
+    assert text.count("проверить") == 1
+    assert "ветер/осадки лучше проверить утром" not in text
+    assert "сверить осадки" not in text
+    assert "Лучшее окно" not in text
+    assert "💬 Настрой на завтра: жарко; у моря порывисто" in text
+    assert "🏄 Серф: данных для уверенной оценки недостаточно; проверить спот перед выездом." in text
+    assert "Отлично: Серф" not in text
+    assert text.splitlines()[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
+
+
 def cy_evening_generic_warning_does_not_trigger_storm() -> None:
     text = build_evening_format_v2("Кипр", GENERIC_UV_WARNING_EVENING)
     score_line = _cyprus_evening_score_line(GENERIC_UV_WARNING_EVENING)
@@ -592,8 +636,9 @@ def cy_evening_generic_warning_does_not_trigger_storm() -> None:
 
 def cy_evening_rain_warning_is_rain_not_storm() -> None:
     text = build_evening_format_v2("Кипр", RAIN_WARNING_NO_STORM_EVENING)
-    assert "🧭 Главное завтра: локальные осадки важнее средних цифр по острову." in text
-    assert "✅ План завтра: держать запасной indoor-вариант" in text
+    assert "🧭 Главное завтра: день неоднородный по острову; маршрут лучше держать гибким." in text
+    assert "⚠️ Главный нюанс: осадки возможны локально" in text
+    assert "✅ План завтра: запасной indoor-вариант; радар — перед выездом." in text
     assert "главный фактор — предупреждение" not in text
     assert "гибкий маршрут, проверка ветра утром" not in text
     assert "⚠️ <b>Предупреждение</b>" not in text
@@ -601,8 +646,8 @@ def cy_evening_rain_warning_is_rain_not_storm() -> None:
 
 def cy_evening_gust_17_triggers_storm_without_word() -> None:
     text = build_evening_format_v2("Кипр", GUST_STORM_NO_WORD_EVENING)
-    assert "🧭 Главное завтра: главный фактор — предупреждение, ветер и порывы у моря." in text
-    assert "✅ План завтра: гибкий маршрут, проверка ветра утром" in text
+    assert "🧭 Главное завтра: сильные порывы у моря задают режим дня." in text
+    assert "✅ План завтра: гибкий маршрут и без лишнего риска у открытого моря." in text
     assert "⚠️ <b>Предупреждение</b>" in text
 
 
@@ -621,7 +666,7 @@ def cy_evening_critical_safecast_is_explicitly_labeled() -> None:
 
 def cy_evening_uncertain_has_short_confidence_line() -> None:
     text = build_evening_format_v2("Кипр", RAIN_EVENING)
-    assert "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром." in text
+    assert "🎯 Уверенность: температура надёжна; по горам и порывам возможны уточнения утром." in text
     assert "🎯 <b>Уверенность прогноза</b>" not in text
 
 
@@ -707,6 +752,7 @@ def main() -> None:
         cy_evening_surf_without_wave_is_not_excellent,
         cy_evening_surf_with_valid_wave_is_cautiously_positive,
         cy_evening_city_air_line_is_compact_and_parenthesized,
+        cy_evening_integrated_guidance_is_not_repetitive,
         cy_evening_generic_warning_does_not_trigger_storm,
         cy_evening_rain_warning_is_rain_not_storm,
         cy_evening_gust_17_triggers_storm_without_word,

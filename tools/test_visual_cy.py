@@ -83,7 +83,7 @@ def cy_evening_hot_coast() -> None:
     scene = apply_visual_rules_cy(ctx)
     assert ctx.post_type == "evening"
     assert ctx.coastal_focus is True
-    assert "warm mediterranean evening" in scene.light_cue.lower()
+    assert "restrained twilight light" in scene.light_cue.lower()
     assert "heat shimmer" in _all_cues(scene)
 
 
@@ -459,7 +459,7 @@ WET_SEVERE_WIND_SOURCE = """<b>🌅 Кипр: погода на завтра (27
 
 def cy_prompt_format_v2_dry_severe_wind_advice_does_not_create_rain() -> None:
     final_text = build_evening_format_v2("Кипр", DRY_SEVERE_WIND_SOURCE)
-    assert "ветер/осадки лучше проверить утром" in final_text
+    assert "порывы лучше перепроверить утром" in final_text
     prompt, _style = build_cyprus_scene_prompt(final_text, post_type="evening")
     low = prompt.lower()
     assert "strong dry coastal wind response" in low
@@ -470,6 +470,45 @@ def cy_prompt_format_v2_dry_severe_wind_advice_does_not_create_rain() -> None:
     assert "dramatic rain clouds" not in low
     assert "wet promenade" not in low
     assert "rain-darkened coast" not in low
+
+
+LOCAL_MOUNTAIN_THUNDER_SOURCE = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 8.1/10 — хорошо для обычных дел.
+🏖 <b>Морские города</b>
+Ларнака: 30/25 °C • переменная облачность • 💨 7 м/с • порывы до 12 м/с
+Лимассол: 30/23 °C • переменная облачность • 💨 8 м/с • порывы до 11 м/с
+Айя-Напа: 29/25 °C • облачно с прояснениями • 💨 6 м/с • порывы до 10 м/с
+Пафос: 28/24 °C • переменная облачность • 💨 6 м/с • порывы до 9 м/с
+———
+🏞 <b>Континентальные города</b>
+Никосия: 33/24 °C • жарко
+Тродос: 25/18 °C • возможна гроза в горах
+———
+🏭 Воздух: AQI 48 (низкий) • PM₂.₅ 12 / PM₁₀ 19
+🌅 Рассвет завтра: 05:37
+🌇 Закат завтра: 20:05
+🌖 Убывающая Луна в ♐ — мягкий вечерний ритм.
+✨ 92% освещённости — Луна яркая.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+def cy_prompt_local_mountain_thunder_keeps_coast_dry_and_windy() -> None:
+    final_text = build_evening_format_v2("Кипр", LOCAL_MOUNTAIN_THUNDER_SOURCE)
+    prompt, _style, meta = build_cyprus_scene_prompt_with_metadata(final_text, post_type="evening")
+    low = prompt.lower()
+    assert meta["cloud_haze_category"] == "inland_cloud_development"
+    assert "distant inland cloud development" in low
+    assert "cloud towers over inland hills" in low
+    assert "textured mediterranean water surface" in low
+    assert "visible wind response in palm fronds and coastal grass" in low
+    assert "occasional small whitecaps" in low
+    assert "dry coastal surfaces" in low
+    assert "dramatic rain clouds" not in low
+    assert "wet promenade" not in low
+    assert "rain-darkened coast" not in low
+    assert "whole-coast storm scene" in low
 
 
 def cy_prompt_format_v2_wet_severe_wind_keeps_rain_visual() -> None:
@@ -771,6 +810,7 @@ TESTS = [
     cy_prompt_morning_high_uv_keeps_direct_sun_cue,
     cy_prompt_real_evening_wind_moon_haze_has_no_rain_or_dust_contradictions,
     cy_prompt_format_v2_dry_severe_wind_advice_does_not_create_rain,
+    cy_prompt_local_mountain_thunder_keeps_coast_dry_and_windy,
     cy_prompt_format_v2_wet_severe_wind_keeps_rain_visual,
     cy_prompt_no_raw_source_hints,
     cy_prompt_coastal_priority_over_nicosia,

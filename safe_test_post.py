@@ -186,20 +186,13 @@ def _cyprus_feels_line(v2_text: str) -> str:
 
 
 def _cyprus_best_window_line(v2_text: str) -> str:
-    c = _cyprus_conditions(v2_text)
-    uv = c.get("uv")
-    gust = c.get("gust")
-
-    if isinstance(uv, (int, float)) and uv >= 8:
-        tail = "днём — тень"
-        if isinstance(gust, (int, float)) and gust >= 15:
-            tail += ", у моря — защищённые места"
-        return f"🕒 Лучшее окно: до 11:00 и после 18:30; {tail}."
-    if isinstance(uv, (int, float)) and uv >= 6:
-        return "🕒 Лучшее окно: до 12:00 и ближе к закату; в полдень лучше тень."
-    if isinstance(gust, (int, float)) and gust >= 15:
-        return "🕒 Лучшее окно: спокойные утренние часы; у моря — по фактическому ветру."
-    return "🕒 Лучшее окно: позднее утро и время перед закатом."
+    for line in str(v2_text or "").splitlines():
+        clean = line.strip()
+        if not clean.startswith("🕒 Лучшее окно:"):
+            continue
+        if re.search(r"\b\d{2}:\d{2}\s*[–—-]\s*\d{2}:\d{2}\b", clean):
+            return clean
+    return ""
 
 
 def _cyprus_smart_plan_line(v2_text: str) -> str:
@@ -222,6 +215,19 @@ def _cyprus_smart_plan_line(v2_text: str) -> str:
     if windy:
         return "✅ План: у моря выбирать защищённые места; лёгкие вещи закрепить; прогулку сверять с фактическим ветром."
     return ""
+
+
+def _has_cyprus_precip_risk(text: str) -> bool:
+    low = _plain(text).lower()
+    if re.search(r"без\s+осад|осад\w*\s+не\s+ожида|дожд\w*\s+не\s+буд", low, flags=re.I):
+        return False
+    return bool(
+        re.search(
+            r"местами\s+(?:дожд|ливн|гроз|осад)|(?:дожд|ливн|гроз|осад)\w*\s+возмож|возмож\w*\s+(?:дожд|ливн|гроз|осад)",
+            low,
+            flags=re.I,
+        )
+    )
 
 
 def _cyprus_score_line(v2_text: str) -> str:
@@ -294,10 +300,14 @@ def _cyprus_evening_score_line(v2_text: str) -> str:
             score -= 1.1; reasons.append("порывы у моря")
         elif max_gust >= 12:
             score -= 0.8; reasons.append("порывы у моря")
+        elif max_gust >= 10:
+            score -= 0.5; reasons.append("порывы у моря")
     if isinstance(max_wind, (int, float)) and max_wind >= 6:
         score -= 0.4; reasons.append("ветер у моря")
     if has_real_mist:
         score -= 0.3; reasons.append("дымка/туман")
+    if _has_cyprus_precip_risk(text):
+        score -= 0.7; reasons.append("локальная погода")
     if _has_actual_cyprus_storm_signal(text, max_gust):
         score -= 1.0; reasons.append("штормовые порывы")
     if "микросценар" in low:
@@ -354,6 +364,8 @@ def _dedupe_score_reasons(reasons: list[str]) -> list[str]:
             return "visibility"
         if "предупреж" in low or "шторм" in low:
             return "warning"
+        if "дожд" in low or "осад" in low or "гроз" in low or "локальная погода" in low:
+            return "local_weather"
         return low
 
     def better(new: str, old: str) -> bool:
@@ -451,12 +463,12 @@ def _polish_surf_lines(text: str) -> str:
 
         if "Отлично:" in line and re.search(r"\b(?:Серф|Сёрф|Surf)\b", line, flags=re.I):
             if last_wave is None:
-                out.append("🏄 Серф: возможны отдельные окна; проверить фактическую волну и ветер по споту.")
+                out.append("🏄 Серф: данных для уверенной оценки недостаточно; проверить спот перед выездом.")
                 continue
             if good_min <= last_wave <= good_max and (last_wind is None or last_wind <= wind_max):
                 out.append("🏄 Серф: есть рабочие окна по волне; проверить конкретный спот.")
                 continue
-            out.append("🏄 Серф: возможны отдельные окна; проверить фактическую волну и ветер по споту.")
+            out.append("🏄 Серф: отдельные окна возможны, но решение — по фактической волне и ветру на споте.")
             continue
         out.append(line)
     return "\n".join(out)
@@ -555,6 +567,12 @@ def _cyprus_main_nuance(v2_text: str) -> str:
     heat = any(x in low for x in ("жара", "тепло"))
     wind = any(x in low for x in ("порыв", "ветер"))
     mist = any(x in low for x in ("туман", "дымк"))
+    rain = _has_cyprus_precip_risk(v2_text)
+    troodos = "тродос" in low or "горы" in low
+    if rain and wind and (heat or troodos):
+        return "⚠️ Главный нюанс: осадки возможны локально, особенно в горах; у моря жарко и порывисто."
+    if rain:
+        return "⚠️ Главный нюанс: осадки возможны локально; по маршруту лучше оставить запасной вариант."
     if heat and wind:
         return "⚠️ Главный нюанс: жара в Никосии и порывы у моря."
     if heat:
@@ -613,6 +631,9 @@ def _cyprus_voice_conditions(v2_text: str) -> dict[str, object]:
         "pm25": pm25,
         "pm10": pm10,
         "poor_air": explicit_poor_air or explicit_dust,
+        "rain": _has_cyprus_precip_risk(v2_text),
+        "local": any(x in text for x in ("локаль", "местами", "тродос", "горы")),
+        "troodos": "тродос" in text,
     }
 
 

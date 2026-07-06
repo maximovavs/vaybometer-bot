@@ -40,7 +40,8 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         raise ValueError("ctx.post_type must be 'morning' or 'evening'")
 
     hot = _is_hot(ctx)
-    rain = bool(ctx.actual_precipitation)
+    rain = bool(ctx.coastal_precipitation or (ctx.actual_precipitation and not ctx.coastal_focus))
+    inland_unsettled = bool(ctx.inland_precipitation or ctx.inland_thunder_risk) and ctx.coastal_focus and not rain
     severe_wind = bool(ctx.severe_wind)
     wet = rain
     dusty = ctx.weather_main == "dusty" or bool(ctx.dust_hint)
@@ -56,6 +57,8 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
 
     if wet:
         sky_cue = "dramatic rain clouds over Cyprus"
+    elif inland_unsettled:
+        sky_cue = "warm Cyprus coast with distant inland cloud development toward the Troodos mountains"
     elif severe_wind:
         sky_cue = "layered wind-driven Mediterranean clouds over a dry Cyprus coast"
     elif dusty:
@@ -66,13 +69,15 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         sky_cue = "layered Mediterranean cloud cover"
     elif ctx.weather_main == "mixed":
         sky_cue = "sun and passing Mediterranean clouds"
+    elif ctx.weather_main == "rain":
+        sky_cue = "mixed Mediterranean cloud depth without making the whole coast stormy"
     else:
         sky_cue = "clear bright Mediterranean sky"
 
     if ctx.post_type == "morning":
         light_cue = "daylight Mediterranean morning, bright practical light for the day ahead"
     else:
-        light_cue = "warm Mediterranean evening with golden or soft dusk light"
+        light_cue = "Mediterranean evening with restrained twilight light and residual horizon glow"
 
     if ctx.post_type == "morning" and ctx.uv_level in {"high", "extreme"}:
         light_cue += "; strong sun cue with crisp sunlit surfaces"
@@ -83,6 +88,15 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
 
     if wet:
         sea_cue = "rain-darkened coast and a wet promenade; active unsettled sea"
+    elif inland_unsettled and windy:
+        sea_cue = (
+            "warm dry Cyprus coast with textured Mediterranean water surface; "
+            "visible wind response in palm fronds and coastal grass; distant inland cloud towers"
+        )
+        if ctx.gust_max is not None and ctx.gust_max >= 12:
+            sea_cue += "; occasional small whitecaps"
+    elif inland_unsettled:
+        sea_cue = "warm dry Cyprus coast with distant inland cloud towers toward the mountains"
     elif severe_wind:
         sea_cue = (
             "strongly textured Mediterranean water surface with frequent small whitecaps; "
@@ -122,6 +136,8 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
 
     if wet:
         activity_cue = "sheltered pedestrians on a wet promenade; no beach leisure mood"
+    elif inland_unsettled:
+        activity_cue = "dry coastal promenade with weather-aware planning and distant inland cloud development"
     elif severe_wind:
         activity_cue = "dry coastal promenade with wind-aware pedestrians and visibly bent vegetation"
     elif windy:
@@ -139,6 +155,8 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         mood_cue = "warm Mediterranean evening mood"
     if wet:
         mood_cue = "weather-alert, dramatic and practical; not a leisure beach scene"
+    elif inland_unsettled:
+        mood_cue = "warm coastal evening with practical awareness of inland weather changes"
     elif severe_wind:
         mood_cue = "wind-alert but dry Mediterranean evening mood"
     elif dusty:
@@ -155,6 +173,14 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         must_show.extend(["dry Nicosia urban heat", "shade and sun-baked stone"])
     if wet:
         must_show.extend(["wet promenade surfaces", "dramatic rain clouds"])
+    elif inland_unsettled:
+        must_show.extend(
+            [
+                "distant inland cloud development toward the mountains",
+                "clearer warm coastal foreground",
+                "dry promenade and dry coastal surfaces",
+            ]
+        )
     elif severe_wind:
         must_show.extend(
             [
@@ -195,6 +221,14 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         must_avoid.extend(["sunset", "night", "moon-led scene"])
     if wet:
         must_avoid.extend(["beach leisure mood", "sunbathing", "carefree swimming scene"])
+    elif inland_unsettled:
+        must_avoid.extend(
+            [
+                "whole-coast storm scene",
+                "coastal surfaces shown as rainy when coastal rain is absent",
+                "fully stormy shoreline when only inland clouds are forecast",
+            ]
+        )
     elif severe_wind:
         must_avoid.extend(
             [
@@ -204,7 +238,7 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         )
     elif windy:
         must_avoid.extend(["mirror-flat water", "completely still vegetation"])
-    if not ctx.inland_heat_focus:
+    if not ctx.inland_heat_focus and not inland_unsettled:
         must_avoid.append("Troodos or inland mountains without explicit relevance")
 
     return SceneCuesCY(
@@ -223,6 +257,7 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
             "hot_rule": hot,
             "rain_rule": rain,
             "wet_rule": wet,
+            "inland_unsettled_rule": inland_unsettled,
             "severe_wind_rule": severe_wind,
             "dust_rule": dusty,
             "visibility_haze_rule": visibility_haze,

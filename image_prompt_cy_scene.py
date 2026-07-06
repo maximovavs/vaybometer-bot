@@ -339,6 +339,8 @@ def _cloud_haze_category(ctx: VisualContextCY) -> str:
         return "dust_haze"
     if ctx.visibility_haze:
         return "visibility_haze"
+    if getattr(ctx, "inland_precipitation", False) or getattr(ctx, "inland_thunder_risk", False):
+        return "inland_cloud_development"
     if ctx.weather_main == "cloudy":
         return "cloudy"
     if ctx.weather_main == "rain":
@@ -549,6 +551,9 @@ def _location_cue(message: str, ctx: VisualContextCY) -> str:
     ]
 
     if ctx.coastal_focus:
+        coastal_found = [name for name in found if name in {"Paphos", "Larnaca", "Limassol", "Ayia Napa"}]
+        if len(coastal_found) > 1:
+            return "Cyprus Mediterranean coast with local stone architecture and varied shoreline"
         if "Paphos" in found:
             return "Paphos rocky Mediterranean coast as the geographic setting"
         if "Larnaca" in found:
@@ -584,6 +589,16 @@ def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
         )
     else:
         cues.append(scene.mood_cue)
+        if scene.diagnostics.get("inland_unsettled_rule"):
+            cues.extend(
+                [
+                    "distant inland cloud development toward the Troodos mountains",
+                    "cloud towers over inland hills while the coastal foreground remains dry",
+                    "clearer warm Cyprus coast with weather building inland",
+                    "no whole-coast storm scene",
+                    "dry coastal surfaces, not a rainy shoreline",
+                ]
+            )
         if scene.diagnostics.get("wind_rule"):
             cues.extend(
                 [
@@ -616,7 +631,13 @@ def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
         cues.append("strong direct sunlight with crisp daylight contrast")
     if ctx.humidity_hint in {"high", "present"}:
         cues.append("soft humid sea haze along the coast")
-    if ctx.coastal_focus and ctx.sea_state_hint == "calm":
+    if (
+        ctx.coastal_focus
+        and ctx.sea_state_hint == "calm"
+        and not scene.diagnostics.get("wind_rule")
+        and not scene.diagnostics.get("wet_rule")
+        and not scene.diagnostics.get("inland_unsettled_rule")
+    ):
         cues.append("calm warm sea surface")
 
     return cues

@@ -1810,7 +1810,7 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
 
     sup_good = False
     if wind_val is not None:
-        if (wind_val <= SUP_WIND_GOOD_MAX) and (wave_h is None or wave_h <= SUP_WAVE_GOOD_MAX):
+        if wave_h is not None and (wind_val <= SUP_WIND_GOOD_MAX) and (wave_h <= SUP_WAVE_GOOD_MAX):
             sup_good = True
         if shore == "offshore" and wind_val >= OFFSHORE_SUP_WIND_MIN:
             sup_good = False
