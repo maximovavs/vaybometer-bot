@@ -4,6 +4,8 @@ on:
   schedule:
     # Утренний пост: 01:00 UTC ≈ 04:00 на Кипре летом / 03:00 зимой
     - cron: '0 1 * * *'
+    # Recovery утреннего поста, если primary schedule/job не стартовал на runner
+    - cron: '15 3 * * *'
     # Вечерний пост: 13:00 UTC ≈ 16:00 на Кипре летом / 15:00 зимой
     - cron: '0 13 * * *'
     # Курсы валют: 07:00 UTC
@@ -49,6 +51,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: daily-post-cy
@@ -93,6 +96,7 @@ env:
   CY_QUAKE_MIN_MAG: "0.9"
 
   TZ: Asia/Nicosia
+  GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
   WORK_DATE: ${{ github.event.inputs.work_date || '' }}
   TO_TEST:   ${{ github.event.inputs.to_test || 'false' }}
   PUBLISH_TO_PROD: ${{ github.event.inputs.publish_to_prod || 'false' }}
@@ -114,7 +118,10 @@ jobs:
     name: Morning post (for today)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 1 * * *') ||
+      (
+        github.event_name == 'schedule' &&
+        (github.event.schedule == '0 1 * * *' || github.event.schedule == '15 3 * * *')
+      ) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_morning == 'true')
     steps:
       - uses: actions/checkout@v4
@@ -122,7 +129,10 @@ jobs:
       - name: Restore .cache (FX + intermarket deltas)
         uses: actions/cache@v4
         with:
-          path: .cache
+          path: |
+            .cache
+            !.cache/cyprus_visual_history_prod.json
+            !.cache/cyprus_visual_history_test.json
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -192,9 +202,68 @@ jobs:
 
       - name: Post morning (for today)
         shell: bash
+        env:
+          GH_ACTIONS_TOKEN: ${{ github.token }}
         run: |
           python <<'PY'
-          import os, runpy, sys
+          import datetime as dt
+          import json
+          import os
+          import runpy
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          def _gh_json(path):
+              token = (os.getenv("GH_ACTIONS_TOKEN") or "").strip()
+              repo = (os.getenv("GITHUB_REPOSITORY") or "").strip()
+              if not token or not repo:
+                  return None
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}{path}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          def _recovery_should_skip():
+              if os.getenv("GITHUB_EVENT_NAME") != "schedule":
+                  return False
+              if (os.getenv("GITHUB_EVENT_SCHEDULE") or "").strip() != "15 3 * * *":
+                  return False
+              today_utc = dt.datetime.now(dt.timezone.utc).date().isoformat()
+              current_run_id = str(os.getenv("GITHUB_RUN_ID") or "")
+              branch = urllib.parse.quote(os.getenv("GITHUB_REF_NAME") or "main", safe="")
+              try:
+                  runs = _gh_json(
+                      f"/actions/workflows/daily_post.yml/runs?event=schedule&branch={branch}&per_page=30"
+                  ) or {}
+                  for run in runs.get("workflow_runs", []):
+                      run_id = str(run.get("id") or "")
+                      if not run_id or run_id == current_run_id:
+                          continue
+                      if str(run.get("created_at") or "")[:10] != today_utc:
+                          continue
+                      if run.get("conclusion") != "success":
+                          continue
+                      jobs = _gh_json(f"/actions/runs/{run_id}/jobs?per_page=100") or {}
+                      for job in jobs.get("jobs", []):
+                          if (
+                              job.get("name") == "Morning post (for today)"
+                              and job.get("conclusion") == "success"
+                          ):
+                              print(
+                                  "CY_MORNING_RECOVERY_SKIP: "
+                                  f"already delivered by successful morning job in run {run_id}"
+                              )
+                              return True
+              except Exception as exc:
+                  print(f"CY_MORNING_RECOVERY_CHECK_FAILED: {exc.__class__.__name__}: {exc}")
+              return False
 
           scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
           format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
@@ -203,6 +272,9 @@ jobs:
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           production_chat = (os.getenv("CHANNEL_ID") or "").strip()
           wd = (os.getenv("WORK_DATE") or "").strip()
+
+          if _recovery_should_skip():
+              raise SystemExit(0)
 
           if format_v2:
               args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
@@ -239,6 +311,15 @@ jobs:
           runpy.run_path("post_cy.py", run_name="__main__")
           PY
 
+      - name: Upload Cyprus morning diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyprus-morning-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .cache/cy_morning_diagnostics/
+          if-no-files-found: ignore
+          retention-days: 7
+
   evening:
     name: Evening post (for tomorrow)
     runs-on: ubuntu-latest
@@ -255,7 +336,10 @@ jobs:
       - name: Restore .cache (FX + intermarket deltas)
         uses: actions/cache@v4
         with:
-          path: .cache
+          path: |
+            .cache
+            !.cache/cyprus_visual_history_prod.json
+            !.cache/cyprus_visual_history_test.json
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -389,7 +473,10 @@ jobs:
       - name: Restore .cache (FX + intermarket deltas)
         uses: actions/cache@v4
         with:
-          path: .cache
+          path: |
+            .cache
+            !.cache/cyprus_visual_history_prod.json
+            !.cache/cyprus_visual_history_test.json
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-

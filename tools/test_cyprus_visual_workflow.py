@@ -27,6 +27,22 @@ def _block(text: str, start: str, end: str | None = None) -> str:
     return text[start_idx:end_idx]
 
 
+def _blocks(text: str, start: str) -> list[str]:
+    out: list[str] = []
+    idx = 0
+    while True:
+        try:
+            start_idx = text.index(start, idx)
+        except ValueError:
+            return out
+        try:
+            end_idx = text.index("\n      - name:", start_idx + 1)
+        except ValueError:
+            end_idx = len(text)
+        out.append(text[start_idx:end_idx])
+        idx = end_idx
+
+
 def test_daily_visual_history_cache() -> None:
     text = _read(DAILY)
     _assert("daily_cache_action", "uses: actions/cache@v4" in text)
@@ -59,6 +75,19 @@ def test_daily_visual_history_cache() -> None:
     _assert("daily_exact_hit_log", "Cyprus visual history cache restored:" not in text)
     _assert("daily_prod_exact_hit_log", "Cyprus visual history prod exact-key hit:" in text)
     _assert("daily_test_exact_hit_log", "Cyprus visual history test exact-key hit:" in text)
+    generic_cache_blocks = _blocks(text, "Restore .cache (FX + intermarket deltas)")
+    _assert("daily_generic_cache_blocks", len(generic_cache_blocks) >= 3, str(len(generic_cache_blocks)))
+    for idx, cache_block in enumerate(generic_cache_blocks, start=1):
+        _assert(f"daily_generic_cache_{idx}_multiline", "path: |" in cache_block)
+        _assert(f"daily_generic_cache_{idx}_cache_dir", "\n            .cache" in cache_block)
+        _assert(
+            f"daily_generic_cache_{idx}_excludes_prod_history",
+            "!.cache/cyprus_visual_history_prod.json" in cache_block,
+        )
+        _assert(
+            f"daily_generic_cache_{idx}_excludes_test_history",
+            "!.cache/cyprus_visual_history_test.json" in cache_block,
+        )
 
     morning_restore = text.index("Restore Cyprus visual history (prod)")
     morning_test_restore = text.index("Restore Cyprus visual history (test)")
@@ -72,6 +101,10 @@ def test_daily_visual_history_cache() -> None:
     _assert("daily_evening_restore_before_generation", evening_restore < evening_test_restore < evening_post)
 
     _assert("daily_schedule_morning_unchanged", "cron: '0 1 * * *'" in text)
+    _assert("daily_schedule_morning_recovery", "cron: '15 3 * * *'" in text)
+    _assert("daily_recovery_guard", "github.event.schedule == '15 3 * * *'" in text)
+    _assert("daily_recovery_skip_log", "CY_MORNING_RECOVERY_SKIP" in text)
+    _assert("daily_morning_failure_artifact", "Upload Cyprus morning diagnostics" in text)
     _assert("daily_schedule_evening_unchanged", "cron: '0 13 * * *'" in text)
     _assert("daily_schedule_fx_unchanged", "cron: '0 7 * * *'" in text)
     print("PASS daily_visual_history_cache")

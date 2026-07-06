@@ -3,6 +3,7 @@
 """Regression checks for Cyprus morning FORMAT_V2 post polish."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -33,6 +34,8 @@ from safe_test_post import (  # noqa: E402
     _apply_astro_cleanup,
     _apply_cyprus_morning_raw_context,
     _apply_cyprus_sensor_cleanup,
+    _build_safe_test_image,
+    _send_telegram_text_chunks,
 )
 
 
@@ -249,6 +252,64 @@ def cy_morning_real_safe_path_restores_sea_and_astro_from_raw() -> None:
     assert text.splitlines()[-1] == "#Кипр #погода #здоровье"
 
 
+def cy_morning_image_failure_still_sends_text_chunks() -> None:
+    async def _run() -> tuple[dict[str, object], list[dict[str, object]], list[int]]:
+        world_old = sys.modules.get("world_en")
+        imagegen_old = sys.modules.get("world_en.imagegen")
+        world_stub = types.ModuleType("world_en")
+        imagegen_stub = types.ModuleType("world_en.imagegen")
+
+        def _fail_image(*_args, **_kwargs):
+            raise RuntimeError("fixture image backend failure")
+
+        imagegen_stub.generate_astro_image = _fail_image
+        world_stub.imagegen = imagegen_stub
+        sys.modules["world_en"] = world_stub
+        sys.modules["world_en.imagegen"] = imagegen_stub
+        try:
+            image_result = await _build_safe_test_image(
+                REAL_LEGACY_MORNING_WITHOUT_SEA_ASTRO,
+                "morning",
+                generate_image=True,
+                send_image_to_test=False,
+                send_image_to_chat=False,
+                image_chat_id=None,
+            )
+        finally:
+            if world_old is None:
+                sys.modules.pop("world_en", None)
+            else:
+                sys.modules["world_en"] = world_old
+            if imagegen_old is None:
+                sys.modules.pop("world_en.imagegen", None)
+            else:
+                sys.modules["world_en.imagegen"] = imagegen_old
+
+        class FakeBot:
+            def __init__(self) -> None:
+                self.messages: list[dict[str, object]] = []
+
+            async def send_message(self, **kwargs):
+                self.messages.append(kwargs)
+                return types.SimpleNamespace(message_id=9000 + len(self.messages))
+
+        bot = FakeBot()
+        message_ids = await _send_telegram_text_chunks(
+            bot,
+            chat_id=123,
+            chunks=["<b>Кипр сегодня</b>\n✅ План: текст отправлен."],
+            add_test_label=False,
+        )
+        return image_result, bot.messages, message_ids
+
+    image_result, messages, message_ids = asyncio.run(_run())
+    assert image_result["result"] == "failed_non_fatal"
+    assert image_result["error_type"] == "RuntimeError"
+    assert len(messages) == 1
+    assert messages[0]["chat_id"] == 123
+    assert message_ids == [9001]
+
+
 def main() -> None:
     checks = (
         cy_morning_adds_concise_sea_block_when_available,
@@ -261,6 +322,7 @@ def main() -> None:
         cy_morning_poor_air_adds_health_recommendation,
         cy_morning_recent_safecast_elevated_is_omitted,
         cy_morning_real_safe_path_restores_sea_and_astro_from_raw,
+        cy_morning_image_failure_still_sends_text_chunks,
     )
     for check in checks:
         check()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import json
 import logging
 import os
 from pathlib import Path
@@ -49,6 +50,11 @@ _CY_CHAT_IMAGE_CAPTIONS = {
     "evening": "Визуальный вайб завтрашнего вечера на Кипре 🌊",
 }
 
+_CY_MORNING_ACTIVE = False
+_CY_MORNING_TARGET_DATE = ""
+_CY_MORNING_FINAL_TEXT = ""
+_CY_MORNING_PHASE_LOG: list[dict[str, object]] = []
+
 _DIR_RU = {
     "N": "северный ветер",
     "NE": "северо-восточный ветер",
@@ -76,6 +82,86 @@ def _env_on(name: str, default: bool = False) -> bool:
 
 def _env_any(*names: str) -> bool:
     return any(_env_on(name) for name in names)
+
+
+def _utc_now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _redact_secret_text(value: str) -> str:
+    redacted = value
+    for secret in (TOKEN, os.getenv("OPENAI_API_KEY", ""), os.getenv("GEMINI_API_KEY", "")):
+        secret = (secret or "").strip()
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
+def _cy_morning_chat_type(args: argparse.Namespace) -> str:
+    if args.to_test or args.send_image_to_test:
+        return "test"
+    if args.chat_id and os.getenv("GITHUB_EVENT_NAME") == "schedule":
+        return "production"
+    if args.chat_id:
+        return "override"
+    if args.send:
+        return "send_without_chat"
+    return "dry_run"
+
+
+def _cy_morning_phase(phase: str, **fields: object) -> None:
+    if not _CY_MORNING_ACTIVE:
+        return
+    record: dict[str, object] = {
+        "phase": phase,
+        "ts_utc": _utc_now_iso(),
+    }
+    if _CY_MORNING_TARGET_DATE:
+        record["target_date"] = _CY_MORNING_TARGET_DATE
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            record[key] = [str(item) for item in value]
+        else:
+            record[key] = value
+    _CY_MORNING_PHASE_LOG.append(record)
+    detail = " ".join(
+        f"{key}={json.dumps(value, ensure_ascii=False)}"
+        for key, value in record.items()
+        if key not in {"phase", "ts_utc"}
+    )
+    line = f"CY_MORNING_PHASE={phase}"
+    if detail:
+        line += f" {detail}"
+    print(line)
+    logging.info(line)
+
+
+def _write_cy_morning_diagnostics(exc: BaseException) -> None:
+    if not (_CY_MORNING_ACTIVE or _CY_MORNING_PHASE_LOG):
+        return
+    diagnostics_dir = Path(".cache/cy_morning_diagnostics")
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    (diagnostics_dir / "phase_log.json").write_text(
+        json.dumps(_CY_MORNING_PHASE_LOG, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if _CY_MORNING_FINAL_TEXT:
+        (diagnostics_dir / "sanitized_final_text.txt").write_text(
+            _CY_MORNING_FINAL_TEXT,
+            encoding="utf-8",
+        )
+    exception_payload = {
+        "type": exc.__class__.__name__,
+        "message": _redact_secret_text(str(exc)),
+        "target_date": _CY_MORNING_TARGET_DATE,
+        "ts_utc": _utc_now_iso(),
+    }
+    (diagnostics_dir / "exception.json").write_text(
+        json.dumps(exception_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _plain(text: str) -> str:
@@ -1110,7 +1196,7 @@ async def _build_safe_test_image(
     send_image_to_test: bool,
     send_image_to_chat: bool,
     image_chat_id: int | None,
-) -> None:
+) -> dict[str, object]:
     if send_image_to_test and send_image_to_chat:
         raise SystemExit(
             "--send-image-to-test и --send-image-to-chat нельзя использовать вместе"
@@ -1121,7 +1207,7 @@ async def _build_safe_test_image(
             raise SystemExit(
                 "Отправка изображения требует --generate-image"
             )
-        return
+        return {"result": "skipped", "message_ids": []}
 
     image_chat: int | None = None
     image_caption = ""
@@ -1274,14 +1360,18 @@ async def _build_safe_test_image(
         print(f"CY_SAFE_IMAGE_PATH: {image_path.resolve()}")
         print(f"CY_SAFE_IMAGE_BYTES: {image_size}")
 
+        sent_message_ids: list[int] = []
         if image_chat is not None:
             image_bot = Bot(token=TOKEN)
             with image_path.open("rb") as photo:
-                await image_bot.send_photo(
+                message = await image_bot.send_photo(
                     chat_id=image_chat,
                     photo=photo,
                     caption=image_caption,
                 )
+            message_id = getattr(message, "message_id", None)
+            if isinstance(message_id, int):
+                sent_message_ids.append(message_id)
             record_cyprus_visual_publication(
                 date_value=metadata["forecast_date"],
                 post_type=mode,
@@ -1301,11 +1391,91 @@ async def _build_safe_test_image(
                 after_history_count,
             )
             logging.info("CY SAFE IMAGE sent before text to chat=%s", image_chat)
+            return {
+                "result": "sent",
+                "message_ids": sent_message_ids,
+                "path": str(image_path),
+                "bytes": image_size,
+                "style_name": style_name,
+                "cache_key": metadata.get("cache_key", ""),
+            }
+        return {
+            "result": "generated",
+            "message_ids": [],
+            "path": str(image_path),
+            "bytes": image_size,
+            "style_name": style_name,
+            "cache_key": metadata.get("cache_key", ""),
+        }
     except Exception as exc:
         logging.exception(
             "CY SAFE IMAGE failed; existing text safe-test flow will continue: %s",
             exc,
         )
+        return {
+            "result": "failed_non_fatal",
+            "message_ids": [],
+            "error_type": exc.__class__.__name__,
+            "error": _redact_secret_text(str(exc)),
+        }
+
+
+def _is_transient_telegram_error(exc: Exception) -> bool:
+    name = exc.__class__.__name__
+    if name in {"TimedOut", "NetworkError", "RetryAfter", "ServerError"}:
+        return True
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
+
+
+async def _send_telegram_message_with_retry(bot: Bot, **kwargs) -> object:
+    delays = [2.0, 5.0, 10.0]
+    for attempt in range(1, len(delays) + 2):
+        try:
+            return await bot.send_message(**kwargs)
+        except Exception as exc:
+            if not _is_transient_telegram_error(exc) or attempt > len(delays):
+                raise
+            delay = getattr(exc, "retry_after", None)
+            try:
+                delay_seconds = float(delay) if delay is not None else delays[attempt - 1]
+            except (TypeError, ValueError):
+                delay_seconds = delays[attempt - 1]
+            logging.warning(
+                "Telegram text send transient failure: type=%s attempt=%d/%d retry_in=%.1fs",
+                exc.__class__.__name__,
+                attempt,
+                len(delays) + 1,
+                delay_seconds,
+            )
+            await asyncio.sleep(delay_seconds)
+    raise RuntimeError("unreachable Telegram retry state")
+
+
+async def _send_telegram_text_chunks(
+    bot: Bot,
+    *,
+    chat_id: int,
+    chunks: list[str],
+    add_test_label: bool,
+) -> list[int]:
+    message_ids: list[int] = []
+    for idx, chunk in enumerate(chunks, start=1):
+        if add_test_label:
+            prefix = f"<b>Test safe post {idx}/{len(chunks)}</b>\n" if len(chunks) > 1 else "<b>Test safe post</b>\n"
+            text = prefix + chunk
+        else:
+            text = chunk
+        message = await _send_telegram_message_with_retry(
+            bot,
+            chat_id=chat_id,
+            text=text,
+            parse_mode=constants.ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        message_id = getattr(message, "message_id", None)
+        if isinstance(message_id, int):
+            message_ids.append(message_id)
+    return message_ids
 
 
 class _TodayPatch:
@@ -1335,6 +1505,7 @@ class _TodayPatch:
 
 
 async def main() -> None:
+    global _CY_MORNING_ACTIVE, _CY_MORNING_FINAL_TEXT, _CY_MORNING_TARGET_DATE
     parser = argparse.ArgumentParser(description="Safe post builder for Cyprus VayboMeter")
     parser.add_argument("--mode", choices=["morning", "evening"], default=os.getenv("POST_MODE", "evening"))
     parser.add_argument("--date", default=os.getenv("WORK_DATE", ""))
@@ -1360,6 +1531,9 @@ async def main() -> None:
 
     mode = (args.mode or "evening").strip().lower()
     os.environ["POST_MODE"] = mode
+    _CY_MORNING_ACTIVE = mode == "morning"
+    _CY_MORNING_PHASE_LOG.clear()
+    _CY_MORNING_FINAL_TEXT = ""
     use_format_v2 = bool(args.format_v2 or _env_on("FORMAT_V2"))
     os.environ["FORMAT_V2"] = "1" if use_format_v2 else "0"
 
@@ -1367,6 +1541,16 @@ async def main() -> None:
     base_date = pendulum.parse(args.date).in_tz(tz) if args.date else pendulum.now(tz)
     if args.for_tomorrow:
         base_date = base_date.add(days=1)
+    _CY_MORNING_TARGET_DATE = base_date.to_date_string()
+    chat_type = _cy_morning_chat_type(args)
+    _cy_morning_phase(
+        "build_started",
+        target_date=_CY_MORNING_TARGET_DATE,
+        chat_type=chat_type,
+        format_v2=use_format_v2,
+        send=args.send,
+        image_requested=args.generate_image,
+    )
 
     with _TodayPatch(base_date):
         raw_msg = build_message(
@@ -1409,6 +1593,14 @@ async def main() -> None:
         print(validation_summary(final_result))
 
     chunks = split_telegram_text(final_result.text)
+    _CY_MORNING_FINAL_TEXT = final_result.text
+    _cy_morning_phase(
+        "text_ready",
+        target_date=_CY_MORNING_TARGET_DATE,
+        chat_type=chat_type,
+        final_text_length=len(final_result.text),
+        chunk_count=len(chunks),
+    )
 
     print("\n===== RAW MESSAGE BEGIN =====\n")
     print(raw_msg)
@@ -1423,7 +1615,13 @@ async def main() -> None:
     if args.send_image_to_chat:
         resolved_text_chat_id = resolve_chat_id(args.chat_id, args.to_test)
 
-    await _build_safe_test_image(
+    if args.generate_image:
+        _cy_morning_phase(
+            "image_started",
+            target_date=_CY_MORNING_TARGET_DATE,
+            chat_type=chat_type,
+        )
+    image_result = await _build_safe_test_image(
         final_result.text,
         mode,
         generate_image=args.generate_image,
@@ -1431,9 +1629,27 @@ async def main() -> None:
         send_image_to_chat=args.send_image_to_chat,
         image_chat_id=resolved_text_chat_id,
     )
+    if args.generate_image:
+        _cy_morning_phase(
+            "image_sent",
+            target_date=_CY_MORNING_TARGET_DATE,
+            chat_type=chat_type,
+            image_result=image_result.get("result"),
+            telegram_message_ids=image_result.get("message_ids"),
+            image_error_type=image_result.get("error_type"),
+        )
 
     if not args.send:
         logging.info("SAFE DRY-RUN: отправка пропущена, format_v2=%s, chunks=%d", use_format_v2, len(chunks))
+        _cy_morning_phase(
+            "completed",
+            target_date=_CY_MORNING_TARGET_DATE,
+            chat_type=chat_type,
+            sent=False,
+            chunk_count=len(chunks),
+            final_text_length=len(final_result.text),
+            image_result=image_result.get("result"),
+        )
         return
 
     if not TOKEN:
@@ -1444,20 +1660,41 @@ async def main() -> None:
         else resolve_chat_id(args.chat_id, args.to_test)
     )
     bot = Bot(token=TOKEN)
-    for idx, chunk in enumerate(chunks, start=1):
-        if args.no_test_label:
-            text = chunk
-        else:
-            prefix = f"<b>Test safe post {idx}/{len(chunks)}</b>\n" if len(chunks) > 1 else "<b>Test safe post</b>\n"
-            text = prefix + chunk
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode=constants.ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
+    _cy_morning_phase(
+        "text_send_started",
+        target_date=_CY_MORNING_TARGET_DATE,
+        chat_type=chat_type,
+        chunk_count=len(chunks),
+        final_text_length=len(final_result.text),
+    )
+    sent_message_ids = await _send_telegram_text_chunks(
+        bot,
+        chat_id=chat_id,
+        chunks=chunks,
+        add_test_label=not args.no_test_label,
+    )
+    _cy_morning_phase(
+        "text_sent",
+        target_date=_CY_MORNING_TARGET_DATE,
+        chat_type=chat_type,
+        chunk_count=len(chunks),
+        telegram_message_ids=sent_message_ids,
+    )
+    _cy_morning_phase(
+        "completed",
+        target_date=_CY_MORNING_TARGET_DATE,
+        chat_type=chat_type,
+        sent=True,
+        chunk_count=len(chunks),
+        final_text_length=len(final_result.text),
+        image_result=image_result.get("result"),
+    )
     logging.info("SAFE TEST sent: chat=%s chunks=%d format_v2=%s", chat_id, len(chunks), use_format_v2)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except BaseException as exc:
+        _write_cy_morning_diagnostics(exc)
+        raise

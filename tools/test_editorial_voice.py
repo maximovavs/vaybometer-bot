@@ -243,6 +243,15 @@ def test_evening_output_has_one_human_line_and_keeps_facts() -> None:
     _assert_clean(text)
 
 
+def test_evening_local_weather_variants_do_not_repeat_factual_nuance() -> None:
+    variants = CYPRUS_EVENING_VARIANTS["LOCAL_WEATHER"]
+    assert variants
+    for phrase in variants:
+        low = phrase.lower()
+        for repeated in ("у моря порывисто", "в горах", "локальные изменения погоды"):
+            assert repeated not in low
+
+
 def test_weekly_output_contains_meaning_block_and_keeps_facts() -> None:
     text = build_weekly_forecast(
         date(2026, 7, 1),
@@ -273,6 +282,7 @@ def main() -> None:
         test_safe_visibility_haze_does_not_select_poor_air,
         test_safe_dust_haze_selects_poor_air,
         test_evening_output_has_one_human_line_and_keeps_facts,
+        test_evening_local_weather_variants_do_not_repeat_factual_nuance,
         test_weekly_output_contains_meaning_block_and_keeps_facts,
     )
     for check in checks:

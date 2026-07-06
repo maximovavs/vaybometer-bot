@@ -618,7 +618,18 @@ def cy_evening_integrated_guidance_is_not_repetitive() -> None:
     assert "ветер/осадки лучше проверить утром" not in text
     assert "сверить осадки" not in text
     assert "Лучшее окно" not in text
-    assert "💬 Настрой на завтра: жарко; у моря порывисто" in text
+    assert text.count("🧭 Главное завтра:") == 1
+    assert text.count("💬 Настрой на завтра:") == 1
+    editorial_line = next(line for line in lines if line.startswith("💬 Настрой на завтра:"))
+    assert any(
+        phrase in editorial_line
+        for phrase in (
+            "день лучше планировать без жёсткого тайминга",
+            "завтра комфортнее двигаться без спешки",
+        )
+    )
+    for repeated in ("у моря порывисто", "в горах", "локальные изменения погоды"):
+        assert repeated not in editorial_line
     assert "🏄 Серф: данных для уверенной оценки недостаточно; проверить спот перед выездом." in text
     assert "Отлично: Серф" not in text
     assert text.splitlines()[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
@@ -719,7 +730,11 @@ def cy_evening_recent_safecast_normal_is_omitted() -> None:
 def cy_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post.yml").read_text(encoding="utf-8")
     assert "cron: '0 1 * * *'" in workflow
+    assert "cron: '15 3 * * *'" in workflow
     assert "github.event.schedule == '0 1 * * *'" in workflow
+    assert "github.event.schedule == '15 3 * * *'" in workflow
+    assert "CY_MORNING_RECOVERY_SKIP" in workflow
+    assert "Upload Cyprus morning diagnostics" in workflow
     assert "01:00 UTC ≈ 04:00 на Кипре летом / 03:00 зимой" in workflow
     assert "cron: '0 13 * * *'" in workflow
     assert "cron: '0 7 * * *'" in workflow
