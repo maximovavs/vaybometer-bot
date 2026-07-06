@@ -733,7 +733,7 @@ def cy_workflow_morning_schedule_is_earlier() -> None:
     assert "cron: '15 3 * * *'" in workflow
     assert "github.event.schedule == '0 1 * * *'" in workflow
     assert "github.event.schedule == '15 3 * * *'" in workflow
-    assert "CY_MORNING_RECOVERY_SKIP" in workflow
+    assert "CY_MORNING_DELIVERY_SKIP" in workflow
     assert "Upload Cyprus morning diagnostics" in workflow
     assert "01:00 UTC ≈ 04:00 на Кипре летом / 03:00 зимой" in workflow
     assert "cron: '0 13 * * *'" in workflow

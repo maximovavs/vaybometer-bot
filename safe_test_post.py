@@ -15,6 +15,7 @@ import logging
 import os
 from pathlib import Path
 import re
+from zoneinfo import ZoneInfo
 
 import pendulum
 from telegram import Bot, constants
@@ -53,6 +54,7 @@ _CY_CHAT_IMAGE_CAPTIONS = {
 _CY_MORNING_ACTIVE = False
 _CY_MORNING_TARGET_DATE = ""
 _CY_MORNING_FINAL_TEXT = ""
+_CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS: list[int] = []
 _CY_MORNING_PHASE_LOG: list[dict[str, object]] = []
 
 _DIR_RU = {
@@ -95,6 +97,150 @@ def _redact_secret_text(value: str) -> str:
         if secret:
             redacted = redacted.replace(secret, "[redacted]")
     return redacted
+
+
+def cy_morning_delivery_dir() -> Path:
+    return Path(os.getenv("CY_MORNING_DELIVERY_DIR", ".cache/cy_morning_delivery"))
+
+
+def cy_morning_delivery_path(target_date: str) -> Path:
+    safe_date = str(target_date or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", safe_date):
+        raise ValueError(f"invalid Cyprus morning target date: {target_date!r}")
+    return cy_morning_delivery_dir() / f"{safe_date}.json"
+
+
+def cy_morning_target_date(date_text: str = "", tz_name: str | None = None) -> str:
+    raw = str(date_text or "").strip()
+    if raw:
+        return dt.date.fromisoformat(raw[:10]).isoformat()
+    tz = ZoneInfo(tz_name or TZ_STR)
+    return dt.datetime.now(tz).date().isoformat()
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+    _atomic_write_text(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def cy_morning_delivery_payload(
+    *,
+    target_date: str,
+    chat_type: str,
+    telegram_message_ids: list[int],
+    text_chunk_count: int,
+    event_schedule: str | None = None,
+) -> dict[str, object]:
+    return {
+        "target_date": target_date,
+        "chat_type": chat_type,
+        "telegram_message_ids": list(telegram_message_ids),
+        "text_chunk_count": int(text_chunk_count),
+        "run_id": os.getenv("GITHUB_RUN_ID", ""),
+        "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", ""),
+        "event_schedule": event_schedule if event_schedule is not None else os.getenv("GITHUB_EVENT_SCHEDULE", ""),
+        "sent_at_utc": _utc_now_iso(),
+    }
+
+
+def cy_morning_write_delivery_receipt(
+    *,
+    target_date: str,
+    chat_type: str,
+    telegram_message_ids: list[int],
+    text_chunk_count: int,
+    event_schedule: str | None = None,
+) -> Path:
+    payload = cy_morning_delivery_payload(
+        target_date=target_date,
+        chat_type=chat_type,
+        telegram_message_ids=telegram_message_ids,
+        text_chunk_count=text_chunk_count,
+        event_schedule=event_schedule,
+    )
+    path = cy_morning_delivery_path(target_date)
+    _atomic_write_json(path, payload)
+    return path
+
+
+def cy_morning_maybe_write_delivery_receipt(
+    *,
+    target_date: str,
+    chat_type: str,
+    telegram_message_ids: list[int],
+    text_chunk_count: int,
+    sent: bool,
+    event_schedule: str | None = None,
+) -> Path | None:
+    if not sent:
+        return None
+    if chat_type != "production":
+        return None
+    if text_chunk_count < 1 or len(telegram_message_ids) < text_chunk_count:
+        return None
+    return cy_morning_write_delivery_receipt(
+        target_date=target_date,
+        chat_type=chat_type,
+        telegram_message_ids=telegram_message_ids,
+        text_chunk_count=text_chunk_count,
+        event_schedule=event_schedule,
+    )
+
+
+def cy_morning_load_delivery_receipt(target_date: str) -> dict[str, object] | None:
+    path = cy_morning_delivery_path(target_date)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logging.warning("Cyprus morning delivery receipt read failed: %s", exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def cy_morning_is_valid_production_receipt(data: object, target_date: str) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if data.get("target_date") != target_date:
+        return False
+    if data.get("chat_type") != "production":
+        return False
+    message_ids = data.get("telegram_message_ids")
+    if not isinstance(message_ids, list) or not message_ids:
+        return False
+    chunk_count = data.get("text_chunk_count")
+    if not isinstance(chunk_count, int) or chunk_count < 1:
+        return False
+    if len(message_ids) < chunk_count:
+        return False
+    sent_at = data.get("sent_at_utc")
+    return isinstance(sent_at, str) and bool(sent_at.strip())
+
+
+def cy_morning_has_valid_production_receipt(target_date: str) -> bool:
+    return cy_morning_is_valid_production_receipt(
+        cy_morning_load_delivery_receipt(target_date),
+        target_date,
+    )
+
+
+def cy_morning_image_phase_for_result(image_result: str) -> str:
+    return {
+        "sent": "image_sent",
+        "generated": "image_generated",
+        "failed_non_fatal": "image_failed_non_fatal",
+        "skipped": "image_skipped",
+    }.get(str(image_result or "unknown"), "image_result")
 
 
 def _cy_morning_chat_type(args: argparse.Namespace) -> str:
@@ -156,6 +302,7 @@ def _write_cy_morning_diagnostics(exc: BaseException) -> None:
         "type": exc.__class__.__name__,
         "message": _redact_secret_text(str(exc)),
         "target_date": _CY_MORNING_TARGET_DATE,
+        "partial_telegram_message_ids": list(_CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS),
         "ts_utc": _utc_now_iso(),
     }
     (diagnostics_dir / "exception.json").write_text(
@@ -1457,6 +1604,7 @@ async def _send_telegram_text_chunks(
     chat_id: int,
     chunks: list[str],
     add_test_label: bool,
+    partial_message_ids: list[int] | None = None,
 ) -> list[int]:
     message_ids: list[int] = []
     for idx, chunk in enumerate(chunks, start=1):
@@ -1475,6 +1623,8 @@ async def _send_telegram_text_chunks(
         message_id = getattr(message, "message_id", None)
         if isinstance(message_id, int):
             message_ids.append(message_id)
+            if partial_message_ids is not None:
+                partial_message_ids.append(message_id)
     return message_ids
 
 
@@ -1505,7 +1655,7 @@ class _TodayPatch:
 
 
 async def main() -> None:
-    global _CY_MORNING_ACTIVE, _CY_MORNING_FINAL_TEXT, _CY_MORNING_TARGET_DATE
+    global _CY_MORNING_ACTIVE, _CY_MORNING_FINAL_TEXT, _CY_MORNING_TARGET_DATE, _CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS
     parser = argparse.ArgumentParser(description="Safe post builder for Cyprus VayboMeter")
     parser.add_argument("--mode", choices=["morning", "evening"], default=os.getenv("POST_MODE", "evening"))
     parser.add_argument("--date", default=os.getenv("WORK_DATE", ""))
@@ -1534,6 +1684,7 @@ async def main() -> None:
     _CY_MORNING_ACTIVE = mode == "morning"
     _CY_MORNING_PHASE_LOG.clear()
     _CY_MORNING_FINAL_TEXT = ""
+    _CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS = []
     use_format_v2 = bool(args.format_v2 or _env_on("FORMAT_V2"))
     os.environ["FORMAT_V2"] = "1" if use_format_v2 else "0"
 
@@ -1629,15 +1780,16 @@ async def main() -> None:
         send_image_to_chat=args.send_image_to_chat,
         image_chat_id=resolved_text_chat_id,
     )
-    if args.generate_image:
-        _cy_morning_phase(
-            "image_sent",
-            target_date=_CY_MORNING_TARGET_DATE,
-            chat_type=chat_type,
-            image_result=image_result.get("result"),
-            telegram_message_ids=image_result.get("message_ids"),
-            image_error_type=image_result.get("error_type"),
-        )
+    image_status = str(image_result.get("result") or "unknown")
+    image_phase = cy_morning_image_phase_for_result(image_status)
+    _cy_morning_phase(
+        image_phase,
+        target_date=_CY_MORNING_TARGET_DATE,
+        chat_type=chat_type,
+        image_result=image_status,
+        telegram_message_ids=image_result.get("message_ids"),
+        image_error_type=image_result.get("error_type"),
+    )
 
     if not args.send:
         logging.info("SAFE DRY-RUN: отправка пропущена, format_v2=%s, chunks=%d", use_format_v2, len(chunks))
@@ -1667,12 +1819,24 @@ async def main() -> None:
         chunk_count=len(chunks),
         final_text_length=len(final_result.text),
     )
-    sent_message_ids = await _send_telegram_text_chunks(
-        bot,
-        chat_id=chat_id,
-        chunks=chunks,
-        add_test_label=not args.no_test_label,
-    )
+    try:
+        sent_message_ids = await _send_telegram_text_chunks(
+            bot,
+            chat_id=chat_id,
+            chunks=chunks,
+            add_test_label=not args.no_test_label,
+            partial_message_ids=_CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS,
+        )
+    except Exception as exc:
+        _cy_morning_phase(
+            "text_send_failed",
+            target_date=_CY_MORNING_TARGET_DATE,
+            chat_type=chat_type,
+            chunk_count=len(chunks),
+            telegram_message_ids=list(_CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS),
+            error_type=exc.__class__.__name__,
+        )
+        raise
     _cy_morning_phase(
         "text_sent",
         target_date=_CY_MORNING_TARGET_DATE,
@@ -1680,6 +1844,35 @@ async def main() -> None:
         chunk_count=len(chunks),
         telegram_message_ids=sent_message_ids,
     )
+    receipt_path = ""
+    if mode == "morning" and chat_type == "production":
+        receipt = cy_morning_maybe_write_delivery_receipt(
+            target_date=_CY_MORNING_TARGET_DATE,
+            chat_type=chat_type,
+            telegram_message_ids=sent_message_ids,
+            text_chunk_count=len(chunks),
+            sent=True,
+            event_schedule=os.getenv("GITHUB_EVENT_SCHEDULE", ""),
+        )
+        if receipt is not None:
+            receipt_path = str(receipt)
+            _cy_morning_phase(
+                "delivery_receipt_written",
+                target_date=_CY_MORNING_TARGET_DATE,
+                chat_type=chat_type,
+                receipt_path=receipt_path,
+                chunk_count=len(chunks),
+                telegram_message_ids=sent_message_ids,
+            )
+        else:
+            _cy_morning_phase(
+                "delivery_receipt_not_written",
+                target_date=_CY_MORNING_TARGET_DATE,
+                chat_type=chat_type,
+                reason="missing_telegram_message_ids",
+                chunk_count=len(chunks),
+                telegram_message_ids=sent_message_ids,
+            )
     _cy_morning_phase(
         "completed",
         target_date=_CY_MORNING_TARGET_DATE,
@@ -1688,6 +1881,7 @@ async def main() -> None:
         chunk_count=len(chunks),
         final_text_length=len(final_result.text),
         image_result=image_result.get("result"),
+        receipt_path=receipt_path,
     )
     logging.info("SAFE TEST sent: chat=%s chunks=%d format_v2=%s", chat_id, len(chunks), use_format_v2)
 

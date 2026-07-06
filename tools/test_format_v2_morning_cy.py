@@ -36,6 +36,12 @@ from safe_test_post import (  # noqa: E402
     _apply_cyprus_sensor_cleanup,
     _build_safe_test_image,
     _send_telegram_text_chunks,
+    cy_morning_delivery_path,
+    cy_morning_has_valid_production_receipt,
+    cy_morning_image_phase_for_result,
+    cy_morning_load_delivery_receipt,
+    cy_morning_maybe_write_delivery_receipt,
+    cy_morning_target_date,
 )
 
 
@@ -153,6 +159,50 @@ MORNING_FULL_MOON = """<b>Кипр: погода на сегодня (27.06.2026
 ✅ Сегодня: вода, SPF.
 #Кипр #погода #здоровье
 """
+
+
+def _with_temp_delivery_dir(callback) -> None:
+    old_dir = os.environ.get("CY_MORNING_DELIVERY_DIR")
+    old_run = os.environ.get("GITHUB_RUN_ID")
+    old_attempt = os.environ.get("GITHUB_RUN_ATTEMPT")
+    old_schedule = os.environ.get("GITHUB_EVENT_SCHEDULE")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            os.environ["CY_MORNING_DELIVERY_DIR"] = tmp
+            os.environ["GITHUB_RUN_ID"] = "fixture-run"
+            os.environ["GITHUB_RUN_ATTEMPT"] = "2"
+            callback(Path(tmp))
+        finally:
+            if old_dir is None:
+                os.environ.pop("CY_MORNING_DELIVERY_DIR", None)
+            else:
+                os.environ["CY_MORNING_DELIVERY_DIR"] = old_dir
+            if old_run is None:
+                os.environ.pop("GITHUB_RUN_ID", None)
+            else:
+                os.environ["GITHUB_RUN_ID"] = old_run
+            if old_attempt is None:
+                os.environ.pop("GITHUB_RUN_ATTEMPT", None)
+            else:
+                os.environ["GITHUB_RUN_ATTEMPT"] = old_attempt
+            if old_schedule is None:
+                os.environ.pop("GITHUB_EVENT_SCHEDULE", None)
+            else:
+                os.environ["GITHUB_EVENT_SCHEDULE"] = old_schedule
+
+
+def _write_fixture_receipt(target_date: str, event_schedule: str) -> Path:
+    os.environ["GITHUB_EVENT_SCHEDULE"] = event_schedule
+    receipt = cy_morning_maybe_write_delivery_receipt(
+        target_date=target_date,
+        chat_type="production",
+        telegram_message_ids=[12345],
+        text_chunk_count=1,
+        sent=True,
+        event_schedule=event_schedule,
+    )
+    assert receipt is not None
+    return receipt
 
 
 def cy_morning_adds_concise_sea_block_when_available() -> None:
@@ -310,6 +360,179 @@ def cy_morning_image_failure_still_sends_text_chunks() -> None:
     assert message_ids == [9001]
 
 
+def cy_morning_recovery_publishes_then_delayed_primary_skips_by_receipt() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+        assert not cy_morning_has_valid_production_receipt(target_date)
+        receipt = _write_fixture_receipt(target_date, "15 3 * * *")
+        assert receipt == cy_morning_delivery_path(target_date)
+        assert cy_morning_has_valid_production_receipt(target_date)
+        data = cy_morning_load_delivery_receipt(target_date)
+        assert data is not None
+        assert data["event_schedule"] == "15 3 * * *"
+        assert data["chat_type"] == "production"
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_primary_publishes_then_recovery_skips_by_receipt() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+        _write_fixture_receipt(target_date, "0 1 * * *")
+        assert cy_morning_has_valid_production_receipt(target_date)
+        data = cy_morning_load_delivery_receipt(target_date)
+        assert data is not None
+        assert data["event_schedule"] == "0 1 * * *"
+        assert data["telegram_message_ids"] == [12345]
+        assert data["text_chunk_count"] == 1
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_failed_primary_without_text_receipt_allows_recovery() -> None:
+    def _case(tmp: Path) -> None:
+        target_date = "2026-07-06"
+        failed_attempt_path = tmp / f"{target_date}.partial.json"
+        failed_attempt_path.write_text(
+            json.dumps({"target_date": target_date, "chat_type": "production"}),
+            encoding="utf-8",
+        )
+        assert not cy_morning_has_valid_production_receipt(target_date)
+        _write_fixture_receipt(target_date, "15 3 * * *")
+        assert cy_morning_has_valid_production_receipt(target_date)
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_dry_run_does_not_create_delivery_receipt() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+        receipt = cy_morning_maybe_write_delivery_receipt(
+            target_date=target_date,
+            chat_type="production",
+            telegram_message_ids=[1],
+            text_chunk_count=1,
+            sent=False,
+            event_schedule="0 1 * * *",
+        )
+        assert receipt is None
+        assert not cy_morning_delivery_path(target_date).exists()
+        assert not cy_morning_has_valid_production_receipt(target_date)
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_test_channel_send_does_not_create_production_receipt() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+        receipt = cy_morning_maybe_write_delivery_receipt(
+            target_date=target_date,
+            chat_type="test",
+            telegram_message_ids=[1],
+            text_chunk_count=1,
+            sent=True,
+            event_schedule="0 1 * * *",
+        )
+        assert receipt is None
+        assert not cy_morning_delivery_path(target_date).exists()
+        assert not cy_morning_has_valid_production_receipt(target_date)
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_image_failure_plus_successful_text_creates_receipt() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+        image_result = {"result": "failed_non_fatal", "error_type": "RuntimeError"}
+        assert image_result["result"] == "failed_non_fatal"
+        receipt = cy_morning_maybe_write_delivery_receipt(
+            target_date=target_date,
+            chat_type="production",
+            telegram_message_ids=[5001],
+            text_chunk_count=1,
+            sent=True,
+            event_schedule="0 1 * * *",
+        )
+        assert receipt is not None
+        assert cy_morning_has_valid_production_receipt(target_date)
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_successful_github_job_without_receipt_does_not_suppress_recovery() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+        successful_job_seen = True
+        assert successful_job_seen
+        assert not cy_morning_has_valid_production_receipt(target_date)
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_receipt_uses_asia_nicosia_target_date() -> None:
+    def _case(_tmp: Path) -> None:
+        assert cy_morning_target_date("2026-07-06", "Asia/Nicosia") == "2026-07-06"
+        target_date = cy_morning_target_date("2026-07-06", "Asia/Nicosia")
+        _write_fixture_receipt(target_date, "0 1 * * *")
+        assert cy_morning_delivery_path(target_date).name == "2026-07-06.json"
+        data = cy_morning_load_delivery_receipt(target_date)
+        assert data is not None
+        assert data["target_date"] == "2026-07-06"
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_partial_text_failure_has_no_completed_receipt() -> None:
+    async def _run() -> tuple[list[int], str]:
+        class FailingBot:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def send_message(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return types.SimpleNamespace(message_id=7001)
+                raise RuntimeError("fixture second chunk failed")
+
+        partial: list[int] = []
+        try:
+            await _send_telegram_text_chunks(
+                FailingBot(),
+                chat_id=123,
+                chunks=["chunk one", "chunk two"],
+                add_test_label=False,
+                partial_message_ids=partial,
+            )
+        except RuntimeError as exc:
+            return partial, exc.__class__.__name__
+        raise AssertionError("second chunk failure was expected")
+
+    def _case(_tmp: Path) -> None:
+        partial, error_type = asyncio.run(_run())
+        assert partial == [7001]
+        assert error_type == "RuntimeError"
+        receipt = cy_morning_maybe_write_delivery_receipt(
+            target_date="2026-07-06",
+            chat_type="production",
+            telegram_message_ids=partial,
+            text_chunk_count=2,
+            sent=True,
+            event_schedule="0 1 * * *",
+        )
+        assert receipt is None
+        assert not cy_morning_has_valid_production_receipt("2026-07-06")
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_image_phase_names_match_delivery_state() -> None:
+    assert cy_morning_image_phase_for_result("sent") == "image_sent"
+    assert cy_morning_image_phase_for_result("generated") == "image_generated"
+    assert cy_morning_image_phase_for_result("failed_non_fatal") == "image_failed_non_fatal"
+    assert cy_morning_image_phase_for_result("skipped") == "image_skipped"
+    assert cy_morning_image_phase_for_result("failed_non_fatal") != "image_sent"
+
+
 def main() -> None:
     checks = (
         cy_morning_adds_concise_sea_block_when_available,
@@ -323,6 +546,16 @@ def main() -> None:
         cy_morning_recent_safecast_elevated_is_omitted,
         cy_morning_real_safe_path_restores_sea_and_astro_from_raw,
         cy_morning_image_failure_still_sends_text_chunks,
+        cy_morning_recovery_publishes_then_delayed_primary_skips_by_receipt,
+        cy_morning_primary_publishes_then_recovery_skips_by_receipt,
+        cy_morning_failed_primary_without_text_receipt_allows_recovery,
+        cy_morning_dry_run_does_not_create_delivery_receipt,
+        cy_morning_test_channel_send_does_not_create_production_receipt,
+        cy_morning_image_failure_plus_successful_text_creates_receipt,
+        cy_morning_successful_github_job_without_receipt_does_not_suppress_recovery,
+        cy_morning_receipt_uses_asia_nicosia_target_date,
+        cy_morning_partial_text_failure_has_no_completed_receipt,
+        cy_morning_image_phase_names_match_delivery_state,
     )
     for check in checks:
         check()

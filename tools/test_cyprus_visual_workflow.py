@@ -88,11 +88,29 @@ def test_daily_visual_history_cache() -> None:
             f"daily_generic_cache_{idx}_excludes_test_history",
             "!.cache/cyprus_visual_history_test.json" in cache_block,
         )
+        _assert(
+            f"daily_generic_cache_{idx}_excludes_delivery_receipts",
+            "!.cache/cy_morning_delivery" in cache_block,
+        )
 
     morning_restore = text.index("Restore Cyprus visual history (prod)")
     morning_test_restore = text.index("Restore Cyprus visual history (test)")
+    morning_delivery_restore = text.index("Restore Cyprus morning delivery receipts")
     morning_post = text.index("Post morning (for today)")
     _assert("daily_morning_restore_before_generation", morning_restore < morning_test_restore < morning_post)
+    _assert("daily_morning_delivery_restore_before_post", morning_delivery_restore < morning_post)
+    _assert(
+        "daily_morning_delivery_cache_key",
+        "key: cyprus-morning-delivery-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" in text,
+    )
+    _assert("daily_morning_delivery_cache_prefix", "cyprus-morning-delivery-" in text)
+    _assert("daily_morning_delivery_path", "path: .cache/cy_morning_delivery" in text)
+    _assert("daily_morning_delivery_inspect", "valid production receipt exists" in text)
+    _assert("daily_morning_delivery_skip_primary_and_recovery", "CY_MORNING_DELIVERY_SKIP" in text)
+    _assert(
+        "daily_no_github_success_skip",
+        "receipt still required for delivery skip" in text,
+    )
 
     evening_job = text.index("evening:")
     evening_restore = text.index("Restore Cyprus visual history (prod)", evening_job)
@@ -103,7 +121,7 @@ def test_daily_visual_history_cache() -> None:
     _assert("daily_schedule_morning_unchanged", "cron: '0 1 * * *'" in text)
     _assert("daily_schedule_morning_recovery", "cron: '15 3 * * *'" in text)
     _assert("daily_recovery_guard", "github.event.schedule == '15 3 * * *'" in text)
-    _assert("daily_recovery_skip_log", "CY_MORNING_RECOVERY_SKIP" in text)
+    _assert("daily_delivery_skip_log", "CY_MORNING_DELIVERY_SKIP" in text)
     _assert("daily_morning_failure_artifact", "Upload Cyprus morning diagnostics" in text)
     _assert("daily_schedule_evening_unchanged", "cron: '0 13 * * *'" in text)
     _assert("daily_schedule_fx_unchanged", "cron: '0 7 * * *'" in text)

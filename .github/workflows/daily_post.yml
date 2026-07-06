@@ -106,6 +106,7 @@ env:
   CYPRUS_VISUAL_HISTORY_PATH: ".cache/cyprus_visual_history_prod.json"
   CYPRUS_VISUAL_HISTORY_PROD_PATH: ".cache/cyprus_visual_history_prod.json"
   CYPRUS_VISUAL_HISTORY_TEST_PATH: ".cache/cyprus_visual_history_test.json"
+  CY_MORNING_DELIVERY_DIR: ".cache/cy_morning_delivery"
 
   # Утренние картинки: 5 стилей, авто-ротация по дате
   CY_IMG_ENABLED: "1"
@@ -133,6 +134,7 @@ jobs:
             .cache
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
+            !.cache/cy_morning_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -181,6 +183,67 @@ jobs:
               print(f"Cyprus visual history {label} entries before generation: {count}")
           PY
 
+      - name: Restore Cyprus morning delivery receipts
+        id: cyprus-morning-delivery-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/cy_morning_delivery
+          key: cyprus-morning-delivery-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            cyprus-morning-delivery-
+
+      - name: Inspect Cyprus morning delivery receipts
+        shell: bash
+        run: |
+          mkdir -p .cache/cy_morning_delivery
+          echo "Cyprus morning delivery cache exact-key hit: ${{ steps.cyprus-morning-delivery-cache.outputs.cache-hit }}"
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          def _target_date() -> str:
+              wd = (os.getenv("WORK_DATE") or "").strip()
+              if wd:
+                  return wd[:10]
+              return datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Nicosia"))).date().isoformat()
+
+          def _valid(data, target_date: str) -> bool:
+              if not isinstance(data, dict):
+                  return False
+              if data.get("target_date") != target_date:
+                  return False
+              if data.get("chat_type") != "production":
+                  return False
+              message_ids = data.get("telegram_message_ids")
+              if not isinstance(message_ids, list) or not message_ids:
+                  return False
+              chunk_count = data.get("text_chunk_count")
+              if not isinstance(chunk_count, int) or chunk_count < 1:
+                  return False
+              if len(message_ids) < chunk_count:
+                  return False
+              sent_at = data.get("sent_at_utc")
+              return isinstance(sent_at, str) and bool(sent_at.strip())
+
+          target_date = _target_date()
+          delivery_dir = Path(os.getenv("CY_MORNING_DELIVERY_DIR", ".cache/cy_morning_delivery"))
+          files = sorted(path.name for path in delivery_dir.glob("*.json"))
+          receipt_path = delivery_dir / f"{target_date}.json"
+          try:
+              data = json.loads(receipt_path.read_text("utf-8"))
+          except FileNotFoundError:
+              data = None
+          except Exception as exc:
+              print(f"Cyprus morning delivery receipt read issue: {exc.__class__.__name__}: {exc}")
+              data = None
+          print(f"Cyprus morning delivery target date: {target_date}")
+          print(f"Cyprus morning delivery restored receipt files: {files}")
+          print(f"Cyprus morning delivery valid production receipt exists: {_valid(data, target_date)}")
+          PY
+
       - name: Time debug
         run: |
           echo "UTC:    $(date -u)"
@@ -213,6 +276,11 @@ jobs:
           import sys
           import urllib.parse
           import urllib.request
+          from safe_test_post import (
+              cy_morning_delivery_path,
+              cy_morning_has_valid_production_receipt,
+              cy_morning_target_date,
+          )
 
           def _gh_json(path):
               token = (os.getenv("GH_ACTIONS_TOKEN") or "").strip()
@@ -230,11 +298,9 @@ jobs:
               with urllib.request.urlopen(request, timeout=20) as response:
                   return json.loads(response.read().decode("utf-8"))
 
-          def _recovery_should_skip():
+          def _log_related_successful_jobs():
               if os.getenv("GITHUB_EVENT_NAME") != "schedule":
-                  return False
-              if (os.getenv("GITHUB_EVENT_SCHEDULE") or "").strip() != "15 3 * * *":
-                  return False
+                  return
               today_utc = dt.datetime.now(dt.timezone.utc).date().isoformat()
               current_run_id = str(os.getenv("GITHUB_RUN_ID") or "")
               branch = urllib.parse.quote(os.getenv("GITHUB_REF_NAME") or "main", safe="")
@@ -257,13 +323,11 @@ jobs:
                               and job.get("conclusion") == "success"
                           ):
                               print(
-                                  "CY_MORNING_RECOVERY_SKIP: "
-                                  f"already delivered by successful morning job in run {run_id}"
+                                  "CY_MORNING_GITHUB_SUCCESSFUL_JOB_SEEN: "
+                                  f"run_id={run_id}; receipt still required for delivery skip"
                               )
-                              return True
               except Exception as exc:
-                  print(f"CY_MORNING_RECOVERY_CHECK_FAILED: {exc.__class__.__name__}: {exc}")
-              return False
+                  print(f"CY_MORNING_GITHUB_JOB_LOG_CHECK_FAILED: {exc.__class__.__name__}: {exc}")
 
           scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
           format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
@@ -273,8 +337,17 @@ jobs:
           production_chat = (os.getenv("CHANNEL_ID") or "").strip()
           wd = (os.getenv("WORK_DATE") or "").strip()
 
-          if _recovery_should_skip():
-              raise SystemExit(0)
+          event_schedule = (os.getenv("GITHUB_EVENT_SCHEDULE") or "").strip()
+          target_date = cy_morning_target_date(wd, os.getenv("TZ", "Asia/Nicosia"))
+          if scheduled_run and event_schedule in ("0 1 * * *", "15 3 * * *"):
+              receipt_path = cy_morning_delivery_path(target_date)
+              print(f"CY_MORNING_DELIVERY_TARGET_DATE: {target_date}")
+              print(f"CY_MORNING_DELIVERY_RECEIPT_PATH: {receipt_path}")
+              if cy_morning_has_valid_production_receipt(target_date):
+                  print(f"CY_MORNING_DELIVERY_SKIP: already delivered for {target_date}")
+                  raise SystemExit(0)
+              print(f"CY_MORNING_DELIVERY_SKIP: no valid receipt for {target_date}; continuing")
+              _log_related_successful_jobs()
 
           if format_v2:
               args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
@@ -340,6 +413,7 @@ jobs:
             .cache
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
+            !.cache/cy_morning_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -477,6 +551,7 @@ jobs:
             .cache
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
+            !.cache/cy_morning_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
