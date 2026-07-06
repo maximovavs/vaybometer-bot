@@ -12,7 +12,7 @@ from visual_context_cy import VisualContextCY, parse_visual_context_cy
 from visual_rules_cy import SceneCuesCY, apply_visual_rules_cy
 
 
-CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v4"
+CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v5"
 
 _GENERAL_TRIGGER_PATTERNS = (
     r"\bweather\s+card\b",
@@ -121,8 +121,8 @@ _CY_COASTAL_SCENE_TEMPLATES = {
         "evening": "dominant Larnaca seafront promenade in late twilight, broad paved edge, low sea wall, and water reflections kept realistic",
     },
     "small_harbour": {
-        "morning": "dominant Limassol marina edge and small harbour stone quay in crisp daylight, reflective basin, local stone, and distant waterfront depth",
-        "evening": "dominant Limassol marina edge and small harbour stone quay at dusk, distant moored shapes, restrained reflections, and coastal depth",
+        "morning": "dominant small Cyprus harbour in crisp daylight, protected harbour basin, stone quay edge, mooring posts, low waterfront buildings, and open sea beyond",
+        "evening": "dominant small Cyprus harbour in restrained twilight, protected harbour basin, stone quay edge, mooring posts, low waterfront buildings, and textured water inside the harbour",
     },
     "open_sea_cliffs": {
         "morning": "dominant Ayia Napa sea caves and open-sea cliffs in daylight, sculpted pale rock arches, turquoise water, and cliff-shadow detail",
@@ -491,13 +491,18 @@ def _controlled_variety(
         foreground = variants["foreground"]
         composition = variants["composition"]
         scene_family = variants["scene_family"]
-    return [
+    parts = [
         "dominant Cyprus scene family: " + scene_family,
         "dominant macro scene variant: " + scene_text,
         "controlled foreground variant: " + foreground,
         "controlled composition variant: " + composition,
         "avoid repeating previous postcard composition, avoid foreground palms as the main subject, avoid identical centered bay curve, avoid cliff walls on both sides",
     ]
+    if scene_family == "small_harbour":
+        parts.append(
+            "small harbour adherence: protected harbour basin, harbour edge as main motif, mooring posts, low coastal human structure, not a generic cliff bay"
+        )
+    return parts
 
 
 def sanitize_cyprus_scene_prompt(prompt: str, *, post_type: str) -> str:
@@ -593,9 +598,13 @@ def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
             cues.extend(
                 [
                     "distant inland cloud development toward the Troodos mountains",
+                    "convective cloud build-up toward Troodos/inland",
+                    "towering cumulus over inland hills",
                     "cloud towers over inland hills while the coastal foreground remains dry",
                     "clearer warm Cyprus coast with weather building inland",
                     "no whole-coast storm scene",
+                    "no perfect tourist calm",
+                    "no ideal postcard sunset scene",
                     "dry coastal surfaces, not a rainy shoreline",
                 ]
             )
@@ -603,14 +612,17 @@ def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
             cues.extend(
                 [
                     "visible wind response in palm fronds and coastal grass",
+                    "coastal vegetation visibly leaning in gusts",
+                    "wind-ruffled sea with uneven texture",
                     "textured Mediterranean water surface",
                     "small wind-driven ripples",
                     "no mirror-flat water",
+                    "no perfect tourist calm",
                     "no completely still vegetation",
                 ]
             )
             if ctx.gust_max is not None and ctx.gust_max >= 12:
-                cues.append("occasional small whitecaps")
+                cues.append("occasional small whitecaps, not storm-scale")
             if scene.diagnostics.get("severe_wind_rule"):
                 cues.extend(
                     [
@@ -785,7 +797,8 @@ def build_cyprus_scene_prompt_with_metadata(
     else:
         time_cue = (
             "Mediterranean late-day atmosphere with restrained twilight color, "
-            "right-side horizon glow, horizon glow from the right side of frame, not always a visible sun disk"
+            "subtle residual horizon glow that does not have to sit on the right side, "
+            "not a default postcard golden sunset, no mandatory visible sun disk"
         )
     foundation = _COASTAL_FOUNDATION if ctx.coastal_focus or not ctx.inland_heat_focus else _INLAND_FOUNDATION
     prompt_parts = [

@@ -1562,6 +1562,44 @@ def _compact_city_air_label(label: str) -> str:
     return s or str(label).split()[0]
 
 
+def _fmt_city_air_value(value: Any) -> Optional[str]:
+    try:
+        num = float(str(value).replace(",", "."))
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return f"{int(round(num))}" if abs(num - round(num)) < 0.05 else f"{num:.1f}"
+
+
+def _city_air_metric_hint(data: Dict[str, Any], compact_label: str) -> str:
+    marker = str(compact_label or "").strip()[:1]
+    if marker not in {"🟡", "🟠", "🔴"}:
+        return ""
+
+    pm25 = _fmt_city_air_value(data.get("pm25"))
+    if pm25:
+        return f"PM₂.₅ {pm25}"
+
+    pollutant = str(data.get("dominant_pollutant") or "").strip().lower()
+    pollutant_map = {
+        "pm10": ("PM₁₀", "pm10"),
+        "no2": ("NO₂", "no2"),
+        "o3": ("O₃", "o3"),
+        "so2": ("SO₂", "so2"),
+        "co": ("CO", "co"),
+    }
+    pollutant = pollutant.replace(".", "")
+    for src, dst in {"₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4", "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9"}.items():
+        pollutant = pollutant.replace(src, dst)
+    if pollutant in pollutant_map:
+        label, key = pollutant_map[pollutant]
+        value = _fmt_city_air_value(data.get(key))
+        if value:
+            return f"{label} {value}"
+    return ""
+
+
 def _air_by_city_line(city_pairs: list[tuple[str, tuple[float, float]]]) -> Optional[str]:
     if os.getenv("CY_AIR_BY_CITY", "1").strip().lower() in ("0", "false", "no", "off"):
         return None
@@ -1599,7 +1637,11 @@ def _air_by_city_line(city_pairs: list[tuple[str, tuple[float, float]]]) -> Opti
         compact = _compact_city_air_label(label)
         if not compact:
             continue
-        chunks.append(f"{_ru_city(city)} {compact}")
+        hint = _city_air_metric_hint(data, compact)
+        if hint:
+            chunks.append(f"{_ru_city(city)} {compact[:1]} ({hint})")
+        else:
+            chunks.append(f"{_ru_city(city)} {compact}")
     if not chunks:
         return None
     return "🏭 Воздух по городам: " + " · ".join(chunks[:5])

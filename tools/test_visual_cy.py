@@ -346,6 +346,7 @@ def cy_prompt_gust_13_has_whitecaps_without_flat_water() -> None:
     assert "visible wind response in palm fronds and coastal grass" in low
     assert "occasional small whitecaps" in low
     assert "no mirror-flat water" in low
+    assert "no perfect tourist calm" in low
     assert "no completely still vegetation" in low
 
 
@@ -500,15 +501,48 @@ def cy_prompt_local_mountain_thunder_keeps_coast_dry_and_windy() -> None:
     low = prompt.lower()
     assert meta["cloud_haze_category"] == "inland_cloud_development"
     assert "distant inland cloud development" in low
+    assert "convective cloud build-up toward troodos/inland" in low
+    assert "towering cumulus over inland hills" in low
     assert "cloud towers over inland hills" in low
+    assert "wind-ruffled sea with uneven texture" in low
     assert "textured mediterranean water surface" in low
     assert "visible wind response in palm fronds and coastal grass" in low
     assert "occasional small whitecaps" in low
     assert "dry coastal surfaces" in low
+    assert "no perfect tourist calm" in low
+    assert "no ideal postcard sunset scene" in low
     assert "dramatic rain clouds" not in low
     assert "wet promenade" not in low
     assert "rain-darkened coast" not in low
     assert "whole-coast storm scene" in low
+
+
+def cy_prompt_small_harbour_scene_has_harbour_logic() -> None:
+    scenario = """
+    2026-07-09
+    Кипр завтра.
+    Лимассол и Ларнака: тёплый вечер у моря, ветер 6 м/с, порывы до 10 м/с.
+    🌙 Растущая Луна в ♐.
+    """
+    selected: tuple[str, str, dict[str, str]] | None = None
+    for attempt in range(20):
+        prompt, style, meta = build_cyprus_scene_prompt_with_metadata(
+            scenario,
+            post_type="evening",
+            variation_attempt=attempt,
+        )
+        if meta["selected_scene"] == "small_harbour":
+            selected = (prompt, style, meta)
+            break
+    assert selected is not None
+    prompt, _style, meta = selected
+    low = prompt.lower()
+    assert meta["selected_scene"] == "small_harbour"
+    assert "protected harbour basin" in low
+    assert "harbour edge as main motif" in low
+    assert "mooring posts" in low
+    assert "low coastal human structure" in low
+    assert "not a generic cliff bay" in low
 
 
 def cy_prompt_format_v2_wet_severe_wind_keeps_rain_visual() -> None:
@@ -590,9 +624,10 @@ def cy_prompt_morning_evening_same_date_differ() -> None:
     assert morning_style != evening_style
     assert "daylight" in morning.lower()
     assert "pale blue sky" in morning.lower()
-    assert "late-day" in evening.lower() or "dusk" in evening.lower()
-    assert "right-side horizon glow" in evening.lower()
-    assert "right side of frame" in evening.lower()
+    assert "late-day" in evening.lower() or "twilight" in evening.lower()
+    assert "restrained twilight color" in evening.lower()
+    assert "no mandatory visible sun disk" in evening.lower()
+    assert "default postcard golden sunset" in evening.lower()
     assert _macro_scene_cue(morning) != _macro_scene_cue(evening)
 
 
@@ -811,6 +846,7 @@ TESTS = [
     cy_prompt_real_evening_wind_moon_haze_has_no_rain_or_dust_contradictions,
     cy_prompt_format_v2_dry_severe_wind_advice_does_not_create_rain,
     cy_prompt_local_mountain_thunder_keeps_coast_dry_and_windy,
+    cy_prompt_small_harbour_scene_has_harbour_logic,
     cy_prompt_format_v2_wet_severe_wind_keeps_rain_visual,
     cy_prompt_no_raw_source_hints,
     cy_prompt_coastal_priority_over_nicosia,

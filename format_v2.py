@@ -466,7 +466,7 @@ def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
     elif flags.get("astro_unfavorable"):
         reason = "астрофон требует мягкого режима"
     elif flags.get("rain") or flags.get("storm"):
-        reason = "переменная погода требует гибкого плана"
+        reason = "локальные осадки и порывы требуют запаса по времени"
     elif flags.get("dust"):
         reason = "дымка/пыль требуют проверки воздуха"
     else:
@@ -479,7 +479,7 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
     if flags["storm"]:
         return "🧭 Главное завтра: сильные порывы у моря задают режим дня."
     if flags["rain"]:
-        return "🧭 Главное завтра: день неоднородный по острову; маршрут лучше держать гибким."
+        return "🧭 Главное завтра: день неоднородный по острову."
     if flags["dust"]:
         return "🧭 Главное завтра: пыль/дымка влияют на воздух и видимость; утром лучше сверить AQI/PM."
     if flags.get("visibility_haze"):
@@ -504,7 +504,7 @@ def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_inland: bool) -> 
     if flags["rain"]:
         if flags.get("troodos") and has_sea:
             return "⚠️ Главный нюанс: осадки возможны локально, особенно в горах; у моря жарко и порывисто."
-        return "⚠️ Главный нюанс: осадки возможны локально; по маршруту лучше оставить запасной вариант."
+        return "⚠️ Главный нюанс: осадки возможны локально; по районам погода может отличаться сильнее среднего прогноза."
     if flags["dust"]:
         return "⚠️ Нюанс: при пыли/дыме чувствительным людям лучше сократить активность на улице."
     if flags.get("visibility_haze"):
@@ -532,7 +532,7 @@ def _evening_confidence_line(flags: dict[str, bool]) -> str:
 
 def _evening_plan(flags: dict[str, bool]) -> str:
     if flags["storm"]:
-        return "✅ План завтра: гибкий маршрут и без лишнего риска у открытого моря."
+        return "✅ План завтра: защищённый берег, короткие перемещения и без лишнего риска у открытого моря."
     if flags["rain"]:
         return "✅ План завтра: запасной indoor-вариант; радар — перед выездом."
     if flags["heat"] and flags["wind"]:
@@ -600,11 +600,21 @@ def _clean_city_air_line(line: str) -> str:
     body = re.sub(r"^🏭\s*Воздух по городам\s*:\s*", "", _plain(line).strip(), flags=re.I)
     city_re = r"Никосия|Лимассол|Ларнака|Пафос|Айя-Напа|Тродос"
     pollutant_re = r"PM₂\.₅|PM2\.?5|PM₁₀|PM10|NO₂|NO2|O₃|O3|SO₂|SO2|CO"
+    value_re = r"\d+(?:[\.,]\d+)?"
     chunks: list[str] = []
-    for m in re.finditer(rf"({city_re})\s+([🟢🟡🟠🔴])(?:\s+({pollutant_re}))?", body, flags=re.I):
-        city, marker, pollutant = m.group(1), m.group(2), m.group(3) or ""
-        pollutant = pollutant.replace("PM10", "PM₁₀").replace("PM2.5", "PM₂.₅").replace("PM25", "PM₂.₅")
-        pollutant = pollutant.replace("NO2", "NO₂").replace("O3", "O₃").replace("SO2", "SO₂")
+    token_re = rf"({city_re})\s+([🟢🟡🟠🔴])(?P<tail>.*?)(?=(?:\s*·\s*|\s+{city_re}\s+[🟢🟡🟠🔴]|$))"
+    for m in re.finditer(token_re, body, flags=re.I):
+        city, marker = m.group(1), m.group(2)
+        tail = (m.group("tail") or "").strip()
+        pollutant = ""
+        pollutant_match = re.search(rf"({pollutant_re})(?:\s*({value_re}))?", tail, flags=re.I)
+        if pollutant_match:
+            pollutant = pollutant_match.group(1)
+            pollutant = pollutant.replace("PM10", "PM₁₀").replace("PM2.5", "PM₂.₅").replace("PM25", "PM₂.₅")
+            pollutant = pollutant.replace("NO2", "NO₂").replace("O3", "O₃").replace("SO2", "SO₂")
+            value = pollutant_match.group(2)
+            if value:
+                pollutant = f"{pollutant} {value.replace(',', '.')}"
         chunks.append(f"{city} {marker}" + (f" ({pollutant})" if pollutant else ""))
     if chunks:
         return "🏭 Воздух по городам: " + " · ".join(chunks[:6])

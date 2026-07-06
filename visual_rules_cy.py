@@ -58,7 +58,7 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     if wet:
         sky_cue = "dramatic rain clouds over Cyprus"
     elif inland_unsettled:
-        sky_cue = "warm Cyprus coast with distant inland cloud development toward the Troodos mountains"
+        sky_cue = "warm Cyprus coast with distant inland cloud development and convective cloud build-up toward the Troodos mountains"
     elif severe_wind:
         sky_cue = "layered wind-driven Mediterranean clouds over a dry Cyprus coast"
     elif dusty:
@@ -90,13 +90,13 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         sea_cue = "rain-darkened coast and a wet promenade; active unsettled sea"
     elif inland_unsettled and windy:
         sea_cue = (
-            "warm dry Cyprus coast with textured Mediterranean water surface; "
-            "visible wind response in palm fronds and coastal grass; distant inland cloud towers"
+            "warm dry Cyprus coast with wind-ruffled sea and uneven Mediterranean water texture; "
+            "visible wind response in palm fronds and coastal grass; convective cloud build-up toward Troodos/inland"
         )
         if ctx.gust_max is not None and ctx.gust_max >= 12:
-            sea_cue += "; occasional small whitecaps"
+            sea_cue += "; occasional small whitecaps, not storm-scale"
     elif inland_unsettled:
-        sea_cue = "warm dry Cyprus coast with distant inland cloud towers toward the mountains"
+        sea_cue = "warm dry Cyprus coast with distant inland cloud towers and convective build-up toward the mountains"
     elif severe_wind:
         sea_cue = (
             "strongly textured Mediterranean water surface with frequent small whitecaps; "
@@ -104,11 +104,11 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         )
     elif windy:
         sea_cue = (
-            "textured Mediterranean water surface with small wind-driven ripples; "
+            "wind-ruffled textured Mediterranean water surface with small wind-driven ripples; "
             "visible wind response in palm fronds and coastal grass"
         )
         if ctx.gust_max is not None and ctx.gust_max >= 12:
-            sea_cue += "; occasional small whitecaps"
+            sea_cue += "; occasional small whitecaps, not storm-scale"
     elif ctx.coastal_focus:
         if ctx.sea_state_hint == "calm":
             sea_cue = "calm warm sea surface beside a Cyprus coastal promenade"
@@ -177,6 +177,8 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         must_show.extend(
             [
                 "distant inland cloud development toward the mountains",
+                "convective cloud build-up toward Troodos/inland",
+                "towering cumulus over inland hills",
                 "clearer warm coastal foreground",
                 "dry promenade and dry coastal surfaces",
             ]
@@ -194,12 +196,14 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         must_show.extend(
             [
                 "visible wind response in palm fronds and coastal grass",
+                "coastal vegetation visibly leaning in gusts",
+                "wind-ruffled sea with uneven texture",
                 "textured Mediterranean water surface",
                 "small wind-driven ripples",
             ]
         )
         if ctx.gust_max is not None and ctx.gust_max >= 12:
-            must_show.append("occasional small whitecaps")
+            must_show.append("occasional small whitecaps, not storm-scale")
     if dusty:
         must_show.append("hazy muted beige-gold atmosphere")
     elif visibility_haze:
@@ -227,6 +231,9 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
                 "whole-coast storm scene",
                 "coastal surfaces shown as rainy when coastal rain is absent",
                 "fully stormy shoreline when only inland clouds are forecast",
+                "perfect tourist calm",
+                "ideal postcard sunset scene",
+                "mirror-flat water",
             ]
         )
     elif severe_wind:
@@ -237,7 +244,7 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
             ]
         )
     elif windy:
-        must_avoid.extend(["mirror-flat water", "completely still vegetation"])
+        must_avoid.extend(["mirror-flat water", "completely still vegetation", "perfect tourist calm"])
     if not ctx.inland_heat_focus and not inland_unsettled:
         must_avoid.append("Troodos or inland mountains without explicit relevance")
 

@@ -311,7 +311,7 @@ CITY_AIR_BROKEN_EVENING = """<b>🌅 Кипр: погода на завтра (2
 Ларнака: 29/23 °C • ясно
 ———
 🏭 Воздух: AQI 48 (низкий) • PM₂.₅ 12 / PM₁₀ 19
-🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟡 PM₁₀ Пафос 🟢 · Айя-Напа 🟡 PM₁₀
+🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟡 PM₂.₅ 18 Пафос 🟠 PM₂.₅ 28 · Айя-Напа 🟢
 🌅 Рассвет завтра: 05:37
 🌕 Полнолуние в ♐ — 96% освещённости.
 💚 В плюсе: планы.
@@ -597,9 +597,9 @@ def cy_evening_surf_with_valid_wave_is_cautiously_positive() -> None:
 
 def cy_evening_city_air_line_is_compact_and_parenthesized() -> None:
     text = _safe_test_evening_pipeline(CITY_AIR_BROKEN_EVENING)
-    expected = "🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟡 (PM₁₀) · Пафос 🟢 · Айя-Напа 🟡 (PM₁₀)"
+    expected = "🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟡 (PM₂.₅ 18) · Пафос 🟠 (PM₂.₅ 28) · Айя-Напа 🟢"
     assert expected in text
-    assert "Ларнака 🟡 PM₁₀ Пафос" not in text
+    assert "Ларнака 🟡 PM₂.₅ 18 Пафос" not in text
     assert text.count("🏭 Воздух по городам:") == 1
 
 
@@ -619,15 +619,18 @@ def cy_evening_integrated_guidance_is_not_repetitive() -> None:
     assert "сверить осадки" not in text
     assert "Лучшее окно" not in text
     assert text.count("🧭 Главное завтра:") == 1
+    assert "🧭 Главное завтра: день неоднородный по острову." in text
     assert text.count("💬 Настрой на завтра:") == 1
     editorial_line = next(line for line in lines if line.startswith("💬 Настрой на завтра:"))
     assert any(
         phrase in editorial_line
         for phrase in (
-            "день лучше планировать без жёсткого тайминга",
-            "завтра комфортнее двигаться без спешки",
+            "двигаться без спешки и беречь силы в жару",
+            "лучше держать темп мягче обычного",
         )
     )
+    assert "маршрут" not in editorial_line
+    assert "сценари" not in editorial_line
     for repeated in ("у моря порывисто", "в горах", "локальные изменения погоды"):
         assert repeated not in editorial_line
     assert "🏄 Серф: данных для уверенной оценки недостаточно; проверить спот перед выездом." in text
@@ -647,7 +650,7 @@ def cy_evening_generic_warning_does_not_trigger_storm() -> None:
 
 def cy_evening_rain_warning_is_rain_not_storm() -> None:
     text = build_evening_format_v2("Кипр", RAIN_WARNING_NO_STORM_EVENING)
-    assert "🧭 Главное завтра: день неоднородный по острову; маршрут лучше держать гибким." in text
+    assert "🧭 Главное завтра: день неоднородный по острову." in text
     assert "⚠️ Главный нюанс: осадки возможны локально" in text
     assert "✅ План завтра: запасной indoor-вариант; радар — перед выездом." in text
     assert "главный фактор — предупреждение" not in text
@@ -658,7 +661,7 @@ def cy_evening_rain_warning_is_rain_not_storm() -> None:
 def cy_evening_gust_17_triggers_storm_without_word() -> None:
     text = build_evening_format_v2("Кипр", GUST_STORM_NO_WORD_EVENING)
     assert "🧭 Главное завтра: сильные порывы у моря задают режим дня." in text
-    assert "✅ План завтра: гибкий маршрут и без лишнего риска у открытого моря." in text
+    assert "✅ План завтра: защищённый берег, короткие перемещения и без лишнего риска у открытого моря." in text
     assert "⚠️ <b>Предупреждение</b>" in text
 
 

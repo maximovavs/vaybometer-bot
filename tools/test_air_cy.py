@@ -105,7 +105,7 @@ def test_city_summary_formatting() -> None:
     os.environ["CY_AIR_BY_CITY"] = "1"
     post_common.get_air_for_cities = lambda pairs: {
         "Limassol": {"src": "cy_official", "clean_label": "🟢 чисто"},
-        "Nicosia": {"src": "cy_official", "clean_label": "🟡 PM₁₀"},
+        "Nicosia": {"src": "cy_official", "clean_label": "🟡 PM₁₀", "pm25": 18, "pm10": 42, "dominant_pollutant": "PM10"},
         "Ayia Napa": {"src": "cy_official", "clean_label": "🟢 чисто"},
     }
     try:
@@ -119,8 +119,8 @@ def test_city_summary_formatting() -> None:
         )
         assert_true("city_summary", isinstance(line, str))
         assert_true("city_summary", "Воздух по городам:" in line)
-        assert_true("city_summary", "Лимассол 🟢 чисто" in line)
-        assert_true("city_summary", "Никосия 🟡 PM₁₀" in line)
+        assert_true("city_summary", "Лимассол 🟢" in line)
+        assert_true("city_summary", "Никосия 🟡 (PM₂.₅ 18)" in line)
         assert_true("city_summary", "Troodos" not in line)
     finally:
         post_common.get_air_for_cities = old_get
@@ -136,18 +136,21 @@ def test_format_v2_keeps_city_air_line() -> None:
 
     legacy = "\n".join(
         [
-            "<b>Кипр: погода на сегодня (25.06.2026)</b>",
-            "Доброе утро! Теплее всего — Никосия (37°), прохладнее — Пафос (28°).",
-            "☀️ <b>УФ-индекс 9 (Very High)</b>: SPF 50",
-            "🏭 AQI 25 (низкий) • PM₂.₅ 8 / PM₁₀ 28",
-            "🏙 Воздух по городам: Лимассол 🟢 чисто; Никосия 🟡 PM₁₀.",
-            "✅ Сегодня: вода и завтрак.",
+            "<b>Кипр: погода на завтра (25.06.2026)</b>",
+            "✨ VayboMeter завтра: 7.4/10 — хорошо.",
+            "🏖 <b>Морские города</b>",
+            "Лимассол: 30/24 °C • ясно",
+            "———",
+            "🏭 Воздух: AQI 25 (низкий) • PM₂.₅ 8 / PM₁₀ 28",
+            "🏭 Воздух по городам: Лимассол 🟢 · Никосия 🟡 PM₂.₅ 18.",
+            "🌅 Рассвет завтра: 05:37",
+            "🌙 Растущая Луна в ♐ — спокойный ритм.",
             "#Кипр #погода #здоровье",
         ]
     )
-    out = build_format_v2("Кипр", "morning", legacy)
-    assert_true("format_v2_city_air", "🏙 Воздух по городам:" in out)
-    assert_true("format_v2_city_air", "Лимассол 🟢 чисто" in out)
+    out = build_format_v2("Кипр", "evening", legacy)
+    assert_true("format_v2_city_air", "🏭 Воздух по городам:" in out)
+    assert_true("format_v2_city_air", "Лимассол 🟢 · Никосия 🟡 (PM₂.₅ 18)" in out)
     print("PASS format_v2_keeps_city_air_line")
 
 
