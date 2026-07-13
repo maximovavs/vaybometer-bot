@@ -653,7 +653,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/restore_cy_visual_snapshot.py
+        run: |
+          export CY_RECOVERY_TARGET_DATE="$(TZ="${TZ:-Asia/Nicosia}" date +%F)"
+          export CY_RECOVERY_POST_TYPE="morning"
+          python .github/scripts/restore_cy_visual_snapshot.py
 
       - name: Time debug
         run: |
@@ -745,7 +748,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/restore_cy_visual_snapshot.py
+        run: |
+          export CY_RECOVERY_TARGET_DATE="$(TZ="${TZ:-Asia/Nicosia}" date -d tomorrow +%F)"
+          export CY_RECOVERY_POST_TYPE="evening"
+          python .github/scripts/restore_cy_visual_snapshot.py
 
       - name: Time debug
         run: |

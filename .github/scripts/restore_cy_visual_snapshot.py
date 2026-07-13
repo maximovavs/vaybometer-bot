@@ -178,10 +178,10 @@ def _restore_receipts(
     validator,
     target_date: str | None,
     post_type: str | None,
-) -> int:
+) -> tuple[int, str]:
     source_dir = _receipt_source_dir(source_root, dir_name)
     if not source_dir.is_dir():
-        return 0
+        return 0, "missing"
 
     if target_date and post_type:
         candidates = [source_dir / f"{target_date}-{post_type}.json"]
@@ -189,6 +189,7 @@ def _restore_receipts(
         candidates = sorted(source_dir.glob("*.json"))
 
     restored = 0
+    status = "missing"
     destination_dir = destination_cache / dir_name
     for source in candidates:
         if not source.is_file():
@@ -196,8 +197,10 @@ def _restore_receipts(
         try:
             snapshot_data = _load_json(source)
         except Exception:
+            status = "invalid"
             continue
         if not validator(snapshot_data, target_date=target_date, post_type=post_type):
+            status = "invalid"
             continue
         destination = destination_dir / source.name
         local_data = None
@@ -206,11 +209,33 @@ def _restore_receipts(
         except Exception:
             local_data = None
         if validator(local_data, target_date=target_date, post_type=post_type) and _receipt_is_newer_or_equal(local_data, snapshot_data):
+            status = "already_newer"
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         restored += 1
-    return restored
+        status = "restored"
+    if not (target_date and post_type) and restored:
+        status = "bulk_restored"
+    return restored, status
+
+
+def _local_receipt_valid(
+    destination_cache: Path,
+    *,
+    dir_name: str,
+    validator,
+    target_date: str | None,
+    post_type: str | None,
+) -> bool:
+    if not (target_date and post_type):
+        return True
+    path = destination_cache / dir_name / f"{target_date}-{post_type}.json"
+    try:
+        data = _load_json(path)
+    except Exception:
+        return False
+    return validator(data, target_date=target_date, post_type=post_type)
 
 
 def _gh_json(args: list[str]) -> dict[str, Any]:
@@ -295,7 +320,7 @@ def main() -> int:
                     if merged_test != local_test_entries:
                         _write_json_atomic(test_destination, merged_test)
 
-                text_restored = _restore_receipts(
+                text_restored, text_status = _restore_receipts(
                     extract_dir,
                     destination_cache,
                     dir_name="cy_text_delivery",
@@ -303,7 +328,7 @@ def main() -> int:
                     target_date=target_date,
                     post_type=post_type,
                 )
-                image_restored = _restore_receipts(
+                image_restored, image_status = _restore_receipts(
                     extract_dir,
                     destination_cache,
                     dir_name="cy_image_delivery",
@@ -311,13 +336,37 @@ def main() -> int:
                     target_date=target_date,
                     post_type=post_type,
                 )
+                text_ok = _local_receipt_valid(
+                    destination_cache,
+                    dir_name="cy_text_delivery",
+                    validator=_valid_text_receipt,
+                    target_date=target_date,
+                    post_type=post_type,
+                )
+                image_ok = _local_receipt_valid(
+                    destination_cache,
+                    dir_name="cy_image_delivery",
+                    validator=_valid_image_receipt,
+                    target_date=target_date,
+                    post_type=post_type,
+                )
                 print(
-                    "Cyprus visual snapshot merged: "
+                    "Cyprus visual snapshot checked: "
                     f"artifact_id={artifact_id}; local_count={len(local_entries)}; "
                     f"snapshot_count={len(snapshot_entries)}; merged_count={len(merged)}; "
                     f"local_latest={local_latest}; snapshot_latest={snapshot_latest}; "
-                    f"text_receipts_restored={text_restored}; image_receipts_restored={image_restored}."
+                    f"text_receipt={text_status}; image_receipt={image_status}; "
+                    f"text_receipts_restored={text_restored}; image_receipts_restored={image_restored}; "
+                    f"final_text_receipt={text_ok}; final_image_receipt={image_ok}."
                 )
+                local_entries = merged
+                local_latest = _latest_entry_date(local_entries)
+                if target_date and post_type and not (text_ok and image_ok):
+                    print(
+                        f"Cyprus targeted receipt restore incomplete after artifact_id={artifact_id}; "
+                        "checking older snapshot artifacts."
+                    )
+                    continue
                 return 0
             except Exception as exc:
                 print(

@@ -1439,6 +1439,14 @@ def _cy_safe_image_min_bytes() -> int:
     return value
 
 
+def _cy_accept_lru_recent_visual_candidate(metadata: dict[str, object], reason: str) -> bool:
+    if reason == "recent_scene_family":
+        return metadata.get("scene_selection_mode") == "least_recently_used"
+    if reason == "recent_composition":
+        return metadata.get("composition_selection_mode") == "least_recently_used"
+    return False
+
+
 def _cy_safe_image_output_path(style_name: str, *, nonce: str = "") -> Path:
     safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", style_name).strip("_") or "cyprus_safe"
     safe_nonce = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(nonce or "")).strip("_")
@@ -1652,8 +1660,6 @@ async def _build_safe_test_image(
             for entry in restored_history[-5:]
             if isinstance(entry, dict) and str(entry.get("composition") or "").strip()
         )
-        blocked_recent_scenes = set(recent_scene_values)
-        blocked_recent_compositions = set(recent_composition_values)
         print(f"CY_SAFE_IMAGE_HISTORY_NAMESPACE: {history_namespace}")
         print(f"CY_SAFE_IMAGE_HISTORY_PATH: {history_path}")
         print(f"CY_SAFE_IMAGE_HISTORY_COUNT_BEFORE: {before_history_count}")
@@ -1680,25 +1686,6 @@ async def _build_safe_test_image(
             last_metadata = dict(metadata)
             target_date_for_diag = str(metadata["forecast_date"])
             cache_key = metadata["cache_key"]
-            scene_blocked = str(metadata.get("selected_scene") or "") in blocked_recent_scenes
-            composition_blocked = str(metadata.get("composition") or "") in blocked_recent_compositions
-            if scene_blocked or composition_blocked:
-                reason = "recent_scene_family" if scene_blocked else "recent_composition"
-                attempts.append(
-                    {
-                        "attempt": generation_attempt + 1,
-                        "variation_attempt": variation_attempt,
-                        "selected_scene": metadata.get("selected_scene", ""),
-                        "composition": metadata.get("composition", ""),
-                        "style_name": style_name,
-                        "cache_key": cache_key,
-                        "cache_status": "not_generated",
-                        "dedup_reason": reason,
-                    }
-                )
-                print(f"CY_SAFE_IMAGE_PREGEN_SKIP: {reason}; scene={metadata.get('selected_scene')}")
-                variation_attempt += 1
-                continue
             generation_attempt += 1
             if production_image_send:
                 if is_valid_cy_image_receipt(metadata["forecast_date"], mode):
@@ -1797,6 +1784,8 @@ async def _build_safe_test_image(
                     "variation_attempt": variation_attempt,
                     "selected_scene": metadata["selected_scene"],
                     "composition": metadata.get("composition", ""),
+                    "scene_selection_mode": metadata.get("scene_selection_mode", ""),
+                    "composition_selection_mode": metadata.get("composition_selection_mode", ""),
                     "style_name": style_name,
                     "cache_key": cache_key,
                     "cache_status": cache_state,
@@ -1821,6 +1810,11 @@ async def _build_safe_test_image(
                 duplicate_result,
             )
             if duplicate_result.accepted:
+                selected_candidate = candidate
+                break
+            if _cy_accept_lru_recent_visual_candidate(metadata, duplicate_result.reason):
+                attempts[-1]["dedup_reason"] = f"{duplicate_result.reason}_lru_allowed"
+                print(f"CY_SAFE_IMAGE_DEDUP_LRU_ALLOWED: {duplicate_result.reason}")
                 selected_candidate = candidate
                 break
             try:
@@ -1867,7 +1861,10 @@ async def _build_safe_test_image(
                 composition=metadata.get("composition"),
                 history_path=history_path,
             )
-            if not duplicate_result.accepted:
+            if (
+                not duplicate_result.accepted
+                and not _cy_accept_lru_recent_visual_candidate(metadata, duplicate_result.reason)
+            ):
                 print(f"CY_SAFE_IMAGE_RESULT: skipped_duplicate_before_send ({duplicate_result.reason})")
                 _cy_write_image_diagnostics(
                     mode=mode,

@@ -338,6 +338,8 @@ def test_image_recovery_jobs_are_production_only() -> None:
         _assert(f"{name}_recovery_not_test", "--send-image-to-test" not in block)
         _assert(f"{name}_recovery_no_text_send", "--send " not in block and "--send\n" not in block)
         _assert(f"{name}_recovery_restores_snapshot", "restore_cy_visual_snapshot.py" in block)
+        _assert(f"{name}_recovery_passes_target_date", "CY_RECOVERY_TARGET_DATE" in block)
+        _assert(f"{name}_recovery_passes_post_type", f'CY_RECOVERY_POST_TYPE="{name}"' in block)
     _assert("evening_late_recovery_schedule_guard", "github.event.schedule == '15 15 * * *'" in evening)
     print("PASS image_recovery_jobs_are_production_only")
 
@@ -449,6 +451,72 @@ def test_snapshot_receipt_validation_and_newer_local_protection() -> None:
     print("PASS snapshot_receipt_validation_and_newer_local_protection")
 
 
+def test_snapshot_targeted_restore_continues_to_older_artifact_for_receipts() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        newest = _make_snapshot_zip(
+            tmp,
+            401,
+            history=[_history_entry("2026-07-13", "morning", "6" * 64)],
+        )
+        older = _make_snapshot_zip(
+            tmp,
+            402,
+            history=[_history_entry("2026-07-12", "morning", "7" * 64)],
+            text_receipts=[_text_receipt("2026-07-13", "morning")],
+            image_receipts=[_image_receipt("2026-07-13", "morning")],
+        )
+        _run_snapshot_helper(
+            tmp,
+            [
+                (401, "2026-07-13T08:00:00Z", newest),
+                (402, "2026-07-13T07:00:00Z", older),
+            ],
+            target_date="2026-07-13",
+            post_type="morning",
+        )
+        _assert("snapshot_older_text_receipt_restored", (tmp / ".cache" / "cy_text_delivery" / "2026-07-13-morning.json").exists())
+        _assert("snapshot_older_image_receipt_restored", (tmp / ".cache" / "cy_image_delivery" / "2026-07-13-morning.json").exists())
+        merged = json.loads((tmp / ".cache" / "cyprus_visual_history_prod.json").read_text("utf-8"))
+        keys = {entry["sha256"] for entry in merged}
+        _assert("snapshot_merges_both_checked_artifacts", {"6" * 64, "7" * 64}.issubset(keys), keys)
+    print("PASS snapshot_targeted_restore_continues_to_older_artifact_for_receipts")
+
+
+def test_snapshot_targeted_restore_stops_when_newest_has_receipts() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        newest = _make_snapshot_zip(
+            tmp,
+            501,
+            history=[_history_entry("2026-07-13", "morning", "8" * 64)],
+            text_receipts=[_text_receipt("2026-07-13", "morning", "2026-07-13T08:00:00Z")],
+            image_receipts=[_image_receipt("2026-07-13", "morning", "2026-07-13T08:01:00Z")],
+        )
+        older = _make_snapshot_zip(
+            tmp,
+            502,
+            history=[_history_entry("2026-07-12", "morning", "9" * 64)],
+            text_receipts=[_text_receipt("2026-07-13", "morning", "2026-07-13T07:00:00Z")],
+            image_receipts=[_image_receipt("2026-07-13", "morning", "2026-07-13T07:01:00Z")],
+        )
+        _run_snapshot_helper(
+            tmp,
+            [
+                (501, "2026-07-13T08:00:00Z", newest),
+                (502, "2026-07-13T07:00:00Z", older),
+            ],
+            target_date="2026-07-13",
+            post_type="morning",
+        )
+        merged = json.loads((tmp / ".cache" / "cyprus_visual_history_prod.json").read_text("utf-8"))
+        keys = {entry["sha256"] for entry in merged}
+        _assert("snapshot_newest_receipts_stop_before_older", "8" * 64 in keys and "9" * 64 not in keys, keys)
+        final_text = json.loads((tmp / ".cache" / "cy_text_delivery" / "2026-07-13-morning.json").read_text("utf-8"))
+        _assert("snapshot_newest_text_receipt_kept", final_text["sent_at_utc"] == "2026-07-13T08:00:00Z")
+    print("PASS snapshot_targeted_restore_stops_when_newest_has_receipts")
+
+
 def test_simulated_manual_morning_evening_history_chain() -> None:
     cache_store: dict[str, list[str]] = {}
     prefix = "cyprus-visual-history-prod-"
@@ -501,6 +569,8 @@ TESTS = [
     test_snapshot_merges_recent_history_without_21_day_gap,
     test_snapshot_skips_malformed_newest_artifact,
     test_snapshot_receipt_validation_and_newer_local_protection,
+    test_snapshot_targeted_restore_continues_to_older_artifact_for_receipts,
+    test_snapshot_targeted_restore_stops_when_newest_has_receipts,
     test_simulated_manual_morning_evening_history_chain,
     test_pillow_is_bounded_dependency,
 ]
