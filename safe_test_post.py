@@ -104,10 +104,26 @@ def _utc_now_iso() -> str:
 
 def _redact_secret_text(value: str) -> str:
     redacted = value
-    for secret in (TOKEN, os.getenv("OPENAI_API_KEY", ""), os.getenv("GEMINI_API_KEY", "")):
+    for secret in (
+        TOKEN,
+        os.getenv("TELEGRAM_TOKEN", ""),
+        os.getenv("OPENAI_API_KEY", ""),
+        os.getenv("GEMINI_API_KEY", ""),
+        os.getenv("GROQ_API_KEY", ""),
+        os.getenv("POLLINATIONS_TOKEN", ""),
+        os.getenv("STABLE_HORDE_API_KEY", ""),
+        os.getenv("CUSTOM_IMAGE_API_KEY", ""),
+    ):
         secret = (secret or "").strip()
         if secret:
             redacted = redacted.replace(secret, "[redacted]")
+    redacted = re.sub(
+        r"https?://[^\s\"']*(?:token|key|apikey|api_key|auth|authorization)=[^\s\"'&]+",
+        "[redacted-url]",
+        redacted,
+        flags=re.I,
+    )
+    redacted = re.sub(r"(Authorization:\s*(?:Bearer\s+)?)[^\s,;]+", r"\1[redacted]", redacted, flags=re.I)
     return redacted
 
 
@@ -245,6 +261,84 @@ def cy_morning_has_valid_production_receipt(target_date: str) -> bool:
         target_date,
     )
 
+def cy_text_delivery_path(target_date: str, post_type: str) -> Path:
+    return _cy_text_receipt_path(target_date, post_type)
+
+
+def cy_image_delivery_path(target_date: str, post_type: str) -> Path:
+    return _cy_image_receipt_path(target_date, post_type)
+
+
+def _load_json_object(path: Path) -> dict[str, object] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logging.warning("Receipt read failed: %s: %s", path, exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _positive_int_list(value: object) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    out: list[int] = []
+    for item in value:
+        if isinstance(item, int) and item > 0:
+            out.append(item)
+    return out
+
+
+def is_valid_cy_text_receipt(target_date: str, post_type: str) -> bool:
+    data = _load_json_object(cy_text_delivery_path(target_date, post_type))
+    if not isinstance(data, dict):
+        return False
+    if data.get("target_date") != target_date:
+        return False
+    if data.get("post_type") != post_type:
+        return False
+    if data.get("chat_type") != "production":
+        return False
+    chunk_count = data.get("text_chunk_count")
+    if not isinstance(chunk_count, int) or chunk_count < 1:
+        return False
+    if len(_positive_int_list(data.get("telegram_message_ids"))) < chunk_count:
+        return False
+    sent_at = data.get("sent_at_utc")
+    return isinstance(sent_at, str) and bool(sent_at.strip())
+
+
+def is_valid_cy_image_receipt(target_date: str, post_type: str) -> bool:
+    data = _load_json_object(cy_image_delivery_path(target_date, post_type))
+    if not isinstance(data, dict):
+        return False
+    if data.get("target_date") != target_date:
+        return False
+    if data.get("post_type") != post_type:
+        return False
+    if data.get("chat_type") != "production":
+        return False
+    message_id = data.get("telegram_message_id")
+    if not isinstance(message_id, int) or message_id <= 0:
+        return False
+    if not str(data.get("sha256") or "").strip():
+        return False
+    if not str(data.get("selected_scene") or "").strip():
+        return False
+    sent_at = data.get("sent_at_utc")
+    return isinstance(sent_at, str) and bool(sent_at.strip())
+
+
+def has_valid_cy_text_delivery(target_date: str, post_type: str, *, allow_legacy_morning: bool = True) -> bool:
+    if is_valid_cy_text_receipt(target_date, post_type):
+        return True
+    return bool(
+        allow_legacy_morning
+        and post_type == "morning"
+        and cy_morning_has_valid_production_receipt(target_date)
+    )
+
 
 def cy_morning_image_phase_for_result(image_result: str) -> str:
     return {
@@ -252,6 +346,10 @@ def cy_morning_image_phase_for_result(image_result: str) -> str:
         "generated": "image_generated",
         "failed_non_fatal": "image_failed_non_fatal",
         "skipped": "image_skipped",
+        "skipped_receipt_exists": "image_skipped",
+        "skipped_no_text_receipt": "image_skipped",
+        "skipped_duplicate": "image_skipped",
+        "skipped_duplicate_before_send": "image_skipped",
     }.get(str(image_result or "unknown"), "image_result")
 
 
@@ -1341,8 +1439,11 @@ def _cy_safe_image_min_bytes() -> int:
     return value
 
 
-def _cy_safe_image_output_path(style_name: str) -> Path:
+def _cy_safe_image_output_path(style_name: str, *, nonce: str = "") -> Path:
     safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", style_name).strip("_") or "cyprus_safe"
+    safe_nonce = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(nonce or "")).strip("_")
+    if safe_nonce:
+        safe_style = f"{safe_style}_{safe_nonce}"
     output_dir = Path(os.getenv("CY_SAFE_IMAGE_DIR", ".cache/cy_safe_images"))
     return output_dir / f"{safe_style}.jpg"
 
@@ -1369,11 +1470,11 @@ def _cy_extract_receipt_date(text: str, fallback: str) -> str:
 
 
 def _cy_image_receipt_path(target_date: str, post_type: str) -> Path:
-    return _CY_IMAGE_DELIVERY_DIR / _cy_receipt_key(target_date, post_type)
+    return Path(os.getenv("CY_IMAGE_DELIVERY_DIR", str(_CY_IMAGE_DELIVERY_DIR))) / _cy_receipt_key(target_date, post_type)
 
 
 def _cy_text_receipt_path(target_date: str, post_type: str) -> Path:
-    return _CY_TEXT_DELIVERY_DIR / _cy_receipt_key(target_date, post_type)
+    return Path(os.getenv("CY_TEXT_DELIVERY_DIR", str(_CY_TEXT_DELIVERY_DIR))) / _cy_receipt_key(target_date, post_type)
 
 
 def _cy_write_json_atomic(path: Path, payload: dict) -> None:
@@ -1407,7 +1508,7 @@ def _cy_write_image_diagnostics(
     history_count_after: int | None = None,
 ) -> Path:
     safe_date = re.sub(r"[^0-9-]+", "_", target_date or "undated")
-    out_dir = _CY_IMAGE_DIAGNOSTICS_DIR / f"{safe_date}-{mode}"
+    out_dir = Path(os.getenv("CY_IMAGE_DIAGNOSTICS_DIR", str(_CY_IMAGE_DIAGNOSTICS_DIR))) / f"{safe_date}-{mode}"
     payload = {
         "image_result": result,
         "target_date": target_date,
@@ -1423,7 +1524,7 @@ def _cy_write_image_diagnostics(
     if error is not None:
         payload["error"] = {
             "type": type(error).__name__,
-            "message": re.sub(r"\s+", " ", str(error))[:500],
+            "message": _redact_secret_text(re.sub(r"\s+", " ", str(error)))[:500],
         }
     _cy_write_json_atomic(out_dir / "image_result.json", payload)
     return out_dir / "image_result.json"
@@ -1453,7 +1554,7 @@ async def _cy_send_photo_with_retry(
                     "attempt": index,
                     "result": "retry",
                     "error_type": type(exc).__name__,
-                    "message": re.sub(r"\s+", " ", str(exc))[:300],
+                    "message": _redact_secret_text(re.sub(r"\s+", " ", str(exc)))[:300],
                     "sleep_seconds": wait_seconds,
                 }
             )
@@ -1539,7 +1640,18 @@ async def _build_safe_test_image(
         history_path = cyprus_visual_history_path(history_namespace)
         history_path_for_diag = history_path
         ensure_pillow_for_visual_dedup()
-        before_history_count = len(load_cyprus_visual_history(history_path))
+        restored_history = load_cyprus_visual_history(history_path)
+        before_history_count = len(restored_history)
+        blocked_recent_scenes = {
+            str(entry.get("selected_scene") or "").strip()
+            for entry in restored_history[-3:]
+            if isinstance(entry, dict) and str(entry.get("selected_scene") or "").strip()
+        }
+        blocked_recent_compositions = {
+            str(entry.get("composition") or "").strip()
+            for entry in restored_history[-5:]
+            if isinstance(entry, dict) and str(entry.get("composition") or "").strip()
+        }
         print(f"CY_SAFE_IMAGE_HISTORY_NAMESPACE: {history_namespace}")
         print(f"CY_SAFE_IMAGE_HISTORY_PATH: {history_path}")
         print(f"CY_SAFE_IMAGE_HISTORY_COUNT_BEFORE: {before_history_count}")
@@ -1562,9 +1674,26 @@ async def _build_safe_test_image(
             last_metadata = dict(metadata)
             target_date_for_diag = str(metadata["forecast_date"])
             cache_key = metadata["cache_key"]
+            scene_blocked = str(metadata.get("selected_scene") or "") in blocked_recent_scenes
+            composition_blocked = str(metadata.get("composition") or "") in blocked_recent_compositions
+            if scene_blocked or composition_blocked:
+                reason = "recent_scene_family" if scene_blocked else "recent_composition"
+                attempts.append(
+                    {
+                        "attempt": visual_attempt + 1,
+                        "selected_scene": metadata.get("selected_scene", ""),
+                        "composition": metadata.get("composition", ""),
+                        "style_name": style_name,
+                        "cache_key": cache_key,
+                        "cache_status": "not_generated",
+                        "dedup_reason": reason,
+                    }
+                )
+                print(f"CY_SAFE_IMAGE_PREGEN_SKIP: {reason}; scene={metadata.get('selected_scene')}")
+                continue
             if production_image_send:
-                receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
-                if receipt_path.exists():
+                if is_valid_cy_image_receipt(metadata["forecast_date"], mode):
+                    receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
                     print(f"CY_SAFE_IMAGE_RECEIPT_EXISTS: {receipt_path}")
                     _cy_write_image_diagnostics(
                         mode=mode,
@@ -1578,8 +1707,8 @@ async def _build_safe_test_image(
                     )
                     return {"result": "skipped_receipt_exists", "message_ids": []}
                 if image_only_recovery:
-                    text_receipt = _cy_text_receipt_path(metadata["forecast_date"], mode)
-                    if not text_receipt.exists():
+                    if not has_valid_cy_text_delivery(metadata["forecast_date"], mode):
+                        text_receipt = _cy_text_receipt_path(metadata["forecast_date"], mode)
                         print(f"CY_SAFE_IMAGE_RECOVERY_SKIP_NO_TEXT_RECEIPT: {text_receipt}")
                         _cy_write_image_diagnostics(
                             mode=mode,
@@ -1600,9 +1729,21 @@ async def _build_safe_test_image(
             print(f"CY_SAFE_IMAGE_CACHE_KEY: {cache_key}")
             logging.info("Cyprus visual cache key: %s", cache_key)
 
-            requested_path = _cy_safe_image_output_path(style_name)
+            force_regenerate = bool(image_only_recovery)
+            nonce = ""
+            if force_regenerate:
+                nonce = "|".join(
+                    [
+                        os.getenv("GITHUB_RUN_ID", "local"),
+                        os.getenv("GITHUB_RUN_ATTEMPT", "0"),
+                        str(os.getpid()),
+                        str(visual_attempt + 1),
+                        dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S%f"),
+                    ]
+                )
+            requested_path = _cy_safe_image_output_path(style_name, nonce=nonce)
             requested_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_state = "hit" if requested_path.exists() else "miss"
+            cache_state = "miss" if force_regenerate else "hit" if requested_path.exists() else "miss"
             print(f"CY_SAFE_IMAGE_CACHE_STATUS: {cache_state}")
             logging.info("Cyprus visual cache hit/miss: %s", cache_state)
 
@@ -1672,6 +1813,12 @@ async def _build_safe_test_image(
             if duplicate_result.accepted:
                 selected_candidate = candidate
                 break
+            try:
+                quarantine = image_path.with_suffix(image_path.suffix + f".rejected.{duplicate_result.reason}")
+                image_path.replace(quarantine)
+                attempts[-1]["quarantined_path"] = str(quarantine)
+            except Exception as exc:
+                logging.warning("Cyprus rejected visual quarantine failed: %s", exc)
             logging.warning(
                 "Cyprus visual candidate rejected: reason=%s scene=%s attempt=%s",
                 duplicate_result.reason,
@@ -1751,12 +1898,13 @@ async def _build_safe_test_image(
                 history_path,
                 after_history_count,
             )
-            if production_image_send:
+            message_id = getattr(sent_message, "message_id", None)
+            if production_image_send and isinstance(message_id, int) and message_id > 0:
                 receipt = {
                     "target_date": metadata["forecast_date"],
                     "post_type": mode,
                     "chat_type": "production",
-                    "telegram_message_id": getattr(sent_message, "message_id", None),
+                    "telegram_message_id": message_id,
                     "sha256": history_entry.get("sha256"),
                     "perceptual_hash": history_entry.get("perceptual_hash"),
                     "phash": history_entry.get("phash"),
@@ -1772,6 +1920,8 @@ async def _build_safe_test_image(
                 receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
                 _cy_write_json_atomic(receipt_path, receipt)
                 print(f"CY_SAFE_IMAGE_RECEIPT_WRITTEN: {receipt_path}")
+            elif production_image_send:
+                print("CY_SAFE_IMAGE_RECEIPT_NOT_WRITTEN: missing valid Telegram message_id")
             _cy_write_image_diagnostics(
                 mode=mode,
                 target_date=metadata["forecast_date"],
@@ -2082,6 +2232,8 @@ async def main() -> None:
         if resolved_text_chat_id is not None
         else resolve_chat_id(args.chat_id, args.to_test)
     )
+
+
     bot = Bot(token=TOKEN)
     _cy_morning_phase(
         "text_send_started",
@@ -2154,7 +2306,7 @@ async def main() -> None:
         image_result=image_result.get("result"),
         receipt_path=receipt_path,
     )
-    if _cy_is_production_text_send(chat_id):
+    if _cy_is_production_text_send(chat_id) and len(sent_message_ids) >= len(chunks):
         target_date = _cy_extract_receipt_date(final_result.text, base_date.to_date_string())
         receipt = {
             "target_date": target_date,
@@ -2169,6 +2321,8 @@ async def main() -> None:
         receipt_path = _cy_text_receipt_path(target_date, mode)
         _cy_write_json_atomic(receipt_path, receipt)
         print(f"CY_TEXT_RECEIPT_WRITTEN: {receipt_path}")
+    elif _cy_is_production_text_send(chat_id):
+        print("CY_TEXT_RECEIPT_NOT_WRITTEN: missing valid Telegram message ids")
     logging.info("SAFE TEST sent: chat=%s chunks=%d format_v2=%s", chat_id, len(chunks), use_format_v2)
 
 

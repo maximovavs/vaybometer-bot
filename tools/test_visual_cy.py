@@ -827,7 +827,14 @@ def cy_scene_strong_gusts_use_exposed_coast_family() -> None:
     Лимассол: ясно, ветер 7 м/с, порывы до 13 м/с.
     🌊 Море: волна умеренная.
     """
-    allowed = {"windy_exposed_coast", "breakwater_coast", "open_sea_cliffs"}
+    allowed = {
+        "windy_exposed_coast",
+        "breakwater_coast",
+        "open_sea_cliffs",
+        "long_sandy_beach",
+        "coastal_promenade",
+        "mountain_coast_view",
+    }
     for attempt in range(5):
         _prompt, _style, meta = build_cyprus_scene_prompt_with_metadata(
             text,
@@ -835,6 +842,7 @@ def cy_scene_strong_gusts_use_exposed_coast_family() -> None:
             variation_attempt=attempt,
         )
         assert meta["selected_scene"] in allowed
+        assert meta["selected_scene"] != "quiet_blue_lagoon"
 
 
 def cy_scene_plain_haze_prefers_visibility_friendly_coast() -> None:
@@ -852,6 +860,25 @@ def cy_scene_plain_haze_prefers_visibility_friendly_coast() -> None:
         )
         assert meta["selected_scene"] in allowed
         assert "dust haze with muted beige-gold" not in prompt
+
+
+def cy_scene_strong_wind_pool_avoids_three_scene_deadlock() -> None:
+    text = """
+    Добрый вечер, Кипр. 2026-07-23
+    Лимассол: ясно, ветер 8 м/с, порывы до 13 м/с.
+    🌊 Море: волна умеренная.
+    """
+    recently_used = {"windy_exposed_coast", "breakwater_coast", "open_sea_cliffs"}
+    scenes: list[str] = []
+    for attempt in range(6):
+        _prompt, _style, meta = build_cyprus_scene_prompt_with_metadata(
+            text,
+            post_type="evening",
+            variation_attempt=attempt,
+        )
+        scenes.append(meta["selected_scene"])
+    assert any(scene not in recently_used for scene in scenes)
+    assert "quiet_blue_lagoon" not in scenes
 
 
 TESTS = [
@@ -896,6 +923,7 @@ TESTS = [
     cy_prompt_cloudy_uses_cloud_cover_without_blazing_sun,
     cy_scene_strong_gusts_use_exposed_coast_family,
     cy_scene_plain_haze_prefers_visibility_friendly_coast,
+    cy_scene_strong_wind_pool_avoids_three_scene_deadlock,
 ]
 
 

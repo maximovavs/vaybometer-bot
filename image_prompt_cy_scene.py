@@ -327,7 +327,14 @@ def _weather_constrained_scene_family(
         default=None,
     )
     if wind_reference is not None and wind_reference >= 12:
-        options = ("windy_exposed_coast", "breakwater_coast", "open_sea_cliffs")
+        options = (
+            "windy_exposed_coast",
+            "breakwater_coast",
+            "open_sea_cliffs",
+            "long_sandy_beach",
+            "coastal_promenade",
+            "mountain_coast_view",
+        )
     elif ctx.visibility_haze and not ctx.dust_hint:
         options = ("coastal_promenade", "small_harbour")
     elif getattr(ctx, "inland_precipitation", False) or getattr(ctx, "inland_thunder_risk", False):

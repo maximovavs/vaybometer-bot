@@ -35,6 +35,9 @@ from safe_test_post import (  # noqa: E402
     _apply_cyprus_morning_raw_context,
     _apply_cyprus_sensor_cleanup,
     _build_safe_test_image,
+    _cy_image_receipt_path,
+    _cy_text_receipt_path,
+    _cy_write_image_diagnostics,
     _send_telegram_text_chunks,
     cy_morning_delivery_path,
     cy_morning_has_valid_production_receipt,
@@ -42,6 +45,9 @@ from safe_test_post import (  # noqa: E402
     cy_morning_load_delivery_receipt,
     cy_morning_maybe_write_delivery_receipt,
     cy_morning_target_date,
+    has_valid_cy_text_delivery,
+    is_valid_cy_image_receipt,
+    is_valid_cy_text_receipt,
 )
 
 
@@ -163,12 +169,18 @@ MORNING_FULL_MOON = """<b>Кипр: погода на сегодня (27.06.2026
 
 def _with_temp_delivery_dir(callback) -> None:
     old_dir = os.environ.get("CY_MORNING_DELIVERY_DIR")
+    old_text_dir = os.environ.get("CY_TEXT_DELIVERY_DIR")
+    old_image_dir = os.environ.get("CY_IMAGE_DELIVERY_DIR")
+    old_diag_dir = os.environ.get("CY_IMAGE_DIAGNOSTICS_DIR")
     old_run = os.environ.get("GITHUB_RUN_ID")
     old_attempt = os.environ.get("GITHUB_RUN_ATTEMPT")
     old_schedule = os.environ.get("GITHUB_EVENT_SCHEDULE")
     with tempfile.TemporaryDirectory() as tmp:
         try:
             os.environ["CY_MORNING_DELIVERY_DIR"] = tmp
+            os.environ["CY_TEXT_DELIVERY_DIR"] = str(Path(tmp) / "cy_text_delivery")
+            os.environ["CY_IMAGE_DELIVERY_DIR"] = str(Path(tmp) / "cy_image_delivery")
+            os.environ["CY_IMAGE_DIAGNOSTICS_DIR"] = str(Path(tmp) / "cy_image_diagnostics")
             os.environ["GITHUB_RUN_ID"] = "fixture-run"
             os.environ["GITHUB_RUN_ATTEMPT"] = "2"
             callback(Path(tmp))
@@ -177,6 +189,18 @@ def _with_temp_delivery_dir(callback) -> None:
                 os.environ.pop("CY_MORNING_DELIVERY_DIR", None)
             else:
                 os.environ["CY_MORNING_DELIVERY_DIR"] = old_dir
+            if old_text_dir is None:
+                os.environ.pop("CY_TEXT_DELIVERY_DIR", None)
+            else:
+                os.environ["CY_TEXT_DELIVERY_DIR"] = old_text_dir
+            if old_image_dir is None:
+                os.environ.pop("CY_IMAGE_DELIVERY_DIR", None)
+            else:
+                os.environ["CY_IMAGE_DELIVERY_DIR"] = old_image_dir
+            if old_diag_dir is None:
+                os.environ.pop("CY_IMAGE_DIAGNOSTICS_DIR", None)
+            else:
+                os.environ["CY_IMAGE_DIAGNOSTICS_DIR"] = old_diag_dir
             if old_run is None:
                 os.environ.pop("GITHUB_RUN_ID", None)
             else:
@@ -203,6 +227,42 @@ def _write_fixture_receipt(target_date: str, event_schedule: str) -> Path:
     )
     assert receipt is not None
     return receipt
+
+
+def _write_canonical_text_receipt(target_date: str, post_type: str = "morning", ids: list[int] | None = None) -> Path:
+    payload = {
+        "target_date": target_date,
+        "post_type": post_type,
+        "chat_type": "production",
+        "telegram_message_ids": ids or [12345],
+        "text_chunk_count": 1,
+        "run_id": "fixture-run",
+        "run_attempt": "2",
+        "sent_at_utc": "2026-07-06T01:05:00Z",
+    }
+    path = _cy_text_receipt_path(target_date, post_type)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _write_image_receipt(target_date: str, post_type: str = "morning", message_id: int = 777) -> Path:
+    payload = {
+        "target_date": target_date,
+        "post_type": post_type,
+        "chat_type": "production",
+        "telegram_message_id": message_id,
+        "sha256": "a" * 64,
+        "perceptual_hash": "b" * 16,
+        "selected_scene": "coastal_promenade",
+        "style_name": "fixture",
+        "cache_key": "fixture",
+        "sent_at_utc": "2026-07-06T01:06:00Z",
+    }
+    path = _cy_image_receipt_path(target_date, post_type)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def cy_morning_adds_concise_sea_block_when_available() -> None:
@@ -533,6 +593,187 @@ def cy_morning_image_phase_names_match_delivery_state() -> None:
     assert cy_morning_image_phase_for_result("failed_non_fatal") != "image_sent"
 
 
+def cy_text_and_image_receipt_validators_are_strict() -> None:
+    def _case(tmp: Path) -> None:
+        target_date = "2026-07-06"
+        assert not is_valid_cy_text_receipt(target_date, "morning")
+        assert not is_valid_cy_image_receipt(target_date, "morning")
+        _write_canonical_text_receipt(target_date)
+        _write_image_receipt(target_date)
+        assert is_valid_cy_text_receipt(target_date, "morning")
+        assert has_valid_cy_text_delivery(target_date, "morning")
+        assert is_valid_cy_image_receipt(target_date, "morning")
+
+        bad_text = _cy_text_receipt_path("2026-07-07", "morning")
+        bad_text.parent.mkdir(parents=True, exist_ok=True)
+        bad_text.write_text("{not json", encoding="utf-8")
+        assert not is_valid_cy_text_receipt("2026-07-07", "morning")
+
+        bad_image = _cy_image_receipt_path("2026-07-07", "morning")
+        bad_image.parent.mkdir(parents=True, exist_ok=True)
+        bad_image.write_text(json.dumps({"target_date": "2026-07-07", "post_type": "morning"}), encoding="utf-8")
+        assert not is_valid_cy_image_receipt("2026-07-07", "morning")
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_morning_delayed_0315_decision_sends_image_only_when_text_exists() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+
+        def decision() -> str:
+            text_delivered = has_valid_cy_text_delivery(target_date, "morning")
+            image_delivered = is_valid_cy_image_receipt(target_date, "morning")
+            if text_delivered and image_delivered:
+                return "skip_all"
+            if text_delivered and not image_delivered:
+                return "image_only"
+            return "full_publish"
+
+        assert decision() == "full_publish"
+        _write_canonical_text_receipt(target_date)
+        assert decision() == "image_only"
+        _write_image_receipt(target_date)
+        assert decision() == "skip_all"
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_evening_late_recovery_decision_sends_image_only_after_delayed_text() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-07"
+        assert not has_valid_cy_text_delivery(target_date, "evening", allow_legacy_morning=False)
+        _write_canonical_text_receipt(target_date, "evening")
+        assert has_valid_cy_text_delivery(target_date, "evening", allow_legacy_morning=False)
+        assert not is_valid_cy_image_receipt(target_date, "evening")
+        _write_image_receipt(target_date, "evening")
+        assert is_valid_cy_image_receipt(target_date, "evening")
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_manual_prod_text_receipt_suppresses_scheduled_recovery() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+        _write_canonical_text_receipt(target_date, "morning", ids=[9001])
+        assert has_valid_cy_text_delivery(target_date, "morning")
+        assert not cy_morning_has_valid_production_receipt(target_date)
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_legacy_morning_receipt_remains_compatibility_fallback() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+        assert not is_valid_cy_text_receipt(target_date, "morning")
+        _write_fixture_receipt(target_date, "0 1 * * *")
+        assert has_valid_cy_text_delivery(target_date, "morning")
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_missing_image_message_id_does_not_validate_receipt() -> None:
+    def _case(_tmp: Path) -> None:
+        target_date = "2026-07-06"
+        _write_image_receipt(target_date, message_id=0)
+        assert not is_valid_cy_image_receipt(target_date, "morning")
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_image_diagnostics_redacts_secrets() -> None:
+    def _case(tmp: Path) -> None:
+        old_token = os.environ.get("POLLINATIONS_TOKEN")
+        old_diag = os.environ.get("CY_IMAGE_DIAGNOSTICS_DIR")
+        secret = "fixture-secret-token"
+        try:
+            os.environ["POLLINATIONS_TOKEN"] = secret
+            # The implementation writes to the standard diagnostics dir; isolate via cwd-like env is not needed here.
+            path = _cy_write_image_diagnostics(
+                mode="morning",
+                target_date="2026-07-06",
+                result="failed",
+                error=RuntimeError(f"backend failed with {secret} and https://x.test/?token={secret}"),
+            )
+            data = json.loads(path.read_text(encoding="utf-8"))
+            message = data["error"]["message"]
+            assert secret not in message
+            assert "[redacted]" in message or "[redacted-url]" in message
+        finally:
+            if old_token is None:
+                os.environ.pop("POLLINATIONS_TOKEN", None)
+            else:
+                os.environ["POLLINATIONS_TOKEN"] = old_token
+            if old_diag is None:
+                os.environ.pop("CY_IMAGE_DIAGNOSTICS_DIR", None)
+            else:
+                os.environ["CY_IMAGE_DIAGNOSTICS_DIR"] = old_diag
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_image_recovery_force_regenerates_instead_of_reusing_cache() -> None:
+    async def _run(tmp: Path) -> tuple[int, list[str]]:
+        world_old = sys.modules.get("world_en")
+        imagegen_old = sys.modules.get("world_en.imagegen")
+        old_img_dir = os.environ.get("CY_SAFE_IMAGE_DIR")
+        old_min = os.environ.get("CY_IMG_MIN_BYTES")
+        world_stub = types.ModuleType("world_en")
+        imagegen_stub = types.ModuleType("world_en.imagegen")
+        calls: list[str] = []
+
+        def _generate(_prompt: str, requested_path: str) -> str:
+            calls.append(requested_path)
+            path = Path(requested_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"fresh image bytes " + str(len(calls)).encode("ascii"))
+            return str(path)
+
+        imagegen_stub.generate_astro_image = _generate
+        world_stub.imagegen = imagegen_stub
+        sys.modules["world_en"] = world_stub
+        sys.modules["world_en.imagegen"] = imagegen_stub
+        os.environ["CY_SAFE_IMAGE_DIR"] = str(tmp / "images")
+        os.environ["CY_IMG_MIN_BYTES"] = "1"
+        try:
+            for _ in range(2):
+                result = await _build_safe_test_image(
+                    REAL_LEGACY_MORNING_WITHOUT_SEA_ASTRO,
+                    "morning",
+                    generate_image=True,
+                    send_image_to_test=False,
+                    send_image_to_chat=False,
+                    image_chat_id=None,
+                    image_only_recovery=True,
+                )
+                assert result["result"] == "generated"
+        finally:
+            if world_old is None:
+                sys.modules.pop("world_en", None)
+            else:
+                sys.modules["world_en"] = world_old
+            if imagegen_old is None:
+                sys.modules.pop("world_en.imagegen", None)
+            else:
+                sys.modules["world_en.imagegen"] = imagegen_old
+            if old_img_dir is None:
+                os.environ.pop("CY_SAFE_IMAGE_DIR", None)
+            else:
+                os.environ["CY_SAFE_IMAGE_DIR"] = old_img_dir
+            if old_min is None:
+                os.environ.pop("CY_IMG_MIN_BYTES", None)
+            else:
+                os.environ["CY_IMG_MIN_BYTES"] = old_min
+        return len(calls), calls
+
+    def _case(tmp: Path) -> None:
+        count, paths = asyncio.run(_run(tmp))
+        assert count == 2
+        assert len(set(paths)) == 2
+
+    _with_temp_delivery_dir(_case)
+
+
 def main() -> None:
     checks = (
         cy_morning_adds_concise_sea_block_when_available,
@@ -556,6 +797,14 @@ def main() -> None:
         cy_morning_receipt_uses_asia_nicosia_target_date,
         cy_morning_partial_text_failure_has_no_completed_receipt,
         cy_morning_image_phase_names_match_delivery_state,
+        cy_text_and_image_receipt_validators_are_strict,
+        cy_morning_delayed_0315_decision_sends_image_only_when_text_exists,
+        cy_evening_late_recovery_decision_sends_image_only_after_delayed_text,
+        cy_manual_prod_text_receipt_suppresses_scheduled_recovery,
+        cy_legacy_morning_receipt_remains_compatibility_fallback,
+        cy_missing_image_message_id_does_not_validate_receipt,
+        cy_image_diagnostics_redacts_secrets,
+        cy_image_recovery_force_regenerates_instead_of_reusing_cache,
     )
     for check in checks:
         check()

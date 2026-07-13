@@ -12,6 +12,8 @@ on:
     - cron: '0 13 * * *'
     # Recovery: дослать только вечернюю картинку, если текст уже ушёл
     - cron: '45 13 * * *'
+    # Late recovery for delayed evening text posts
+    - cron: '15 15 * * *'
     # Курсы валют: 07:00 UTC
     - cron: '0 7 * * *'
   workflow_dispatch:
@@ -138,6 +140,7 @@ jobs:
             .cache
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
+            !.cache/cy_safe_images
             !.cache/cy_morning_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
@@ -251,48 +254,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p .cache .cache/visual_snapshot_restore
-          python - <<'PY' > /tmp/cy_history_needs_snapshot.txt
-          import json
-          import os
-          from datetime import date, timedelta
-          from pathlib import Path
-          path = Path(os.environ["CYPRUS_VISUAL_HISTORY_PROD_PATH"])
-          try:
-              data = json.loads(path.read_text("utf-8"))
-              dates = []
-              if isinstance(data, list):
-                  for entry in data:
-                      if isinstance(entry, dict) and entry.get("date"):
-                          try:
-                              dates.append(date.fromisoformat(str(entry["date"])[:10]))
-                          except ValueError:
-                              pass
-              stale = bool(dates) and max(dates) < date.today() - timedelta(days=21)
-              ok = isinstance(data, list) and len(data) > 0 and not stale
-              if stale:
-                  print("Cyprus visual history prod looks stale; trying snapshot artifact.")
-          except Exception:
-              ok = False
-          print("no" if ok else "yes")
-          PY
-          if [ "$(cat /tmp/cy_history_needs_snapshot.txt)" != "yes" ]; then
-            echo "Cyprus visual history snapshot restore not needed."
-            exit 0
-          fi
-          artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false and (.name | startswith("cyprus-visual-history-prod-snapshot"))) | .id' | head -n 1 || true)"
-          if [ -z "$artifact_id" ]; then
-            echo "No Cyprus visual history snapshot artifact found; continuing with restored cache state."
-            exit 0
-          fi
-          echo "Restoring Cyprus visual history snapshot artifact id: $artifact_id"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/cy_visual_snapshot.zip
-          unzip -o /tmp/cy_visual_snapshot.zip -d .cache/visual_snapshot_restore
-          if [ -s ".cache/visual_snapshot_restore/cyprus_visual_history_prod.json" ]; then
-            cp ".cache/visual_snapshot_restore/cyprus_visual_history_prod.json" "$CYPRUS_VISUAL_HISTORY_PROD_PATH"
-            echo "Cyprus visual history prod restored from latest valid snapshot artifact."
-          fi
+        run: python .github/scripts/restore_cy_visual_snapshot.py
 
       - name: Time debug
         run: |
@@ -328,8 +290,9 @@ jobs:
           import urllib.request
           from safe_test_post import (
               cy_morning_delivery_path,
-              cy_morning_has_valid_production_receipt,
               cy_morning_target_date,
+              has_valid_cy_text_delivery,
+              is_valid_cy_image_receipt,
           )
 
           def _gh_json(path):
@@ -393,10 +356,26 @@ jobs:
               receipt_path = cy_morning_delivery_path(target_date)
               print(f"CY_MORNING_DELIVERY_TARGET_DATE: {target_date}")
               print(f"CY_MORNING_DELIVERY_RECEIPT_PATH: {receipt_path}")
-              if cy_morning_has_valid_production_receipt(target_date):
-                  print(f"CY_MORNING_DELIVERY_SKIP: already delivered for {target_date}")
+              text_delivered = has_valid_cy_text_delivery(target_date, "morning")
+              image_delivered = is_valid_cy_image_receipt(target_date, "morning")
+              if text_delivered and image_delivered:
+                  print(f"CY_MORNING_DELIVERY_SKIP: text and image already delivered for {target_date}")
                   raise SystemExit(0)
-              print(f"CY_MORNING_DELIVERY_SKIP: no valid receipt for {target_date}; continuing")
+              if event_schedule == "15 3 * * *" and text_delivered and not image_delivered:
+                  if not production_chat:
+                      raise SystemExit("CHANNEL_ID is missing; cannot run morning image recovery.")
+                  print(f"CY_MORNING_IMAGE_ONLY_RECOVERY: text delivered but image missing for {target_date}")
+                  args = [
+                      "safe_test_post.py", "--mode", "morning", "--format-v2",
+                      "--generate-image", "--send-image-to-chat", "--image-only-recovery",
+                      "--chat-id", production_chat,
+                  ]
+                  if wd:
+                      args += ["--date", wd]
+                  sys.argv = args
+                  runpy.run_path("safe_test_post.py", run_name="__main__")
+                  raise SystemExit(0)
+              print(f"CY_MORNING_DELIVERY_SKIP: no complete delivery receipt for {target_date}; continuing")
               _log_related_successful_jobs()
 
           if format_v2:
@@ -459,8 +438,8 @@ jobs:
           path: |
             .cache/cyprus_visual_history_prod.json
             .cache/cyprus_visual_history_test.json
-            .cache/cy_image_delivery/*.json
-            .cache/cy_text_delivery/*.json
+            .cache/cy_image_delivery
+            .cache/cy_text_delivery
           if-no-files-found: ignore
           retention-days: 30
 
@@ -484,6 +463,7 @@ jobs:
             .cache
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
+            !.cache/cy_safe_images
             !.cache/cy_morning_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
@@ -537,48 +517,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p .cache .cache/visual_snapshot_restore
-          python - <<'PY' > /tmp/cy_history_needs_snapshot.txt
-          import json
-          import os
-          from datetime import date, timedelta
-          from pathlib import Path
-          path = Path(os.environ["CYPRUS_VISUAL_HISTORY_PROD_PATH"])
-          try:
-              data = json.loads(path.read_text("utf-8"))
-              dates = []
-              if isinstance(data, list):
-                  for entry in data:
-                      if isinstance(entry, dict) and entry.get("date"):
-                          try:
-                              dates.append(date.fromisoformat(str(entry["date"])[:10]))
-                          except ValueError:
-                              pass
-              stale = bool(dates) and max(dates) < date.today() - timedelta(days=21)
-              ok = isinstance(data, list) and len(data) > 0 and not stale
-              if stale:
-                  print("Cyprus visual history prod looks stale; trying snapshot artifact.")
-          except Exception:
-              ok = False
-          print("no" if ok else "yes")
-          PY
-          if [ "$(cat /tmp/cy_history_needs_snapshot.txt)" != "yes" ]; then
-            echo "Cyprus visual history snapshot restore not needed."
-            exit 0
-          fi
-          artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false and (.name | startswith("cyprus-visual-history-prod-snapshot"))) | .id' | head -n 1 || true)"
-          if [ -z "$artifact_id" ]; then
-            echo "No Cyprus visual history snapshot artifact found; continuing with restored cache state."
-            exit 0
-          fi
-          echo "Restoring Cyprus visual history snapshot artifact id: $artifact_id"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/cy_visual_snapshot.zip
-          unzip -o /tmp/cy_visual_snapshot.zip -d .cache/visual_snapshot_restore
-          if [ -s ".cache/visual_snapshot_restore/cyprus_visual_history_prod.json" ]; then
-            cp ".cache/visual_snapshot_restore/cyprus_visual_history_prod.json" "$CYPRUS_VISUAL_HISTORY_PROD_PATH"
-            echo "Cyprus visual history prod restored from latest valid snapshot artifact."
-          fi
+        run: python .github/scripts/restore_cy_visual_snapshot.py
 
       - name: Time debug
         run: |
@@ -668,8 +607,8 @@ jobs:
           path: |
             .cache/cyprus_visual_history_prod.json
             .cache/cyprus_visual_history_test.json
-            .cache/cy_image_delivery/*.json
-            .cache/cy_text_delivery/*.json
+            .cache/cy_image_delivery
+            .cache/cy_text_delivery
           if-no-files-found: ignore
           retention-days: 30
 
@@ -687,6 +626,7 @@ jobs:
             .cache
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
+            !.cache/cy_safe_images
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -708,6 +648,12 @@ jobs:
           key: cyprus-visual-history-test-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           restore-keys: |
             cyprus-visual-history-test-
+
+      - name: Restore Cyprus visual history snapshot artifact if needed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/restore_cy_visual_snapshot.py
 
       - name: Time debug
         run: |
@@ -753,15 +699,15 @@ jobs:
           path: |
             .cache/cyprus_visual_history_prod.json
             .cache/cyprus_visual_history_test.json
-            .cache/cy_image_delivery/*.json
-            .cache/cy_text_delivery/*.json
+            .cache/cy_image_delivery
+            .cache/cy_text_delivery
           if-no-files-found: ignore
           retention-days: 30
 
   evening_image_recovery:
     name: Evening image recovery only
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' && github.event.schedule == '45 13 * * *'
+    if: github.event_name == 'schedule' && (github.event.schedule == '45 13 * * *' || github.event.schedule == '15 15 * * *')
     steps:
       - uses: actions/checkout@v4
 
@@ -772,6 +718,7 @@ jobs:
             .cache
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
+            !.cache/cy_safe_images
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -793,6 +740,12 @@ jobs:
           key: cyprus-visual-history-test-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           restore-keys: |
             cyprus-visual-history-test-
+
+      - name: Restore Cyprus visual history snapshot artifact if needed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/restore_cy_visual_snapshot.py
 
       - name: Time debug
         run: |
@@ -838,8 +791,8 @@ jobs:
           path: |
             .cache/cyprus_visual_history_prod.json
             .cache/cyprus_visual_history_test.json
-            .cache/cy_image_delivery/*.json
-            .cache/cy_text_delivery/*.json
+            .cache/cy_image_delivery
+            .cache/cy_text_delivery
           if-no-files-found: ignore
           retention-days: 30
 
@@ -861,6 +814,7 @@ jobs:
             .cache
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
+            !.cache/cy_safe_images
             !.cache/cy_morning_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |

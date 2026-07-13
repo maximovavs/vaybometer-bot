@@ -91,6 +91,10 @@ def test_daily_visual_history_cache() -> None:
             "!.cache/cyprus_visual_history_test.json" in cache_block,
         )
         _assert(
+            f"daily_generic_cache_{idx}_excludes_safe_images",
+            "!.cache/cy_safe_images" in cache_block,
+        )
+        _assert(
             f"daily_generic_cache_{idx}_excludes_delivery_receipts",
             "!.cache/cy_morning_delivery" in cache_block,
         )
@@ -129,6 +133,10 @@ def test_daily_visual_history_cache() -> None:
     _assert("daily_schedule_fx_unchanged", "cron: '0 7 * * *'" in text)
     _assert("daily_schedule_morning_image_recovery", "cron: '45 1 * * *'" in text)
     _assert("daily_schedule_evening_image_recovery", "cron: '45 13 * * *'" in text)
+    _assert("daily_schedule_evening_late_image_recovery", "cron: '15 15 * * *'" in text)
+    _assert("daily_morning_0315_image_only_branch", "CY_MORNING_IMAGE_ONLY_RECOVERY" in text)
+    _assert("daily_morning_uses_unified_text_delivery", "has_valid_cy_text_delivery(target_date, \"morning\")" in text)
+    _assert("daily_morning_uses_image_delivery_validation", "is_valid_cy_image_receipt(target_date, \"morning\")" in text)
     print("PASS daily_visual_history_cache")
 
 
@@ -194,20 +202,28 @@ def test_image_recovery_jobs_are_production_only() -> None:
         _assert(f"{name}_recovery_uses_prod_channel", '--chat-id "$CHANNEL_ID"' in block)
         _assert(f"{name}_recovery_not_test", "--send-image-to-test" not in block)
         _assert(f"{name}_recovery_no_text_send", "--send " not in block and "--send\n" not in block)
+        _assert(f"{name}_recovery_restores_snapshot", "restore_cy_visual_snapshot.py" in block)
+    _assert("evening_late_recovery_schedule_guard", "github.event.schedule == '15 15 * * *'" in evening)
     print("PASS image_recovery_jobs_are_production_only")
 
 
 def test_delivery_receipts_diagnostics_and_snapshots() -> None:
     text = _read(DAILY)
     _assert("permissions_actions_read", "actions: read" in text)
-    _assert("image_delivery_artifact_path", ".cache/cy_image_delivery/*.json" in text)
-    _assert("text_delivery_artifact_path", ".cache/cy_text_delivery/*.json" in text)
+    _assert("image_delivery_artifact_path", ".cache/cy_image_delivery" in text)
+    _assert("text_delivery_artifact_path", ".cache/cy_text_delivery" in text)
     _assert("diagnostics_artifact", "cyprus-image-diagnostics-${{ github.job }}" in text)
     _assert("diagnostics_path", "path: .cache/cy_image_diagnostics" in text)
     _assert("history_snapshot_artifact", "cyprus-visual-history-prod-snapshot-${{ github.job }}" in text)
     _assert("snapshot_restore_step", "Restore Cyprus visual history snapshot artifact if needed" in text)
-    _assert("snapshot_restore_uses_gh_api", "actions/artifacts?per_page=100" in text)
-    _assert("snapshot_restore_checks_stale_history", "looks stale; trying snapshot artifact" in text)
+    _assert("snapshot_restore_helper", "python .github/scripts/restore_cy_visual_snapshot.py" in text)
+    _assert("snapshot_restore_not_inline_control_file", "cy_history_needs_snapshot" not in text)
+    helper = (ROOT / ".github" / "scripts" / "restore_cy_visual_snapshot.py").read_text("utf-8")
+    _assert("snapshot_restore_uses_gh_api", "actions/artifacts?per_page=100" in helper)
+    _assert("snapshot_restore_checks_stale_history", "looks stale; trying snapshot artifact" in helper)
+    _assert("snapshot_restore_rejects_invalid_newest", "Skipping invalid Cyprus visual snapshot artifact" in helper)
+    _assert("snapshot_restore_restores_receipts", "cy_image_delivery" in helper and "cy_text_delivery" in helper)
+    _assert("snapshot_restore_used_in_four_jobs", text.count("restore_cy_visual_snapshot.py") >= 4)
     print("PASS delivery_receipts_diagnostics_and_snapshots")
 
 
