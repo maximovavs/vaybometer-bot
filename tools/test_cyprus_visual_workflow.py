@@ -4,12 +4,19 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import os
 from pathlib import Path
+import shutil
+import tempfile
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DAILY = ROOT / ".github" / "workflows" / "daily_post.yml"
 SAFE_TEST = ROOT / ".github" / "workflows" / "safe_test_post.yml"
+SNAPSHOT_HELPER = ROOT / ".github" / "scripts" / "restore_cy_visual_snapshot.py"
 
 
 def _read(path: Path) -> str:
@@ -19,6 +26,134 @@ def _read(path: Path) -> str:
 def _assert(name: str, condition: bool, detail: str = "") -> None:
     if not condition:
         raise AssertionError(f"{name}: {detail or 'assertion failed'}")
+
+
+def _load_snapshot_helper():
+    spec = importlib.util.spec_from_file_location("restore_cy_visual_snapshot_test", SNAPSHOT_HELPER)
+    if spec is None or spec.loader is None:
+        raise AssertionError("cannot load restore_cy_visual_snapshot helper")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _history_entry(day: str, post_type: str, sha: str, **extra) -> dict:
+    payload = {
+        "date": day,
+        "post_type": post_type,
+        "sha256": sha,
+        "selected_scene": "coastal_promenade",
+        "composition": "wide panorama composition",
+        "prompt_version": "cyprus_visual_v5",
+        "cache_key": f"{day}-{post_type}-{sha}",
+        "style_name": "fixture",
+    }
+    payload.update(extra)
+    return payload
+
+
+def _text_receipt(day: str, post_type: str = "morning", sent_at: str = "2026-07-10T01:00:00Z") -> dict:
+    return {
+        "target_date": day,
+        "post_type": post_type,
+        "chat_type": "production",
+        "telegram_message_ids": [111],
+        "text_chunk_count": 1,
+        "sent_at_utc": sent_at,
+    }
+
+
+def _image_receipt(day: str, post_type: str = "morning", sent_at: str = "2026-07-10T01:01:00Z") -> dict:
+    return {
+        "target_date": day,
+        "post_type": post_type,
+        "chat_type": "production",
+        "telegram_message_id": 222,
+        "sha256": "b" * 64,
+        "selected_scene": "coastal_promenade",
+        "sent_at_utc": sent_at,
+    }
+
+
+def _write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _make_snapshot_zip(base: Path, artifact_id: int, *, history, text_receipts=(), image_receipts=()) -> Path:
+    source = base / f"artifact_{artifact_id}_src"
+    cache = source / ".cache"
+    _write_json(cache / "cyprus_visual_history_prod.json", history)
+    for receipt in text_receipts:
+        name = f"{receipt['target_date']}-{receipt['post_type']}.json"
+        _write_json(cache / "cy_text_delivery" / name, receipt)
+    for receipt in image_receipts:
+        name = f"{receipt['target_date']}-{receipt['post_type']}.json"
+        _write_json(cache / "cy_image_delivery" / name, receipt)
+    zip_path = base / f"artifact_{artifact_id}.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for item in source.rglob("*"):
+            if item.is_file():
+                archive.write(item, item.relative_to(source).as_posix())
+    return zip_path
+
+
+def _run_snapshot_helper(tmp: Path, artifacts: list[tuple[int, str, Path]], *, target_date: str | None = None, post_type: str | None = None):
+    module = _load_snapshot_helper()
+    old_env = {name: os.environ.get(name) for name in (
+        "GH_TOKEN",
+        "GITHUB_REPOSITORY",
+        "CYPRUS_VISUAL_HISTORY_PROD_PATH",
+        "CY_RECOVERY_TARGET_DATE",
+        "CY_RECOVERY_POST_TYPE",
+    )}
+    old_cwd = Path.cwd()
+    old_gh_json = module._gh_json
+    old_download = module._download_artifact
+    artifact_map = {artifact_id: zip_path for artifact_id, _created, zip_path in artifacts}
+
+    def fake_gh_json(_args):
+        return {
+            "artifacts": [
+                {
+                    "id": artifact_id,
+                    "name": "cyprus-visual-history-prod-snapshot-fixture",
+                    "created_at": created,
+                    "expired": False,
+                }
+                for artifact_id, created, _zip_path in artifacts
+            ]
+        }
+
+    def fake_download(_repo: str, artifact_id: int, target: Path) -> None:
+        shutil.copy2(artifact_map[artifact_id], target)
+
+    try:
+        os.chdir(tmp)
+        os.environ["GH_TOKEN"] = "fixture-token"
+        os.environ["GITHUB_REPOSITORY"] = "maximovavs/vaybometer-bot"
+        os.environ["CYPRUS_VISUAL_HISTORY_PROD_PATH"] = str(tmp / ".cache" / "cyprus_visual_history_prod.json")
+        if target_date:
+            os.environ["CY_RECOVERY_TARGET_DATE"] = target_date
+        else:
+            os.environ.pop("CY_RECOVERY_TARGET_DATE", None)
+        if post_type:
+            os.environ["CY_RECOVERY_POST_TYPE"] = post_type
+        else:
+            os.environ.pop("CY_RECOVERY_POST_TYPE", None)
+        module._gh_json = fake_gh_json
+        module._download_artifact = fake_download
+        result = module.main()
+    finally:
+        module._gh_json = old_gh_json
+        module._download_artifact = old_download
+        os.chdir(old_cwd)
+        for name, value in old_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    return result
 
 
 def _block(text: str, start: str, end: str | None = None) -> str:
@@ -220,11 +355,98 @@ def test_delivery_receipts_diagnostics_and_snapshots() -> None:
     _assert("snapshot_restore_not_inline_control_file", "cy_history_needs_snapshot" not in text)
     helper = (ROOT / ".github" / "scripts" / "restore_cy_visual_snapshot.py").read_text("utf-8")
     _assert("snapshot_restore_uses_gh_api", "actions/artifacts?per_page=100" in helper)
-    _assert("snapshot_restore_checks_stale_history", "looks stale; trying snapshot artifact" in helper)
+    _assert("snapshot_restore_merges_history", "_merge_history" in helper and "merged_count" in helper)
+    _assert("snapshot_restore_validates_receipts", "_valid_text_receipt" in helper and "_valid_image_receipt" in helper)
     _assert("snapshot_restore_rejects_invalid_newest", "Skipping invalid Cyprus visual snapshot artifact" in helper)
     _assert("snapshot_restore_restores_receipts", "cy_image_delivery" in helper and "cy_text_delivery" in helper)
     _assert("snapshot_restore_used_in_four_jobs", text.count("restore_cy_visual_snapshot.py") >= 4)
     print("PASS delivery_receipts_diagnostics_and_snapshots")
+
+
+def test_snapshot_restores_receipts_even_when_history_current() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        local_history = [
+            _history_entry("2026-07-12", "morning", "a" * 64),
+        ]
+        _write_json(tmp / ".cache" / "cyprus_visual_history_prod.json", local_history)
+        snapshot = _make_snapshot_zip(
+            tmp,
+            101,
+            history=local_history,
+            text_receipts=[_text_receipt("2026-07-13", "morning")],
+            image_receipts=[_image_receipt("2026-07-13", "morning")],
+        )
+        result = _run_snapshot_helper(
+            tmp,
+            [(101, "2026-07-13T05:00:00Z", snapshot)],
+            target_date="2026-07-13",
+            post_type="morning",
+        )
+        _assert("snapshot_receipt_restore_result", result == 0)
+        _assert("snapshot_text_receipt_restored", (tmp / ".cache" / "cy_text_delivery" / "2026-07-13-morning.json").exists())
+        _assert("snapshot_image_receipt_restored", (tmp / ".cache" / "cy_image_delivery" / "2026-07-13-morning.json").exists())
+    print("PASS snapshot_restores_receipts_even_when_history_current")
+
+
+def test_snapshot_merges_recent_history_without_21_day_gap() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        local_entry = _history_entry("2026-07-10", "morning", "1" * 64)
+        snapshot_entry = _history_entry("2026-07-12", "evening", "2" * 64)
+        _write_json(tmp / ".cache" / "cyprus_visual_history_prod.json", [local_entry])
+        snapshot = _make_snapshot_zip(tmp, 102, history=[snapshot_entry])
+        _run_snapshot_helper(tmp, [(102, "2026-07-13T05:00:00Z", snapshot)])
+        merged = json.loads((tmp / ".cache" / "cyprus_visual_history_prod.json").read_text("utf-8"))
+        keys = {(entry["date"], entry["post_type"], entry["sha256"]) for entry in merged}
+        _assert("snapshot_preserves_local_entry", ("2026-07-10", "morning", "1" * 64) in keys)
+        _assert("snapshot_adds_yesterday_entry", ("2026-07-12", "evening", "2" * 64) in keys)
+    print("PASS snapshot_merges_recent_history_without_21_day_gap")
+
+
+def test_snapshot_skips_malformed_newest_artifact() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        bad = _make_snapshot_zip(tmp, 201, history=[{"date": "2026-07-12", "post_type": "morning"}])
+        valid_entry = _history_entry("2026-07-12", "morning", "3" * 64)
+        good = _make_snapshot_zip(tmp, 202, history=[valid_entry])
+        _run_snapshot_helper(
+            tmp,
+            [
+                (201, "2026-07-13T06:00:00Z", bad),
+                (202, "2026-07-13T05:00:00Z", good),
+            ],
+        )
+        merged = json.loads((tmp / ".cache" / "cyprus_visual_history_prod.json").read_text("utf-8"))
+        _assert("snapshot_second_newest_used", merged and merged[0]["sha256"] == "3" * 64, merged)
+    print("PASS snapshot_skips_malformed_newest_artifact")
+
+
+def test_snapshot_receipt_validation_and_newer_local_protection() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        _write_json(tmp / ".cache" / "cyprus_visual_history_prod.json", [_history_entry("2026-07-12", "morning", "4" * 64)])
+        local_newer = _text_receipt("2026-07-13", "morning", "2026-07-13T06:00:00Z")
+        _write_json(tmp / ".cache" / "cy_text_delivery" / "2026-07-13-morning.json", local_newer)
+        invalid_image = _image_receipt("2026-07-13", "morning")
+        invalid_image.pop("telegram_message_id")
+        snapshot = _make_snapshot_zip(
+            tmp,
+            301,
+            history=[_history_entry("2026-07-13", "morning", "5" * 64)],
+            text_receipts=[_text_receipt("2026-07-13", "morning", "2026-07-13T05:00:00Z")],
+            image_receipts=[invalid_image],
+        )
+        _run_snapshot_helper(
+            tmp,
+            [(301, "2026-07-13T07:00:00Z", snapshot)],
+            target_date="2026-07-13",
+            post_type="morning",
+        )
+        final_text = json.loads((tmp / ".cache" / "cy_text_delivery" / "2026-07-13-morning.json").read_text("utf-8"))
+        _assert("snapshot_keeps_newer_local_text_receipt", final_text["sent_at_utc"] == "2026-07-13T06:00:00Z")
+        _assert("snapshot_does_not_restore_invalid_image_receipt", not (tmp / ".cache" / "cy_image_delivery" / "2026-07-13-morning.json").exists())
+    print("PASS snapshot_receipt_validation_and_newer_local_protection")
 
 
 def test_simulated_manual_morning_evening_history_chain() -> None:
@@ -275,6 +497,10 @@ TESTS = [
     test_evening_waits_for_morning_without_losing_dispatch_paths,
     test_image_recovery_jobs_are_production_only,
     test_delivery_receipts_diagnostics_and_snapshots,
+    test_snapshot_restores_receipts_even_when_history_current,
+    test_snapshot_merges_recent_history_without_21_day_gap,
+    test_snapshot_skips_malformed_newest_artifact,
+    test_snapshot_receipt_validation_and_newer_local_protection,
     test_simulated_manual_morning_evening_history_chain,
     test_pillow_is_bounded_dependency,
 ]

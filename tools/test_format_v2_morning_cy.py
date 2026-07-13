@@ -29,6 +29,8 @@ imghdr_stub.what = lambda *args, **kwargs: None
 sys.modules.setdefault("imghdr", imghdr_stub)
 
 from format_v2 import build_morning_format_v2  # noqa: E402
+import cyprus_visual_dedup  # noqa: E402
+from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata  # noqa: E402
 from post_safety import sanitize_post_text  # noqa: E402
 from safe_test_post import (  # noqa: E402
     _apply_astro_cleanup,
@@ -774,6 +776,96 @@ def cy_image_recovery_force_regenerates_instead_of_reusing_cache() -> None:
     _with_temp_delivery_dir(_case)
 
 
+def cy_image_liveness_skips_recent_compositions_before_backend_without_consuming_attempts() -> None:
+    text = REAL_LEGACY_MORNING_WITHOUT_SEA_ASTRO
+    first_five_metadata = [
+        build_cyprus_scene_prompt_with_metadata(text, post_type="morning", variation_attempt=attempt)[2]
+        for attempt in range(5)
+    ]
+
+    async def _run(tmp: Path) -> tuple[int, dict]:
+        world_old = sys.modules.get("world_en")
+        imagegen_old = sys.modules.get("world_en.imagegen")
+        old_img_dir = os.environ.get("CY_SAFE_IMAGE_DIR")
+        old_min = os.environ.get("CY_IMG_MIN_BYTES")
+        old_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
+        world_stub = types.ModuleType("world_en")
+        imagegen_stub = types.ModuleType("world_en.imagegen")
+        calls: list[str] = []
+        history_path = tmp / "history.json"
+
+        history = []
+        for index, metadata in enumerate(first_five_metadata):
+            history.append(
+                {
+                    "date": f"2026-07-{index + 1:02d}",
+                    "post_type": "morning",
+                    "sha256": str(index) * 64,
+                    "selected_scene": metadata["selected_scene"],
+                    "composition": metadata["composition"],
+                    "prompt_version": "cyprus_visual_v5",
+                    "cache_key": f"fixture-{index}",
+                    "style_name": "fixture",
+                }
+            )
+        history_path.write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
+
+        def _generate(_prompt: str, requested_path: str) -> str:
+            calls.append(requested_path)
+            path = Path(requested_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"liveness image bytes")
+            return str(path)
+
+        imagegen_stub.generate_astro_image = _generate
+        world_stub.imagegen = imagegen_stub
+        sys.modules["world_en"] = world_stub
+        sys.modules["world_en.imagegen"] = imagegen_stub
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = history_path
+        os.environ["CY_SAFE_IMAGE_DIR"] = str(tmp / "images")
+        os.environ["CY_IMG_MIN_BYTES"] = "1"
+        try:
+            result = await _build_safe_test_image(
+                text,
+                "morning",
+                generate_image=True,
+                send_image_to_test=False,
+                send_image_to_chat=False,
+                image_chat_id=None,
+                image_only_recovery=False,
+            )
+        finally:
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = old_history
+            if world_old is None:
+                sys.modules.pop("world_en", None)
+            else:
+                sys.modules["world_en"] = world_old
+            if imagegen_old is None:
+                sys.modules.pop("world_en.imagegen", None)
+            else:
+                sys.modules["world_en.imagegen"] = imagegen_old
+            if old_img_dir is None:
+                os.environ.pop("CY_SAFE_IMAGE_DIR", None)
+            else:
+                os.environ["CY_SAFE_IMAGE_DIR"] = old_img_dir
+            if old_min is None:
+                os.environ.pop("CY_IMG_MIN_BYTES", None)
+            else:
+                os.environ["CY_IMG_MIN_BYTES"] = old_min
+        return len(calls), result
+
+    def _case(tmp: Path) -> None:
+        count, result = asyncio.run(_run(tmp))
+        assert count == 1
+        assert result["result"] == "generated"
+        attempts = result.get("attempts") or []
+        assert attempts
+        assert attempts[0]["dedup_reason"] == "accepted"
+        assert attempts[0]["composition"] not in {meta["composition"] for meta in first_five_metadata}
+
+    _with_temp_delivery_dir(_case)
+
+
 def main() -> None:
     checks = (
         cy_morning_adds_concise_sea_block_when_available,
@@ -805,6 +897,7 @@ def main() -> None:
         cy_missing_image_message_id_does_not_validate_receipt,
         cy_image_diagnostics_redacts_secrets,
         cy_image_recovery_force_regenerates_instead_of_reusing_cache,
+        cy_image_liveness_skips_recent_compositions_before_backend_without_consuming_attempts,
     )
     for check in checks:
         check()

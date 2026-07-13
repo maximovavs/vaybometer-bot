@@ -302,6 +302,7 @@ def _select_composition(
     *,
     variation_attempt: int = 0,
     _history_depth: int = 5,
+    blocked_compositions: tuple[str, ...] = (),
 ) -> str:
     count = len(_CY_COASTAL_COMPOSITIONS)
     seed = "|".join([post_type, weather_main, "cyprus_composition"])
@@ -311,7 +312,33 @@ def _select_composition(
     except ValueError:
         ordinal = _stable_index(date_key, "undated_composition", count)
     idx = (ordinal + offset + variation_attempt) % count
-    return _CY_COASTAL_COMPOSITIONS[idx]
+    return _select_recent_aware_option(
+        _CY_COASTAL_COMPOSITIONS,
+        idx,
+        variation_attempt=variation_attempt,
+        recent_values=blocked_compositions,
+    )
+
+
+def _select_recent_aware_option(
+    options: tuple[str, ...],
+    preferred_index: int,
+    *,
+    variation_attempt: int,
+    recent_values: tuple[str, ...] = (),
+) -> str:
+    """Select from non-recent options first; if all are recent, use least-recently-used."""
+    if not options:
+        raise ValueError("options must not be empty")
+    ordered = tuple(options[(preferred_index + shift) % len(options)] for shift in range(len(options)))
+    recent = tuple(value for value in recent_values if value in options)
+    blocked = set(recent)
+    eligible = tuple(value for value in ordered if value not in blocked)
+    if eligible:
+        return eligible[variation_attempt % len(eligible)]
+    if recent:
+        return recent[0]
+    return ordered[0]
 
 
 def _weather_constrained_scene_family(
@@ -321,6 +348,7 @@ def _weather_constrained_scene_family(
     ctx: VisualContextCY,
     *,
     variation_attempt: int,
+    blocked_scenes: tuple[str, ...] = (),
 ) -> str:
     wind_reference = max(
         [value for value in (ctx.wind_max, ctx.gust_max) if isinstance(value, (int, float))],
@@ -340,11 +368,17 @@ def _weather_constrained_scene_family(
     elif getattr(ctx, "inland_precipitation", False) or getattr(ctx, "inland_thunder_risk", False):
         options = ("mountain_coast_view", "open_sea_cliffs", "breakwater_coast")
     else:
-        return scene_family
-    if scene_family in options:
+        options = _CYPRUS_SCENE_FAMILIES
+    if scene_family in options and scene_family not in set(blocked_scenes):
         return scene_family
     seed = "|".join([date_key, post_type, str(ctx.weather_main), "weather_scene_constraint"])
-    return options[(_stable_index(seed, "scene", len(options)) + variation_attempt) % len(options)]
+    base_index = _stable_index(seed, "scene", len(options))
+    return _select_recent_aware_option(
+        options,
+        base_index,
+        variation_attempt=variation_attempt,
+        recent_values=blocked_scenes,
+    )
 
 
 def _wind_category(ctx: VisualContextCY) -> str:
@@ -406,6 +440,8 @@ def _coastal_visual_variants(
     post_type: str,
     *,
     variation_attempt: int,
+    blocked_scenes: tuple[str, ...] = (),
+    blocked_compositions: tuple[str, ...] = (),
 ) -> dict[str, str]:
     date_key = _extract_date_key(message)
     scene_family = _select_scene_family(
@@ -420,6 +456,7 @@ def _coastal_visual_variants(
         post_type,
         ctx,
         variation_attempt=variation_attempt,
+        blocked_scenes=blocked_scenes,
     )
     scene_text = _CY_COASTAL_SCENE_TEMPLATES[scene_family][post_type]
     composition = _select_composition(
@@ -428,6 +465,7 @@ def _coastal_visual_variants(
         str(ctx.weather_main),
         scene_family,
         variation_attempt=variation_attempt,
+        blocked_compositions=blocked_compositions,
     )
     seed = _variant_seed(message, ctx, post_type)
     foreground = _stable_variant(
@@ -509,6 +547,8 @@ def _controlled_variety(
     post_type: str,
     *,
     variation_attempt: int = 0,
+    blocked_scenes: tuple[str, ...] = (),
+    blocked_compositions: tuple[str, ...] = (),
 ) -> list[str]:
     seed = _variant_seed(message, ctx, post_type)
     inland_only = ctx.inland_heat_focus and not ctx.coastal_focus
@@ -526,6 +566,8 @@ def _controlled_variety(
             ctx,
             post_type,
             variation_attempt=variation_attempt,
+            blocked_scenes=blocked_scenes,
+            blocked_compositions=blocked_compositions,
         )
         scene_text = variants["scene_text"]
         foreground = variants["foreground"]
@@ -701,6 +743,7 @@ def _selected_scene_family(
     post_type: str,
     *,
     variation_attempt: int,
+    blocked_scenes: tuple[str, ...] = (),
 ) -> str:
     if ctx.inland_heat_focus and not ctx.coastal_focus:
         return "inland_urban_heat"
@@ -709,6 +752,7 @@ def _selected_scene_family(
         ctx,
         post_type,
         variation_attempt=variation_attempt,
+        blocked_scenes=blocked_scenes,
     )["scene_family"]
 
 
@@ -718,6 +762,8 @@ def _visual_cache_metadata(
     post_type: str,
     *,
     variation_attempt: int,
+    blocked_scenes: tuple[str, ...] = (),
+    blocked_compositions: tuple[str, ...] = (),
 ) -> dict[str, str]:
     forecast_date = _extract_date_key(message)
     selected_scene = _selected_scene_family(
@@ -725,6 +771,7 @@ def _visual_cache_metadata(
         ctx,
         post_type,
         variation_attempt=variation_attempt,
+        blocked_scenes=blocked_scenes,
     )
     lunar_phase, lunar_illumination = _moon_cache_fields(message, post_type)
     metadata = {
@@ -738,6 +785,8 @@ def _visual_cache_metadata(
             ctx,
             post_type,
             variation_attempt=variation_attempt,
+            blocked_scenes=blocked_scenes,
+            blocked_compositions=blocked_compositions,
         )["composition"] if not (ctx.inland_heat_focus and not ctx.coastal_focus) else "inland_composition",
         "weather_scenario": str(ctx.weather_main),
         "wind_gust_category": _wind_category(ctx),
@@ -772,6 +821,8 @@ def build_cyprus_visual_cache_key(
     *,
     post_type: str = "evening",
     variation_attempt: int = 0,
+    blocked_scenes: tuple[str, ...] = (),
+    blocked_compositions: tuple[str, ...] = (),
 ) -> str:
     mode = post_type.strip().lower()
     if mode not in {"morning", "evening"}:
@@ -782,6 +833,8 @@ def build_cyprus_visual_cache_key(
         ctx,
         mode,
         variation_attempt=variation_attempt,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
     )["cache_key"]
 
 
@@ -802,6 +855,8 @@ def build_cyprus_scene_prompt_with_metadata(
     *,
     post_type: str = "evening",
     variation_attempt: int = 0,
+    blocked_scenes: tuple[str, ...] = (),
+    blocked_compositions: tuple[str, ...] = (),
 ) -> tuple[str, str, dict[str, str]]:
     """Return a sanitized Cyprus prompt, stable style name, and visual cache metadata."""
     mode = post_type.strip().lower()
@@ -818,6 +873,8 @@ def build_cyprus_scene_prompt_with_metadata(
         ctx,
         mode,
         variation_attempt=variation_attempt,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
     )
 
     if mode == "morning":
@@ -858,6 +915,8 @@ def build_cyprus_scene_prompt_with_metadata(
             ctx,
             mode,
             variation_attempt=variation_attempt,
+            blocked_scenes=blocked_scenes,
+            blocked_compositions=blocked_compositions,
         ),
     ]
     if ctx.coastal_focus or not ctx.inland_heat_focus:
@@ -946,12 +1005,16 @@ def build_cyprus_scene_prompt(
     *,
     post_type: str = "evening",
     variation_attempt: int = 0,
+    blocked_scenes: tuple[str, ...] = (),
+    blocked_compositions: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     """Return a sanitized positive Cyprus landscape prompt and stable style name."""
     prompt, style_name, _metadata = build_cyprus_scene_prompt_with_metadata(
         final_format_v2_message,
         post_type=post_type,
         variation_attempt=variation_attempt,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
     )
     return prompt, style_name
 

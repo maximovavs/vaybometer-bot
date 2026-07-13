@@ -15,6 +15,7 @@ from visual_context_cy import parse_visual_context_cy
 from visual_rules_cy import apply_visual_rules_cy
 from image_prompt_cy_scene import (
     CYPRUS_VISUAL_PROMPT_VERSION,
+    _CY_COASTAL_COMPOSITIONS,
     build_cyprus_scene_prompt,
     build_cyprus_scene_prompt_with_metadata,
     build_cyprus_visual_cache_key,
@@ -881,6 +882,42 @@ def cy_scene_strong_wind_pool_avoids_three_scene_deadlock() -> None:
     assert "quiet_blue_lagoon" not in scenes
 
 
+def cy_composition_selection_uses_eligible_before_backend() -> None:
+    text = """
+    Доброе утро, Кипр. 2026-07-24
+    Лимассол: ясно, ветер 4 м/с.
+    🌊 Море: волна спокойная.
+    """
+    first_five = [
+        build_cyprus_scene_prompt_with_metadata(text, post_type="morning", variation_attempt=attempt)[2]["composition"]
+        for attempt in range(5)
+    ]
+    _prompt, _style, meta = build_cyprus_scene_prompt_with_metadata(
+        text,
+        post_type="morning",
+        variation_attempt=0,
+        blocked_compositions=tuple(first_five),
+    )
+    assert meta["composition"] not in set(first_five)
+    assert meta["composition"] in set(_CY_COASTAL_COMPOSITIONS)
+
+
+def cy_composition_selection_uses_lru_when_everything_recent() -> None:
+    text = """
+    Доброе утро, Кипр. 2026-07-25
+    Лимассол: ясно, ветер 4 м/с.
+    🌊 Море: волна спокойная.
+    """
+    recent = tuple(_CY_COASTAL_COMPOSITIONS)
+    _prompt, _style, meta = build_cyprus_scene_prompt_with_metadata(
+        text,
+        post_type="morning",
+        variation_attempt=0,
+        blocked_compositions=recent,
+    )
+    assert meta["composition"] == recent[0]
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -924,6 +961,8 @@ TESTS = [
     cy_scene_strong_gusts_use_exposed_coast_family,
     cy_scene_plain_haze_prefers_visibility_friendly_coast,
     cy_scene_strong_wind_pool_avoids_three_scene_deadlock,
+    cy_composition_selection_uses_eligible_before_backend,
+    cy_composition_selection_uses_lru_when_everything_recent,
 ]
 
 

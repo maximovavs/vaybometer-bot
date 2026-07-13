@@ -1642,16 +1642,18 @@ async def _build_safe_test_image(
         ensure_pillow_for_visual_dedup()
         restored_history = load_cyprus_visual_history(history_path)
         before_history_count = len(restored_history)
-        blocked_recent_scenes = {
+        recent_scene_values = tuple(
             str(entry.get("selected_scene") or "").strip()
             for entry in restored_history[-3:]
             if isinstance(entry, dict) and str(entry.get("selected_scene") or "").strip()
-        }
-        blocked_recent_compositions = {
+        )
+        recent_composition_values = tuple(
             str(entry.get("composition") or "").strip()
             for entry in restored_history[-5:]
             if isinstance(entry, dict) and str(entry.get("composition") or "").strip()
-        }
+        )
+        blocked_recent_scenes = set(recent_scene_values)
+        blocked_recent_compositions = set(recent_composition_values)
         print(f"CY_SAFE_IMAGE_HISTORY_NAMESPACE: {history_namespace}")
         print(f"CY_SAFE_IMAGE_HISTORY_PATH: {history_path}")
         print(f"CY_SAFE_IMAGE_HISTORY_COUNT_BEFORE: {before_history_count}")
@@ -1665,11 +1667,15 @@ async def _build_safe_test_image(
         selected_candidate = None
         minimum = _cy_safe_image_min_bytes()
 
-        for visual_attempt in range(5):
+        variation_attempt = 0
+        generation_attempt = 0
+        while generation_attempt < 5 and variation_attempt < 40:
             prompt, style_name, metadata = build_cyprus_scene_prompt_with_metadata(
                 final_text,
                 post_type=mode,
-                variation_attempt=visual_attempt,
+                variation_attempt=variation_attempt,
+                blocked_scenes=recent_scene_values,
+                blocked_compositions=recent_composition_values,
             )
             last_metadata = dict(metadata)
             target_date_for_diag = str(metadata["forecast_date"])
@@ -1680,7 +1686,8 @@ async def _build_safe_test_image(
                 reason = "recent_scene_family" if scene_blocked else "recent_composition"
                 attempts.append(
                     {
-                        "attempt": visual_attempt + 1,
+                        "attempt": generation_attempt + 1,
+                        "variation_attempt": variation_attempt,
                         "selected_scene": metadata.get("selected_scene", ""),
                         "composition": metadata.get("composition", ""),
                         "style_name": style_name,
@@ -1690,7 +1697,9 @@ async def _build_safe_test_image(
                     }
                 )
                 print(f"CY_SAFE_IMAGE_PREGEN_SKIP: {reason}; scene={metadata.get('selected_scene')}")
+                variation_attempt += 1
                 continue
+            generation_attempt += 1
             if production_image_send:
                 if is_valid_cy_image_receipt(metadata["forecast_date"], mode):
                     receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
@@ -1721,7 +1730,7 @@ async def _build_safe_test_image(
                             history_count_before=before_history_count,
                         )
                         return {"result": "skipped_no_text_receipt", "message_ids": []}
-            print(f"\nCY_SAFE_IMAGE_ATTEMPT: {visual_attempt + 1}/5")
+            print(f"\nCY_SAFE_IMAGE_ATTEMPT: {generation_attempt}/5")
             print("CY_SAFE_IMAGE_PROMPT_BEGIN")
             print(prompt)
             print("CY_SAFE_IMAGE_PROMPT_END")
@@ -1737,7 +1746,7 @@ async def _build_safe_test_image(
                         os.getenv("GITHUB_RUN_ID", "local"),
                         os.getenv("GITHUB_RUN_ATTEMPT", "0"),
                         str(os.getpid()),
-                        str(visual_attempt + 1),
+                        str(generation_attempt),
                         dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S%f"),
                     ]
                 )
@@ -1784,7 +1793,8 @@ async def _build_safe_test_image(
             )
             attempts.append(
                 {
-                    "attempt": visual_attempt + 1,
+                    "attempt": generation_attempt,
+                    "variation_attempt": variation_attempt,
                     "selected_scene": metadata["selected_scene"],
                     "composition": metadata.get("composition", ""),
                     "style_name": style_name,
@@ -1823,8 +1833,9 @@ async def _build_safe_test_image(
                 "Cyprus visual candidate rejected: reason=%s scene=%s attempt=%s",
                 duplicate_result.reason,
                 metadata["selected_scene"],
-                visual_attempt,
+                variation_attempt,
             )
+            variation_attempt += 1
 
         if selected_candidate is None:
             print("CY_SAFE_IMAGE_RESULT: skipped_duplicate")
@@ -1941,6 +1952,8 @@ async def _build_safe_test_image(
                 "bytes": image_size,
                 "style_name": style_name,
                 "cache_key": metadata.get("cache_key", ""),
+                "attempts": attempts,
+                "metadata": metadata,
             }
         return {
             "result": "generated",
@@ -1949,6 +1962,8 @@ async def _build_safe_test_image(
             "bytes": image_size,
             "style_name": style_name,
             "cache_key": metadata.get("cache_key", ""),
+            "attempts": attempts,
+            "metadata": metadata,
         }
     except Exception as exc:
         _cy_write_image_diagnostics(
