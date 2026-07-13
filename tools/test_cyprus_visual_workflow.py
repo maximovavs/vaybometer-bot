@@ -365,6 +365,18 @@ def test_delivery_receipts_diagnostics_and_snapshots() -> None:
     print("PASS delivery_receipts_diagnostics_and_snapshots")
 
 
+def test_main_morning_snapshot_restore_is_targeted() -> None:
+    text = _read(DAILY)
+    morning = _block(text, "  morning:", "  evening:")
+    restore = _block(morning, "Restore Cyprus visual history snapshot artifact if needed", "      - name: Time debug")
+    _assert("main_morning_snapshot_uses_work_date", '${WORK_DATE:0:10}' in restore)
+    _assert("main_morning_snapshot_uses_local_date", 'TZ="${TZ:-Asia/Nicosia}" date +%F' in restore)
+    _assert("main_morning_snapshot_exports_target", 'export CY_RECOVERY_TARGET_DATE="$TARGET_DATE"' in restore)
+    _assert("main_morning_snapshot_exports_type", 'export CY_RECOVERY_POST_TYPE="morning"' in restore)
+    _assert("main_morning_snapshot_runs_helper", "python .github/scripts/restore_cy_visual_snapshot.py" in restore)
+    print("PASS main_morning_snapshot_restore_is_targeted")
+
+
 def test_snapshot_restores_receipts_even_when_history_current() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
@@ -517,6 +529,49 @@ def test_snapshot_targeted_restore_stops_when_newest_has_receipts() -> None:
     print("PASS snapshot_targeted_restore_stops_when_newest_has_receipts")
 
 
+def test_main_morning_0315_restore_skips_duplicate_publication() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        newest = _make_snapshot_zip(
+            tmp,
+            601,
+            history=[_history_entry("2026-07-14", "morning", "a" * 64)],
+        )
+        older = _make_snapshot_zip(
+            tmp,
+            602,
+            history=[_history_entry("2026-07-13", "morning", "b" * 64)],
+            text_receipts=[_text_receipt("2026-07-14", "morning", "2026-07-14T01:02:00Z")],
+            image_receipts=[_image_receipt("2026-07-14", "morning", "2026-07-14T01:04:00Z")],
+        )
+        _run_snapshot_helper(
+            tmp,
+            [
+                (601, "2026-07-14T03:20:00Z", newest),
+                (602, "2026-07-14T01:10:00Z", older),
+            ],
+            target_date="2026-07-14",
+            post_type="morning",
+        )
+
+        helper = _load_snapshot_helper()
+        text_path = tmp / ".cache" / "cy_text_delivery" / "2026-07-14-morning.json"
+        image_path = tmp / ".cache" / "cy_image_delivery" / "2026-07-14-morning.json"
+        text_receipt = json.loads(text_path.read_text("utf-8"))
+        image_receipt = json.loads(image_path.read_text("utf-8"))
+        text_ok = helper._valid_text_receipt(text_receipt, target_date="2026-07-14", post_type="morning")
+        image_ok = helper._valid_image_receipt(image_receipt, target_date="2026-07-14", post_type="morning")
+        decision = "skip_all" if text_ok and image_ok else "publish"
+        _assert("main_0315_restores_older_text_receipt", text_ok)
+        _assert("main_0315_restores_older_image_receipt", image_ok)
+        _assert("main_0315_recovery_decision_skip_all", decision == "skip_all", decision)
+
+        merged = json.loads((tmp / ".cache" / "cyprus_visual_history_prod.json").read_text("utf-8"))
+        keys = {entry["sha256"] for entry in merged}
+        _assert("main_0315_merges_newest_and_older_history", {"a" * 64, "b" * 64}.issubset(keys), keys)
+    print("PASS main_morning_0315_restore_skips_duplicate_publication")
+
+
 def test_simulated_manual_morning_evening_history_chain() -> None:
     cache_store: dict[str, list[str]] = {}
     prefix = "cyprus-visual-history-prod-"
@@ -565,12 +620,14 @@ TESTS = [
     test_evening_waits_for_morning_without_losing_dispatch_paths,
     test_image_recovery_jobs_are_production_only,
     test_delivery_receipts_diagnostics_and_snapshots,
+    test_main_morning_snapshot_restore_is_targeted,
     test_snapshot_restores_receipts_even_when_history_current,
     test_snapshot_merges_recent_history_without_21_day_gap,
     test_snapshot_skips_malformed_newest_artifact,
     test_snapshot_receipt_validation_and_newer_local_protection,
     test_snapshot_targeted_restore_continues_to_older_artifact_for_receipts,
     test_snapshot_targeted_restore_stops_when_newest_has_receipts,
+    test_main_morning_0315_restore_skips_duplicate_publication,
     test_simulated_manual_morning_evening_history_chain,
     test_pillow_is_bounded_dependency,
 ]

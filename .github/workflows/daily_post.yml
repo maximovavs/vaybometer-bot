@@ -254,7 +254,15 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/restore_cy_visual_snapshot.py
+        run: |
+          if [ -n "${WORK_DATE:-}" ]; then
+            TARGET_DATE="${WORK_DATE:0:10}"
+          else
+            TARGET_DATE="$(TZ="${TZ:-Asia/Nicosia}" date +%F)"
+          fi
+          export CY_RECOVERY_TARGET_DATE="$TARGET_DATE"
+          export CY_RECOVERY_POST_TYPE="morning"
+          python .github/scripts/restore_cy_visual_snapshot.py
 
       - name: Time debug
         run: |
