@@ -20,6 +20,7 @@ from cyprus_visual_dedup import (
     evaluate_cyprus_visual_candidate,
     hamming_distance_hex,
     load_cyprus_visual_history,
+    phash_file,
     pillow_available,
     record_cyprus_visual_publication,
 )
@@ -168,6 +169,7 @@ def cy_dedup_history_is_persisted_and_read() -> None:
         assert len(loaded) == 1
         assert loaded[0]["sha256"] == entry["sha256"]
         assert loaded[0]["perceptual_hash"] == entry["perceptual_hash"]
+        assert loaded[0]["phash"] == entry["phash"]
         assert loaded[0]["selected_scene"] == "small_harbour"
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -191,10 +193,11 @@ def cy_dedup_record_is_atomic_and_dedupes_same_publication() -> None:
                 image_path=image,
                 selected_scene="small_harbour",
                 prompt_version="cyprus_visual_v_test",
-                cache_key="cache=repeat",
-                style_name="style_repeat",
-                history_path=history,
-            )
+            cache_key="cache=repeat",
+            style_name="style_repeat",
+            composition="wide panorama composition",
+            history_path=history,
+        )
         loaded = load_cyprus_visual_history(history)
         assert len(loaded) == 1
 
@@ -206,6 +209,7 @@ def cy_dedup_record_is_atomic_and_dedupes_same_publication() -> None:
             prompt_version="cyprus_visual_v_test",
             cache_key="cache=evening",
             style_name="style_evening",
+            composition="eye-level coast view",
             history_path=history,
         )
         loaded = load_cyprus_visual_history(history)
@@ -273,7 +277,15 @@ def cy_dedup_fresh_run_restore_simulation() -> None:
         shutil.copy2(history1, history4)
         image_b = run4 / "b.ppm"
         _write_ppm(image_b, mode="coast_b")
-        different = _evaluate(image_b, history4, date_value="2026-07-04")
+        different = evaluate_cyprus_visual_candidate(
+            image_b,
+            date_value="2026-07-04",
+            post_type="morning",
+            selected_scene="long_sandy_beach",
+            prompt_version="cyprus_visual_v_test",
+            composition="open horizon composition",
+            history_path=history4,
+        )
         assert different.accepted is True
         record_cyprus_visual_publication(
             date_value="2026-07-04",
@@ -311,6 +323,78 @@ def cy_dedup_png_jpg_hashes_when_pillow_available() -> None:
             assert digest is not None
             assert len(digest) == 16
             int(digest, 16)
+            perceptual = phash_file(path)
+            assert perceptual is not None
+            assert len(perceptual) == 16
+            int(perceptual, 16)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_dedup_recent_scene_family_is_rejected_after_hash_checks() -> None:
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        old_image = root / "old.ppm"
+        new_image = root / "new.ppm"
+        _write_ppm(old_image, mode="coast_a")
+        _write_ppm(new_image, mode="coast_b")
+        record_cyprus_visual_publication(
+            date_value="2026-07-05",
+            post_type="morning",
+            image_path=old_image,
+            selected_scene="quiet_blue_lagoon",
+            prompt_version="cyprus_visual_v_test",
+            cache_key="cache=old",
+            style_name="style_old",
+            composition="beach curve composition",
+            history_path=history,
+        )
+        result = evaluate_cyprus_visual_candidate(
+            new_image,
+            date_value="2026-07-06",
+            post_type="evening",
+            selected_scene="quiet_blue_lagoon",
+            prompt_version="cyprus_visual_v_test",
+            composition="open horizon composition",
+            history_path=history,
+        )
+        assert result.accepted is False
+        assert result.reason == "recent_scene_family"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_dedup_recent_composition_is_rejected() -> None:
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        old_image = root / "old.ppm"
+        new_image = root / "new.ppm"
+        _write_ppm(old_image, mode="coast_a")
+        _write_ppm(new_image, mode="coast_b")
+        record_cyprus_visual_publication(
+            date_value="2026-07-05",
+            post_type="morning",
+            image_path=old_image,
+            selected_scene="small_harbour",
+            prompt_version="cyprus_visual_v_test",
+            cache_key="cache=old",
+            style_name="style_old",
+            composition="wide panorama composition",
+            history_path=history,
+        )
+        result = evaluate_cyprus_visual_candidate(
+            new_image,
+            date_value="2026-07-06",
+            post_type="evening",
+            selected_scene="open_sea_cliffs",
+            prompt_version="cyprus_visual_v_test",
+            composition="wide panorama composition",
+            history_path=history,
+        )
+        assert result.accepted is False
+        assert result.reason == "recent_composition"
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -325,6 +409,8 @@ TESTS = [
     cy_dedup_malformed_history_keeps_backup,
     cy_dedup_fresh_run_restore_simulation,
     cy_dedup_png_jpg_hashes_when_pillow_available,
+    cy_dedup_recent_scene_family_is_rejected_after_hash_checks,
+    cy_dedup_recent_composition_is_rejected,
 ]
 
 

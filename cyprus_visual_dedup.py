@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,9 @@ CYPRUS_VISUAL_HISTORY_TEST_PATH = Path(
 CYPRUS_VISUAL_EXACT_DAYS = 30
 CYPRUS_VISUAL_NEAR_DAYS = 14
 CYPRUS_VISUAL_DHASH_THRESHOLD = 6
+CYPRUS_VISUAL_PHASH_THRESHOLD = 10
+CYPRUS_VISUAL_SCENE_RECENT_COUNT = 3
+CYPRUS_VISUAL_COMPOSITION_RECENT_COUNT = 5
 
 
 @dataclass(frozen=True)
@@ -34,7 +38,9 @@ class CyprusVisualDuplicateResult:
     reason: str
     sha256: str
     perceptual_hash: str | None
+    phash: str | None = None
     min_distance: int | None = None
+    min_phash_distance: int | None = None
     matched_entry: dict[str, Any] | None = None
 
 
@@ -248,6 +254,71 @@ def dhash_file(path: str | Path, *, hash_size: int = 8) -> str | None:
         return _dhash_from_pixels(pixels, width, height, hash_size=hash_size)
 
 
+def _sample_grayscale(
+    pixels: list[int],
+    width: int,
+    height: int,
+    *,
+    target: int = 32,
+) -> list[float]:
+    if width <= 0 or height <= 0 or len(pixels) < width * height:
+        raise ValueError("invalid pixel buffer")
+    sample: list[float] = []
+    for y in range(target):
+        src_y = min(height - 1, int((y + 0.5) * height / target))
+        for x in range(target):
+            src_x = min(width - 1, int((x + 0.5) * width / target))
+            sample.append(float(pixels[src_y * width + src_x]))
+    return sample
+
+
+def _phash_from_sample(values: list[float], *, size: int = 32, low: int = 8) -> str:
+    if len(values) < size * size:
+        raise ValueError("invalid DCT sample")
+    coeffs: list[float] = []
+    for v in range(low):
+        for u in range(low):
+            total = 0.0
+            for y in range(size):
+                cy = math.cos(((2 * y + 1) * v * math.pi) / (2 * size))
+                row = y * size
+                for x in range(size):
+                    cx = math.cos(((2 * x + 1) * u * math.pi) / (2 * size))
+                    total += values[row + x] * cx * cy
+            coeffs.append(total)
+    comparable = coeffs[1:]
+    median = sorted(comparable)[len(comparable) // 2] if comparable else 0.0
+    bits = ["1" if value > median else "0" for value in coeffs]
+    return f"{int(''.join(bits), 2):0{low * low // 4}x}"
+
+
+def phash_file(path: str | Path) -> str | None:
+    image_path = Path(path)
+    try:
+        from PIL import Image, ImageOps  # type: ignore
+
+        with Image.open(image_path) as image:
+            image = ImageOps.grayscale(image)
+            try:
+                resample = Image.Resampling.LANCZOS
+            except AttributeError:  # pragma: no cover - old Pillow fallback
+                resample = Image.LANCZOS
+            image = image.resize((32, 32), resample)
+            values = [float(value) for value in image.getdata()]
+        return _phash_from_sample(values)
+    except Exception:
+        ppm = _read_ppm_or_pgm(image_path)
+        if ppm is None:
+            logging.error("Cyprus visual pHash detection unavailable: Pillow missing.")
+            return None
+        pixels, width, height = ppm
+        return _phash_from_sample(_sample_grayscale(pixels, width, height))
+
+
+def _recent_entries(history: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    return [entry for entry in history if isinstance(entry, dict)][-limit:]
+
+
 def evaluate_cyprus_visual_candidate(
     image_path: str | Path,
     *,
@@ -255,14 +326,17 @@ def evaluate_cyprus_visual_candidate(
     post_type: str,
     selected_scene: str,
     prompt_version: str,
+    composition: str | None = None,
     history_path: str | Path = CYPRUS_VISUAL_HISTORY_PATH,
     current_date: date | None = None,
     threshold: int = CYPRUS_VISUAL_DHASH_THRESHOLD,
+    phash_threshold: int = CYPRUS_VISUAL_PHASH_THRESHOLD,
 ) -> CyprusVisualDuplicateResult:
     current = current_date or _parse_date(date_value) or _today()
     history = load_cyprus_visual_history(history_path)
     digest = sha256_file(image_path)
     perceptual = dhash_file(image_path)
+    phash = phash_file(image_path)
 
     for entry in history:
         if not _within_days(entry, current, CYPRUS_VISUAL_EXACT_DAYS):
@@ -273,6 +347,7 @@ def evaluate_cyprus_visual_candidate(
                 reason="exact_duplicate",
                 sha256=digest,
                 perceptual_hash=perceptual,
+                phash=phash,
                 matched_entry=entry,
             )
 
@@ -295,16 +370,74 @@ def evaluate_cyprus_visual_candidate(
                 reason="near_duplicate",
                 sha256=digest,
                 perceptual_hash=perceptual,
+                phash=phash,
                 min_distance=min_distance,
                 matched_entry=nearest_entry,
             )
+
+    min_phash_distance: int | None = None
+    nearest_phash_entry: dict[str, Any] | None = None
+    if phash:
+        for entry in history:
+            if not _within_days(entry, current, CYPRUS_VISUAL_NEAR_DAYS):
+                continue
+            previous_hash = str(entry.get("phash") or "")
+            if not previous_hash:
+                continue
+            distance = _hamming_hex(phash, previous_hash)
+            if min_phash_distance is None or distance < min_phash_distance:
+                min_phash_distance = distance
+                nearest_phash_entry = entry
+        if min_phash_distance is not None and min_phash_distance <= phash_threshold:
+            return CyprusVisualDuplicateResult(
+                accepted=False,
+                reason="near_duplicate_phash",
+                sha256=digest,
+                perceptual_hash=perceptual,
+                phash=phash,
+                min_distance=min_distance,
+                min_phash_distance=min_phash_distance,
+                matched_entry=nearest_phash_entry,
+            )
+
+    scene_value = str(selected_scene or "").strip()
+    if scene_value:
+        for entry in _recent_entries(history, CYPRUS_VISUAL_SCENE_RECENT_COUNT):
+            if str(entry.get("selected_scene") or "").strip() == scene_value:
+                return CyprusVisualDuplicateResult(
+                    accepted=False,
+                    reason="recent_scene_family",
+                    sha256=digest,
+                    perceptual_hash=perceptual,
+                    phash=phash,
+                    min_distance=min_distance,
+                    min_phash_distance=min_phash_distance,
+                    matched_entry=entry,
+                )
+
+    composition_value = str(composition or "").strip()
+    if composition_value:
+        for entry in _recent_entries(history, CYPRUS_VISUAL_COMPOSITION_RECENT_COUNT):
+            if str(entry.get("composition") or "").strip() == composition_value:
+                return CyprusVisualDuplicateResult(
+                    accepted=False,
+                    reason="recent_composition",
+                    sha256=digest,
+                    perceptual_hash=perceptual,
+                    phash=phash,
+                    min_distance=min_distance,
+                    min_phash_distance=min_phash_distance,
+                    matched_entry=entry,
+                )
 
     return CyprusVisualDuplicateResult(
         accepted=True,
         reason="accepted",
         sha256=digest,
         perceptual_hash=perceptual,
+        phash=phash,
         min_distance=min_distance,
+        min_phash_distance=min_phash_distance,
         matched_entry=nearest_entry,
     )
 
@@ -318,6 +451,7 @@ def record_cyprus_visual_publication(
     prompt_version: str,
     cache_key: str,
     style_name: str,
+    composition: str | None = None,
     history_path: str | Path = CYPRUS_VISUAL_HISTORY_PATH,
 ) -> dict[str, Any]:
     current = _parse_date(date_value) or _today()
@@ -333,7 +467,9 @@ def record_cyprus_visual_publication(
         "post_type": post_type,
         "sha256": sha256_file(image_path),
         "perceptual_hash": dhash_file(image_path),
+        "phash": phash_file(image_path),
         "selected_scene": selected_scene,
+        "composition": composition or "",
         "prompt_version": prompt_version,
         "cache_key": cache_key,
         "style_name": style_name,
@@ -367,6 +503,7 @@ __all__ = [
     "CYPRUS_VISUAL_HISTORY_PROD_PATH",
     "CYPRUS_VISUAL_HISTORY_TEST_PATH",
     "CYPRUS_VISUAL_NEAR_DAYS",
+    "CYPRUS_VISUAL_PHASH_THRESHOLD",
     "CyprusVisualDuplicateResult",
     "cyprus_visual_history_path",
     "dhash_file",
@@ -375,6 +512,7 @@ __all__ = [
     "hamming_distance_hex",
     "load_cyprus_visual_history",
     "pillow_available",
+    "phash_file",
     "record_cyprus_visual_publication",
     "save_cyprus_visual_history",
     "sha256_file",

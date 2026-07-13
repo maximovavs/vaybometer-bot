@@ -821,6 +821,39 @@ def cy_prompt_cloudy_uses_cloud_cover_without_blazing_sun() -> None:
     assert "strong direct sunlight" not in low
 
 
+def cy_scene_strong_gusts_use_exposed_coast_family() -> None:
+    text = """
+    Добрый вечер, Кипр. 2026-07-21
+    Лимассол: ясно, ветер 7 м/с, порывы до 13 м/с.
+    🌊 Море: волна умеренная.
+    """
+    allowed = {"windy_exposed_coast", "breakwater_coast", "open_sea_cliffs"}
+    for attempt in range(5):
+        _prompt, _style, meta = build_cyprus_scene_prompt_with_metadata(
+            text,
+            post_type="evening",
+            variation_attempt=attempt,
+        )
+        assert meta["selected_scene"] in allowed
+
+
+def cy_scene_plain_haze_prefers_visibility_friendly_coast() -> None:
+    text = """
+    Добрый вечер, Кипр. 2026-07-22
+    Ларнака: утром местами дымка/туман, AQI 40, PM₂.₅ 8, PM₁₀ 14.
+    🌊 Море: спокойно.
+    """
+    allowed = {"coastal_promenade", "small_harbour"}
+    for attempt in range(4):
+        prompt, _style, meta = build_cyprus_scene_prompt_with_metadata(
+            text,
+            post_type="evening",
+            variation_attempt=attempt,
+        )
+        assert meta["selected_scene"] in allowed
+        assert "dust haze with muted beige-gold" not in prompt
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -861,6 +894,8 @@ TESTS = [
     cy_scene_rotation_week_has_no_obvious_repeats,
     cy_scene_retry_rotates_scene_family,
     cy_prompt_cloudy_uses_cloud_cover_without_blazing_sun,
+    cy_scene_strong_gusts_use_exposed_coast_family,
+    cy_scene_plain_haze_prefers_visibility_friendly_coast,
 ]
 
 

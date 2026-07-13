@@ -314,6 +314,32 @@ def _select_composition(
     return _CY_COASTAL_COMPOSITIONS[idx]
 
 
+def _weather_constrained_scene_family(
+    scene_family: str,
+    date_key: str,
+    post_type: str,
+    ctx: VisualContextCY,
+    *,
+    variation_attempt: int,
+) -> str:
+    wind_reference = max(
+        [value for value in (ctx.wind_max, ctx.gust_max) if isinstance(value, (int, float))],
+        default=None,
+    )
+    if wind_reference is not None and wind_reference >= 12:
+        options = ("windy_exposed_coast", "breakwater_coast", "open_sea_cliffs")
+    elif ctx.visibility_haze and not ctx.dust_hint:
+        options = ("coastal_promenade", "small_harbour")
+    elif getattr(ctx, "inland_precipitation", False) or getattr(ctx, "inland_thunder_risk", False):
+        options = ("mountain_coast_view", "open_sea_cliffs", "breakwater_coast")
+    else:
+        return scene_family
+    if scene_family in options:
+        return scene_family
+    seed = "|".join([date_key, post_type, str(ctx.weather_main), "weather_scene_constraint"])
+    return options[(_stable_index(seed, "scene", len(options)) + variation_attempt) % len(options)]
+
+
 def _wind_category(ctx: VisualContextCY) -> str:
     strongest = max(
         [value for value in (ctx.wind_max, ctx.gust_max) if isinstance(value, (int, float))],
@@ -379,6 +405,13 @@ def _coastal_visual_variants(
         date_key,
         post_type,
         str(ctx.weather_main),
+        variation_attempt=variation_attempt,
+    )
+    scene_family = _weather_constrained_scene_family(
+        scene_family,
+        date_key,
+        post_type,
+        ctx,
         variation_attempt=variation_attempt,
     )
     scene_text = _CY_COASTAL_SCENE_TEMPLATES[scene_family][post_type]
@@ -693,6 +726,12 @@ def _visual_cache_metadata(
         "target_date": "today" if post_type == "morning" else "tomorrow",
         "prompt_version": CYPRUS_VISUAL_PROMPT_VERSION,
         "selected_scene": selected_scene,
+        "composition": _coastal_visual_variants(
+            message,
+            ctx,
+            post_type,
+            variation_attempt=variation_attempt,
+        )["composition"] if not (ctx.inland_heat_focus and not ctx.coastal_focus) else "inland_composition",
         "weather_scenario": str(ctx.weather_main),
         "wind_gust_category": _wind_category(ctx),
         "cloud_haze_category": _cloud_haze_category(ctx),
@@ -708,6 +747,7 @@ def _visual_cache_metadata(
         "post_type",
         "prompt_version",
         "selected_scene",
+        "composition",
         "weather_scenario",
         "wind_gust_category",
         "cloud_haze_category",

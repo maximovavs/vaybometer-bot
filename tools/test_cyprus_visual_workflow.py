@@ -59,6 +59,8 @@ def test_daily_visual_history_cache() -> None:
     _assert("daily_restore_prefix", "cyprus-visual-history-prod-" in text)
     _assert("daily_test_restore_prefix", "cyprus-visual-history-test-" in text)
     _assert("daily_no_image_cache_key", "path: .cache/cy_safe_images" not in text)
+    _assert("daily_generic_cache_excludes_prod_history", "!.cache/cyprus_visual_history_prod.json" in text)
+    _assert("daily_generic_cache_excludes_test_history", "!.cache/cyprus_visual_history_test.json" in text)
     _assert("daily_no_empty_history_seed", "printf '[]\\n' > \"$CYPRUS_VISUAL_HISTORY_PATH\"" not in text)
     _assert(
         "daily_prod_env",
@@ -125,6 +127,8 @@ def test_daily_visual_history_cache() -> None:
     _assert("daily_morning_failure_artifact", "Upload Cyprus morning diagnostics" in text)
     _assert("daily_schedule_evening_unchanged", "cron: '0 13 * * *'" in text)
     _assert("daily_schedule_fx_unchanged", "cron: '0 7 * * *'" in text)
+    _assert("daily_schedule_morning_image_recovery", "cron: '45 1 * * *'" in text)
+    _assert("daily_schedule_evening_image_recovery", "cron: '45 13 * * *'" in text)
     print("PASS daily_visual_history_cache")
 
 
@@ -176,6 +180,37 @@ def test_evening_waits_for_morning_without_losing_dispatch_paths() -> None:
     print("PASS evening_waits_for_morning_without_losing_dispatch_paths")
 
 
+def test_image_recovery_jobs_are_production_only() -> None:
+    text = _read(DAILY)
+    morning = _block(text, "  morning_image_recovery:", "  evening_image_recovery:")
+    evening = _block(text, "  evening_image_recovery:", "  noon_fx:")
+    for name, block, cron in (
+        ("morning", morning, "45 1 * * *"),
+        ("evening", evening, "45 13 * * *"),
+    ):
+        _assert(f"{name}_recovery_schedule_guard", f"github.event.schedule == '{cron}'" in block)
+        _assert(f"{name}_recovery_image_only", "--image-only-recovery" in block)
+        _assert(f"{name}_recovery_send_image_to_chat", "--send-image-to-chat" in block)
+        _assert(f"{name}_recovery_uses_prod_channel", '--chat-id "$CHANNEL_ID"' in block)
+        _assert(f"{name}_recovery_not_test", "--send-image-to-test" not in block)
+        _assert(f"{name}_recovery_no_text_send", "--send " not in block and "--send\n" not in block)
+    print("PASS image_recovery_jobs_are_production_only")
+
+
+def test_delivery_receipts_diagnostics_and_snapshots() -> None:
+    text = _read(DAILY)
+    _assert("permissions_actions_read", "actions: read" in text)
+    _assert("image_delivery_artifact_path", ".cache/cy_image_delivery/*.json" in text)
+    _assert("text_delivery_artifact_path", ".cache/cy_text_delivery/*.json" in text)
+    _assert("diagnostics_artifact", "cyprus-image-diagnostics-${{ github.job }}" in text)
+    _assert("diagnostics_path", "path: .cache/cy_image_diagnostics" in text)
+    _assert("history_snapshot_artifact", "cyprus-visual-history-prod-snapshot-${{ github.job }}" in text)
+    _assert("snapshot_restore_step", "Restore Cyprus visual history snapshot artifact if needed" in text)
+    _assert("snapshot_restore_uses_gh_api", "actions/artifacts?per_page=100" in text)
+    _assert("snapshot_restore_checks_stale_history", "looks stale; trying snapshot artifact" in text)
+    print("PASS delivery_receipts_diagnostics_and_snapshots")
+
+
 def test_simulated_manual_morning_evening_history_chain() -> None:
     cache_store: dict[str, list[str]] = {}
     prefix = "cyprus-visual-history-prod-"
@@ -222,6 +257,8 @@ TESTS = [
     test_safe_test_visual_history_cache,
     test_prod_and_test_history_are_separated,
     test_evening_waits_for_morning_without_losing_dispatch_paths,
+    test_image_recovery_jobs_are_production_only,
+    test_delivery_receipts_diagnostics_and_snapshots,
     test_simulated_manual_morning_evening_history_chain,
     test_pillow_is_bounded_dependency,
 ]

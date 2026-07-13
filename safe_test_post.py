@@ -19,6 +19,10 @@ from zoneinfo import ZoneInfo
 
 import pendulum
 from telegram import Bot, constants
+try:  # python-telegram-bot exposes retryable exceptions here in CI/prod.
+    from telegram.error import NetworkError, RetryAfter, ServerError, TimedOut
+except Exception:  # pragma: no cover - local lightweight telegram module fallback
+    NetworkError = RetryAfter = ServerError = TimedOut = None  # type: ignore[assignment]
 
 from editorial_voice import build_evening_human_line, build_morning_human_line
 from post_common import build_message
@@ -50,6 +54,14 @@ _CY_CHAT_IMAGE_CAPTIONS = {
     "morning": "Визуальный вайб сегодняшнего утра на Кипре 🌊",
     "evening": "Визуальный вайб завтрашнего вечера на Кипре 🌊",
 }
+_CY_IMAGE_DELIVERY_DIR = Path(".cache/cy_image_delivery")
+_CY_TEXT_DELIVERY_DIR = Path(".cache/cy_text_delivery")
+_CY_IMAGE_DIAGNOSTICS_DIR = Path(".cache/cy_image_diagnostics")
+_TELEGRAM_RETRY_EXCEPTIONS = tuple(
+    exc
+    for exc in (TimedOut, NetworkError, RetryAfter, ServerError, ConnectionError, TimeoutError, OSError)
+    if isinstance(exc, type) and issubclass(exc, BaseException)
+)
 
 _CY_MORNING_ACTIVE = False
 _CY_MORNING_TARGET_DATE = ""
@@ -1335,6 +1347,122 @@ def _cy_safe_image_output_path(style_name: str) -> Path:
     return output_dir / f"{safe_style}.jpg"
 
 
+def _cy_utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _cy_receipt_key(target_date: str, post_type: str) -> str:
+    safe_date = re.sub(r"[^0-9-]+", "_", str(target_date or "undated")) or "undated"
+    safe_type = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(post_type or "post")) or "post"
+    return f"{safe_date}-{safe_type}.json"
+
+
+def _cy_extract_receipt_date(text: str, fallback: str) -> str:
+    value = str(text or "")
+    match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", value)
+    if match:
+        return match.group(0)
+    match = re.search(r"\b(\d{2})[./-](\d{2})[./-](\d{4})\b", value)
+    if match:
+        return f"{match.group(3)}-{match.group(2)}-{match.group(1)}"
+    return fallback
+
+
+def _cy_image_receipt_path(target_date: str, post_type: str) -> Path:
+    return _CY_IMAGE_DELIVERY_DIR / _cy_receipt_key(target_date, post_type)
+
+
+def _cy_text_receipt_path(target_date: str, post_type: str) -> Path:
+    return _CY_TEXT_DELIVERY_DIR / _cy_receipt_key(target_date, post_type)
+
+
+def _cy_write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), "utf-8")
+    tmp.replace(path)
+
+
+def _cy_is_production_image_send(*, send_image_to_chat: bool, image_chat: int | None) -> bool:
+    production_chat = (os.getenv("CHANNEL_ID") or "").strip()
+    return bool(send_image_to_chat and production_chat and image_chat is not None and str(image_chat) == production_chat)
+
+
+def _cy_is_production_text_send(chat_id: int | None) -> bool:
+    production_chat = (os.getenv("CHANNEL_ID") or "").strip()
+    return bool(production_chat and chat_id is not None and str(chat_id) == production_chat)
+
+
+def _cy_write_image_diagnostics(
+    *,
+    mode: str,
+    target_date: str,
+    result: str,
+    error: BaseException | None = None,
+    prompt_metadata: dict | None = None,
+    attempts: list[dict] | None = None,
+    telegram_attempts: list[dict] | None = None,
+    history_path: Path | None = None,
+    history_count_before: int | None = None,
+    history_count_after: int | None = None,
+) -> Path:
+    safe_date = re.sub(r"[^0-9-]+", "_", target_date or "undated")
+    out_dir = _CY_IMAGE_DIAGNOSTICS_DIR / f"{safe_date}-{mode}"
+    payload = {
+        "image_result": result,
+        "target_date": target_date,
+        "post_type": mode,
+        "sent_at_utc": _cy_utc_now(),
+        "prompt_metadata": prompt_metadata or {},
+        "selected_scene_attempts": attempts or [],
+        "telegram_send_attempts": telegram_attempts or [],
+        "history_path": str(history_path) if history_path else "",
+        "history_count_before": history_count_before,
+        "history_count_after": history_count_after,
+    }
+    if error is not None:
+        payload["error"] = {
+            "type": type(error).__name__,
+            "message": re.sub(r"\s+", " ", str(error))[:500],
+        }
+    _cy_write_json_atomic(out_dir / "image_result.json", payload)
+    return out_dir / "image_result.json"
+
+
+async def _cy_send_photo_with_retry(
+    bot: Bot,
+    *,
+    chat_id: int,
+    image_path: Path,
+    caption: str,
+) -> tuple[object, list[dict]]:
+    delays = [2, 5, 10]
+    attempts: list[dict] = []
+    for index in range(1, 5):
+        try:
+            with image_path.open("rb") as photo:
+                message = await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption)
+            attempts.append({"attempt": index, "result": "sent"})
+            return message, attempts
+        except _TELEGRAM_RETRY_EXCEPTIONS as exc:
+            wait_seconds = getattr(exc, "retry_after", None)
+            if wait_seconds is None:
+                wait_seconds = delays[min(index - 1, len(delays) - 1)]
+            attempts.append(
+                {
+                    "attempt": index,
+                    "result": "retry",
+                    "error_type": type(exc).__name__,
+                    "message": re.sub(r"\s+", " ", str(exc))[:300],
+                    "sleep_seconds": wait_seconds,
+                }
+            )
+            if index >= 4:
+                raise
+            await asyncio.sleep(float(wait_seconds))
+    raise RuntimeError("unreachable Telegram send retry state")
+
+
 async def _build_safe_test_image(
     final_text: str,
     mode: str,
@@ -1343,6 +1471,7 @@ async def _build_safe_test_image(
     send_image_to_test: bool,
     send_image_to_chat: bool,
     image_chat_id: int | None,
+    image_only_recovery: bool = False,
 ) -> dict[str, object]:
     if send_image_to_test and send_image_to_chat:
         raise SystemExit(
@@ -1377,12 +1506,24 @@ async def _build_safe_test_image(
         image_chat = image_chat_id
         image_caption = _CY_CHAT_IMAGE_CAPTIONS[mode]
 
+    production_image_send = _cy_is_production_image_send(
+        send_image_to_chat=send_image_to_chat,
+        image_chat=image_chat,
+    )
+
     if image_chat is not None:
         if not TOKEN:
             raise SystemExit(
                 "Для отправки изображения TELEGRAM_TOKEN должен быть определён"
             )
 
+    last_metadata: dict | None = None
+    attempts: list[dict] = []
+    telegram_attempts: list[dict] = []
+    target_date_for_diag = "undated"
+    history_path_for_diag: Path | None = None
+    before_history_count: int | None = None
+    after_history_count: int | None = None
     try:
         from cyprus_visual_dedup import (
             cyprus_visual_history_path,
@@ -1396,6 +1537,7 @@ async def _build_safe_test_image(
 
         history_namespace = "test" if send_image_to_test else "prod" if send_image_to_chat else "test"
         history_path = cyprus_visual_history_path(history_namespace)
+        history_path_for_diag = history_path
         ensure_pillow_for_visual_dedup()
         before_history_count = len(load_cyprus_visual_history(history_path))
         print(f"CY_SAFE_IMAGE_HISTORY_NAMESPACE: {history_namespace}")
@@ -1409,17 +1551,48 @@ async def _build_safe_test_image(
         )
 
         selected_candidate = None
-        least_similar_candidate = None
         minimum = _cy_safe_image_min_bytes()
 
-        for visual_attempt in range(3):
+        for visual_attempt in range(5):
             prompt, style_name, metadata = build_cyprus_scene_prompt_with_metadata(
                 final_text,
                 post_type=mode,
                 variation_attempt=visual_attempt,
             )
+            last_metadata = dict(metadata)
+            target_date_for_diag = str(metadata["forecast_date"])
             cache_key = metadata["cache_key"]
-            print(f"\nCY_SAFE_IMAGE_ATTEMPT: {visual_attempt + 1}/3")
+            if production_image_send:
+                receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
+                if receipt_path.exists():
+                    print(f"CY_SAFE_IMAGE_RECEIPT_EXISTS: {receipt_path}")
+                    _cy_write_image_diagnostics(
+                        mode=mode,
+                        target_date=metadata["forecast_date"],
+                        result="skipped_receipt_exists",
+                        prompt_metadata=metadata,
+                        attempts=attempts,
+                        telegram_attempts=telegram_attempts,
+                        history_path=history_path,
+                        history_count_before=before_history_count,
+                    )
+                    return {"result": "skipped_receipt_exists", "message_ids": []}
+                if image_only_recovery:
+                    text_receipt = _cy_text_receipt_path(metadata["forecast_date"], mode)
+                    if not text_receipt.exists():
+                        print(f"CY_SAFE_IMAGE_RECOVERY_SKIP_NO_TEXT_RECEIPT: {text_receipt}")
+                        _cy_write_image_diagnostics(
+                            mode=mode,
+                            target_date=metadata["forecast_date"],
+                            result="skipped_no_text_receipt",
+                            prompt_metadata=metadata,
+                            attempts=attempts,
+                            telegram_attempts=telegram_attempts,
+                            history_path=history_path,
+                            history_count_before=before_history_count,
+                        )
+                        return {"result": "skipped_no_text_receipt", "message_ids": []}
+            print(f"\nCY_SAFE_IMAGE_ATTEMPT: {visual_attempt + 1}/5")
             print("CY_SAFE_IMAGE_PROMPT_BEGIN")
             print(prompt)
             print("CY_SAFE_IMAGE_PROMPT_END")
@@ -1457,13 +1630,35 @@ async def _build_safe_test_image(
                 post_type=mode,
                 selected_scene=metadata["selected_scene"],
                 prompt_version=metadata["prompt_version"],
+                composition=metadata.get("composition"),
                 history_path=history_path,
             )
             print(
                 "CY_SAFE_IMAGE_DEDUP: "
                 f"{duplicate_result.reason}; sha256={duplicate_result.sha256[:12]}; "
                 f"dhash={duplicate_result.perceptual_hash or 'n/a'}; "
-                f"min_distance={duplicate_result.min_distance}"
+                f"phash={duplicate_result.phash or 'n/a'}; "
+                f"min_distance={duplicate_result.min_distance}; "
+                f"min_phash_distance={duplicate_result.min_phash_distance}"
+            )
+            attempts.append(
+                {
+                    "attempt": visual_attempt + 1,
+                    "selected_scene": metadata["selected_scene"],
+                    "composition": metadata.get("composition", ""),
+                    "style_name": style_name,
+                    "cache_key": cache_key,
+                    "cache_status": cache_state,
+                    "backend": "world_en.imagegen.generate_astro_image",
+                    "image_path": str(image_path),
+                    "image_bytes": image_size,
+                    "dedup_reason": duplicate_result.reason,
+                    "sha256": duplicate_result.sha256,
+                    "perceptual_hash": duplicate_result.perceptual_hash,
+                    "phash": duplicate_result.phash,
+                    "min_distance": duplicate_result.min_distance,
+                    "min_phash_distance": duplicate_result.min_phash_distance,
+                }
             )
 
             candidate = (
@@ -1483,24 +1678,20 @@ async def _build_safe_test_image(
                 metadata["selected_scene"],
                 visual_attempt,
             )
-            if duplicate_result.reason != "exact_duplicate":
-                if least_similar_candidate is None:
-                    least_similar_candidate = candidate
-                else:
-                    previous_distance = least_similar_candidate[5].min_distance
-                    current_distance = duplicate_result.min_distance
-                    if (current_distance or -1) > (previous_distance or -1):
-                        least_similar_candidate = candidate
 
         if selected_candidate is None:
-            if least_similar_candidate is None:
-                raise RuntimeError("all Cyprus visual attempts were exact duplicates")
-            selected_candidate = least_similar_candidate
-            logging.warning(
-                "Cyprus visual dedup: all attempts were near-duplicates; "
-                "using least similar candidate with distance=%s",
-                selected_candidate[5].min_distance,
+            print("CY_SAFE_IMAGE_RESULT: skipped_duplicate")
+            _cy_write_image_diagnostics(
+                mode=mode,
+                target_date=target_date_for_diag,
+                result="skipped_duplicate",
+                prompt_metadata=last_metadata,
+                attempts=attempts,
+                telegram_attempts=telegram_attempts,
+                history_path=history_path,
+                history_count_before=before_history_count,
             )
+            return {"result": "skipped_duplicate", "message_ids": []}
 
         prompt, style_name, metadata, image_path, image_size, duplicate_result = selected_candidate
 
@@ -1509,17 +1700,39 @@ async def _build_safe_test_image(
 
         sent_message_ids: list[int] = []
         if image_chat is not None:
-            image_bot = Bot(token=TOKEN)
-            with image_path.open("rb") as photo:
-                message = await image_bot.send_photo(
-                    chat_id=image_chat,
-                    photo=photo,
-                    caption=image_caption,
+            duplicate_result = evaluate_cyprus_visual_candidate(
+                image_path,
+                date_value=metadata["forecast_date"],
+                post_type=mode,
+                selected_scene=metadata["selected_scene"],
+                prompt_version=metadata["prompt_version"],
+                composition=metadata.get("composition"),
+                history_path=history_path,
+            )
+            if not duplicate_result.accepted:
+                print(f"CY_SAFE_IMAGE_RESULT: skipped_duplicate_before_send ({duplicate_result.reason})")
+                _cy_write_image_diagnostics(
+                    mode=mode,
+                    target_date=metadata["forecast_date"],
+                    result="skipped_duplicate_before_send",
+                    prompt_metadata=metadata,
+                    attempts=attempts,
+                    telegram_attempts=telegram_attempts,
+                    history_path=history_path,
+                    history_count_before=before_history_count,
                 )
-            message_id = getattr(message, "message_id", None)
+                return {"result": "skipped_duplicate_before_send", "message_ids": []}
+            image_bot = Bot(token=TOKEN)
+            sent_message, telegram_attempts = await _cy_send_photo_with_retry(
+                image_bot,
+                chat_id=image_chat,
+                image_path=image_path,
+                caption=image_caption,
+            )
+            message_id = getattr(sent_message, "message_id", None)
             if isinstance(message_id, int):
                 sent_message_ids.append(message_id)
-            record_cyprus_visual_publication(
+            history_entry = record_cyprus_visual_publication(
                 date_value=metadata["forecast_date"],
                 post_type=mode,
                 image_path=image_path,
@@ -1527,6 +1740,7 @@ async def _build_safe_test_image(
                 prompt_version=metadata["prompt_version"],
                 cache_key=metadata["cache_key"],
                 style_name=style_name,
+                composition=metadata.get("composition"),
                 history_path=history_path,
             )
             after_history_count = len(load_cyprus_visual_history(history_path))
@@ -1536,6 +1750,38 @@ async def _build_safe_test_image(
                 history_namespace,
                 history_path,
                 after_history_count,
+            )
+            if production_image_send:
+                receipt = {
+                    "target_date": metadata["forecast_date"],
+                    "post_type": mode,
+                    "chat_type": "production",
+                    "telegram_message_id": getattr(sent_message, "message_id", None),
+                    "sha256": history_entry.get("sha256"),
+                    "perceptual_hash": history_entry.get("perceptual_hash"),
+                    "phash": history_entry.get("phash"),
+                    "selected_scene": metadata["selected_scene"],
+                    "composition": metadata.get("composition", ""),
+                    "style_name": style_name,
+                    "cache_key": metadata["cache_key"],
+                    "backend": "world_en.imagegen.generate_astro_image",
+                    "run_id": os.getenv("GITHUB_RUN_ID", ""),
+                    "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", ""),
+                    "sent_at_utc": _cy_utc_now(),
+                }
+                receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
+                _cy_write_json_atomic(receipt_path, receipt)
+                print(f"CY_SAFE_IMAGE_RECEIPT_WRITTEN: {receipt_path}")
+            _cy_write_image_diagnostics(
+                mode=mode,
+                target_date=metadata["forecast_date"],
+                result="sent",
+                prompt_metadata=metadata,
+                attempts=attempts,
+                telegram_attempts=telegram_attempts,
+                history_path=history_path,
+                history_count_before=before_history_count,
+                history_count_after=after_history_count,
             )
             logging.info("CY SAFE IMAGE sent before text to chat=%s", image_chat)
             return {
@@ -1555,6 +1801,18 @@ async def _build_safe_test_image(
             "cache_key": metadata.get("cache_key", ""),
         }
     except Exception as exc:
+        _cy_write_image_diagnostics(
+            mode=mode,
+            target_date=target_date_for_diag,
+            result="failed",
+            error=exc,
+            prompt_metadata=last_metadata,
+            attempts=attempts,
+            telegram_attempts=telegram_attempts,
+            history_path=history_path_for_diag,
+            history_count_before=before_history_count,
+            history_count_after=after_history_count,
+        )
         logging.exception(
             "CY SAFE IMAGE failed; existing text safe-test flow will continue: %s",
             exc,
@@ -1667,6 +1925,7 @@ async def main() -> None:
     parser.add_argument("--generate-image", action="store_true", help="Generate a Cyprus safe-test image after final text is built.")
     parser.add_argument("--send-image-to-test", action="store_true", help="Send the generated image only to CHANNEL_ID_TEST.")
     parser.add_argument("--send-image-to-chat", action="store_true", help="Send the generated image to the same explicitly resolved chat as the text post.")
+    parser.add_argument("--image-only-recovery", action="store_true", help="Recovery mode: send only a missing production image when text receipt exists.")
     parser.add_argument("--no-test-label", action="store_true", help="Do not prepend the 'Test safe post' label when sending.")
     args = parser.parse_args()
 
@@ -1676,8 +1935,13 @@ async def main() -> None:
         )
     if args.send_image_to_chat and not args.generate_image:
         raise SystemExit("--send-image-to-chat требует --generate-image")
-    if args.send_image_to_chat and not args.send:
+    if args.send_image_to_chat and not args.send and not args.image_only_recovery:
         raise SystemExit("--send-image-to-chat требует --send")
+    if args.image_only_recovery:
+        if not args.generate_image or not args.send_image_to_chat:
+            raise SystemExit("--image-only-recovery требует --generate-image и --send-image-to-chat")
+        if args.send_image_to_test or args.to_test:
+            raise SystemExit("--image-only-recovery разрешён только для production chat")
 
     mode = (args.mode or "evening").strip().lower()
     os.environ["POST_MODE"] = mode
@@ -1765,6 +2029,8 @@ async def main() -> None:
     resolved_text_chat_id: int | None = None
     if args.send_image_to_chat:
         resolved_text_chat_id = resolve_chat_id(args.chat_id, args.to_test)
+    if args.image_only_recovery and not _cy_is_production_text_send(resolved_text_chat_id):
+        raise SystemExit("--image-only-recovery разрешён только для CHANNEL_ID production")
 
     if args.generate_image:
         _cy_morning_phase(
@@ -1779,6 +2045,7 @@ async def main() -> None:
         send_image_to_test=args.send_image_to_test,
         send_image_to_chat=args.send_image_to_chat,
         image_chat_id=resolved_text_chat_id,
+        image_only_recovery=args.image_only_recovery,
     )
     image_status = str(image_result.get("result") or "unknown")
     image_phase = cy_morning_image_phase_for_result(image_status)
@@ -1790,6 +2057,10 @@ async def main() -> None:
         telegram_message_ids=image_result.get("message_ids"),
         image_error_type=image_result.get("error_type"),
     )
+
+    if args.image_only_recovery:
+        logging.info("CY IMAGE RECOVERY: text send skipped by design")
+        return
 
     if not args.send:
         logging.info("SAFE DRY-RUN: отправка пропущена, format_v2=%s, chunks=%d", use_format_v2, len(chunks))
@@ -1883,6 +2154,21 @@ async def main() -> None:
         image_result=image_result.get("result"),
         receipt_path=receipt_path,
     )
+    if _cy_is_production_text_send(chat_id):
+        target_date = _cy_extract_receipt_date(final_result.text, base_date.to_date_string())
+        receipt = {
+            "target_date": target_date,
+            "post_type": mode,
+            "chat_type": "production",
+            "telegram_message_ids": sent_message_ids,
+            "text_chunk_count": len(chunks),
+            "run_id": os.getenv("GITHUB_RUN_ID", ""),
+            "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", ""),
+            "sent_at_utc": _cy_utc_now(),
+        }
+        receipt_path = _cy_text_receipt_path(target_date, mode)
+        _cy_write_json_atomic(receipt_path, receipt)
+        print(f"CY_TEXT_RECEIPT_WRITTEN: {receipt_path}")
     logging.info("SAFE TEST sent: chat=%s chunks=%d format_v2=%s", chat_id, len(chunks), use_format_v2)
 
 
