@@ -31,6 +31,7 @@ sys.modules.setdefault("imghdr", imghdr_stub)
 from format_v2 import build_morning_format_v2  # noqa: E402
 import cyprus_visual_dedup  # noqa: E402
 import image_prompt_cy_scene as cy_scene_prompt  # noqa: E402
+import safe_test_post as safe_module  # noqa: E402
 from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata  # noqa: E402
 from image_prompt_cy_scene import _CY_COASTAL_COMPOSITIONS  # noqa: E402
 from post_safety import sanitize_post_text  # noqa: E402
@@ -854,6 +855,220 @@ def _history_entry_for_liveness(
     }
 
 
+def _write_ppm(path: Path, *, color: tuple[int, int, int], comment: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width = height = 300
+    header = f"P6\n# {comment}\n{width} {height}\n255\n".encode("ascii")
+    path.write_bytes(header + bytes(color) * width * height)
+
+
+def _write_gradient_ppm(path: Path, *, comment: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width = height = 300
+    header = f"P6\n# {comment}\n{width} {height}\n255\n".encode("ascii")
+    pixels = bytearray()
+    for y in range(height):
+        for x in range(width):
+            pixels.extend((255 - (x * 255) // width, (y * 255) // height, ((x + y) * 255) // (width + height)))
+    path.write_bytes(header + bytes(pixels))
+
+
+def cy_image_candidate_errors_continue_to_later_candidate() -> None:
+    async def _run(tmp: Path) -> tuple[dict, list[str]]:
+        world_old = sys.modules.get("world_en")
+        imagegen_old = sys.modules.get("world_en.imagegen")
+        old_img_dir = os.environ.get("CY_SAFE_IMAGE_DIR")
+        old_min = os.environ.get("CY_IMG_MIN_BYTES")
+        world_stub = types.ModuleType("world_en")
+        imagegen_stub = types.ModuleType("world_en.imagegen")
+        calls: list[str] = []
+
+        def _generate(_prompt: str, requested_path: str, **_kwargs):
+            calls.append(requested_path)
+            path = Path(requested_path)
+            if len(calls) == 1:
+                raise RuntimeError("fixture candidate backend error")
+            if len(calls) == 2:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x" * 92)
+                return types.SimpleNamespace(
+                    path=str(path),
+                    backend="pollinations",
+                    byte_count=92,
+                    backend_attempts=[{"backend": "pollinations"}],
+                )
+            _write_ppm(path, color=(40, 120, 180), comment=f"candidate-{len(calls)}")
+            return types.SimpleNamespace(
+                path=str(path),
+                backend="stable_horde",
+                byte_count=path.stat().st_size,
+                backend_attempts=[{"backend": "stable_horde"}],
+            )
+
+        imagegen_stub.generate_astro_image_result_with_exclusions = _generate
+        imagegen_stub.generate_astro_image = lambda prompt, path: str(_generate(prompt, path).path)
+        world_stub.imagegen = imagegen_stub
+        sys.modules["world_en"] = world_stub
+        sys.modules["world_en.imagegen"] = imagegen_stub
+        os.environ["CY_SAFE_IMAGE_DIR"] = str(tmp / "images")
+        os.environ["CY_IMG_MIN_BYTES"] = "12000"
+        try:
+            result = await _build_safe_test_image(
+                REAL_LEGACY_MORNING_WITHOUT_SEA_ASTRO,
+                "morning",
+                generate_image=True,
+                send_image_to_test=False,
+                send_image_to_chat=False,
+                image_chat_id=None,
+            )
+        finally:
+            if world_old is None:
+                sys.modules.pop("world_en", None)
+            else:
+                sys.modules["world_en"] = world_old
+            if imagegen_old is None:
+                sys.modules.pop("world_en.imagegen", None)
+            else:
+                sys.modules["world_en.imagegen"] = imagegen_old
+            if old_img_dir is None:
+                os.environ.pop("CY_SAFE_IMAGE_DIR", None)
+            else:
+                os.environ["CY_SAFE_IMAGE_DIR"] = old_img_dir
+            if old_min is None:
+                os.environ.pop("CY_IMG_MIN_BYTES", None)
+            else:
+                os.environ["CY_IMG_MIN_BYTES"] = old_min
+        return result, calls
+
+    def _case(tmp: Path) -> None:
+        result, calls = asyncio.run(_run(tmp))
+        assert result["result"] == "generated"
+        assert len(calls) == 3
+        attempts = result.get("attempts") or []
+        assert attempts[0]["error_type"] == "RuntimeError"
+        assert attempts[1]["image_bytes"] == 92
+        assert attempts[-1]["backend"] == "stable_horde"
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_image_repeated_pollinations_switches_backend_and_sends_receipt() -> None:
+    async def _run(tmp: Path) -> tuple[dict, list[set[str]], list[dict[str, object]]]:
+        world_old = sys.modules.get("world_en")
+        imagegen_old = sys.modules.get("world_en.imagegen")
+        old_img_dir = os.environ.get("CY_SAFE_IMAGE_DIR")
+        old_min = os.environ.get("CY_IMG_MIN_BYTES")
+        old_channel = os.environ.get("CHANNEL_ID")
+        old_token_attr = safe_module.TOKEN
+        old_bot = safe_module.Bot
+        old_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
+        history_path = tmp / "history.json"
+        duplicate_seed = tmp / "duplicate_seed.ppm"
+        _write_ppm(duplicate_seed, color=(80, 80, 80), comment="history")
+        history = [
+            {
+                **_history_entry_for_liveness(0),
+                "date": "2026-06-27",
+                "perceptual_hash": cyprus_visual_dedup.dhash_file(duplicate_seed),
+                "phash": cyprus_visual_dedup.phash_file(duplicate_seed),
+            }
+        ]
+        history_path.write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
+
+        world_stub = types.ModuleType("world_en")
+        imagegen_stub = types.ModuleType("world_en.imagegen")
+        excluded_seen: list[set[str]] = []
+        photo_calls: list[dict[str, object]] = []
+
+        def _generate(_prompt: str, requested_path: str, *, excluded_backends=None, **_kwargs):
+            excluded = set(excluded_backends or set())
+            excluded_seen.append(excluded)
+            path = Path(requested_path)
+            if "pollinations" not in excluded:
+                _write_ppm(path, color=(80, 80, 80), comment=f"pollinations-{len(excluded_seen)}")
+                return types.SimpleNamespace(
+                    path=str(path),
+                    backend="pollinations",
+                    byte_count=path.stat().st_size,
+                    backend_attempts=[{"backend": "pollinations"}],
+                )
+            _write_gradient_ppm(path, comment="stable-horde-distinct")
+            return types.SimpleNamespace(
+                path=str(path),
+                backend="stable_horde",
+                byte_count=path.stat().st_size,
+                backend_attempts=[{"backend": "stable_horde"}],
+            )
+
+        class FakeBot:
+            def __init__(self, token: str) -> None:
+                self.token = token
+
+            async def send_photo(self, **kwargs):
+                photo_calls.append(kwargs)
+                return types.SimpleNamespace(message_id=7001)
+
+        imagegen_stub.generate_astro_image_result_with_exclusions = _generate
+        imagegen_stub.generate_astro_image = lambda prompt, path: str(_generate(prompt, path).path)
+        world_stub.imagegen = imagegen_stub
+        sys.modules["world_en"] = world_stub
+        sys.modules["world_en.imagegen"] = imagegen_stub
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = history_path
+        safe_module.TOKEN = "fixture-token"
+        safe_module.Bot = FakeBot
+        os.environ["CHANNEL_ID"] = "777"
+        os.environ["CY_SAFE_IMAGE_DIR"] = str(tmp / "images")
+        os.environ["CY_IMG_MIN_BYTES"] = "12000"
+        try:
+            result = await _build_safe_test_image(
+                REAL_LEGACY_MORNING_WITHOUT_SEA_ASTRO,
+                "morning",
+                generate_image=True,
+                send_image_to_test=False,
+                send_image_to_chat=True,
+                image_chat_id=777,
+            )
+        finally:
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = old_history
+            safe_module.TOKEN = old_token_attr
+            safe_module.Bot = old_bot
+            if world_old is None:
+                sys.modules.pop("world_en", None)
+            else:
+                sys.modules["world_en"] = world_old
+            if imagegen_old is None:
+                sys.modules.pop("world_en.imagegen", None)
+            else:
+                sys.modules["world_en.imagegen"] = imagegen_old
+            if old_img_dir is None:
+                os.environ.pop("CY_SAFE_IMAGE_DIR", None)
+            else:
+                os.environ["CY_SAFE_IMAGE_DIR"] = old_img_dir
+            if old_min is None:
+                os.environ.pop("CY_IMG_MIN_BYTES", None)
+            else:
+                os.environ["CY_IMG_MIN_BYTES"] = old_min
+            if old_channel is None:
+                os.environ.pop("CHANNEL_ID", None)
+            else:
+                os.environ["CHANNEL_ID"] = old_channel
+        return result, excluded_seen, photo_calls
+
+    def _case(tmp: Path) -> None:
+        result, excluded_seen, photo_calls = asyncio.run(_run(tmp))
+        assert result["result"] == "sent"
+        assert any("pollinations" in value for value in excluded_seen)
+        assert len(photo_calls) == 1
+        receipt = _cy_image_receipt_path("2026-06-27", "morning")
+        assert is_valid_cy_image_receipt("2026-06-27", "morning")
+        assert json.loads(receipt.read_text("utf-8"))["telegram_message_id"] == 7001
+        attempts = result.get("attempts") or []
+        assert any(item.get("dedup_reason") == "provider_repeated_output" for item in attempts)
+        assert attempts[-1]["backend"] == "stable_horde"
+
+    _with_temp_delivery_dir(_case)
+
+
 def cy_image_liveness_skips_recent_compositions_before_backend_without_consuming_attempts() -> None:
     text = REAL_LEGACY_MORNING_WITHOUT_SEA_ASTRO
     first_five_metadata = [
@@ -1009,6 +1224,8 @@ def main() -> None:
         cy_missing_image_message_id_does_not_validate_receipt,
         cy_image_diagnostics_redacts_secrets,
         cy_image_recovery_force_regenerates_instead_of_reusing_cache,
+        cy_image_candidate_errors_continue_to_later_candidate,
+        cy_image_repeated_pollinations_switches_backend_and_sends_receipt,
         cy_image_liveness_skips_recent_compositions_before_backend_without_consuming_attempts,
         cy_image_liveness_visibility_haze_lru_scene_reaches_backend,
         cy_image_liveness_inland_thunder_lru_scene_reaches_backend,

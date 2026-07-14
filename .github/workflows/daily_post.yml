@@ -6,6 +6,8 @@ on:
     - cron: '0 1 * * *'
     # Recovery: дослать только утреннюю картинку, если текст уже ушёл
     - cron: '45 1 * * *'
+    # Final recovery: ещё одна попытка дослать только утреннюю картинку
+    - cron: '30 5 * * *'
     # Recovery утреннего поста, если primary schedule/job не стартовал на runner
     - cron: '15 3 * * *'
     # Вечерний пост: 13:00 UTC ≈ 16:00 на Кипре летом / 15:00 зимой
@@ -623,7 +625,7 @@ jobs:
   morning_image_recovery:
     name: Morning image recovery only
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' && github.event.schedule == '45 1 * * *'
+    if: github.event_name == 'schedule' && (github.event.schedule == '45 1 * * *' || github.event.schedule == '30 5 * * *')
     steps:
       - uses: actions/checkout@v4
 

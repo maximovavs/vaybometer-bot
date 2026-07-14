@@ -50,6 +50,7 @@ Stable Horde / AI Horde:
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass, field
 import logging
 import os
 import time
@@ -148,8 +149,132 @@ CUSTOM_IMAGE_TIMEOUT = float(os.environ.get("CUSTOM_IMAGE_TIMEOUT", "20"))
 CUSTOM_IMAGE_API_KEY = os.environ.get("CUSTOM_IMAGE_API_KEY", "").strip()
 
 
+@dataclass
+class ImageGenerationResult:
+    path: str
+    backend: str
+    byte_count: int
+    content_type: str | None = None
+    backend_attempts: list[dict] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        return self.path
+
+    def __fspath__(self) -> str:
+        return self.path
+
+
 def _ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _min_valid_image_bytes() -> int:
+    try:
+        value = int(os.getenv("IMAGEGEN_MIN_VALID_BYTES", "4096"))
+    except Exception:
+        value = 4096
+    return max(512, value)
+
+
+def _image_signature(data: bytes) -> str | None:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def _delete_invalid(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _validate_generated_image(
+    *,
+    backend: str,
+    out_path: Path,
+    payload: bytes,
+    status_code: int | None = None,
+    content_type: str | None = None,
+) -> ImageGenerationResult | None:
+    byte_count = len(payload or b"")
+    content_type_clean = (content_type or "").split(";", 1)[0].strip().lower()
+    if content_type is not None and not content_type_clean.startswith("image/"):
+        logger.warning(
+            "%s invalid image response: status=%s content_type=%s bytes=%d reason=content_type",
+            backend,
+            status_code,
+            content_type_clean or "missing",
+            byte_count,
+        )
+        _delete_invalid(out_path)
+        return None
+    if byte_count <= _min_valid_image_bytes():
+        logger.warning(
+            "%s invalid image response: status=%s content_type=%s bytes=%d reason=too_small",
+            backend,
+            status_code,
+            content_type_clean or "missing",
+            byte_count,
+        )
+        _delete_invalid(out_path)
+        return None
+    signature = _image_signature(payload)
+    if signature is None:
+        logger.warning(
+            "%s invalid image response: status=%s content_type=%s bytes=%d reason=signature",
+            backend,
+            status_code,
+            content_type_clean or "missing",
+            byte_count,
+        )
+        _delete_invalid(out_path)
+        return None
+    if Image is None:
+        logger.warning(
+            "%s image validation unavailable: Pillow missing; accepting signature=%s bytes=%d",
+            backend,
+            signature,
+            byte_count,
+        )
+    else:
+        try:
+            with Image.open(out_path) as im:  # type: ignore[attr-defined]
+                width, height = im.size
+                im.verify()
+            if width < 256 or height < 256:
+                logger.warning(
+                    "%s invalid image response: status=%s content_type=%s bytes=%d reason=dimensions %sx%s",
+                    backend,
+                    status_code,
+                    content_type_clean or "missing",
+                    byte_count,
+                    width,
+                    height,
+                )
+                _delete_invalid(out_path)
+                return None
+        except Exception as exc:
+            logger.warning(
+                "%s invalid image response: status=%s content_type=%s bytes=%d reason=pillow_verify error=%s",
+                backend,
+                status_code,
+                content_type_clean or "missing",
+                byte_count,
+                exc.__class__.__name__,
+            )
+            _delete_invalid(out_path)
+            return None
+    return ImageGenerationResult(
+        path=str(out_path),
+        backend=backend,
+        byte_count=byte_count,
+        content_type=content_type_clean or None,
+    )
 
 
 def _hamming_distance(a: int, b: int) -> int:
@@ -239,7 +364,7 @@ def _fetch_from_pollinations(
     prompt: str,
     out_path: Path,
     size: Tuple[int, int] = (512, 512),
-) -> Optional[Path]:
+) -> Optional[ImageGenerationResult]:
     """
     Попытка получить картинку через Pollinations.
 
@@ -273,9 +398,10 @@ def _fetch_from_pollinations(
 
     if resp.status_code != 200:
         logger.warning(
-            "Pollinations non-200: %s, body preview=%s",
+            "Pollinations non-200: %s bytes=%d content_type=%s",
             resp.status_code,
-            (resp.text or "")[:200],
+            len(resp.content or b""),
+            resp.headers.get("Content-Type", ""),
         )
         return None
 
@@ -285,6 +411,15 @@ def _fetch_from_pollinations(
 
     _ensure_parent_dir(out_path)
     out_path.write_bytes(resp.content)
+    result = _validate_generated_image(
+        backend="pollinations",
+        out_path=out_path,
+        payload=resp.content,
+        status_code=resp.status_code,
+        content_type=resp.headers.get("Content-Type"),
+    )
+    if result is None:
+        return None
 
     # Детект заглушки (если это она — удаляем и считаем неудачей)
     if _looks_like_pollinations_placeholder(out_path):
@@ -300,7 +435,7 @@ def _fetch_from_pollinations(
         out_path,
         out_path.stat().st_size,
     )
-    return out_path
+    return result
 
 
 def _horde_headers(api_key: str) -> Dict[str, str]:
@@ -317,7 +452,7 @@ def _fetch_from_horde_once(
     size: Tuple[int, int],
     timeout: float,
     api_key: str,
-) -> Tuple[Optional[Path], Optional[int], str]:
+) -> Tuple[Optional[ImageGenerationResult], Optional[int], str]:
     """
     Одна попытка Horde с конкретным api_key.
     Возвращает (path|None, http_status|None, error_code_str)
@@ -340,8 +475,6 @@ def _fetch_from_horde_once(
         "shared": True,
     }
 
-    import json as _json
-
     try:
         logger.info("Stable Horde async request")
         resp = requests.post(
@@ -356,21 +489,22 @@ def _fetch_from_horde_once(
 
     if resp.status_code not in (200, 202):
         logger.warning(
-            "Horde async non-2xx: %s, body preview=%s",
+            "Horde async non-2xx: %s bytes=%d content_type=%s",
             resp.status_code,
-            resp.text[:200],
+            len(resp.content or b""),
+            resp.headers.get("Content-Type", ""),
         )
         return None, resp.status_code, "AsyncNon2xx"
 
     try:
         data = resp.json()
     except Exception as exc:
-        logger.warning("Horde async JSON error: %s, body=%r", exc, resp.text[:200])
+        logger.warning("Horde async JSON error: %s bytes=%d", exc, len(resp.content or b""))
         return None, resp.status_code, "AsyncJSONError"
 
     job_id = data.get("id")
     if not job_id:
-        logger.warning("Horde async response missing id: %s", _json.dumps(data)[:200])
+        logger.warning("Horde async response missing id; keys=%s", sorted(data.keys()) if isinstance(data, dict) else [])
         return None, resp.status_code, "MissingJobId"
 
     logger.info("Horde job id: %s", job_id)
@@ -389,9 +523,10 @@ def _fetch_from_horde_once(
 
         if check_resp.status_code != 200:
             logger.warning(
-                "Horde check non-200: %s, body preview=%s",
+                "Horde check non-200: %s bytes=%d content_type=%s",
                 check_resp.status_code,
-                check_resp.text[:200],
+                len(check_resp.content or b""),
+                check_resp.headers.get("Content-Type", ""),
             )
             time.sleep(5)
             continue
@@ -399,7 +534,7 @@ def _fetch_from_horde_once(
         try:
             check = check_resp.json()
         except Exception as exc:
-            logger.warning("Horde check JSON error: %s", exc)
+            logger.warning("Horde check JSON error: %s bytes=%d", exc, len(check_resp.content or b""))
             time.sleep(5)
             continue
 
@@ -429,16 +564,17 @@ def _fetch_from_horde_once(
 
     if gen_resp.status_code != 200:
         logger.warning(
-            "Horde status non-200: %s, body preview=%s",
+            "Horde status non-200: %s bytes=%d content_type=%s",
             gen_resp.status_code,
-            gen_resp.text[:200],
+            len(gen_resp.content or b""),
+            gen_resp.headers.get("Content-Type", ""),
         )
         return None, gen_resp.status_code, "StatusNon200"
 
     try:
         gen_data = gen_resp.json()
     except Exception as exc:
-        logger.warning("Horde status JSON error: %s", exc)
+        logger.warning("Horde status JSON error: %s bytes=%d", exc, len(gen_resp.content or b""))
         return None, gen_resp.status_code, "StatusJSONError"
 
     generations = gen_data.get("generations") or []
@@ -460,12 +596,21 @@ def _fetch_from_horde_once(
 
     _ensure_parent_dir(out_path)
     out_path.write_bytes(img_bytes)
+    result = _validate_generated_image(
+        backend="stable_horde",
+        out_path=out_path,
+        payload=img_bytes,
+        status_code=200,
+        content_type=None,
+    )
+    if result is None:
+        return None, 200, "InvalidImage"
     logger.info(
         "Horde image saved to %s (%d bytes)",
         out_path,
         out_path.stat().st_size,
     )
-    return out_path, 200, ""
+    return result, 200, ""
 
 
 def _fetch_from_horde(
@@ -473,7 +618,7 @@ def _fetch_from_horde(
     out_path: Path,
     size: Tuple[int, int] = (512, 512),
     timeout: float = HORDE_TIMEOUT,
-) -> Optional[Path]:
+) -> Optional[ImageGenerationResult]:
     """
     Фолбэк: генерация через Stable Horde / AI Horde.
 
@@ -496,7 +641,7 @@ def _fetch_from_custom_backend(
     prompt: str,
     out_path: Path,
     size: Tuple[int, int] = (512, 512),
-) -> Optional[Path]:
+) -> Optional[ImageGenerationResult]:
     """
     Опциональный третий бэкенд.
 
@@ -527,9 +672,10 @@ def _fetch_from_custom_backend(
 
     if resp.status_code != 200:
         logger.warning(
-            "Custom backend non-200: %s, body preview=%s",
+            "Custom backend non-200: %s bytes=%d content_type=%s",
             resp.status_code,
-            (resp.text or "")[:200],
+            len(resp.content or b""),
+            resp.headers.get("Content-Type", ""),
         )
         return None
 
@@ -539,51 +685,67 @@ def _fetch_from_custom_backend(
 
     _ensure_parent_dir(out_path)
     out_path.write_bytes(resp.content)
+    result = _validate_generated_image(
+        backend="custom",
+        out_path=out_path,
+        payload=resp.content,
+        status_code=resp.status_code,
+        content_type=resp.headers.get("Content-Type"),
+    )
+    if result is None:
+        return None
     logger.info(
         "Custom backend image saved to %s (%d bytes)",
         out_path,
         out_path.stat().st_size,
     )
-    return out_path
+    return result
 
 
-def generate_astro_image(
+def generate_astro_image_result(
     prompt: str,
     out_path: str,
     size: Tuple[int, int] = (512, 512),
-) -> Optional[str]:
+) -> Optional[ImageGenerationResult]:
     """
     Основная точка входа.
 
     :param prompt: текстовый промпт (ENG), который ты передаёшь из world_astro_collect.
     :param out_path: путь к файлу (строка); директории будут созданы при необходимости.
     :param size: размер картинки (ширина, высота)
-    :return: строка пути к файлу или None, если все бэкенды и все попытки упали.
+    :return: результат генерации или None, если все бэкенды и все попытки упали.
     """
     out = Path(out_path)
     logger.info("Requested astro image at %s", out)
     logger.info("Max attempts: %d", MAX_ATTEMPTS)
+    backend_attempts: list[dict] = []
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         logger.info("Image generation attempt %d/%d", attempt, MAX_ATTEMPTS)
 
         # 1) Pollinations
+        backend_attempts.append({"attempt": attempt, "backend": "pollinations"})
         img = _fetch_from_pollinations(prompt, out, size=size)
         if img is not None:
+            img.backend_attempts = list(backend_attempts)
             logger.info("Using Pollinations backend on attempt %d", attempt)
-            return str(img)
+            return img
 
         # 2) Stable Horde / AI Horde
+        backend_attempts.append({"attempt": attempt, "backend": "stable_horde"})
         img = _fetch_from_horde(prompt, out, size=size)
         if img is not None:
+            img.backend_attempts = list(backend_attempts)
             logger.info("Using Stable Horde backend on attempt %d", attempt)
-            return str(img)
+            return img
 
         # 3) Custom backend
+        backend_attempts.append({"attempt": attempt, "backend": "custom"})
         img = _fetch_from_custom_backend(prompt, out, size=size)
         if img is not None:
+            img.backend_attempts = list(backend_attempts)
             logger.info("Using CUSTOM backend on attempt %d", attempt)
-            return str(img)
+            return img
 
         if attempt < MAX_ATTEMPTS:
             logger.warning("All backends failed on attempt %d, will retry...", attempt)
@@ -593,4 +755,53 @@ def generate_astro_image(
     return None
 
 
-__all__ = ["generate_astro_image"]
+def generate_astro_image_result_with_exclusions(
+    prompt: str,
+    out_path: str,
+    size: Tuple[int, int] = (512, 512),
+    excluded_backends: set[str] | None = None,
+) -> Optional[ImageGenerationResult]:
+    excluded = {str(item).strip().lower() for item in (excluded_backends or set()) if str(item).strip()}
+    if not excluded:
+        return generate_astro_image_result(prompt, out_path, size=size)
+
+    out = Path(out_path)
+    logger.info("Requested astro image at %s with excluded backends: %s", out, sorted(excluded))
+    backend_attempts: list[dict] = []
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        if "pollinations" not in excluded:
+            backend_attempts.append({"attempt": attempt, "backend": "pollinations"})
+            img = _fetch_from_pollinations(prompt, out, size=size)
+            if img is not None:
+                img.backend_attempts = list(backend_attempts)
+                return img
+        if "stable_horde" not in excluded and "horde" not in excluded:
+            backend_attempts.append({"attempt": attempt, "backend": "stable_horde"})
+            img = _fetch_from_horde(prompt, out, size=size)
+            if img is not None:
+                img.backend_attempts = list(backend_attempts)
+                return img
+        if "custom" not in excluded:
+            backend_attempts.append({"attempt": attempt, "backend": "custom"})
+            img = _fetch_from_custom_backend(prompt, out, size=size)
+            if img is not None:
+                img.backend_attempts = list(backend_attempts)
+                return img
+    return None
+
+
+def generate_astro_image(
+    prompt: str,
+    out_path: str,
+    size: Tuple[int, int] = (512, 512),
+) -> Optional[str]:
+    result = generate_astro_image_result(prompt, out_path, size=size)
+    return result.path if result is not None else None
+
+
+__all__ = [
+    "ImageGenerationResult",
+    "generate_astro_image",
+    "generate_astro_image_result",
+    "generate_astro_image_result_with_exclusions",
+]

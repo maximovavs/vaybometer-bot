@@ -1572,6 +1572,42 @@ async def _cy_send_photo_with_retry(
     raise RuntimeError("unreachable Telegram send retry state")
 
 
+def _cy_image_backend_name(generated: object) -> str:
+    return str(getattr(generated, "backend", "") or "world_en.imagegen.generate_astro_image")
+
+
+def _cy_image_backend_attempts(generated: object) -> list[dict]:
+    attempts = getattr(generated, "backend_attempts", None)
+    if isinstance(attempts, list):
+        return [item for item in attempts if isinstance(item, dict)]
+    return []
+
+
+def _cy_image_result_path(generated: object) -> Path | None:
+    if generated is None:
+        return None
+    value = getattr(generated, "path", generated)
+    if not value:
+        return None
+    return Path(os.fspath(value))
+
+
+def _cy_file_size(path: Path | None) -> int | None:
+    try:
+        return path.stat().st_size if path is not None and path.exists() else None
+    except Exception:
+        return None
+
+
+def _cy_remove_broken_image(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 async def _build_safe_test_image(
     final_text: str,
     mode: str,
@@ -1642,7 +1678,7 @@ async def _build_safe_test_image(
             record_cyprus_visual_publication,
         )
         from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata
-        from world_en.imagegen import generate_astro_image
+        import world_en.imagegen as imagegen_module
 
         history_namespace = "test" if send_image_to_test else "prod" if send_image_to_chat else "test"
         history_path = cyprus_visual_history_path(history_namespace)
@@ -1675,7 +1711,12 @@ async def _build_safe_test_image(
 
         variation_attempt = 0
         generation_attempt = 0
-        while generation_attempt < 5 and variation_attempt < 40:
+        backend_generation_calls = 0
+        generation_failures = 0
+        excluded_backends: set[str] = set()
+        backend_duplicate_counts: dict[str, int] = {}
+        seen_run_hashes: dict[tuple[str, str], dict[str, str]] = {}
+        while generation_attempt < 5 and backend_generation_calls < 10 and variation_attempt < 40:
             prompt, style_name, metadata = build_cyprus_scene_prompt_with_metadata(
                 final_text,
                 post_type=mode,
@@ -1686,7 +1727,6 @@ async def _build_safe_test_image(
             last_metadata = dict(metadata)
             target_date_for_diag = str(metadata["forecast_date"])
             cache_key = metadata["cache_key"]
-            generation_attempt += 1
             if production_image_send:
                 if is_valid_cy_image_receipt(metadata["forecast_date"], mode):
                     receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
@@ -1717,7 +1757,7 @@ async def _build_safe_test_image(
                             history_count_before=before_history_count,
                         )
                         return {"result": "skipped_no_text_receipt", "message_ids": []}
-            print(f"\nCY_SAFE_IMAGE_ATTEMPT: {generation_attempt}/5")
+            print(f"\nCY_SAFE_IMAGE_ATTEMPT: {generation_attempt + 1}/5")
             print("CY_SAFE_IMAGE_PROMPT_BEGIN")
             print(prompt)
             print("CY_SAFE_IMAGE_PROMPT_END")
@@ -1743,23 +1783,73 @@ async def _build_safe_test_image(
             print(f"CY_SAFE_IMAGE_CACHE_STATUS: {cache_state}")
             logging.info("Cyprus visual cache hit/miss: %s", cache_state)
 
-            if cache_state == "hit":
-                generated = str(requested_path)
-            else:
-                generated = generate_astro_image(prompt, str(requested_path))
-                if not generated:
-                    raise RuntimeError("image backend returned no file")
+            generated = None
+            backend = "cache" if cache_state == "hit" else "imagegen"
+            image_path: Path | None = requested_path if cache_state == "hit" else None
+            image_size: int | None = None
+            backend_attempts: list[dict] = []
+            try:
+                if cache_state == "hit":
+                    generated = str(requested_path)
+                else:
+                    result_fn = getattr(imagegen_module, "generate_astro_image_result_with_exclusions", None)
+                    if callable(result_fn):
+                        generated = result_fn(
+                            prompt,
+                            str(requested_path),
+                            excluded_backends=set(excluded_backends),
+                        )
+                    else:
+                        generated = imagegen_module.generate_astro_image(prompt, str(requested_path))
+                    backend_attempts = _cy_image_backend_attempts(generated)
+                    backend_generation_calls += max(1, len(backend_attempts))
+                    if not generated:
+                        raise RuntimeError("image backend returned no file")
+                    backend = _cy_image_backend_name(generated)
+                    image_path = _cy_image_result_path(generated)
 
-            image_path = Path(generated)
-            if not image_path.is_file():
-                raise RuntimeError(f"generated image does not exist: {image_path}")
+                if image_path is None or not image_path.is_file():
+                    raise RuntimeError(f"generated image does not exist: {image_path}")
 
-            image_size = image_path.stat().st_size
-            if image_size <= minimum:
-                raise RuntimeError(
-                    f"generated image is too small: {image_size} bytes; "
-                    f"must be greater than {minimum}"
+                image_size = image_path.stat().st_size
+                if image_size <= minimum:
+                    raise RuntimeError(
+                        f"generated image is too small: {image_size} bytes; "
+                        f"must be greater than {minimum}"
+                    )
+            except Exception as exc:
+                generation_failures += 1
+                image_size = image_size if image_size is not None else _cy_file_size(image_path)
+                attempts.append(
+                    {
+                        "attempt": generation_attempt + 1,
+                        "variation_attempt": variation_attempt,
+                        "selected_scene": metadata["selected_scene"],
+                        "composition": metadata.get("composition", ""),
+                        "scene_selection_mode": metadata.get("scene_selection_mode", ""),
+                        "composition_selection_mode": metadata.get("composition_selection_mode", ""),
+                        "style_name": style_name,
+                        "cache_key": cache_key,
+                        "cache_status": cache_state,
+                        "backend": backend,
+                        "backend_attempts": backend_attempts,
+                        "backend_excluded": sorted(excluded_backends),
+                        "error_type": exc.__class__.__name__,
+                        "error": _redact_secret_text(re.sub(r"\s+", " ", str(exc)))[:300],
+                        "image_path": str(image_path) if image_path else "",
+                        "image_bytes": image_size,
+                    }
                 )
+                _cy_remove_broken_image(image_path)
+                logging.warning(
+                    "Cyprus visual candidate generation failed: type=%s attempt=%s backend=%s bytes=%s",
+                    exc.__class__.__name__,
+                    variation_attempt,
+                    backend,
+                    image_size,
+                )
+                variation_attempt += 1
+                continue
 
             duplicate_result = evaluate_cyprus_visual_candidate(
                 image_path,
@@ -1778,9 +1868,52 @@ async def _build_safe_test_image(
                 f"min_distance={duplicate_result.min_distance}; "
                 f"min_phash_distance={duplicate_result.min_phash_distance}"
             )
+            same_run_key = (
+                duplicate_result.perceptual_hash or "",
+                duplicate_result.phash or "",
+            )
+            provider_switch_reason = ""
+            if same_run_key[0] and same_run_key[1] and same_run_key in seen_run_hashes:
+                previous = seen_run_hashes[same_run_key]
+                if previous.get("cache_key") != cache_key:
+                    provider_switch_reason = "provider_repeated_output"
+                    duplicate_reason = "provider_repeated_output"
+                    if backend and backend != "cache":
+                        excluded_backends.add(backend)
+                    print(
+                        "CY_SAFE_IMAGE_PROVIDER_REPEATED_OUTPUT: "
+                        f"backend={backend}; dhash={same_run_key[0]}; phash={same_run_key[1]}"
+                    )
+                else:
+                    duplicate_reason = duplicate_result.reason
+            else:
+                duplicate_reason = duplicate_result.reason
+                if same_run_key[0] and same_run_key[1]:
+                    seen_run_hashes[same_run_key] = {
+                        "backend": backend,
+                        "cache_key": cache_key,
+                    }
+
+            candidate_attempt = generation_attempt + 1
+            if provider_switch_reason != "provider_repeated_output":
+                generation_attempt += 1
+
+            if duplicate_result.reason in {"exact_duplicate", "near_duplicate", "near_duplicate_phash"}:
+                backend_duplicate_counts[backend] = backend_duplicate_counts.get(backend, 0) + 1
+                if (
+                    backend == "pollinations"
+                    and backend_duplicate_counts[backend] >= 2
+                    and duplicate_result.perceptual_hash
+                ):
+                    excluded_backends.add("pollinations")
+                    provider_switch_reason = provider_switch_reason or "pollinations_repeated_perceptual_duplicate"
+                if backend_duplicate_counts[backend] >= 3 and backend != "cache":
+                    excluded_backends.add(backend)
+                    provider_switch_reason = provider_switch_reason or "backend_three_duplicate_candidates"
+
             attempts.append(
                 {
-                    "attempt": generation_attempt,
+                    "attempt": candidate_attempt,
                     "variation_attempt": variation_attempt,
                     "selected_scene": metadata["selected_scene"],
                     "composition": metadata.get("composition", ""),
@@ -1789,10 +1922,14 @@ async def _build_safe_test_image(
                     "style_name": style_name,
                     "cache_key": cache_key,
                     "cache_status": cache_state,
-                    "backend": "world_en.imagegen.generate_astro_image",
+                    "backend": backend,
+                    "backend_attempts": backend_attempts,
+                    "backend_excluded": sorted(excluded_backends),
+                    "provider_switch_reason": provider_switch_reason,
+                    "repeated_output_hash": ":".join(same_run_key) if provider_switch_reason else "",
                     "image_path": str(image_path),
                     "image_bytes": image_size,
-                    "dedup_reason": duplicate_result.reason,
+                    "dedup_reason": duplicate_reason,
                     "sha256": duplicate_result.sha256,
                     "perceptual_hash": duplicate_result.perceptual_hash,
                     "phash": duplicate_result.phash,
@@ -1809,29 +1946,52 @@ async def _build_safe_test_image(
                 image_size,
                 duplicate_result,
             )
-            if duplicate_result.accepted:
+            if provider_switch_reason == "provider_repeated_output":
+                pass
+            elif duplicate_result.accepted:
                 selected_candidate = candidate
                 break
-            if _cy_accept_lru_recent_visual_candidate(metadata, duplicate_result.reason):
+            elif _cy_accept_lru_recent_visual_candidate(metadata, duplicate_result.reason):
                 attempts[-1]["dedup_reason"] = f"{duplicate_result.reason}_lru_allowed"
                 print(f"CY_SAFE_IMAGE_DEDUP_LRU_ALLOWED: {duplicate_result.reason}")
                 selected_candidate = candidate
                 break
             try:
-                quarantine = image_path.with_suffix(image_path.suffix + f".rejected.{duplicate_result.reason}")
+                quarantine = image_path.with_suffix(image_path.suffix + f".rejected.{duplicate_reason}")
                 image_path.replace(quarantine)
                 attempts[-1]["quarantined_path"] = str(quarantine)
             except Exception as exc:
                 logging.warning("Cyprus rejected visual quarantine failed: %s", exc)
             logging.warning(
                 "Cyprus visual candidate rejected: reason=%s scene=%s attempt=%s",
-                duplicate_result.reason,
+                duplicate_reason,
                 metadata["selected_scene"],
                 variation_attempt,
             )
             variation_attempt += 1
 
         if selected_candidate is None:
+            if generation_attempt == 0 and generation_failures:
+                error = RuntimeError("no valid Cyprus image candidate generated")
+                _cy_write_image_diagnostics(
+                    mode=mode,
+                    target_date=target_date_for_diag,
+                    result="failed",
+                    error=error,
+                    prompt_metadata=last_metadata,
+                    attempts=attempts,
+                    telegram_attempts=telegram_attempts,
+                    history_path=history_path,
+                    history_count_before=before_history_count,
+                )
+                logging.error("CY SAFE IMAGE failed after candidate errors: %s", error)
+                return {
+                    "result": "failed_non_fatal",
+                    "message_ids": [],
+                    "error_type": error.__class__.__name__,
+                    "error": str(error),
+                    "attempts": attempts,
+                }
             print("CY_SAFE_IMAGE_RESULT: skipped_duplicate")
             _cy_write_image_diagnostics(
                 mode=mode,

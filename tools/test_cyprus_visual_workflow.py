@@ -340,6 +340,8 @@ def test_image_recovery_jobs_are_production_only() -> None:
         _assert(f"{name}_recovery_restores_snapshot", "restore_cy_visual_snapshot.py" in block)
         _assert(f"{name}_recovery_passes_target_date", "CY_RECOVERY_TARGET_DATE" in block)
         _assert(f"{name}_recovery_passes_post_type", f'CY_RECOVERY_POST_TYPE="{name}"' in block)
+    _assert("morning_final_recovery_cron_present", "cron: '30 5 * * *'" in text)
+    _assert("morning_final_recovery_same_job", "github.event.schedule == '30 5 * * *'" in morning)
     _assert("evening_late_recovery_schedule_guard", "github.event.schedule == '15 15 * * *'" in evening)
     print("PASS image_recovery_jobs_are_production_only")
 
