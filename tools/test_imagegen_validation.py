@@ -98,11 +98,128 @@ def pollinations_invalid_jpeg_falls_back_to_horde() -> None:
     assert len(horde_calls) == 1
 
 
+def failed_pollinations_and_horde_count_as_two_backend_calls() -> None:
+    old_pollinations = imagegen._fetch_from_pollinations
+    old_horde = imagegen._fetch_from_horde
+    old_custom_url = imagegen.CUSTOM_IMAGE_BASE_URL
+    old_attempts = imagegen.MAX_ATTEMPTS
+    calls: list[str] = []
+
+    def fail_pollinations(*_args, **_kwargs):
+        calls.append("pollinations")
+        return None
+
+    def fail_horde(*_args, **_kwargs):
+        calls.append("stable_horde")
+        return None
+
+    try:
+        imagegen._fetch_from_pollinations = fail_pollinations
+        imagegen._fetch_from_horde = fail_horde
+        imagegen.CUSTOM_IMAGE_BASE_URL = ""
+        imagegen.MAX_ATTEMPTS = 1
+        outcome = imagegen.generate_astro_image_outcome("prompt", "unused.jpg", max_backend_calls=10)
+    finally:
+        imagegen._fetch_from_pollinations = old_pollinations
+        imagegen._fetch_from_horde = old_horde
+        imagegen.CUSTOM_IMAGE_BASE_URL = old_custom_url
+        imagegen.MAX_ATTEMPTS = old_attempts
+
+    assert outcome.result is None
+    assert calls == ["pollinations", "stable_horde"]
+    assert outcome.actual_backend_call_count == 2
+    assert [item["result"] for item in outcome.backend_attempts] == ["failed", "failed"]
+
+
+def repeated_provider_none_results_stop_at_shared_limit() -> None:
+    old_pollinations = imagegen._fetch_from_pollinations
+    old_horde = imagegen._fetch_from_horde
+    old_custom_url = imagegen.CUSTOM_IMAGE_BASE_URL
+    old_attempts = imagegen.MAX_ATTEMPTS
+    calls: list[str] = []
+
+    def fail(name: str):
+        def _inner(*_args, **_kwargs):
+            calls.append(name)
+            return None
+
+        return _inner
+
+    try:
+        imagegen._fetch_from_pollinations = fail("pollinations")
+        imagegen._fetch_from_horde = fail("stable_horde")
+        imagegen.CUSTOM_IMAGE_BASE_URL = ""
+        imagegen.MAX_ATTEMPTS = 5
+        outcome = imagegen.generate_astro_image_outcome("prompt", "unused.jpg", max_backend_calls=10)
+    finally:
+        imagegen._fetch_from_pollinations = old_pollinations
+        imagegen._fetch_from_horde = old_horde
+        imagegen.CUSTOM_IMAGE_BASE_URL = old_custom_url
+        imagegen.MAX_ATTEMPTS = old_attempts
+
+    assert outcome.result is None
+    assert outcome.exhausted
+    assert outcome.actual_backend_call_count == 10
+    assert len(calls) == 10
+
+
+def all_backends_excluded_fail_immediately() -> None:
+    old_custom_url = imagegen.CUSTOM_IMAGE_BASE_URL
+    try:
+        imagegen.CUSTOM_IMAGE_BASE_URL = ""
+        outcome = imagegen.generate_astro_image_outcome_with_exclusions(
+            "prompt",
+            "unused.jpg",
+            excluded_backends={"pollinations", "stable_horde", "custom"},
+            max_backend_calls=10,
+        )
+    finally:
+        imagegen.CUSTOM_IMAGE_BASE_URL = old_custom_url
+
+    assert outcome.result is None
+    assert outcome.exhausted
+    assert outcome.error_type == "NoBackendsAvailable"
+    assert outcome.actual_backend_call_count == 0
+    assert outcome.backend_attempts == []
+
+
+def pillow_unavailable_rejects_otherwise_valid_image() -> None:
+    old_image = imagegen.Image
+    old_min = os.environ.get("IMAGEGEN_MIN_VALID_BYTES")
+    os.environ["IMAGEGEN_MIN_VALID_BYTES"] = "128"
+    with tempfile.TemporaryDirectory() as tmp_name:
+        out_path = Path(tmp_name) / "candidate.png"
+        payload = _png_bytes((20, 80, 140))
+        out_path.write_bytes(payload)
+        try:
+            imagegen.Image = None
+            result = imagegen._validate_generated_image(
+                backend="pollinations",
+                out_path=out_path,
+                payload=payload,
+                status_code=200,
+                content_type="image/png",
+            )
+        finally:
+            imagegen.Image = old_image
+            if old_min is None:
+                os.environ.pop("IMAGEGEN_MIN_VALID_BYTES", None)
+            else:
+                os.environ["IMAGEGEN_MIN_VALID_BYTES"] = old_min
+
+        assert result is None
+        assert not out_path.exists()
+
+
 def main() -> None:
     checks = (
         pollinations_json_92_bytes_falls_back_to_horde,
         pollinations_text_plain_falls_back_to_horde,
         pollinations_invalid_jpeg_falls_back_to_horde,
+        failed_pollinations_and_horde_count_as_two_backend_calls,
+        repeated_provider_none_results_stop_at_shared_limit,
+        all_backends_excluded_fail_immediately,
+        pillow_unavailable_rejects_otherwise_valid_image,
     )
     for check in checks:
         check()

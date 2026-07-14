@@ -345,6 +345,7 @@ def cy_morning_image_phase_for_result(image_result: str) -> str:
         "sent": "image_sent",
         "generated": "image_generated",
         "failed_non_fatal": "image_failed_non_fatal",
+        "failed_after_duplicates": "image_failed_non_fatal",
         "skipped": "image_skipped",
         "skipped_receipt_exists": "image_skipped",
         "skipped_no_text_receipt": "image_skipped",
@@ -1514,6 +1515,7 @@ def _cy_write_image_diagnostics(
     history_path: Path | None = None,
     history_count_before: int | None = None,
     history_count_after: int | None = None,
+    generation_summary: dict | None = None,
 ) -> Path:
     safe_date = re.sub(r"[^0-9-]+", "_", target_date or "undated")
     out_dir = Path(os.getenv("CY_IMAGE_DIAGNOSTICS_DIR", str(_CY_IMAGE_DIAGNOSTICS_DIR))) / f"{safe_date}-{mode}"
@@ -1529,6 +1531,7 @@ def _cy_write_image_diagnostics(
         "history_count_before": history_count_before,
         "history_count_after": history_count_after,
     }
+    payload.update(generation_summary or {})
     if error is not None:
         payload["error"] = {
             "type": type(error).__name__,
@@ -1573,7 +1576,12 @@ async def _cy_send_photo_with_retry(
 
 
 def _cy_image_backend_name(generated: object) -> str:
-    return str(getattr(generated, "backend", "") or "world_en.imagegen.generate_astro_image")
+    backend = str(getattr(generated, "backend", "") or "").strip().lower()
+    if backend == "horde":
+        return "stable_horde"
+    if backend in {"pollinations", "stable_horde", "custom", "cache"}:
+        return backend
+    return "custom"
 
 
 def _cy_image_backend_attempts(generated: object) -> list[dict]:
@@ -1581,6 +1589,26 @@ def _cy_image_backend_attempts(generated: object) -> list[dict]:
     if isinstance(attempts, list):
         return [item for item in attempts if isinstance(item, dict)]
     return []
+
+
+def _cy_image_actual_backend_call_count(outcome: object) -> int:
+    try:
+        value = int(getattr(outcome, "actual_backend_call_count", 0) or 0)
+    except Exception:
+        value = 0
+    return max(0, value)
+
+
+def _cy_image_provider_failure_count(backend_attempts: list[dict]) -> int:
+    failures = 0
+    last_index = len(backend_attempts) - 1
+    for index, item in enumerate(backend_attempts):
+        status = str(item.get("result") or "").strip().lower()
+        if status in {"failed", "exception", "invalid"}:
+            failures += 1
+        elif not status and index < last_index:
+            failures += 1
+    return failures
 
 
 def _cy_image_result_path(generated: object) -> Path | None:
@@ -1712,11 +1740,32 @@ async def _build_safe_test_image(
         variation_attempt = 0
         generation_attempt = 0
         backend_generation_calls = 0
+        backend_call_limit = 10
         generation_failures = 0
+        valid_candidate_count = 0
+        duplicate_candidate_count = 0
+        provider_failure_count = 0
         excluded_backends: set[str] = set()
         backend_duplicate_counts: dict[str, int] = {}
         seen_run_hashes: dict[tuple[str, str], dict[str, str]] = {}
-        while generation_attempt < 5 and backend_generation_calls < 10 and variation_attempt < 40:
+
+        def _generation_summary(final_reason: str, selected_backend: str = "") -> dict:
+            return {
+                "valid_candidate_count": valid_candidate_count,
+                "duplicate_candidate_count": duplicate_candidate_count,
+                "provider_failure_count": provider_failure_count,
+                "backend_call_count": backend_generation_calls,
+                "backend_call_limit": backend_call_limit,
+                "excluded_backends": sorted(excluded_backends),
+                "selected_backend": selected_backend,
+                "final_reason": final_reason,
+            }
+
+        while (
+            generation_attempt < 5
+            and backend_generation_calls < backend_call_limit
+            and variation_attempt < 40
+        ):
             prompt, style_name, metadata = build_cyprus_scene_prompt_with_metadata(
                 final_text,
                 post_type=mode,
@@ -1788,23 +1837,61 @@ async def _build_safe_test_image(
             image_path: Path | None = requested_path if cache_state == "hit" else None
             image_size: int | None = None
             backend_attempts: list[dict] = []
+            backend_calls_before = backend_generation_calls
+            provider_failures_before = provider_failure_count
+            outcome_exhausted = False
+            structured_outcome_returned = False
+            stop_generation = False
             try:
                 if cache_state == "hit":
                     generated = str(requested_path)
                 else:
-                    result_fn = getattr(imagegen_module, "generate_astro_image_result_with_exclusions", None)
-                    if callable(result_fn):
-                        generated = result_fn(
+                    remaining_backend_calls = backend_call_limit - backend_generation_calls
+                    outcome_fn = getattr(
+                        imagegen_module,
+                        "generate_astro_image_outcome_with_exclusions",
+                        None,
+                    )
+                    if callable(outcome_fn):
+                        outcome = outcome_fn(
                             prompt,
                             str(requested_path),
                             excluded_backends=set(excluded_backends),
+                            max_backend_calls=remaining_backend_calls,
                         )
+                        structured_outcome_returned = True
+                        backend_attempts = _cy_image_backend_attempts(outcome)
+                        reported_calls = _cy_image_actual_backend_call_count(outcome)
+                        if reported_calls <= 0 and backend_attempts:
+                            reported_calls = len(backend_attempts)
+                        backend_generation_calls += min(remaining_backend_calls, reported_calls)
+                        provider_failure_count += _cy_image_provider_failure_count(backend_attempts)
+                        generated = getattr(outcome, "result", None)
+                        outcome_exhausted = bool(getattr(outcome, "exhausted", False))
+                        if not generated:
+                            error_type = str(getattr(outcome, "error_type", "") or "ImageGenerationFailed")
+                            error_message = str(
+                                getattr(outcome, "error_message", "") or "image backend returned no file"
+                            )
+                            raise RuntimeError(f"{error_type}: {error_message}")
                     else:
-                        generated = imagegen_module.generate_astro_image(prompt, str(requested_path))
-                    backend_attempts = _cy_image_backend_attempts(generated)
-                    backend_generation_calls += max(1, len(backend_attempts))
-                    if not generated:
-                        raise RuntimeError("image backend returned no file")
+                        result_fn = getattr(imagegen_module, "generate_astro_image_result_with_exclusions", None)
+                        if callable(result_fn):
+                            generated = result_fn(
+                                prompt,
+                                str(requested_path),
+                                excluded_backends=set(excluded_backends),
+                                max_backend_calls=remaining_backend_calls,
+                            )
+                        else:
+                            generated = imagegen_module.generate_astro_image(prompt, str(requested_path))
+                        backend_attempts = _cy_image_backend_attempts(generated)
+                        reported_calls = max(1, len(backend_attempts))
+                        backend_generation_calls += min(remaining_backend_calls, reported_calls)
+                        provider_failure_count += _cy_image_provider_failure_count(backend_attempts)
+                        if not generated:
+                            provider_failure_count += int(not backend_attempts)
+                            raise RuntimeError("image backend returned no file")
                     backend = _cy_image_backend_name(generated)
                     image_path = _cy_image_result_path(generated)
 
@@ -1819,6 +1906,24 @@ async def _build_safe_test_image(
                     )
             except Exception as exc:
                 generation_failures += 1
+                if (
+                    cache_state != "hit"
+                    and not structured_outcome_returned
+                    and backend_generation_calls == backend_calls_before
+                ):
+                    backend_generation_calls += min(1, backend_call_limit - backend_generation_calls)
+                    provider_failure_count += 1
+                elif (
+                    cache_state != "hit"
+                    and (not structured_outcome_returned or backend_generation_calls > backend_calls_before)
+                    and provider_failure_count == provider_failures_before
+                    and backend_generation_calls > backend_calls_before
+                ):
+                    provider_failure_count += 1
+                if outcome_exhausted and backend_generation_calls == backend_calls_before:
+                    stop_generation = True
+                if backend_generation_calls >= backend_call_limit:
+                    stop_generation = True
                 image_size = image_size if image_size is not None else _cy_file_size(image_path)
                 attempts.append(
                     {
@@ -1833,6 +1938,8 @@ async def _build_safe_test_image(
                         "cache_status": cache_state,
                         "backend": backend,
                         "backend_attempts": backend_attempts,
+                        "backend_call_count": backend_generation_calls,
+                        "backend_call_limit": backend_call_limit,
                         "backend_excluded": sorted(excluded_backends),
                         "error_type": exc.__class__.__name__,
                         "error": _redact_secret_text(re.sub(r"\s+", " ", str(exc)))[:300],
@@ -1849,8 +1956,11 @@ async def _build_safe_test_image(
                     image_size,
                 )
                 variation_attempt += 1
+                if stop_generation:
+                    break
                 continue
 
+            valid_candidate_count += 1
             duplicate_result = evaluate_cyprus_visual_candidate(
                 image_path,
                 date_value=metadata["forecast_date"],
@@ -1924,6 +2034,8 @@ async def _build_safe_test_image(
                     "cache_status": cache_state,
                     "backend": backend,
                     "backend_attempts": backend_attempts,
+                    "backend_call_count": backend_generation_calls,
+                    "backend_call_limit": backend_call_limit,
                     "backend_excluded": sorted(excluded_backends),
                     "provider_switch_reason": provider_switch_reason,
                     "repeated_output_hash": ":".join(same_run_key) if provider_switch_reason else "",
@@ -1945,9 +2057,10 @@ async def _build_safe_test_image(
                 image_path,
                 image_size,
                 duplicate_result,
+                backend,
             )
             if provider_switch_reason == "provider_repeated_output":
-                pass
+                duplicate_candidate_count += 1
             elif duplicate_result.accepted:
                 selected_candidate = candidate
                 break
@@ -1956,6 +2069,8 @@ async def _build_safe_test_image(
                 print(f"CY_SAFE_IMAGE_DEDUP_LRU_ALLOWED: {duplicate_result.reason}")
                 selected_candidate = candidate
                 break
+            else:
+                duplicate_candidate_count += 1
             try:
                 quarantine = image_path.with_suffix(image_path.suffix + f".rejected.{duplicate_reason}")
                 image_path.replace(quarantine)
@@ -1971,18 +2086,49 @@ async def _build_safe_test_image(
             variation_attempt += 1
 
         if selected_candidate is None:
-            if generation_attempt == 0 and generation_failures:
-                error = RuntimeError("no valid Cyprus image candidate generated")
+            mixed_failure = bool(
+                duplicate_candidate_count
+                and provider_failure_count
+                and generation_failures
+            )
+            if mixed_failure:
+                final_reason = "failed_after_duplicates"
+                error = RuntimeError("backend failure prevented a distinct Cyprus image after duplicates")
                 _cy_write_image_diagnostics(
                     mode=mode,
                     target_date=target_date_for_diag,
-                    result="failed",
+                    result=final_reason,
                     error=error,
                     prompt_metadata=last_metadata,
                     attempts=attempts,
                     telegram_attempts=telegram_attempts,
                     history_path=history_path,
                     history_count_before=before_history_count,
+                    generation_summary=_generation_summary(final_reason),
+                )
+                logging.error("CY SAFE IMAGE failed after duplicates and backend errors: %s", error)
+                return {
+                    "result": final_reason,
+                    "message_ids": [],
+                    "error_type": error.__class__.__name__,
+                    "error": str(error),
+                    "attempts": attempts,
+                    **_generation_summary(final_reason),
+                }
+            if valid_candidate_count == 0 and generation_failures:
+                final_reason = "failed_non_fatal"
+                error = RuntimeError("no valid Cyprus image candidate generated")
+                _cy_write_image_diagnostics(
+                    mode=mode,
+                    target_date=target_date_for_diag,
+                    result=final_reason,
+                    error=error,
+                    prompt_metadata=last_metadata,
+                    attempts=attempts,
+                    telegram_attempts=telegram_attempts,
+                    history_path=history_path,
+                    history_count_before=before_history_count,
+                    generation_summary=_generation_summary(final_reason),
                 )
                 logging.error("CY SAFE IMAGE failed after candidate errors: %s", error)
                 return {
@@ -1991,7 +2137,9 @@ async def _build_safe_test_image(
                     "error_type": error.__class__.__name__,
                     "error": str(error),
                     "attempts": attempts,
+                    **_generation_summary(final_reason),
                 }
+            final_reason = "skipped_duplicate"
             print("CY_SAFE_IMAGE_RESULT: skipped_duplicate")
             _cy_write_image_diagnostics(
                 mode=mode,
@@ -2002,10 +2150,16 @@ async def _build_safe_test_image(
                 telegram_attempts=telegram_attempts,
                 history_path=history_path,
                 history_count_before=before_history_count,
+                generation_summary=_generation_summary(final_reason),
             )
-            return {"result": "skipped_duplicate", "message_ids": []}
+            return {
+                "result": final_reason,
+                "message_ids": [],
+                "attempts": attempts,
+                **_generation_summary(final_reason),
+            }
 
-        prompt, style_name, metadata, image_path, image_size, duplicate_result = selected_candidate
+        prompt, style_name, metadata, image_path, image_size, duplicate_result, selected_backend = selected_candidate
 
         print(f"CY_SAFE_IMAGE_PATH: {image_path.resolve()}")
         print(f"CY_SAFE_IMAGE_BYTES: {image_size}")
@@ -2035,8 +2189,17 @@ async def _build_safe_test_image(
                     telegram_attempts=telegram_attempts,
                     history_path=history_path,
                     history_count_before=before_history_count,
+                    generation_summary=_generation_summary(
+                        "skipped_duplicate_before_send",
+                        selected_backend,
+                    ),
                 )
-                return {"result": "skipped_duplicate_before_send", "message_ids": []}
+                return {
+                    "result": "skipped_duplicate_before_send",
+                    "message_ids": [],
+                    "backend": selected_backend,
+                    **_generation_summary("skipped_duplicate_before_send", selected_backend),
+                }
             image_bot = Bot(token=TOKEN)
             sent_message, telegram_attempts = await _cy_send_photo_with_retry(
                 image_bot,
@@ -2080,7 +2243,7 @@ async def _build_safe_test_image(
                     "composition": metadata.get("composition", ""),
                     "style_name": style_name,
                     "cache_key": metadata["cache_key"],
-                    "backend": "world_en.imagegen.generate_astro_image",
+                    "backend": selected_backend,
                     "run_id": os.getenv("GITHUB_RUN_ID", ""),
                     "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", ""),
                     "sent_at_utc": _cy_utc_now(),
@@ -2100,6 +2263,7 @@ async def _build_safe_test_image(
                 history_path=history_path,
                 history_count_before=before_history_count,
                 history_count_after=after_history_count,
+                generation_summary=_generation_summary("sent", selected_backend),
             )
             logging.info("CY SAFE IMAGE sent before text to chat=%s", image_chat)
             return {
@@ -2109,9 +2273,22 @@ async def _build_safe_test_image(
                 "bytes": image_size,
                 "style_name": style_name,
                 "cache_key": metadata.get("cache_key", ""),
+                "backend": selected_backend,
                 "attempts": attempts,
                 "metadata": metadata,
+                **_generation_summary("sent", selected_backend),
             }
+        _cy_write_image_diagnostics(
+            mode=mode,
+            target_date=metadata["forecast_date"],
+            result="generated",
+            prompt_metadata=metadata,
+            attempts=attempts,
+            telegram_attempts=telegram_attempts,
+            history_path=history_path,
+            history_count_before=before_history_count,
+            generation_summary=_generation_summary("generated", selected_backend),
+        )
         return {
             "result": "generated",
             "message_ids": [],
@@ -2119,8 +2296,10 @@ async def _build_safe_test_image(
             "bytes": image_size,
             "style_name": style_name,
             "cache_key": metadata.get("cache_key", ""),
+            "backend": selected_backend,
             "attempts": attempts,
             "metadata": metadata,
+            **_generation_summary("generated", selected_backend),
         }
     except Exception as exc:
         _cy_write_image_diagnostics(

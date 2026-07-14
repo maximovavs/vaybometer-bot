@@ -164,6 +164,16 @@ class ImageGenerationResult:
         return self.path
 
 
+@dataclass
+class ImageGenerationOutcome:
+    result: ImageGenerationResult | None
+    backend_attempts: list[dict] = field(default_factory=list)
+    error_type: str = ""
+    error_message: str = ""
+    exhausted: bool = False
+    actual_backend_call_count: int = 0
+
+
 def _ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -236,39 +246,42 @@ def _validate_generated_image(
         return None
     if Image is None:
         logger.warning(
-            "%s image validation unavailable: Pillow missing; accepting signature=%s bytes=%d",
+            "%s invalid image response: status=%s content_type=%s bytes=%d reason=pillow_unavailable signature=%s",
             backend,
-            signature,
+            status_code,
+            content_type_clean or "missing",
             byte_count,
+            signature,
         )
-    else:
-        try:
-            with Image.open(out_path) as im:  # type: ignore[attr-defined]
-                width, height = im.size
-                im.verify()
-            if width < 256 or height < 256:
-                logger.warning(
-                    "%s invalid image response: status=%s content_type=%s bytes=%d reason=dimensions %sx%s",
-                    backend,
-                    status_code,
-                    content_type_clean or "missing",
-                    byte_count,
-                    width,
-                    height,
-                )
-                _delete_invalid(out_path)
-                return None
-        except Exception as exc:
+        _delete_invalid(out_path)
+        return None
+    try:
+        with Image.open(out_path) as im:  # type: ignore[attr-defined]
+            width, height = im.size
+            im.verify()
+        if width < 256 or height < 256:
             logger.warning(
-                "%s invalid image response: status=%s content_type=%s bytes=%d reason=pillow_verify error=%s",
+                "%s invalid image response: status=%s content_type=%s bytes=%d reason=dimensions %sx%s",
                 backend,
                 status_code,
                 content_type_clean or "missing",
                 byte_count,
-                exc.__class__.__name__,
+                width,
+                height,
             )
             _delete_invalid(out_path)
             return None
+    except Exception as exc:
+        logger.warning(
+            "%s invalid image response: status=%s content_type=%s bytes=%d reason=pillow_verify error=%s",
+            backend,
+            status_code,
+            content_type_clean or "missing",
+            byte_count,
+            exc.__class__.__name__,
+        )
+        _delete_invalid(out_path)
+        return None
     return ImageGenerationResult(
         path=str(out_path),
         backend=backend,
@@ -702,57 +715,155 @@ def _fetch_from_custom_backend(
     return result
 
 
+def _normalise_backend_call_limit(max_backend_calls: int | None) -> int:
+    if max_backend_calls is None:
+        return MAX_ATTEMPTS * 3
+    try:
+        value = int(max_backend_calls)
+    except Exception:
+        value = 0
+    return max(0, value)
+
+
+def _generate_astro_image_outcome(
+    prompt: str,
+    out_path: str,
+    size: Tuple[int, int] = (512, 512),
+    *,
+    excluded_backends: set[str] | None = None,
+    max_backend_calls: int | None = None,
+) -> ImageGenerationOutcome:
+    out = Path(out_path)
+    excluded = {str(item).strip().lower() for item in (excluded_backends or set()) if str(item).strip()}
+    call_limit = _normalise_backend_call_limit(max_backend_calls)
+    backend_attempts: list[dict] = []
+    last_error_type = ""
+    last_error_message = ""
+
+    backend_specs = []
+    if "pollinations" not in excluded:
+        backend_specs.append(("pollinations", lambda: _fetch_from_pollinations(prompt, out, size=size)))
+    if "stable_horde" not in excluded and "horde" not in excluded:
+        backend_specs.append(("stable_horde", lambda: _fetch_from_horde(prompt, out, size=size)))
+    if CUSTOM_IMAGE_BASE_URL and "custom" not in excluded:
+        backend_specs.append(("custom", lambda: _fetch_from_custom_backend(prompt, out, size=size)))
+
+    logger.info(
+        "Requested astro image at %s; max attempts=%d backend_call_limit=%d excluded=%s",
+        out,
+        MAX_ATTEMPTS,
+        call_limit,
+        sorted(excluded),
+    )
+    if not backend_specs:
+        return ImageGenerationOutcome(
+            result=None,
+            backend_attempts=[],
+            error_type="NoBackendsAvailable",
+            error_message="all configured image backends are excluded or unavailable",
+            exhausted=True,
+            actual_backend_call_count=0,
+        )
+    if call_limit == 0:
+        return ImageGenerationOutcome(
+            result=None,
+            backend_attempts=[],
+            error_type="BackendCallBudgetExhausted",
+            error_message="no backend calls remain",
+            exhausted=True,
+            actual_backend_call_count=0,
+        )
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        logger.info("Image generation attempt %d/%d", attempt, MAX_ATTEMPTS)
+        for backend_name, fetch in backend_specs:
+            if len(backend_attempts) >= call_limit:
+                return ImageGenerationOutcome(
+                    result=None,
+                    backend_attempts=backend_attempts,
+                    error_type=last_error_type or "BackendCallBudgetExhausted",
+                    error_message=last_error_message or "backend call budget exhausted",
+                    exhausted=True,
+                    actual_backend_call_count=len(backend_attempts),
+                )
+            entry = {"attempt": attempt, "backend": backend_name}
+            backend_attempts.append(entry)
+            try:
+                img = fetch()
+            except Exception as exc:
+                last_error_type = exc.__class__.__name__
+                last_error_message = str(exc)
+                entry.update(
+                    {
+                        "result": "exception",
+                        "error_type": last_error_type,
+                        "error_message": last_error_message[:300],
+                    }
+                )
+                logger.warning("%s backend raised %s", backend_name, last_error_type)
+                continue
+            if img is not None:
+                entry["result"] = "success"
+                img.backend_attempts = list(backend_attempts)
+                return ImageGenerationOutcome(
+                    result=img,
+                    backend_attempts=backend_attempts,
+                    exhausted=False,
+                    actual_backend_call_count=len(backend_attempts),
+                )
+            entry["result"] = "failed"
+            last_error_type = "BackendReturnedNoImage"
+            last_error_message = f"{backend_name} returned no valid image"
+
+    exhausted = len(backend_attempts) >= call_limit
+    return ImageGenerationOutcome(
+        result=None,
+        backend_attempts=backend_attempts,
+        error_type=last_error_type or "AllBackendsFailed",
+        error_message=last_error_message or "all image backends failed",
+        exhausted=exhausted,
+        actual_backend_call_count=len(backend_attempts),
+    )
+
+
+def generate_astro_image_outcome(
+    prompt: str,
+    out_path: str,
+    size: Tuple[int, int] = (512, 512),
+    *,
+    max_backend_calls: int | None = None,
+) -> ImageGenerationOutcome:
+    return _generate_astro_image_outcome(
+        prompt,
+        out_path,
+        size=size,
+        max_backend_calls=max_backend_calls,
+    )
+
+
+def generate_astro_image_outcome_with_exclusions(
+    prompt: str,
+    out_path: str,
+    size: Tuple[int, int] = (512, 512),
+    excluded_backends: set[str] | None = None,
+    *,
+    max_backend_calls: int | None = None,
+) -> ImageGenerationOutcome:
+    return _generate_astro_image_outcome(
+        prompt,
+        out_path,
+        size=size,
+        excluded_backends=excluded_backends,
+        max_backend_calls=max_backend_calls,
+    )
+
+
 def generate_astro_image_result(
     prompt: str,
     out_path: str,
     size: Tuple[int, int] = (512, 512),
 ) -> Optional[ImageGenerationResult]:
-    """
-    Основная точка входа.
-
-    :param prompt: текстовый промпт (ENG), который ты передаёшь из world_astro_collect.
-    :param out_path: путь к файлу (строка); директории будут созданы при необходимости.
-    :param size: размер картинки (ширина, высота)
-    :return: результат генерации или None, если все бэкенды и все попытки упали.
-    """
-    out = Path(out_path)
-    logger.info("Requested astro image at %s", out)
-    logger.info("Max attempts: %d", MAX_ATTEMPTS)
-    backend_attempts: list[dict] = []
-
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        logger.info("Image generation attempt %d/%d", attempt, MAX_ATTEMPTS)
-
-        # 1) Pollinations
-        backend_attempts.append({"attempt": attempt, "backend": "pollinations"})
-        img = _fetch_from_pollinations(prompt, out, size=size)
-        if img is not None:
-            img.backend_attempts = list(backend_attempts)
-            logger.info("Using Pollinations backend on attempt %d", attempt)
-            return img
-
-        # 2) Stable Horde / AI Horde
-        backend_attempts.append({"attempt": attempt, "backend": "stable_horde"})
-        img = _fetch_from_horde(prompt, out, size=size)
-        if img is not None:
-            img.backend_attempts = list(backend_attempts)
-            logger.info("Using Stable Horde backend on attempt %d", attempt)
-            return img
-
-        # 3) Custom backend
-        backend_attempts.append({"attempt": attempt, "backend": "custom"})
-        img = _fetch_from_custom_backend(prompt, out, size=size)
-        if img is not None:
-            img.backend_attempts = list(backend_attempts)
-            logger.info("Using CUSTOM backend on attempt %d", attempt)
-            return img
-
-        if attempt < MAX_ATTEMPTS:
-            logger.warning("All backends failed on attempt %d, will retry...", attempt)
-        else:
-            logger.error("All backends failed after %d attempts, giving up", MAX_ATTEMPTS)
-
-    return None
+    return generate_astro_image_outcome(prompt, out_path, size=size).result
 
 
 def generate_astro_image_result_with_exclusions(
@@ -760,34 +871,16 @@ def generate_astro_image_result_with_exclusions(
     out_path: str,
     size: Tuple[int, int] = (512, 512),
     excluded_backends: set[str] | None = None,
+    *,
+    max_backend_calls: int | None = None,
 ) -> Optional[ImageGenerationResult]:
-    excluded = {str(item).strip().lower() for item in (excluded_backends or set()) if str(item).strip()}
-    if not excluded:
-        return generate_astro_image_result(prompt, out_path, size=size)
-
-    out = Path(out_path)
-    logger.info("Requested astro image at %s with excluded backends: %s", out, sorted(excluded))
-    backend_attempts: list[dict] = []
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        if "pollinations" not in excluded:
-            backend_attempts.append({"attempt": attempt, "backend": "pollinations"})
-            img = _fetch_from_pollinations(prompt, out, size=size)
-            if img is not None:
-                img.backend_attempts = list(backend_attempts)
-                return img
-        if "stable_horde" not in excluded and "horde" not in excluded:
-            backend_attempts.append({"attempt": attempt, "backend": "stable_horde"})
-            img = _fetch_from_horde(prompt, out, size=size)
-            if img is not None:
-                img.backend_attempts = list(backend_attempts)
-                return img
-        if "custom" not in excluded:
-            backend_attempts.append({"attempt": attempt, "backend": "custom"})
-            img = _fetch_from_custom_backend(prompt, out, size=size)
-            if img is not None:
-                img.backend_attempts = list(backend_attempts)
-                return img
-    return None
+    return generate_astro_image_outcome_with_exclusions(
+        prompt,
+        out_path,
+        size=size,
+        excluded_backends=excluded_backends,
+        max_backend_calls=max_backend_calls,
+    ).result
 
 
 def generate_astro_image(
@@ -800,8 +893,11 @@ def generate_astro_image(
 
 
 __all__ = [
+    "ImageGenerationOutcome",
     "ImageGenerationResult",
     "generate_astro_image",
+    "generate_astro_image_outcome",
+    "generate_astro_image_outcome_with_exclusions",
     "generate_astro_image_result",
     "generate_astro_image_result_with_exclusions",
 ]
