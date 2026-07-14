@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import date, timedelta
+import os
 import re
 import sys
 
@@ -520,7 +521,7 @@ def cy_prompt_local_mountain_thunder_keeps_coast_dry_and_windy() -> None:
 
 def cy_prompt_small_harbour_scene_has_harbour_logic() -> None:
     scenario = """
-    2026-07-09
+    2026-07-01
     Кипр завтра.
     Лимассол и Ларнака: тёплый вечер у моря, ветер 6 м/с, порывы до 10 м/с.
     🌙 Растущая Луна в ♐.
@@ -739,6 +740,7 @@ def cy_visual_cache_key_contains_identity_fields() -> None:
     assert "target_date=tomorrow" in key_a
     assert f"prompt_version={CYPRUS_VISUAL_PROMPT_VERSION}" in key_a
     assert "selected_scene=" in key_a
+    assert "visual_archetype=" in key_a
     assert "weather_scenario=" in key_a
     assert "wind_gust_category=" in key_a
     assert "cloud_haze_category=" in key_a
@@ -918,6 +920,45 @@ def cy_composition_selection_uses_lru_when_everything_recent() -> None:
     assert meta["composition"] == recent[0]
 
 
+def cy_disable_bay_visuals_excludes_bays_and_adds_negative_constraints() -> None:
+    text = """
+    2026-07-15
+    Кипр завтра: ясно, у моря ветер 7 м/с, порывы до 12 м/с.
+    🌙 Убывающая Луна, 92% освещённости.
+    """
+    old_value = os.environ.get("CY_DISABLE_BAY_VISUALS")
+    os.environ["CY_DISABLE_BAY_VISUALS"] = "1"
+    try:
+        for attempt in range(32):
+            prompt, _style, meta = build_cyprus_scene_prompt_with_metadata(
+                text,
+                post_type="evening",
+                variation_attempt=attempt,
+            )
+            scene = meta["selected_scene"].lower()
+            composition = meta["composition"].lower()
+            assert not any(token in scene for token in ("bay", "cove", "lagoon"))
+            assert meta["visual_archetype"] not in {"bay_panorama", "elevated_cliff_panorama"}
+            assert not any(token in composition for token in ("aerial", "raised", "wide panorama", "beach curve"))
+            low = prompt.lower()
+            for clause in (
+                "no bay",
+                "no cove",
+                "no enclosed lagoon",
+                "no elevated cliff panorama",
+                "no palm-framed bay",
+                "no curved coastline viewed from above",
+                "no generic mediterranean postcard composition",
+                "no repeated sunset-on-the-right composition",
+            ):
+                assert clause in low
+    finally:
+        if old_value is None:
+            os.environ.pop("CY_DISABLE_BAY_VISUALS", None)
+        else:
+            os.environ["CY_DISABLE_BAY_VISUALS"] = old_value
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -963,6 +1004,7 @@ TESTS = [
     cy_scene_strong_wind_pool_avoids_three_scene_deadlock,
     cy_composition_selection_uses_eligible_before_backend,
     cy_composition_selection_uses_lru_when_everything_recent,
+    cy_disable_bay_visuals_excludes_bays_and_adds_negative_constraints,
 ]
 
 

@@ -20,9 +20,11 @@ from cyprus_visual_dedup import (
     evaluate_cyprus_visual_candidate,
     hamming_distance_hex,
     load_cyprus_visual_history,
+    load_cyprus_visual_reference_history,
     phash_file,
     pillow_available,
     record_cyprus_visual_publication,
+    save_cyprus_visual_history,
 )
 
 
@@ -399,6 +401,114 @@ def cy_dedup_recent_composition_is_rejected() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def cy_test_reference_reads_prod_but_writes_test_only() -> None:
+    root = _tmpdir()
+    try:
+        prod = root / "cyprus_visual_history_prod.json"
+        test = root / "cyprus_visual_history_test.json"
+        production_image = root / "production.ppm"
+        distinct_image = root / "distinct.ppm"
+        _write_ppm(production_image, mode="coast_a")
+        _write_ppm(distinct_image, mode="coast_b")
+        record_cyprus_visual_publication(
+            date_value="2026-07-08",
+            post_type="evening",
+            image_path=production_image,
+            selected_scene="protected_bay",
+            prompt_version="cyprus_visual_v_test",
+            cache_key="cache=prod",
+            style_name="style_prod",
+            composition="wide panorama composition",
+            visual_archetype="bay_panorama",
+            history_path=prod,
+        )
+        prod_before = prod.read_bytes()
+
+        duplicate = evaluate_cyprus_visual_candidate(
+            production_image,
+            date_value="2026-07-15",
+            post_type="evening",
+            selected_scene="open_beach_horizon",
+            prompt_version="cyprus_visual_v_test",
+            composition="eye-level open beach horizon composition",
+            visual_archetype="beach_eye_level",
+            reference_history_paths=(prod, test),
+        )
+        assert duplicate.accepted is False
+        assert duplicate.reason == "exact_duplicate"
+
+        distinct = evaluate_cyprus_visual_candidate(
+            distinct_image,
+            date_value="2026-07-15",
+            post_type="evening",
+            selected_scene="marina_walkway",
+            prompt_version="cyprus_visual_v_test",
+            composition="marina walkway close-up composition",
+            visual_archetype="marina_closeup",
+            reference_history_paths=(prod, test),
+        )
+        assert distinct.accepted is True
+        record_cyprus_visual_publication(
+            date_value="2026-07-15",
+            post_type="evening",
+            image_path=distinct_image,
+            selected_scene="marina_walkway",
+            prompt_version="cyprus_visual_v_test",
+            cache_key="cache=test",
+            style_name="style_test",
+            composition="marina walkway close-up composition",
+            visual_archetype="marina_closeup",
+            history_path=test,
+        )
+
+        assert prod.read_bytes() == prod_before
+        assert len(load_cyprus_visual_history(prod)) == 1
+        test_entries = load_cyprus_visual_history(test)
+        assert len(test_entries) == 1
+        assert test_entries[0]["visual_archetype"] == "marina_closeup"
+        assert len(load_cyprus_visual_reference_history((prod, test))) == 2
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_bay_archetype_cooldown_uses_last_ten_references() -> None:
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        image = root / "candidate.ppm"
+        _write_ppm(image, mode="coast_b")
+        entries = []
+        for index in range(10):
+            entry = {
+                "date": f"2026-07-{index + 5:02d}",
+                "post_type": "morning",
+                "sha256": f"{index + 1:064x}",
+                "selected_scene": "protected_bay" if index == 0 else f"fixture_scene_{index}",
+                "composition": "wide panorama composition" if index == 0 else f"fixture_composition_{index}",
+                "prompt_version": "cyprus_visual_v_test",
+                "cache_key": f"cache={index}",
+                "style_name": f"style_{index}",
+            }
+            if index > 0:
+                entry["visual_archetype"] = f"fixture_{index}"
+            entries.append(entry)
+        save_cyprus_visual_history(entries, history)
+        result = evaluate_cyprus_visual_candidate(
+            image,
+            date_value="2026-07-15",
+            post_type="evening",
+            selected_scene="fresh_scene",
+            prompt_version="cyprus_visual_v_test",
+            composition="fresh composition",
+            visual_archetype="bay_panorama",
+            reference_history_paths=(history,),
+        )
+        assert result.accepted is False
+        assert result.reason == "recent_bay_panorama"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 TESTS = [
     cy_dedup_exact_sha_is_rejected,
     cy_dedup_near_duplicate_recolor_crop_is_rejected,
@@ -411,6 +521,8 @@ TESTS = [
     cy_dedup_png_jpg_hashes_when_pillow_available,
     cy_dedup_recent_scene_family_is_rejected_after_hash_checks,
     cy_dedup_recent_composition_is_rejected,
+    cy_test_reference_reads_prod_but_writes_test_only,
+    cy_bay_archetype_cooldown_uses_last_ten_references,
 ]
 
 

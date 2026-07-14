@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from datetime import date, timedelta
 
@@ -98,14 +99,20 @@ _INLAND_FOUNDATION = (
 _CYPRUS_SCENE_FAMILIES = (
     "rocky_cove_overlook",
     "long_sandy_beach",
+    "open_beach_horizon",
     "coastal_promenade",
+    "marina_walkway",
     "small_harbour",
+    "harbour_pier_waterlevel",
     "open_sea_cliffs",
     "mountain_coast_view",
     "breakwater_coast",
     "protected_bay",
     "windy_exposed_coast",
     "quiet_blue_lagoon",
+    "coastal_urban_rooftop",
+    "salt_lake_landscape",
+    "beach_cafe_terrace",
 )
 _CY_COASTAL_SCENE_TEMPLATES = {
     "rocky_cove_overlook": {
@@ -116,13 +123,25 @@ _CY_COASTAL_SCENE_TEMPLATES = {
         "morning": "dominant long sandy Cyprus beach curve in clear daylight, pale sand, low dunes, open sea horizon, and no foreground palms",
         "evening": "dominant long sandy Cyprus beach curve in late-day light, low dunes, long shoreline shadows, and restrained warm horizon glow",
     },
+    "open_beach_horizon": {
+        "morning": "dominant eye-level open Cyprus beach facing the straight sea horizon in clear daylight, flat shoreline, pale sand, and no enclosing headlands",
+        "evening": "dominant eye-level open Cyprus beach facing the straight sea horizon in late twilight, flat shoreline, textured water, and no enclosing headlands",
+    },
     "coastal_promenade": {
         "morning": "dominant Larnaca seafront promenade in clean morning daylight, broad paved edge, low sea wall, and open water as the main structure",
         "evening": "dominant Larnaca seafront promenade in late twilight, broad paved edge, low sea wall, and water reflections kept realistic",
     },
+    "marina_walkway": {
+        "morning": "dominant Limassol-style marina walkway close-up at street level, stone paving, railings, mooring details, and open water beyond",
+        "evening": "dominant Limassol-style marina walkway close-up in restrained twilight, stone paving, railings, mooring details, and textured water beyond",
+    },
     "small_harbour": {
         "morning": "dominant small Cyprus harbour in crisp daylight, protected harbour basin, stone quay edge, mooring posts, low waterfront buildings, and open sea beyond",
         "evening": "dominant small Cyprus harbour in restrained twilight, protected harbour basin, stone quay edge, mooring posts, low waterfront buildings, and textured water inside the harbour",
+    },
+    "harbour_pier_waterlevel": {
+        "morning": "dominant Cyprus harbour pier at water level in crisp daylight, linear stone edge, mooring posts, and open horizon beyond",
+        "evening": "dominant Cyprus harbour pier at water level in late twilight, linear stone edge, mooring posts, and realistic moving water",
     },
     "open_sea_cliffs": {
         "morning": "dominant Ayia Napa sea caves and open-sea cliffs in daylight, sculpted pale rock arches, turquoise water, and cliff-shadow detail",
@@ -148,11 +167,24 @@ _CY_COASTAL_SCENE_TEMPLATES = {
         "morning": "dominant open sea horizon and quiet blue lagoon with local stone architecture in the foreground, pale walls, clean morning sky, and natural depth",
         "evening": "dominant open sea horizon and quiet blue lagoon with local stone architecture in the foreground, pale walls, late twilight, and natural depth",
     },
+    "coastal_urban_rooftop": {
+        "morning": "dominant Cyprus urban rooftop under the forecast morning sky, low pale buildings, practical city depth, and a distant strip of open sea",
+        "evening": "dominant Cyprus urban rooftop under the forecast twilight sky, low pale buildings, practical city depth, and a distant strip of open sea",
+    },
+    "salt_lake_landscape": {
+        "morning": "dominant flat Cyprus salt-lake landscape in clear daylight, low reeds, pale mineral shore, wide sky, and distant low city edge",
+        "evening": "dominant flat Cyprus salt-lake landscape in late twilight, low reeds, pale mineral shore, wide sky, and restrained horizon color",
+    },
+    "beach_cafe_terrace": {
+        "morning": "dominant street-level Cyprus beach cafe terrace facing open sea, simple shaded tables, low railing, straight horizon, and no people as focal subjects",
+        "evening": "dominant street-level Cyprus beach cafe terrace facing open sea, simple tables, low railing, textured water, and restrained twilight light",
+    },
 }
 _CY_INLAND_SCENES = (
-    "inland urban heat view with shaded stone streets",
-    "sun-baked inland urban depth",
-    "dry Nicosia street perspective with sparse shade",
+    "Nicosia urban rooftop under the forecast sky with low pale buildings and practical city depth",
+    "Troodos mountain landscape with dry pine slopes, layered ridges, and a wide forecast sky",
+    "traditional inland Cyprus village landscape with stone houses and narrow shaded lanes",
+    "dry inland Cyprus landscape with ochre fields, sparse scrub, and low rolling terrain",
 )
 _CY_COASTAL_FOREGROUNDS = (
     "rough limestone foreground",
@@ -177,12 +209,91 @@ _CY_COASTAL_COMPOSITIONS = (
     "promenade or harbour foreground composition",
     "beach curve composition",
     "cliffs without foreground palms composition",
+    "street-level promenade composition",
+    "eye-level open beach horizon composition",
+    "marina walkway close-up composition",
+    "harbour pier water-level composition",
+    "urban rooftop sky composition",
+    "flat coastal landscape composition",
+    "beach cafe terrace composition",
 )
 _CY_INLAND_COMPOSITIONS = (
     "layered street-and-sky composition",
     "framed inland urban view",
     "diagonal shaded-street composition",
 )
+
+_CY_NO_BAY_NEGATIVE = (
+    "no bay; no cove; no enclosed lagoon; no elevated cliff panorama; no palm-framed bay; "
+    "no curved coastline viewed from above; no generic Mediterranean postcard composition; "
+    "no repeated sunset-on-the-right composition"
+)
+
+
+def _bay_visuals_disabled() -> bool:
+    return str(os.getenv("CY_DISABLE_BAY_VISUALS", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _scene_is_bay_or_cove(scene_family: str) -> bool:
+    value = str(scene_family or "").lower()
+    return any(token in value for token in ("bay", "cove", "lagoon"))
+
+
+def _available_scene_families(options: tuple[str, ...]) -> tuple[str, ...]:
+    if not _bay_visuals_disabled():
+        return options
+    filtered = tuple(value for value in options if not _scene_is_bay_or_cove(value))
+    return filtered or ("open_beach_horizon", "coastal_promenade", "marina_walkway")
+
+
+def _available_compositions() -> tuple[str, ...]:
+    if not _bay_visuals_disabled():
+        return _CY_COASTAL_COMPOSITIONS
+    blocked_terms = ("aerial", "raised", "wide panorama", "beach curve", "closer foreground rocks")
+    filtered = tuple(
+        value for value in _CY_COASTAL_COMPOSITIONS
+        if not any(term in value.lower() for term in blocked_terms)
+    )
+    return filtered or ("street-level promenade composition", "eye-level open beach horizon composition")
+
+
+def _inland_scene_family(scene_text: str) -> str:
+    low = str(scene_text or "").lower()
+    if "troodos" in low:
+        return "troodos_landscape"
+    if "village" in low:
+        return "inland_village"
+    if "dry inland" in low:
+        return "dry_inland_landscape"
+    return "inland_urban_rooftop"
+
+
+def _visual_archetype(scene_family: str, composition: str) -> str:
+    scene = str(scene_family or "").lower()
+    comp = str(composition or "").lower()
+    if _scene_is_bay_or_cove(scene):
+        return "bay_panorama"
+    if scene in {"open_sea_cliffs", "mountain_coast_view", "rocky_cove_overlook"} and any(
+        token in comp for token in ("aerial", "raised", "wide panorama", "cliff")
+    ):
+        return "elevated_cliff_panorama"
+    if scene in {"long_sandy_beach", "open_beach_horizon"}:
+        return "beach_eye_level"
+    if scene in {"coastal_promenade", "beach_cafe_terrace"}:
+        return "promenade_eye_level"
+    if scene == "marina_walkway":
+        return "marina_closeup"
+    if scene in {"small_harbour", "harbour_pier_waterlevel", "breakwater_coast"}:
+        return "harbour_pier"
+    if scene == "coastal_urban_rooftop" or scene == "inland_urban_rooftop":
+        return "urban_rooftop"
+    if scene == "troodos_landscape":
+        return "troodos_landscape"
+    if scene in {"inland_village", "dry_inland_landscape"}:
+        return scene
+    if scene == "salt_lake_landscape":
+        return "salt_lake_landscape"
+    return "open_sea_shore"
 
 
 def build_visual_context_cy(
@@ -324,7 +435,8 @@ def _select_composition_with_mode(
     variation_attempt: int = 0,
     blocked_compositions: tuple[str, ...] = (),
 ) -> tuple[str, str]:
-    count = len(_CY_COASTAL_COMPOSITIONS)
+    options = _available_compositions()
+    count = len(options)
     seed = "|".join([post_type, weather_main, "cyprus_composition"])
     offset = _stable_index(seed, "composition_offset", count)
     try:
@@ -333,7 +445,7 @@ def _select_composition_with_mode(
         ordinal = _stable_index(date_key, "undated_composition", count)
     idx = (ordinal + offset + variation_attempt) % count
     return _select_recent_aware_option_with_mode(
-        _CY_COASTAL_COMPOSITIONS,
+        options,
         idx,
         variation_attempt=variation_attempt,
         recent_values=blocked_compositions,
@@ -425,6 +537,7 @@ def _weather_constrained_scene_family_with_mode(
         options = ("mountain_coast_view", "open_sea_cliffs", "breakwater_coast")
     else:
         options = _CYPRUS_SCENE_FAMILIES
+    options = _available_scene_families(options)
     if scene_family in options and scene_family not in set(blocked_scenes):
         return scene_family, "eligible"
     seed = "|".join([date_key, post_type, str(ctx.weather_main), "weather_scene_constraint"])
@@ -498,31 +611,55 @@ def _coastal_visual_variants(
     variation_attempt: int,
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
+    blocked_archetypes: tuple[str, ...] = (),
 ) -> dict[str, str]:
     date_key = _extract_date_key(message)
-    scene_family = _select_scene_family(
-        date_key,
-        post_type,
-        str(ctx.weather_main),
-        variation_attempt=variation_attempt,
-    )
-    scene_family, scene_selection_mode = _weather_constrained_scene_family_with_mode(
+    blocked_archetype_set = {value for value in blocked_archetypes if value}
+    selected: tuple[str, str, str, str, str] | None = None
+    attempts = max(1, len(_available_scene_families(_CYPRUS_SCENE_FAMILIES)) * 2)
+    for offset in range(attempts):
+        candidate_attempt = variation_attempt + offset
+        scene_family = _select_scene_family(
+            date_key,
+            post_type,
+            str(ctx.weather_main),
+            variation_attempt=candidate_attempt,
+        )
+        scene_family, scene_selection_mode = _weather_constrained_scene_family_with_mode(
+            scene_family,
+            date_key,
+            post_type,
+            ctx,
+            variation_attempt=candidate_attempt,
+            blocked_scenes=blocked_scenes,
+        )
+        composition, composition_selection_mode = _select_composition_with_mode(
+            date_key,
+            post_type,
+            str(ctx.weather_main),
+            scene_family,
+            variation_attempt=candidate_attempt,
+            blocked_compositions=blocked_compositions,
+        )
+        visual_archetype = _visual_archetype(scene_family, composition)
+        selected = (
+            scene_family,
+            composition,
+            visual_archetype,
+            scene_selection_mode,
+            composition_selection_mode,
+        )
+        if visual_archetype not in blocked_archetype_set:
+            break
+    assert selected is not None
+    (
         scene_family,
-        date_key,
-        post_type,
-        ctx,
-        variation_attempt=variation_attempt,
-        blocked_scenes=blocked_scenes,
-    )
+        composition,
+        visual_archetype,
+        scene_selection_mode,
+        composition_selection_mode,
+    ) = selected
     scene_text = _CY_COASTAL_SCENE_TEMPLATES[scene_family][post_type]
-    composition, composition_selection_mode = _select_composition_with_mode(
-        date_key,
-        post_type,
-        str(ctx.weather_main),
-        scene_family,
-        variation_attempt=variation_attempt,
-        blocked_compositions=blocked_compositions,
-    )
     seed = _variant_seed(message, ctx, post_type)
     foreground = _stable_variant(
         f"{seed}|{scene_family}|{variation_attempt}",
@@ -534,6 +671,7 @@ def _coastal_visual_variants(
         "scene_text": scene_text,
         "foreground": foreground,
         "composition": composition,
+        "visual_archetype": visual_archetype,
         "scene_selection_mode": scene_selection_mode,
         "composition_selection_mode": composition_selection_mode,
     }
@@ -607,6 +745,7 @@ def _controlled_variety(
     variation_attempt: int = 0,
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
+    blocked_archetypes: tuple[str, ...] = (),
 ) -> list[str]:
     seed = _variant_seed(message, ctx, post_type)
     inland_only = ctx.inland_heat_focus and not ctx.coastal_focus
@@ -617,7 +756,7 @@ def _controlled_variety(
         scene_text = _stable_variant(seed, "scene", scenes)
         foreground = _stable_variant(seed, "foreground", foregrounds)
         composition = _stable_variant(seed, "composition", compositions)
-        scene_family = "inland_urban_heat"
+        scene_family = _inland_scene_family(scene_text)
     else:
         variants = _coastal_visual_variants(
             message,
@@ -626,6 +765,7 @@ def _controlled_variety(
             variation_attempt=variation_attempt,
             blocked_scenes=blocked_scenes,
             blocked_compositions=blocked_compositions,
+            blocked_archetypes=blocked_archetypes,
         )
         scene_text = variants["scene_text"]
         foreground = variants["foreground"]
@@ -822,11 +962,15 @@ def _visual_cache_metadata(
     variation_attempt: int,
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
+    blocked_archetypes: tuple[str, ...] = (),
 ) -> dict[str, str]:
     forecast_date = _extract_date_key(message)
     if ctx.inland_heat_focus and not ctx.coastal_focus:
-        selected_scene = "inland_urban_heat"
-        composition = "inland_composition"
+        seed = _variant_seed(message, ctx, post_type)
+        scene_text = _stable_variant(seed, "scene", _CY_INLAND_SCENES)
+        selected_scene = _inland_scene_family(scene_text)
+        composition = _stable_variant(seed, "composition", _CY_INLAND_COMPOSITIONS)
+        visual_archetype = _visual_archetype(selected_scene, composition)
         scene_selection_mode = "eligible"
         composition_selection_mode = "eligible"
     else:
@@ -837,9 +981,11 @@ def _visual_cache_metadata(
             variation_attempt=variation_attempt,
             blocked_scenes=blocked_scenes,
             blocked_compositions=blocked_compositions,
+            blocked_archetypes=blocked_archetypes,
         )
         selected_scene = variants["scene_family"]
         composition = variants["composition"]
+        visual_archetype = variants["visual_archetype"]
         scene_selection_mode = variants["scene_selection_mode"]
         composition_selection_mode = variants["composition_selection_mode"]
     lunar_phase, lunar_illumination = _moon_cache_fields(message, post_type)
@@ -850,6 +996,7 @@ def _visual_cache_metadata(
         "prompt_version": CYPRUS_VISUAL_PROMPT_VERSION,
         "selected_scene": selected_scene,
         "composition": composition,
+        "visual_archetype": visual_archetype,
         "scene_selection_mode": scene_selection_mode,
         "composition_selection_mode": composition_selection_mode,
         "weather_scenario": str(ctx.weather_main),
@@ -868,6 +1015,7 @@ def _visual_cache_metadata(
         "prompt_version",
         "selected_scene",
         "composition",
+        "visual_archetype",
         "scene_selection_mode",
         "composition_selection_mode",
         "weather_scenario",
@@ -889,6 +1037,7 @@ def build_cyprus_visual_cache_key(
     variation_attempt: int = 0,
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
+    blocked_archetypes: tuple[str, ...] = (),
 ) -> str:
     mode = post_type.strip().lower()
     if mode not in {"morning", "evening"}:
@@ -901,6 +1050,7 @@ def build_cyprus_visual_cache_key(
         variation_attempt=variation_attempt,
         blocked_scenes=blocked_scenes,
         blocked_compositions=blocked_compositions,
+        blocked_archetypes=blocked_archetypes,
     )["cache_key"]
 
 
@@ -923,6 +1073,7 @@ def build_cyprus_scene_prompt_with_metadata(
     variation_attempt: int = 0,
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
+    blocked_archetypes: tuple[str, ...] = (),
 ) -> tuple[str, str, dict[str, str]]:
     """Return a sanitized Cyprus prompt, stable style name, and visual cache metadata."""
     mode = post_type.strip().lower()
@@ -941,6 +1092,7 @@ def build_cyprus_scene_prompt_with_metadata(
         variation_attempt=variation_attempt,
         blocked_scenes=blocked_scenes,
         blocked_compositions=blocked_compositions,
+        blocked_archetypes=blocked_archetypes,
     )
 
     if mode == "morning":
@@ -983,8 +1135,13 @@ def build_cyprus_scene_prompt_with_metadata(
             variation_attempt=variation_attempt,
             blocked_scenes=blocked_scenes,
             blocked_compositions=blocked_compositions,
+            blocked_archetypes=blocked_archetypes,
         ),
     ]
+    require_no_bay = _bay_visuals_disabled() or metadata["visual_archetype"] not in {
+        "bay_panorama",
+        "elevated_cliff_panorama",
+    }
     if ctx.coastal_focus or not ctx.inland_heat_focus:
         prompt_parts.extend(
             [
@@ -1058,6 +1215,8 @@ def build_cyprus_scene_prompt_with_metadata(
         prompt = prompt.rstrip(" .;") + ". " + _GLOBAL_PHOTOREALISM_GUARD
     if mode == "morning" and "morning-only constraints" not in prompt.lower():
         prompt = prompt.rstrip(" .;") + " " + _MORNING_LIGHT_GUARD
+    if require_no_bay and _CY_NO_BAY_NEGATIVE.lower() not in prompt.lower():
+        prompt = prompt.rstrip(" .;") + ". " + _CY_NO_BAY_NEGATIVE + "."
     style_digest = hashlib.sha256(
         f"{metadata['cache_key']}|{prompt}".encode("utf-8")
     ).hexdigest()[:8]
@@ -1073,6 +1232,7 @@ def build_cyprus_scene_prompt(
     variation_attempt: int = 0,
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
+    blocked_archetypes: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     """Return a sanitized positive Cyprus landscape prompt and stable style name."""
     prompt, style_name, _metadata = build_cyprus_scene_prompt_with_metadata(
@@ -1081,6 +1241,7 @@ def build_cyprus_scene_prompt(
         variation_attempt=variation_attempt,
         blocked_scenes=blocked_scenes,
         blocked_compositions=blocked_compositions,
+        blocked_archetypes=blocked_archetypes,
     )
     return prompt, style_name
 

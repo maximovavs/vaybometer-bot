@@ -193,6 +193,7 @@ def test_daily_visual_history_cache() -> None:
     )
     _assert("daily_restore_prefix", "cyprus-visual-history-prod-" in text)
     _assert("daily_test_restore_prefix", "cyprus-visual-history-test-" in text)
+    _assert("daily_bay_visuals_temporarily_disabled", 'CY_DISABLE_BAY_VISUALS: "1"' in text)
     _assert("daily_no_image_cache_key", "path: .cache/cy_safe_images" not in text)
     _assert("daily_generic_cache_excludes_prod_history", "!.cache/cyprus_visual_history_prod.json" in text)
     _assert("daily_generic_cache_excludes_test_history", "!.cache/cyprus_visual_history_test.json" in text)

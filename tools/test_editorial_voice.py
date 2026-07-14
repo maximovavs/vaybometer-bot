@@ -179,9 +179,10 @@ def test_deterministic_variant_is_stable_and_rotates() -> None:
     assert "hash(" not in (ROOT / "editorial_voice.py").read_text(encoding="utf-8")
 
 
-def test_morning_output_has_one_human_line_and_keeps_facts() -> None:
+def test_morning_daily_output_omits_human_line_and_keeps_facts() -> None:
     text = build_morning_format_v2("Кипр", MORNING)
-    assert text.count("💬 По ощущениям дня:") == 1
+    assert "💬 По ощущениям" not in text
+    assert "💬 Настрой" not in text
     assert "AQI 125" in text
     assert "PM₂.₅ 20" in text
     assert "PM₁₀ 69" in text
@@ -228,13 +229,10 @@ def test_safe_dust_haze_selects_poor_air() -> None:
     assert "пылевая дымка" in text
 
 
-def test_evening_output_has_one_human_line_and_keeps_facts() -> None:
+def test_evening_daily_output_omits_human_line_and_keeps_facts() -> None:
     text = build_evening_format_v2("Кипр", EVENING)
-    assert text.count("💬 Настрой на завтра:") == 1
-    line = _voice_line(text, "💬 Настрой на завтра:")
-    phrase = line.split(": ", 1)[1]
-    assert phrase in _phrases(CYPRUS_EVENING_VARIANTS)
-    assert not re.search(r"(?<![А-Яа-яЁё])сегодня(?![А-Яа-яЁё])", line, flags=re.I)
+    assert "💬 Настрой" not in text
+    assert "💬 По ощущениям" not in text
     assert "Никосия: 35/24 °C" in text
     assert "Лимассол: 31/24 °C" in text
     assert "AQI 75" in text
@@ -276,12 +274,12 @@ def test_weekly_output_contains_meaning_block_and_keeps_facts() -> None:
 def main() -> None:
     checks = (
         test_deterministic_variant_is_stable_and_rotates,
-        test_morning_output_has_one_human_line_and_keeps_facts,
+        test_morning_daily_output_omits_human_line_and_keeps_facts,
         test_safe_pollen_low_does_not_select_poor_air,
         test_safe_bad_air_selects_poor_air,
         test_safe_visibility_haze_does_not_select_poor_air,
         test_safe_dust_haze_selects_poor_air,
-        test_evening_output_has_one_human_line_and_keeps_facts,
+        test_evening_daily_output_omits_human_line_and_keeps_facts,
         test_evening_local_weather_variants_do_not_repeat_factual_nuance,
         test_weekly_output_contains_meaning_block_and_keeps_facts,
     )

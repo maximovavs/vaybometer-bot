@@ -9,6 +9,7 @@ import re
 import sys
 import tempfile
 import types
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,13 +30,15 @@ telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(
 sys.modules.setdefault("telegram", telegram_stub)
 
 from format_v2 import build_evening_format_v2, build_format_v2, build_morning_format_v2  # noqa: E402
-from post_safety import sanitize_post_text  # noqa: E402
+from post_safety import sanitize_post_text, split_telegram_text  # noqa: E402
 from safe_test_post import (  # noqa: E402
     _apply_astro_cleanup,
     _apply_cyprus_sensor_cleanup,
     _apply_format_v2_test_polish,
     _cyprus_evening_score_line,
+    _cy_image_caption,
     _insert_main_nuance,
+    finalize_hashtags_at_end,
 )
 
 
@@ -620,19 +623,8 @@ def cy_evening_integrated_guidance_is_not_repetitive() -> None:
     assert "Лучшее окно" not in text
     assert text.count("🧭 Главное завтра:") == 1
     assert "🧭 Главное завтра: день неоднородный по острову." in text
-    assert text.count("💬 Настрой на завтра:") == 1
-    editorial_line = next(line for line in lines if line.startswith("💬 Настрой на завтра:"))
-    assert any(
-        phrase in editorial_line
-        for phrase in (
-            "двигаться без спешки и беречь силы в жару",
-            "лучше держать темп мягче обычного",
-        )
-    )
-    assert "маршрут" not in editorial_line
-    assert "сценари" not in editorial_line
-    for repeated in ("у моря порывисто", "в горах", "локальные изменения погоды"):
-        assert repeated not in editorial_line
+    assert "💬 Настрой на завтра:" not in text
+    assert "💬 По ощущениям:" not in text
     assert "🏄 Серф: данных для уверенной оценки недостаточно; проверить спот перед выездом." in text
     assert "Отлично: Серф" not in text
     assert text.splitlines()[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
@@ -730,6 +722,44 @@ def cy_evening_recent_safecast_normal_is_omitted() -> None:
     assert "PM₂.₅ 28" not in text
 
 
+def cy_evening_hashtag_finalizer_and_caption_use_target_date() -> None:
+    dirty = "\n".join(
+        (
+            "<b>🌅 Кипр завтра (15.07.2026)</b>",
+            "#Кипр #погода #здоровье #Никосия #Тродос",
+            "✅ План завтра: проверить ветер.",
+            "💬 Настрой на завтра: лишняя строка.",
+            "#Кипр #погода #здоровье #Никосия #Тродос",
+            "",
+        )
+    )
+    without_editorial = "\n".join(
+        line for line in dirty.splitlines() if not line.startswith("💬 Настрой")
+    )
+    text = finalize_hashtags_at_end(
+        without_editorial,
+        canonical_hashtags="#Кипр #погода #здоровье #Никосия #Тродос",
+    )
+    lines = [line for line in text.splitlines() if line.strip()]
+    assert lines[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
+    assert text.count("#Кипр #погода #здоровье #Никосия #Тродос") == 1
+    assert "💬 Настрой" not in text
+    chunks = split_telegram_text(text)
+    assert [line for line in chunks[-1].splitlines() if line.strip()][-1] == lines[-1]
+    assert _cy_image_caption(
+        "evening",
+        "2026-07-15",
+        test_label=True,
+        current_date=date(2026, 7, 14),
+    ) == "🧪 Визуальный вайб погоды на Кипре завтра 🌊"
+    assert "сегодняшнего вечера" not in _cy_image_caption(
+        "evening",
+        "2026-07-15",
+        test_label=False,
+        current_date=date(2026, 7, 14),
+    )
+
+
 def cy_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post.yml").read_text(encoding="utf-8")
     assert "cron: '0 1 * * *'" in workflow
@@ -749,6 +779,7 @@ def main() -> None:
         cy_morning_preserves_quake_line,
         cy_evening_polish_does_not_duplicate_nuance,
         cy_evening_recent_safecast_normal_is_omitted,
+        cy_evening_hashtag_finalizer_and_caption_use_target_date,
         cy_evening_normal_no_generic_confidence,
         cy_evening_normal_no_island_correction,
         cy_evening_no_old_conclusion_or_recommendations,

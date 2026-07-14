@@ -12,7 +12,7 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 CYPRUS_VISUAL_HISTORY_PATH = Path(
@@ -30,6 +30,8 @@ CYPRUS_VISUAL_DHASH_THRESHOLD = 6
 CYPRUS_VISUAL_PHASH_THRESHOLD = 10
 CYPRUS_VISUAL_SCENE_RECENT_COUNT = 3
 CYPRUS_VISUAL_COMPOSITION_RECENT_COUNT = 5
+CYPRUS_VISUAL_BAY_ARCHETYPE_RECENT_COUNT = 10
+CYPRUS_VISUAL_ELEVATED_ARCHETYPE_RECENT_COUNT = 6
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,58 @@ def load_cyprus_visual_history(
         _backup_malformed_history(history_path)
         return []
     return [entry for entry in data if isinstance(entry, dict)]
+
+
+def cyprus_visual_archetype_from_entry(entry: dict[str, Any]) -> str:
+    explicit = str(entry.get("visual_archetype") or "").strip()
+    if explicit:
+        return explicit
+    scene = str(entry.get("selected_scene") or "").strip().lower()
+    composition = str(entry.get("composition") or "").strip().lower()
+    if any(token in scene for token in ("bay", "cove", "lagoon")):
+        return "bay_panorama"
+    if scene in {"open_sea_cliffs", "mountain_coast_view", "rocky_cove_overlook"} and any(
+        token in composition for token in ("aerial", "raised", "wide panorama", "cliff")
+    ):
+        return "elevated_cliff_panorama"
+    if scene in {"long_sandy_beach", "open_beach_horizon"}:
+        return "beach_eye_level"
+    if scene in {"coastal_promenade", "beach_cafe_terrace"}:
+        return "promenade_eye_level"
+    if scene == "marina_walkway":
+        return "marina_closeup"
+    if scene in {"small_harbour", "harbour_pier_waterlevel", "breakwater_coast"}:
+        return "harbour_pier"
+    if scene in {"coastal_urban_rooftop", "inland_urban_rooftop"}:
+        return "urban_rooftop"
+    if scene in {"troodos_landscape", "inland_village", "dry_inland_landscape", "salt_lake_landscape"}:
+        return scene
+    return "open_sea_shore" if scene else ""
+
+
+def load_cyprus_visual_reference_history(
+    paths: Iterable[str | Path],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for path in paths:
+        for source_entry in load_cyprus_visual_history(path):
+            entry = dict(source_entry)
+            archetype = cyprus_visual_archetype_from_entry(entry)
+            if archetype:
+                entry["visual_archetype"] = archetype
+            key = (
+                str(entry.get("date") or ""),
+                str(entry.get("post_type") or ""),
+                str(entry.get("sha256") or ""),
+                str(entry.get("cache_key") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(entry)
+    merged.sort(key=lambda entry: str(entry.get("date") or ""))
+    return merged
 
 
 def save_cyprus_visual_history(
@@ -327,13 +381,19 @@ def evaluate_cyprus_visual_candidate(
     selected_scene: str,
     prompt_version: str,
     composition: str | None = None,
+    visual_archetype: str | None = None,
     history_path: str | Path = CYPRUS_VISUAL_HISTORY_PATH,
+    reference_history_paths: Iterable[str | Path] | None = None,
     current_date: date | None = None,
     threshold: int = CYPRUS_VISUAL_DHASH_THRESHOLD,
     phash_threshold: int = CYPRUS_VISUAL_PHASH_THRESHOLD,
 ) -> CyprusVisualDuplicateResult:
     current = current_date or _parse_date(date_value) or _today()
-    history = load_cyprus_visual_history(history_path)
+    history = (
+        load_cyprus_visual_reference_history(reference_history_paths)
+        if reference_history_paths is not None
+        else load_cyprus_visual_history(history_path)
+    )
     digest = sha256_file(image_path)
     perceptual = dhash_file(image_path)
     phash = phash_file(image_path)
@@ -400,6 +460,39 @@ def evaluate_cyprus_visual_candidate(
                 matched_entry=nearest_phash_entry,
             )
 
+    archetype_value = str(visual_archetype or "").strip()
+    if archetype_value:
+        recent = _recent_entries(history, 1)
+        if recent and cyprus_visual_archetype_from_entry(recent[-1]) == archetype_value:
+            return CyprusVisualDuplicateResult(
+                accepted=False,
+                reason="immediate_visual_archetype_repeat",
+                sha256=digest,
+                perceptual_hash=perceptual,
+                phash=phash,
+                min_distance=min_distance,
+                min_phash_distance=min_phash_distance,
+                matched_entry=recent[-1],
+            )
+        cooldowns = {
+            "bay_panorama": CYPRUS_VISUAL_BAY_ARCHETYPE_RECENT_COUNT,
+            "elevated_cliff_panorama": CYPRUS_VISUAL_ELEVATED_ARCHETYPE_RECENT_COUNT,
+        }
+        cooldown = cooldowns.get(archetype_value)
+        if cooldown:
+            for entry in _recent_entries(history, cooldown):
+                if cyprus_visual_archetype_from_entry(entry) == archetype_value:
+                    return CyprusVisualDuplicateResult(
+                        accepted=False,
+                        reason=f"recent_{archetype_value}",
+                        sha256=digest,
+                        perceptual_hash=perceptual,
+                        phash=phash,
+                        min_distance=min_distance,
+                        min_phash_distance=min_phash_distance,
+                        matched_entry=entry,
+                    )
+
     scene_value = str(selected_scene or "").strip()
     if scene_value:
         for entry in _recent_entries(history, CYPRUS_VISUAL_SCENE_RECENT_COUNT):
@@ -452,6 +545,7 @@ def record_cyprus_visual_publication(
     cache_key: str,
     style_name: str,
     composition: str | None = None,
+    visual_archetype: str | None = None,
     history_path: str | Path = CYPRUS_VISUAL_HISTORY_PATH,
 ) -> dict[str, Any]:
     current = _parse_date(date_value) or _today()
@@ -470,6 +564,7 @@ def record_cyprus_visual_publication(
         "phash": phash_file(image_path),
         "selected_scene": selected_scene,
         "composition": composition or "",
+        "visual_archetype": visual_archetype or "",
         "prompt_version": prompt_version,
         "cache_key": cache_key,
         "style_name": style_name,
@@ -498,6 +593,8 @@ def record_cyprus_visual_publication(
 
 __all__ = [
     "CYPRUS_VISUAL_DHASH_THRESHOLD",
+    "CYPRUS_VISUAL_BAY_ARCHETYPE_RECENT_COUNT",
+    "CYPRUS_VISUAL_ELEVATED_ARCHETYPE_RECENT_COUNT",
     "CYPRUS_VISUAL_EXACT_DAYS",
     "CYPRUS_VISUAL_HISTORY_PATH",
     "CYPRUS_VISUAL_HISTORY_PROD_PATH",
@@ -506,11 +603,13 @@ __all__ = [
     "CYPRUS_VISUAL_PHASH_THRESHOLD",
     "CyprusVisualDuplicateResult",
     "cyprus_visual_history_path",
+    "cyprus_visual_archetype_from_entry",
     "dhash_file",
     "ensure_pillow_for_visual_dedup",
     "evaluate_cyprus_visual_candidate",
     "hamming_distance_hex",
     "load_cyprus_visual_history",
+    "load_cyprus_visual_reference_history",
     "pillow_available",
     "phash_file",
     "record_cyprus_visual_publication",

@@ -46,14 +46,7 @@ OTHER_CITIES_ALL = {
     "Troodos": (34.916, 32.823),
 }
 
-_CY_TEST_IMAGE_CAPTIONS = {
-    "morning": "🧪 Визуальный вайб сегодняшнего утра на Кипре 🌊",
-    "evening": "🧪 Визуальный вайб сегодняшнего вечера на Кипре 🌊",
-}
-_CY_CHAT_IMAGE_CAPTIONS = {
-    "morning": "Визуальный вайб сегодняшнего утра на Кипре 🌊",
-    "evening": "Визуальный вайб завтрашнего вечера на Кипре 🌊",
-}
+_CY_CANONICAL_DAILY_HASHTAGS = "#Кипр #погода #здоровье #Никосия #Тродос"
 _CY_IMAGE_DELIVERY_DIR = Path(".cache/cy_image_delivery")
 _CY_TEXT_DELIVERY_DIR = Path(".cache/cy_text_delivery")
 _CY_IMAGE_DIAGNOSTICS_DIR = Path(".cache/cy_image_diagnostics")
@@ -945,7 +938,7 @@ def _without_editorial_voice(v2_text: str) -> list[str]:
     return [
         line
         for line in str(v2_text or "").splitlines()
-        if not line.strip().startswith(("💬 По ощущениям дня:", "💬 Настрой на завтра:"))
+        if not line.strip().startswith(("💬 По ощущениям", "💬 Настрой", "💬 По-человечески"))
     ]
 
 
@@ -1003,7 +996,56 @@ def _apply_editorial_voice(v2_text: str, mode: str) -> str:
         line = build_morning_human_line("Кипр", date_s or "today", conditions)
         return _insert_editorial_after(lines, line, ("⚠️ Главный нюанс:", "✨ VayboMeter:"))
     line = build_evening_human_line("Кипр", date_s or "tomorrow", conditions)
-    return _insert_editorial_after(lines, line, ("⚠️ Нюанс:", "⚠️ Главный нюанс:", "🧭 Главное завтра:", "✨ VayboMeter завтра:", "✨ VayboMeter:"))
+    return _insert_editorial_after(
+        lines,
+        line,
+        ("⚠️ Нюанс:", "⚠️ Главный нюанс:", "🧭 Главное завтра:", "✨ VayboMeter завтра:", "✨ VayboMeter:"),
+    )
+
+
+def finalize_hashtags_at_end(text: str, canonical_hashtags: str | None = None) -> str:
+    """Move hashtag-only lines to one deterministic final non-empty line."""
+    body: list[str] = []
+    hashtag_tokens: list[str] = []
+    hashtag_line_re = re.compile(r"^#[^\s#<>]+(?:\s+#[^\s#<>]+)*$")
+    for raw_line in str(text or "").splitlines():
+        stripped = raw_line.strip()
+        if stripped and hashtag_line_re.fullmatch(stripped):
+            hashtag_tokens.extend(stripped.split())
+            continue
+        body.append(raw_line.rstrip())
+
+    if canonical_hashtags:
+        hashtag_tokens = canonical_hashtags.split()
+    deduplicated = list(dict.fromkeys(hashtag_tokens))
+    while body and not body[-1].strip():
+        body.pop()
+    if deduplicated:
+        body.append(" ".join(deduplicated))
+    return "\n".join(body)
+
+
+def _cy_image_caption(
+    mode: str,
+    target_date: str,
+    *,
+    test_label: bool,
+    current_date: dt.date | None = None,
+) -> str:
+    target = dt.date.fromisoformat(str(target_date)[:10])
+    today = current_date or dt.datetime.now(ZoneInfo(TZ_STR)).date()
+    prefix = "🧪 " if test_label else ""
+    if mode.startswith("morn") and target == today:
+        body = "Визуальный вайб сегодняшнего дня на Кипре 🌊"
+    elif mode.startswith("even") and target == today + dt.timedelta(days=1):
+        body = "Визуальный вайб погоды на Кипре завтра 🌊"
+    elif target == today:
+        body = "Визуальный вайб погоды на Кипре сегодня 🌊"
+    elif target == today + dt.timedelta(days=1):
+        body = "Визуальный вайб погоды на Кипре завтра 🌊"
+    else:
+        body = f"Визуальный вайб погоды на Кипре на {target.strftime('%d.%m.%Y')} 🌊"
+    return prefix + body
 
 
 def _apply_confidence_polish(v2_text: str) -> str:
@@ -1512,7 +1554,8 @@ def _cy_write_image_diagnostics(
     prompt_metadata: dict | None = None,
     attempts: list[dict] | None = None,
     telegram_attempts: list[dict] | None = None,
-    history_path: Path | None = None,
+    write_history_path: Path | None = None,
+    reference_history_paths: tuple[Path, ...] = (),
     history_count_before: int | None = None,
     history_count_after: int | None = None,
     generation_summary: dict | None = None,
@@ -1527,7 +1570,8 @@ def _cy_write_image_diagnostics(
         "prompt_metadata": prompt_metadata or {},
         "selected_scene_attempts": attempts or [],
         "telegram_send_attempts": telegram_attempts or [],
-        "history_path": str(history_path) if history_path else "",
+        "write_history_path": str(write_history_path) if write_history_path else "",
+        "reference_history_paths": [str(path) for path in reference_history_paths],
         "history_count_before": history_count_before,
         "history_count_after": history_count_after,
     }
@@ -1659,7 +1703,7 @@ async def _build_safe_test_image(
         return {"result": "skipped", "message_ids": []}
 
     image_chat: int | None = None
-    image_caption = ""
+    image_caption_is_test = False
     if send_image_to_test:
         test_chat = os.getenv("CHANNEL_ID_TEST", "").strip()
         if not test_chat:
@@ -1670,14 +1714,13 @@ async def _build_safe_test_image(
             image_chat = int(test_chat)
         except ValueError as exc:
             raise SystemExit("CHANNEL_ID_TEST должен быть числом") from exc
-        image_caption = _CY_TEST_IMAGE_CAPTIONS[mode]
+        image_caption_is_test = True
     elif send_image_to_chat:
         if image_chat_id is None:
             raise SystemExit(
                 "--send-image-to-chat требует явно разрешённый --chat-id или --to-test"
             )
         image_chat = image_chat_id
-        image_caption = _CY_CHAT_IMAGE_CAPTIONS[mode]
 
     production_image_send = _cy_is_production_image_send(
         send_image_to_chat=send_image_to_chat,
@@ -1694,7 +1737,8 @@ async def _build_safe_test_image(
     attempts: list[dict] = []
     telegram_attempts: list[dict] = []
     target_date_for_diag = "undated"
-    history_path_for_diag: Path | None = None
+    write_history_path_for_diag: Path | None = None
+    reference_history_paths_for_diag: tuple[Path, ...] = ()
     before_history_count: int | None = None
     after_history_count: int | None = None
     try:
@@ -1703,17 +1747,24 @@ async def _build_safe_test_image(
             ensure_pillow_for_visual_dedup,
             evaluate_cyprus_visual_candidate,
             load_cyprus_visual_history,
+            load_cyprus_visual_reference_history,
             record_cyprus_visual_publication,
         )
         from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata
         import world_en.imagegen as imagegen_module
 
         history_namespace = "test" if send_image_to_test else "prod" if send_image_to_chat else "test"
-        history_path = cyprus_visual_history_path(history_namespace)
-        history_path_for_diag = history_path
+        write_history_path = cyprus_visual_history_path(history_namespace)
+        reference_history_paths = (
+            (cyprus_visual_history_path("prod"), cyprus_visual_history_path("test"))
+            if history_namespace == "test"
+            else (cyprus_visual_history_path("prod"),)
+        )
+        write_history_path_for_diag = write_history_path
+        reference_history_paths_for_diag = reference_history_paths
         ensure_pillow_for_visual_dedup()
-        restored_history = load_cyprus_visual_history(history_path)
-        before_history_count = len(restored_history)
+        restored_history = load_cyprus_visual_reference_history(reference_history_paths)
+        before_history_count = len(load_cyprus_visual_history(write_history_path))
         recent_scene_values = tuple(
             str(entry.get("selected_scene") or "").strip()
             for entry in restored_history[-3:]
@@ -1724,13 +1775,28 @@ async def _build_safe_test_image(
             for entry in restored_history[-5:]
             if isinstance(entry, dict) and str(entry.get("composition") or "").strip()
         )
+        blocked_archetype_values: list[str] = []
+        recent_archetypes = [
+            str(entry.get("visual_archetype") or "").strip()
+            for entry in restored_history
+            if isinstance(entry, dict) and str(entry.get("visual_archetype") or "").strip()
+        ]
+        if recent_archetypes:
+            blocked_archetype_values.append(recent_archetypes[-1])
+        if "bay_panorama" in recent_archetypes[-10:]:
+            blocked_archetype_values.append("bay_panorama")
+        if "elevated_cliff_panorama" in recent_archetypes[-6:]:
+            blocked_archetype_values.append("elevated_cliff_panorama")
+        blocked_archetypes = tuple(dict.fromkeys(blocked_archetype_values))
         print(f"CY_SAFE_IMAGE_HISTORY_NAMESPACE: {history_namespace}")
-        print(f"CY_SAFE_IMAGE_HISTORY_PATH: {history_path}")
+        print(f"CY_SAFE_IMAGE_WRITE_HISTORY_PATH: {write_history_path}")
+        print("CY_SAFE_IMAGE_REFERENCE_HISTORY_PATHS: " + ", ".join(map(str, reference_history_paths)))
         print(f"CY_SAFE_IMAGE_HISTORY_COUNT_BEFORE: {before_history_count}")
         logging.info(
-            "Cyprus visual history count before generation: namespace=%s path=%s count=%s",
+            "Cyprus visual history count before generation: namespace=%s write_path=%s references=%s count=%s",
             history_namespace,
-            history_path,
+            write_history_path,
+            reference_history_paths,
             before_history_count,
         )
 
@@ -1772,6 +1838,7 @@ async def _build_safe_test_image(
                 variation_attempt=variation_attempt,
                 blocked_scenes=recent_scene_values,
                 blocked_compositions=recent_composition_values,
+                blocked_archetypes=blocked_archetypes,
             )
             last_metadata = dict(metadata)
             target_date_for_diag = str(metadata["forecast_date"])
@@ -1787,7 +1854,8 @@ async def _build_safe_test_image(
                         prompt_metadata=metadata,
                         attempts=attempts,
                         telegram_attempts=telegram_attempts,
-                        history_path=history_path,
+                        write_history_path=write_history_path,
+                        reference_history_paths=reference_history_paths,
                         history_count_before=before_history_count,
                     )
                     return {"result": "skipped_receipt_exists", "message_ids": []}
@@ -1802,7 +1870,8 @@ async def _build_safe_test_image(
                             prompt_metadata=metadata,
                             attempts=attempts,
                             telegram_attempts=telegram_attempts,
-                            history_path=history_path,
+                            write_history_path=write_history_path,
+                            reference_history_paths=reference_history_paths,
                             history_count_before=before_history_count,
                         )
                         return {"result": "skipped_no_text_receipt", "message_ids": []}
@@ -1968,7 +2037,8 @@ async def _build_safe_test_image(
                 selected_scene=metadata["selected_scene"],
                 prompt_version=metadata["prompt_version"],
                 composition=metadata.get("composition"),
-                history_path=history_path,
+                visual_archetype=metadata.get("visual_archetype"),
+                reference_history_paths=reference_history_paths,
             )
             print(
                 "CY_SAFE_IMAGE_DEDUP: "
@@ -2027,6 +2097,7 @@ async def _build_safe_test_image(
                     "variation_attempt": variation_attempt,
                     "selected_scene": metadata["selected_scene"],
                     "composition": metadata.get("composition", ""),
+                    "visual_archetype": metadata.get("visual_archetype", ""),
                     "scene_selection_mode": metadata.get("scene_selection_mode", ""),
                     "composition_selection_mode": metadata.get("composition_selection_mode", ""),
                     "style_name": style_name,
@@ -2102,7 +2173,8 @@ async def _build_safe_test_image(
                     prompt_metadata=last_metadata,
                     attempts=attempts,
                     telegram_attempts=telegram_attempts,
-                    history_path=history_path,
+                    write_history_path=write_history_path,
+                    reference_history_paths=reference_history_paths,
                     history_count_before=before_history_count,
                     generation_summary=_generation_summary(final_reason),
                 )
@@ -2126,7 +2198,8 @@ async def _build_safe_test_image(
                     prompt_metadata=last_metadata,
                     attempts=attempts,
                     telegram_attempts=telegram_attempts,
-                    history_path=history_path,
+                    write_history_path=write_history_path,
+                    reference_history_paths=reference_history_paths,
                     history_count_before=before_history_count,
                     generation_summary=_generation_summary(final_reason),
                 )
@@ -2148,7 +2221,8 @@ async def _build_safe_test_image(
                 prompt_metadata=last_metadata,
                 attempts=attempts,
                 telegram_attempts=telegram_attempts,
-                history_path=history_path,
+                write_history_path=write_history_path,
+                reference_history_paths=reference_history_paths,
                 history_count_before=before_history_count,
                 generation_summary=_generation_summary(final_reason),
             )
@@ -2173,7 +2247,8 @@ async def _build_safe_test_image(
                 selected_scene=metadata["selected_scene"],
                 prompt_version=metadata["prompt_version"],
                 composition=metadata.get("composition"),
-                history_path=history_path,
+                visual_archetype=metadata.get("visual_archetype"),
+                reference_history_paths=reference_history_paths,
             )
             if (
                 not duplicate_result.accepted
@@ -2187,7 +2262,8 @@ async def _build_safe_test_image(
                     prompt_metadata=metadata,
                     attempts=attempts,
                     telegram_attempts=telegram_attempts,
-                    history_path=history_path,
+                    write_history_path=write_history_path,
+                    reference_history_paths=reference_history_paths,
                     history_count_before=before_history_count,
                     generation_summary=_generation_summary(
                         "skipped_duplicate_before_send",
@@ -2201,6 +2277,11 @@ async def _build_safe_test_image(
                     **_generation_summary("skipped_duplicate_before_send", selected_backend),
                 }
             image_bot = Bot(token=TOKEN)
+            image_caption = _cy_image_caption(
+                mode,
+                metadata["forecast_date"],
+                test_label=image_caption_is_test,
+            )
             sent_message, telegram_attempts = await _cy_send_photo_with_retry(
                 image_bot,
                 chat_id=image_chat,
@@ -2219,14 +2300,15 @@ async def _build_safe_test_image(
                 cache_key=metadata["cache_key"],
                 style_name=style_name,
                 composition=metadata.get("composition"),
-                history_path=history_path,
+                visual_archetype=metadata.get("visual_archetype"),
+                history_path=write_history_path,
             )
-            after_history_count = len(load_cyprus_visual_history(history_path))
+            after_history_count = len(load_cyprus_visual_history(write_history_path))
             print(f"CY_SAFE_IMAGE_HISTORY_COUNT_AFTER: {after_history_count}")
             logging.info(
                 "Cyprus visual history count after publication: namespace=%s path=%s count=%s",
                 history_namespace,
-                history_path,
+                write_history_path,
                 after_history_count,
             )
             message_id = getattr(sent_message, "message_id", None)
@@ -2241,6 +2323,7 @@ async def _build_safe_test_image(
                     "phash": history_entry.get("phash"),
                     "selected_scene": metadata["selected_scene"],
                     "composition": metadata.get("composition", ""),
+                    "visual_archetype": metadata.get("visual_archetype", ""),
                     "style_name": style_name,
                     "cache_key": metadata["cache_key"],
                     "backend": selected_backend,
@@ -2260,7 +2343,8 @@ async def _build_safe_test_image(
                 prompt_metadata=metadata,
                 attempts=attempts,
                 telegram_attempts=telegram_attempts,
-                history_path=history_path,
+                write_history_path=write_history_path,
+                reference_history_paths=reference_history_paths,
                 history_count_before=before_history_count,
                 history_count_after=after_history_count,
                 generation_summary=_generation_summary("sent", selected_backend),
@@ -2285,7 +2369,8 @@ async def _build_safe_test_image(
             prompt_metadata=metadata,
             attempts=attempts,
             telegram_attempts=telegram_attempts,
-            history_path=history_path,
+            write_history_path=write_history_path,
+            reference_history_paths=reference_history_paths,
             history_count_before=before_history_count,
             generation_summary=_generation_summary("generated", selected_backend),
         )
@@ -2310,7 +2395,8 @@ async def _build_safe_test_image(
             prompt_metadata=last_metadata,
             attempts=attempts,
             telegram_attempts=telegram_attempts,
-            history_path=history_path_for_diag,
+            write_history_path=write_history_path_for_diag,
+            reference_history_paths=reference_history_paths_for_diag,
             history_count_before=before_history_count,
             history_count_after=after_history_count,
         )
@@ -2496,7 +2582,7 @@ async def main() -> None:
         v2_raw = _apply_astro_cleanup(v2_raw)
         v2_raw = _apply_cyprus_morning_raw_context(v2_raw, raw_msg, legacy_result.text, mode)
         v2_raw = _apply_cyprus_sensor_cleanup(v2_raw)
-        v2_raw = _apply_editorial_voice(v2_raw, mode)
+        v2_raw = "\n".join(_without_editorial_voice(v2_raw))
         v2_raw = _apply_score_conclusion(v2_raw)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         v2_raw = _apply_compact(v2_raw)
@@ -2508,6 +2594,10 @@ async def main() -> None:
         print("\n===== FORMAT_V2 SAFETY SUMMARY =====\n")
         print(validation_summary(final_result))
 
+    final_result.text = finalize_hashtags_at_end(
+        final_result.text,
+        canonical_hashtags=_CY_CANONICAL_DAILY_HASHTAGS if use_format_v2 else None,
+    )
     chunks = split_telegram_text(final_result.text)
     _CY_MORNING_FINAL_TEXT = final_result.text
     _cy_morning_phase(

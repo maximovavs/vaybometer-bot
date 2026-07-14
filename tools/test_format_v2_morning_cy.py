@@ -6,9 +6,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sys
 import tempfile
 import types
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +43,7 @@ from safe_test_post import (  # noqa: E402
     _apply_cyprus_sensor_cleanup,
     _build_safe_test_image,
     _cy_image_receipt_path,
+    _cy_image_caption,
     _cy_text_receipt_path,
     _cy_write_image_diagnostics,
     _send_telegram_text_chunks,
@@ -53,6 +56,7 @@ from safe_test_post import (  # noqa: E402
     has_valid_cy_text_delivery,
     is_valid_cy_image_receipt,
     is_valid_cy_text_receipt,
+    finalize_hashtags_at_end,
 )
 
 
@@ -346,6 +350,26 @@ def cy_morning_recent_safecast_elevated_is_omitted() -> None:
     assert "🧪" not in text
     assert "Частный датчик" not in text
     assert "Safecast CY" not in text
+
+
+def cy_morning_hashtags_are_final_without_editorial_tail() -> None:
+    built = build_morning_format_v2("Кипр", MORNING_WITH_SEA)
+    assert "💬 Настрой" not in built
+    assert "💬 По ощущениям" not in built
+    dirty = built + "\n#Кипр #погода #здоровье #Никосия #Тродос\n\n"
+    text = finalize_hashtags_at_end(
+        dirty,
+        canonical_hashtags="#Кипр #погода #здоровье #Никосия #Тродос",
+    )
+    lines = [line for line in text.splitlines() if line.strip()]
+    assert lines[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
+    assert text.count("#Кипр #погода #здоровье #Никосия #Тродос") == 1
+    assert _cy_image_caption(
+        "morning",
+        "2026-07-14",
+        test_label=True,
+        current_date=date(2026, 7, 14),
+    ) == "🧪 Визуальный вайб сегодняшнего дня на Кипре 🌊"
     assert "PM₂.₅" in text
 
 
@@ -776,6 +800,120 @@ def cy_image_recovery_force_regenerates_instead_of_reusing_cache() -> None:
         count, paths = asyncio.run(_run(tmp))
         assert count == 2
         assert len(set(paths)) == 2
+
+    _with_temp_delivery_dir(_case)
+
+
+def cy_test_image_checks_prod_history_and_writes_only_test_history() -> None:
+    async def _run(tmp: Path) -> tuple[dict, bytes, list[dict[str, object]]]:
+        world_old = sys.modules.get("world_en")
+        imagegen_old = sys.modules.get("world_en.imagegen")
+        old_prod = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
+        old_test = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
+        old_bot = safe_module.Bot
+        old_token = safe_module.TOKEN
+        old_env = {name: os.environ.get(name) for name in (
+            "CHANNEL_ID_TEST",
+            "CY_SAFE_IMAGE_DIR",
+            "CY_IMG_MIN_BYTES",
+            "CY_DISABLE_BAY_VISUALS",
+        )}
+        prod = tmp / "cyprus_visual_history_prod.json"
+        test = tmp / "cyprus_visual_history_test.json"
+        duplicate_seed = tmp / "production.ppm"
+        _write_ppm(duplicate_seed, color=(70, 90, 120), comment="production")
+        cyprus_visual_dedup.record_cyprus_visual_publication(
+            date_value="2026-06-20",
+            post_type="evening",
+            image_path=duplicate_seed,
+            selected_scene="protected_bay",
+            prompt_version="cyprus_visual_v5",
+            cache_key="fixture-prod",
+            style_name="fixture-prod",
+            composition="wide panorama composition",
+            visual_archetype="bay_panorama",
+            history_path=prod,
+        )
+        prod_before = prod.read_bytes()
+        calls: list[str] = []
+        photo_calls: list[dict[str, object]] = []
+        world_stub = types.ModuleType("world_en")
+        imagegen_stub = types.ModuleType("world_en.imagegen")
+
+        def _generate(_prompt: str, requested_path: str, **_kwargs):
+            calls.append(requested_path)
+            path = Path(requested_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if len(calls) == 1:
+                shutil.copy2(duplicate_seed, path)
+            else:
+                _write_gradient_ppm(path, comment="distinct-test")
+            return types.SimpleNamespace(
+                path=str(path),
+                backend="custom",
+                byte_count=path.stat().st_size,
+                backend_attempts=[{"backend": "custom"}],
+            )
+
+        class FakeBot:
+            def __init__(self, token: str) -> None:
+                self.token = token
+
+            async def send_photo(self, **kwargs):
+                photo_calls.append(kwargs)
+                return types.SimpleNamespace(message_id=8080)
+
+        imagegen_stub.generate_astro_image_result_with_exclusions = _generate
+        imagegen_stub.generate_astro_image = lambda prompt, path: str(_generate(prompt, path).path)
+        world_stub.imagegen = imagegen_stub
+        sys.modules["world_en"] = world_stub
+        sys.modules["world_en.imagegen"] = imagegen_stub
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = prod
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = test
+        safe_module.Bot = FakeBot
+        safe_module.TOKEN = "fixture-token"
+        os.environ["CHANNEL_ID_TEST"] = "9090"
+        os.environ["CY_SAFE_IMAGE_DIR"] = str(tmp / "images")
+        os.environ["CY_IMG_MIN_BYTES"] = "12000"
+        os.environ["CY_DISABLE_BAY_VISUALS"] = "1"
+        try:
+            result = await _build_safe_test_image(
+                REAL_LEGACY_MORNING_WITHOUT_SEA_ASTRO,
+                "morning",
+                generate_image=True,
+                send_image_to_test=True,
+                send_image_to_chat=False,
+                image_chat_id=None,
+            )
+        finally:
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = old_prod
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = old_test
+            safe_module.Bot = old_bot
+            safe_module.TOKEN = old_token
+            if world_old is None:
+                sys.modules.pop("world_en", None)
+            else:
+                sys.modules["world_en"] = world_old
+            if imagegen_old is None:
+                sys.modules.pop("world_en.imagegen", None)
+            else:
+                sys.modules["world_en.imagegen"] = imagegen_old
+            for name, value in old_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        assert prod.read_bytes() == prod_before
+        assert len(cyprus_visual_dedup.load_cyprus_visual_history(test)) == 1
+        return result, prod_before, photo_calls
+
+    def _case(tmp: Path) -> None:
+        result, _prod_before, photo_calls = asyncio.run(_run(tmp))
+        assert result["result"] == "sent"
+        attempts = result.get("attempts") or []
+        assert attempts[0]["dedup_reason"] == "exact_duplicate"
+        assert attempts[-1]["dedup_reason"] == "accepted"
+        assert len(photo_calls) == 1
 
     _with_temp_delivery_dir(_case)
 
@@ -1531,6 +1669,7 @@ def main() -> None:
         cy_morning_preserves_full_moon_line_without_illumination_duplicate,
         cy_morning_poor_air_adds_health_recommendation,
         cy_morning_recent_safecast_elevated_is_omitted,
+        cy_morning_hashtags_are_final_without_editorial_tail,
         cy_morning_real_safe_path_restores_sea_and_astro_from_raw,
         cy_morning_image_failure_still_sends_text_chunks,
         cy_morning_recovery_publishes_then_delayed_primary_skips_by_receipt,
@@ -1551,6 +1690,7 @@ def main() -> None:
         cy_missing_image_message_id_does_not_validate_receipt,
         cy_image_diagnostics_redacts_secrets,
         cy_image_recovery_force_regenerates_instead_of_reusing_cache,
+        cy_test_image_checks_prod_history_and_writes_only_test_history,
         cy_image_candidate_errors_continue_to_later_candidate,
         cy_image_repeated_pollinations_switches_backend_and_sends_receipt,
         cy_image_raising_backend_is_bounded_to_ten_calls,
