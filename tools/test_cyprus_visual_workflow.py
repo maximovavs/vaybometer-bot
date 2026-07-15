@@ -75,12 +75,53 @@ def _image_receipt(day: str, post_type: str = "morning", sent_at: str = "2026-07
     }
 
 
+def _provider_health(day: str, post_type: str = "morning", namespace: str = "prod") -> dict:
+    base = {
+        "repeated_dhash": "",
+        "repeated_phash": "",
+        "duplicate_count": 0,
+        "invalid_response_count": 0,
+        "consecutive_failures": 0,
+        "excluded_until_utc": "",
+        "last_error_type": "",
+        "last_attempt_utc": "2026-07-15T01:04:00Z",
+        "run_id": "fixture-run",
+    }
+    return {
+        "schema_version": 1,
+        "target_date": day,
+        "post_type": post_type,
+        "namespace": namespace,
+        "updated_at_utc": "2026-07-15T01:05:00Z",
+        "providers": {
+            "pollinations": {
+                **base,
+                "repeated_dhash": "0000393f47c6b62e",
+                "repeated_phash": "d2a4af9a406f70bc",
+                "duplicate_count": 2,
+                "excluded_until_utc": "2026-07-17T00:00:00Z",
+                "last_error_type": "ProviderRepeatedPerceptualOutput",
+            },
+            "stable_horde": dict(base),
+            "custom": dict(base),
+        },
+    }
+
+
 def _write_json(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def _make_snapshot_zip(base: Path, artifact_id: int, *, history, text_receipts=(), image_receipts=()) -> Path:
+def _make_snapshot_zip(
+    base: Path,
+    artifact_id: int,
+    *,
+    history,
+    text_receipts=(),
+    image_receipts=(),
+    provider_health=(),
+) -> Path:
     source = base / f"artifact_{artifact_id}_src"
     cache = source / ".cache"
     _write_json(cache / "cyprus_visual_history_prod.json", history)
@@ -90,6 +131,12 @@ def _make_snapshot_zip(base: Path, artifact_id: int, *, history, text_receipts=(
     for receipt in image_receipts:
         name = f"{receipt['target_date']}-{receipt['post_type']}.json"
         _write_json(cache / "cy_image_delivery" / name, receipt)
+    for health in provider_health:
+        name = f"{health['target_date']}-{health['post_type']}.json"
+        _write_json(
+            cache / "cy_image_provider_health" / health["namespace"] / name,
+            health,
+        )
     zip_path = base / f"artifact_{artifact_id}.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
         for item in source.rglob("*"):
@@ -352,6 +399,7 @@ def test_delivery_receipts_diagnostics_and_snapshots() -> None:
     _assert("permissions_actions_read", "actions: read" in text)
     _assert("image_delivery_artifact_path", ".cache/cy_image_delivery" in text)
     _assert("text_delivery_artifact_path", ".cache/cy_text_delivery" in text)
+    _assert("provider_health_artifact_path", ".cache/cy_image_provider_health" in text)
     _assert("diagnostics_artifact", "cyprus-image-diagnostics-${{ github.job }}" in text)
     _assert("diagnostics_path", "path: .cache/cy_image_diagnostics" in text)
     _assert("history_snapshot_artifact", "cyprus-visual-history-prod-snapshot-${{ github.job }}" in text)
@@ -364,6 +412,7 @@ def test_delivery_receipts_diagnostics_and_snapshots() -> None:
     _assert("snapshot_restore_validates_receipts", "_valid_text_receipt" in helper and "_valid_image_receipt" in helper)
     _assert("snapshot_restore_rejects_invalid_newest", "Skipping invalid Cyprus visual snapshot artifact" in helper)
     _assert("snapshot_restore_restores_receipts", "cy_image_delivery" in helper and "cy_text_delivery" in helper)
+    _assert("snapshot_restore_restores_provider_health", "_restore_provider_health" in helper)
     _assert("snapshot_restore_used_in_four_jobs", text.count("restore_cy_visual_snapshot.py") >= 4)
     print("PASS delivery_receipts_diagnostics_and_snapshots")
 
@@ -404,6 +453,40 @@ def test_snapshot_restores_receipts_even_when_history_current() -> None:
         _assert("snapshot_text_receipt_restored", (tmp / ".cache" / "cy_text_delivery" / "2026-07-13-morning.json").exists())
         _assert("snapshot_image_receipt_restored", (tmp / ".cache" / "cy_image_delivery" / "2026-07-13-morning.json").exists())
     print("PASS snapshot_restores_receipts_even_when_history_current")
+
+
+def test_snapshot_restores_date_scoped_provider_health() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        local_history = [_history_entry("2026-07-14", "morning", "f" * 64)]
+        _write_json(tmp / ".cache" / "cyprus_visual_history_prod.json", local_history)
+        snapshot = _make_snapshot_zip(
+            tmp,
+            111,
+            history=local_history,
+            text_receipts=[_text_receipt("2026-07-15", "morning")],
+            image_receipts=[_image_receipt("2026-07-15", "morning")],
+            provider_health=[
+                _provider_health("2026-07-15", "morning", "prod"),
+                _provider_health("2026-07-15", "morning", "test"),
+            ],
+        )
+        _run_snapshot_helper(
+            tmp,
+            [(111, "2026-07-15T05:00:00Z", snapshot)],
+            target_date="2026-07-15",
+            post_type="morning",
+        )
+        prod_path = tmp / ".cache" / "cy_image_provider_health" / "prod" / "2026-07-15-morning.json"
+        test_path = tmp / ".cache" / "cy_image_provider_health" / "test" / "2026-07-15-morning.json"
+        _assert("snapshot_prod_provider_health_restored", prod_path.exists())
+        _assert("snapshot_test_provider_health_restored", test_path.exists())
+        prod = json.loads(prod_path.read_text("utf-8"))
+        _assert(
+            "snapshot_stuck_pollinations_preserved",
+            bool(prod["providers"]["pollinations"]["excluded_until_utc"]),
+        )
+    print("PASS snapshot_restores_date_scoped_provider_health")
 
 
 def test_snapshot_merges_recent_history_without_21_day_gap() -> None:
@@ -625,6 +708,7 @@ TESTS = [
     test_delivery_receipts_diagnostics_and_snapshots,
     test_main_morning_snapshot_restore_is_targeted,
     test_snapshot_restores_receipts_even_when_history_current,
+    test_snapshot_restores_date_scoped_provider_health,
     test_snapshot_merges_recent_history_without_21_day_gap,
     test_snapshot_skips_malformed_newest_artifact,
     test_snapshot_receipt_validation_and_newer_local_protection,

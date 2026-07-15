@@ -344,6 +344,7 @@ def cy_morning_image_phase_for_result(image_result: str) -> str:
         "skipped_no_text_receipt": "image_skipped",
         "skipped_duplicate": "image_skipped",
         "skipped_duplicate_before_send": "image_skipped",
+        "skipped_duplicate_local_weather_card": "image_skipped",
     }.get(str(image_result or "unknown"), "image_result")
 
 
@@ -1749,6 +1750,17 @@ async def _build_safe_test_image(
             load_cyprus_visual_history,
             load_cyprus_visual_reference_history,
             record_cyprus_visual_publication,
+            sha256_file,
+        )
+        from cyprus_image_recovery import (
+            LOCAL_WEATHER_CARD_VERSION,
+            load_provider_health,
+            mark_provider_duplicate,
+            provider_health_exclusions,
+            provider_health_path,
+            record_provider_attempts,
+            render_local_weather_card,
+            write_provider_health,
         )
         from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata
         import world_en.imagegen as imagegen_module
@@ -1814,6 +1826,28 @@ async def _build_safe_test_image(
         excluded_backends: set[str] = set()
         backend_duplicate_counts: dict[str, int] = {}
         seen_run_hashes: dict[tuple[str, str], dict[str, str]] = {}
+        provider_call_limits = {"pollinations": 2, "stable_horde": 3, "custom": 2}
+        provider_call_counts = {name: 0 for name in provider_call_limits}
+        provider_health: dict | None = None
+        provider_health_file = ""
+        configured_backends: list[str] = []
+        available_backends: list[str] = []
+        unconfigured_backends: list[str] = []
+        local_fallback_generated = False
+
+        def _remaining_provider_calls() -> dict[str, int]:
+            return {
+                name: max(0, limit - provider_call_counts.get(name, 0))
+                for name, limit in provider_call_limits.items()
+            }
+
+        def _network_backends_exhausted() -> bool:
+            network = [name for name in configured_backends if name in provider_call_limits]
+            return bool(network) and all(
+                name in excluded_backends
+                or provider_call_counts.get(name, 0) >= provider_call_limits[name]
+                for name in network
+            )
 
         def _generation_summary(final_reason: str, selected_backend: str = "") -> dict:
             return {
@@ -1823,6 +1857,15 @@ async def _build_safe_test_image(
                 "backend_call_count": backend_generation_calls,
                 "backend_call_limit": backend_call_limit,
                 "excluded_backends": sorted(excluded_backends),
+                "configured_backends": configured_backends,
+                "available_backends": [
+                    name for name in available_backends if name not in excluded_backends
+                ],
+                "unconfigured_backends": unconfigured_backends,
+                "provider_call_limits": provider_call_limits,
+                "provider_call_counts": provider_call_counts,
+                "provider_health_path": provider_health_file,
+                "local_fallback_generated": local_fallback_generated,
                 "selected_backend": selected_backend,
                 "final_reason": final_reason,
             }
@@ -1843,6 +1886,38 @@ async def _build_safe_test_image(
             last_metadata = dict(metadata)
             target_date_for_diag = str(metadata["forecast_date"])
             cache_key = metadata["cache_key"]
+            if provider_health is None:
+                provider_health = load_provider_health(
+                    metadata["forecast_date"],
+                    mode,
+                    history_namespace,
+                )
+                provider_health_file = str(
+                    provider_health_path(metadata["forecast_date"], mode, history_namespace)
+                )
+                health_excluded = provider_health_exclusions(provider_health)
+                excluded_backends.update(health_excluded)
+                availability_fn = getattr(imagegen_module, "configured_image_backends", None)
+                if callable(availability_fn):
+                    availability = availability_fn(excluded_backends=set(excluded_backends))
+                    configured_backends = list(availability.get("configured_backends") or [])
+                    available_backends = list(availability.get("available_backends") or [])
+                    unconfigured_backends = list(availability.get("unconfigured_backends") or [])
+                else:
+                    configured_backends = ["pollinations", "stable_horde"]
+                    available_backends = [
+                        name for name in configured_backends if name not in excluded_backends
+                    ]
+                    unconfigured_backends = ["custom"]
+                print(f"CY_SAFE_IMAGE_CONFIGURED_BACKENDS: {','.join(configured_backends) or 'none'}")
+                print(f"CY_SAFE_IMAGE_AVAILABLE_BACKENDS: {','.join(available_backends) or 'none'}")
+                print(f"CY_SAFE_IMAGE_UNCONFIGURED_BACKENDS: {','.join(unconfigured_backends) or 'none'}")
+                print(f"CY_SAFE_IMAGE_PROVIDER_HEALTH_PATH: {provider_health_file}")
+                if health_excluded:
+                    print(
+                        "CY_SAFE_IMAGE_PROVIDER_HEALTH_EXCLUDED: "
+                        + ",".join(sorted(health_excluded))
+                    )
             if production_image_send:
                 if is_valid_cy_image_receipt(metadata["forecast_date"], mode):
                     receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
@@ -1927,6 +2002,7 @@ async def _build_safe_test_image(
                             str(requested_path),
                             excluded_backends=set(excluded_backends),
                             max_backend_calls=remaining_backend_calls,
+                            backend_call_limits=_remaining_provider_calls(),
                         )
                         structured_outcome_returned = True
                         backend_attempts = _cy_image_backend_attempts(outcome)
@@ -1935,6 +2011,19 @@ async def _build_safe_test_image(
                             reported_calls = len(backend_attempts)
                         backend_generation_calls += min(remaining_backend_calls, reported_calls)
                         provider_failure_count += _cy_image_provider_failure_count(backend_attempts)
+                        for item in backend_attempts:
+                            item_backend = str(item.get("backend") or "").strip().lower()
+                            if item_backend == "horde":
+                                item_backend = "stable_horde"
+                            if item_backend in provider_call_counts:
+                                provider_call_counts[item_backend] += 1
+                        if provider_health is not None and backend_attempts:
+                            record_provider_attempts(
+                                provider_health,
+                                backend_attempts,
+                                run_id=os.getenv("GITHUB_RUN_ID", ""),
+                            )
+                            write_provider_health(provider_health)
                         generated = getattr(outcome, "result", None)
                         outcome_exhausted = bool(getattr(outcome, "exhausted", False))
                         if not generated:
@@ -1951,6 +2040,7 @@ async def _build_safe_test_image(
                                 str(requested_path),
                                 excluded_backends=set(excluded_backends),
                                 max_backend_calls=remaining_backend_calls,
+                                backend_call_limits=_remaining_provider_calls(),
                             )
                         else:
                             generated = imagegen_module.generate_astro_image(prompt, str(requested_path))
@@ -1958,6 +2048,19 @@ async def _build_safe_test_image(
                         reported_calls = max(1, len(backend_attempts))
                         backend_generation_calls += min(remaining_backend_calls, reported_calls)
                         provider_failure_count += _cy_image_provider_failure_count(backend_attempts)
+                        for item in backend_attempts:
+                            item_backend = str(item.get("backend") or "").strip().lower()
+                            if item_backend == "horde":
+                                item_backend = "stable_horde"
+                            if item_backend in provider_call_counts:
+                                provider_call_counts[item_backend] += 1
+                        if provider_health is not None and backend_attempts:
+                            record_provider_attempts(
+                                provider_health,
+                                backend_attempts,
+                                run_id=os.getenv("GITHUB_RUN_ID", ""),
+                            )
+                            write_provider_health(provider_health)
                         if not generated:
                             provider_failure_count += int(not backend_attempts)
                             raise RuntimeError("image backend returned no file")
@@ -2091,6 +2194,20 @@ async def _build_safe_test_image(
                     excluded_backends.add(backend)
                     provider_switch_reason = provider_switch_reason or "backend_three_duplicate_candidates"
 
+            if provider_health is not None and (
+                provider_switch_reason == "provider_repeated_output"
+                or duplicate_result.reason in {"exact_duplicate", "near_duplicate", "near_duplicate_phash"}
+            ):
+                mark_provider_duplicate(
+                    provider_health,
+                    backend,
+                    dhash=duplicate_result.perceptual_hash or "",
+                    phash=duplicate_result.phash or "",
+                    stuck=provider_switch_reason == "provider_repeated_output",
+                    run_id=os.getenv("GITHUB_RUN_ID", ""),
+                )
+                write_provider_health(provider_health)
+
             attempts.append(
                 {
                     "attempt": candidate_attempt,
@@ -2155,6 +2272,132 @@ async def _build_safe_test_image(
                 variation_attempt,
             )
             variation_attempt += 1
+
+        if selected_candidate is None:
+            fallback_allowed = bool(
+                production_image_send
+                and image_only_recovery
+                and last_metadata
+                and has_valid_cy_text_delivery(target_date_for_diag, mode)
+                and not is_valid_cy_image_receipt(target_date_for_diag, mode)
+                and (_network_backends_exhausted() or backend_generation_calls >= backend_call_limit)
+            )
+            if fallback_allowed:
+                local_metadata = dict(last_metadata or {})
+                local_metadata.update(
+                    {
+                        "prompt_version": LOCAL_WEATHER_CARD_VERSION,
+                        "selected_scene": "local_weather_card",
+                        "composition": "weather_card",
+                        "visual_archetype": "weather_card",
+                        "scene_selection_mode": "local_fallback",
+                        "composition_selection_mode": "local_fallback",
+                        "cache_key": (
+                            f"region=cyprus|forecast_date={target_date_for_diag}|post_type={mode}"
+                            f"|prompt_version={LOCAL_WEATHER_CARD_VERSION}|selected_scene=local_weather_card"
+                        ),
+                    }
+                )
+                local_path = _cy_safe_image_output_path(
+                    f"local_weather_card_{target_date_for_diag}_{mode}"
+                ).with_suffix(".png")
+                local_result = render_local_weather_card(
+                    final_text,
+                    target_date=target_date_for_diag,
+                    post_type=mode,
+                    output_path=local_path,
+                    minimum_bytes=minimum,
+                )
+                local_path = Path(str(local_result["path"]))
+                local_size = int(local_result["bytes"])
+                local_sha256 = sha256_file(local_path)
+                existing_local_exact = next(
+                    (
+                        entry
+                        for entry in restored_history
+                        if str(entry.get("sha256") or "") == local_sha256
+                        and str(entry.get("date") or "") == target_date_for_diag
+                        and str(entry.get("post_type") or "") == mode
+                    ),
+                    None,
+                )
+                existing_local_date = next(
+                    (
+                        entry
+                        for entry in restored_history
+                        if str(entry.get("date") or "") == target_date_for_diag
+                        and str(entry.get("post_type") or "") == mode
+                        and str(entry.get("selected_scene") or "") == "local_weather_card"
+                    ),
+                    None,
+                )
+                attempts.append(
+                    {
+                        "attempt": generation_attempt + 1,
+                        "variation_attempt": variation_attempt,
+                        "selected_scene": "local_weather_card",
+                        "composition": "weather_card",
+                        "visual_archetype": "weather_card",
+                        "style_name": "local_weather_card",
+                        "cache_key": local_metadata["cache_key"],
+                        "cache_status": "local_generated",
+                        "backend": "local_weather_card",
+                        "backend_attempts": [],
+                        "backend_call_count": backend_generation_calls,
+                        "backend_call_limit": backend_call_limit,
+                        "backend_excluded": sorted(excluded_backends),
+                        "image_path": str(local_path),
+                        "image_bytes": local_size,
+                        "dedup_reason": (
+                            "exact_duplicate"
+                            if existing_local_exact
+                            else "local_date_post_type_duplicate"
+                            if existing_local_date
+                            else "local_exact_sha_clear"
+                        ),
+                        "sha256": local_sha256,
+                        "local_metadata": local_result.get("metadata") or {},
+                    }
+                )
+                local_fallback_generated = True
+                last_metadata = local_metadata
+                if existing_local_exact or existing_local_date:
+                    final_reason = "skipped_duplicate_local_weather_card"
+                    _cy_write_image_diagnostics(
+                        mode=mode,
+                        target_date=target_date_for_diag,
+                        result=final_reason,
+                        prompt_metadata=local_metadata,
+                        attempts=attempts,
+                        telegram_attempts=telegram_attempts,
+                        write_history_path=write_history_path,
+                        reference_history_paths=reference_history_paths,
+                        history_count_before=before_history_count,
+                        generation_summary=_generation_summary(
+                            final_reason,
+                            "local_weather_card",
+                        ),
+                    )
+                    return {
+                        "result": final_reason,
+                        "message_ids": [],
+                        "backend": "local_weather_card",
+                        "attempts": attempts,
+                        **_generation_summary(final_reason, "local_weather_card"),
+                    }
+                selected_candidate = (
+                    "",
+                    "local_weather_card",
+                    local_metadata,
+                    local_path,
+                    local_size,
+                    None,
+                    "local_weather_card",
+                )
+                print(
+                    "CY_SAFE_IMAGE_LOCAL_FALLBACK: "
+                    f"path={local_path}; bytes={local_size}; sha256={local_sha256[:12]}"
+                )
 
         if selected_candidate is None:
             mixed_failure = bool(
@@ -2240,42 +2483,43 @@ async def _build_safe_test_image(
 
         sent_message_ids: list[int] = []
         if image_chat is not None:
-            duplicate_result = evaluate_cyprus_visual_candidate(
-                image_path,
-                date_value=metadata["forecast_date"],
-                post_type=mode,
-                selected_scene=metadata["selected_scene"],
-                prompt_version=metadata["prompt_version"],
-                composition=metadata.get("composition"),
-                visual_archetype=metadata.get("visual_archetype"),
-                reference_history_paths=reference_history_paths,
-            )
-            if (
-                not duplicate_result.accepted
-                and not _cy_accept_lru_recent_visual_candidate(metadata, duplicate_result.reason)
-            ):
-                print(f"CY_SAFE_IMAGE_RESULT: skipped_duplicate_before_send ({duplicate_result.reason})")
-                _cy_write_image_diagnostics(
-                    mode=mode,
-                    target_date=metadata["forecast_date"],
-                    result="skipped_duplicate_before_send",
-                    prompt_metadata=metadata,
-                    attempts=attempts,
-                    telegram_attempts=telegram_attempts,
-                    write_history_path=write_history_path,
+            if selected_backend != "local_weather_card":
+                duplicate_result = evaluate_cyprus_visual_candidate(
+                    image_path,
+                    date_value=metadata["forecast_date"],
+                    post_type=mode,
+                    selected_scene=metadata["selected_scene"],
+                    prompt_version=metadata["prompt_version"],
+                    composition=metadata.get("composition"),
+                    visual_archetype=metadata.get("visual_archetype"),
                     reference_history_paths=reference_history_paths,
-                    history_count_before=before_history_count,
-                    generation_summary=_generation_summary(
-                        "skipped_duplicate_before_send",
-                        selected_backend,
-                    ),
                 )
-                return {
-                    "result": "skipped_duplicate_before_send",
-                    "message_ids": [],
-                    "backend": selected_backend,
-                    **_generation_summary("skipped_duplicate_before_send", selected_backend),
-                }
+                if (
+                    not duplicate_result.accepted
+                    and not _cy_accept_lru_recent_visual_candidate(metadata, duplicate_result.reason)
+                ):
+                    print(f"CY_SAFE_IMAGE_RESULT: skipped_duplicate_before_send ({duplicate_result.reason})")
+                    _cy_write_image_diagnostics(
+                        mode=mode,
+                        target_date=metadata["forecast_date"],
+                        result="skipped_duplicate_before_send",
+                        prompt_metadata=metadata,
+                        attempts=attempts,
+                        telegram_attempts=telegram_attempts,
+                        write_history_path=write_history_path,
+                        reference_history_paths=reference_history_paths,
+                        history_count_before=before_history_count,
+                        generation_summary=_generation_summary(
+                            "skipped_duplicate_before_send",
+                            selected_backend,
+                        ),
+                    )
+                    return {
+                        "result": "skipped_duplicate_before_send",
+                        "message_ids": [],
+                        "backend": selected_backend,
+                        **_generation_summary("skipped_duplicate_before_send", selected_backend),
+                    }
             image_bot = Bot(token=TOKEN)
             image_caption = _cy_image_caption(
                 mode,

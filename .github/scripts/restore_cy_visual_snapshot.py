@@ -155,6 +155,29 @@ def _valid_image_receipt(data: Any, *, target_date: str | None = None, post_type
     return isinstance(data.get("sent_at_utc"), str) and bool(str(data.get("sent_at_utc")).strip())
 
 
+def _valid_provider_health(
+    data: Any,
+    *,
+    target_date: str | None = None,
+    post_type: str | None = None,
+    namespace: str | None = None,
+) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if target_date and data.get("target_date") != target_date:
+        return False
+    if post_type and data.get("post_type") != post_type:
+        return False
+    if namespace and data.get("namespace") != namespace:
+        return False
+    if data.get("namespace") not in {"prod", "test"}:
+        return False
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        return False
+    return all(isinstance(providers.get(name), dict) for name in ("pollinations", "stable_horde", "custom"))
+
+
 def _receipt_is_newer_or_equal(local_data: dict[str, Any], snapshot_data: dict[str, Any]) -> bool:
     local_time = _parse_time(local_data.get("sent_at_utc"))
     snapshot_time = _parse_time(snapshot_data.get("sent_at_utc"))
@@ -236,6 +259,62 @@ def _local_receipt_valid(
     except Exception:
         return False
     return validator(data, target_date=target_date, post_type=post_type)
+
+
+def _restore_provider_health(
+    source_root: Path,
+    destination_cache: Path,
+    *,
+    target_date: str | None,
+    post_type: str | None,
+) -> tuple[int, str]:
+    source_dir = _receipt_source_dir(source_root, "cy_image_provider_health")
+    if not source_dir.is_dir():
+        return 0, "missing"
+    restored = 0
+    status = "missing"
+    for namespace in ("prod", "test"):
+        namespace_dir = source_dir / namespace
+        if target_date and post_type:
+            candidates = [namespace_dir / f"{target_date}-{post_type}.json"]
+        else:
+            candidates = sorted(namespace_dir.glob("*.json")) if namespace_dir.is_dir() else []
+        for source in candidates:
+            if not source.is_file():
+                continue
+            try:
+                snapshot_data = _load_json(source)
+            except Exception:
+                status = "invalid"
+                continue
+            if not _valid_provider_health(
+                snapshot_data,
+                target_date=target_date,
+                post_type=post_type,
+                namespace=namespace,
+            ):
+                status = "invalid"
+                continue
+            destination = destination_cache / "cy_image_provider_health" / namespace / source.name
+            try:
+                local_data = _load_json(destination)
+            except Exception:
+                local_data = None
+            if _valid_provider_health(
+                local_data,
+                target_date=target_date,
+                post_type=post_type,
+                namespace=namespace,
+            ) and _receipt_is_newer_or_equal(local_data, snapshot_data):
+                status = "already_newer"
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            restored += 1
+            status = "restored"
+    if not (target_date and post_type) and restored:
+        status = "bulk_restored"
+    return restored, status
 
 
 def _gh_json(args: list[str]) -> dict[str, Any]:
@@ -336,6 +415,12 @@ def main() -> int:
                     target_date=target_date,
                     post_type=post_type,
                 )
+                health_restored, health_status = _restore_provider_health(
+                    extract_dir,
+                    destination_cache,
+                    target_date=target_date,
+                    post_type=post_type,
+                )
                 text_ok = _local_receipt_valid(
                     destination_cache,
                     dir_name="cy_text_delivery",
@@ -357,6 +442,7 @@ def main() -> int:
                     f"local_latest={local_latest}; snapshot_latest={snapshot_latest}; "
                     f"text_receipt={text_status}; image_receipt={image_status}; "
                     f"text_receipts_restored={text_restored}; image_receipts_restored={image_restored}; "
+                    f"provider_health={health_status}; provider_health_restored={health_restored}; "
                     f"final_text_receipt={text_ok}; final_image_receipt={image_ok}."
                 )
                 local_entries = merged

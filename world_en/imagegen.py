@@ -56,7 +56,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Any, Optional, Tuple, Dict
 from urllib.parse import quote_plus
 
 import requests
@@ -172,6 +172,38 @@ class ImageGenerationOutcome:
     error_message: str = ""
     exhausted: bool = False
     actual_backend_call_count: int = 0
+    configured_backends: list[str] = field(default_factory=list)
+    available_backends: list[str] = field(default_factory=list)
+    unconfigured_backends: list[str] = field(default_factory=list)
+
+
+_LAST_BACKEND_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
+
+
+def configured_image_backends(*, excluded_backends: set[str] | None = None) -> dict[str, list[str]]:
+    """Return safe backend availability without exposing credentials."""
+
+    excluded = {str(item).strip().lower() for item in (excluded_backends or set()) if str(item).strip()}
+    configured = ["pollinations", "stable_horde"]
+    unconfigured: list[str] = []
+    if CUSTOM_IMAGE_BASE_URL:
+        configured.append("custom")
+    else:
+        unconfigured.append("custom")
+    available = [name for name in configured if name not in excluded and not (name == "stable_horde" and "horde" in excluded)]
+    return {
+        "configured_backends": configured,
+        "available_backends": available,
+        "unconfigured_backends": unconfigured,
+    }
+
+
+def _set_backend_diagnostics(backend: str, payload: dict[str, Any]) -> None:
+    _LAST_BACKEND_DIAGNOSTICS[str(backend)] = dict(payload)
+
+
+def _take_backend_diagnostics(backend: str) -> dict[str, Any]:
+    return dict(_LAST_BACKEND_DIAGNOSTICS.pop(str(backend), {}))
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -387,6 +419,23 @@ def _fetch_from_pollinations(
     """
     url = _pollinations_url(prompt, size)
     headers = _pollinations_headers()
+    started = time.monotonic()
+    diagnostics: dict[str, Any] = {
+        "http_status": None,
+        "payload_byte_count": 0,
+        "content_type": "",
+        "exception_type": "",
+        "error_category": "",
+        "error_message": "",
+        "elapsed_seconds": 0.0,
+    }
+
+    def finish(category: str = "", message: str = "", exc: BaseException | None = None) -> None:
+        diagnostics["error_category"] = category
+        diagnostics["error_message"] = " ".join(str(message or "").split())[:300]
+        diagnostics["exception_type"] = exc.__class__.__name__ if exc is not None else ""
+        diagnostics["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        _set_backend_diagnostics("pollinations", diagnostics)
 
     # 1) основной запрос (заголовки)
     logger.info("Pollinations request: %s", url)
@@ -394,6 +443,8 @@ def _fetch_from_pollinations(
         resp = requests.get(url, headers=headers, timeout=POLLINATIONS_TIMEOUT)
     except Exception as exc:
         logger.warning("Pollinations error: %s", exc)
+        diagnostics["exception_type"] = exc.__class__.__name__
+        diagnostics["error_message"] = " ".join(str(exc).split())[:300]
         resp = None
 
     # 2) опциональный повтор с query-token (если включено)
@@ -404,11 +455,16 @@ def _fetch_from_pollinations(
             resp = requests.get(real_url, headers={k: v for k, v in headers.items() if k.lower() != "authorization"}, timeout=POLLINATIONS_TIMEOUT)
         except Exception as exc:
             logger.warning("Pollinations error (query-token): %s", exc)
+            finish("provider_timeout", str(exc), exc)
             return None
 
     if resp is None:
+        finish("provider_timeout", diagnostics["error_message"] or "Pollinations returned no response")
         return None
 
+    diagnostics["http_status"] = resp.status_code
+    diagnostics["payload_byte_count"] = len(resp.content or b"")
+    diagnostics["content_type"] = resp.headers.get("Content-Type", "")
     if resp.status_code != 200:
         logger.warning(
             "Pollinations non-200: %s bytes=%d content_type=%s",
@@ -416,10 +472,13 @@ def _fetch_from_pollinations(
             len(resp.content or b""),
             resp.headers.get("Content-Type", ""),
         )
+        category = "rate_limited" if resp.status_code == 429 else "server_error" if resp.status_code >= 500 else "submission_rejected"
+        finish(category, f"Pollinations HTTP {resp.status_code}")
         return None
 
     if not resp.content:
         logger.warning("Pollinations returned empty content")
+        finish("invalid_response", "Pollinations returned empty content")
         return None
 
     _ensure_parent_dir(out_path)
@@ -432,6 +491,7 @@ def _fetch_from_pollinations(
         content_type=resp.headers.get("Content-Type"),
     )
     if result is None:
+        finish("invalid_image", "Pollinations image validation failed")
         return None
 
     # Детект заглушки (если это она — удаляем и считаем неудачей)
@@ -441,6 +501,7 @@ def _fetch_from_pollinations(
             out_path.unlink(missing_ok=True)  # py3.8+; на GH actions обычно 3.11+
         except Exception:
             pass
+        finish("invalid_image", "Pollinations rate-limit placeholder detected")
         return None
 
     logger.info(
@@ -448,6 +509,7 @@ def _fetch_from_pollinations(
         out_path,
         out_path.stat().st_size,
     )
+    finish()
     return result
 
 
@@ -465,12 +527,44 @@ def _fetch_from_horde_once(
     size: Tuple[int, int],
     timeout: float,
     api_key: str,
-) -> Tuple[Optional[ImageGenerationResult], Optional[int], str]:
+) -> Tuple[Optional[ImageGenerationResult], Optional[int], str, dict[str, Any]]:
     """
     Одна попытка Horde с конкретным api_key.
-    Возвращает (path|None, http_status|None, error_code_str)
+    Возвращает (result|None, http_status|None, error_code_str, safe_diagnostics).
     """
     headers = _horde_headers(api_key)
+    started = time.monotonic()
+    diagnostics: dict[str, Any] = {
+        "http_status": None,
+        "submission_result": "not_started",
+        "request_id": "",
+        "queue_status": {},
+        "timeout": False,
+        "faulted": False,
+        "cancelled": False,
+        "generations_count": 0,
+        "payload_byte_count": 0,
+        "content_type": "",
+        "image_validation_failure": "",
+        "exception_type": "",
+        "error_category": "",
+        "error_message": "",
+        "elapsed_seconds": 0.0,
+    }
+
+    def finish(
+        image: Optional[ImageGenerationResult],
+        status: Optional[int],
+        code: str,
+    ) -> Tuple[Optional[ImageGenerationResult], Optional[int], str, dict[str, Any]]:
+        diagnostics["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        return image, status, code, dict(diagnostics)
+
+    def fail(category: str, message: str, *, exc: BaseException | None = None) -> None:
+        diagnostics["error_category"] = category
+        diagnostics["error_message"] = " ".join(str(message or "").split())[:300]
+        if exc is not None:
+            diagnostics["exception_type"] = exc.__class__.__name__
 
     payload = {
         "prompt": prompt,
@@ -498,8 +592,13 @@ def _fetch_from_horde_once(
         )
     except Exception as exc:
         logger.warning("Horde async error: %s", exc)
-        return None, None, "AsyncRequestError"
+        diagnostics["submission_result"] = "request_exception"
+        fail("submission_rejected", str(exc), exc=exc)
+        return finish(None, None, "AsyncRequestError")
 
+    diagnostics["http_status"] = resp.status_code
+    diagnostics["payload_byte_count"] = len(resp.content or b"")
+    diagnostics["content_type"] = resp.headers.get("Content-Type", "")
     if resp.status_code not in (200, 202):
         logger.warning(
             "Horde async non-2xx: %s bytes=%d content_type=%s",
@@ -507,19 +606,28 @@ def _fetch_from_horde_once(
             len(resp.content or b""),
             resp.headers.get("Content-Type", ""),
         )
-        return None, resp.status_code, "AsyncNon2xx"
+        diagnostics["submission_result"] = "rejected"
+        category = "rate_limited" if resp.status_code == 429 else "server_error" if resp.status_code >= 500 else "submission_rejected"
+        fail(category, f"submission HTTP {resp.status_code}")
+        return finish(None, resp.status_code, "AsyncNon2xx")
 
     try:
         data = resp.json()
     except Exception as exc:
         logger.warning("Horde async JSON error: %s bytes=%d", exc, len(resp.content or b""))
-        return None, resp.status_code, "AsyncJSONError"
+        diagnostics["submission_result"] = "invalid_json"
+        fail("invalid_response", str(exc), exc=exc)
+        return finish(None, resp.status_code, "AsyncJSONError")
 
     job_id = data.get("id")
     if not job_id:
         logger.warning("Horde async response missing id; keys=%s", sorted(data.keys()) if isinstance(data, dict) else [])
-        return None, resp.status_code, "MissingJobId"
+        diagnostics["submission_result"] = "missing_request_id"
+        fail("invalid_response", "submission response missing request id")
+        return finish(None, resp.status_code, "MissingJobId")
 
+    diagnostics["submission_result"] = "accepted"
+    diagnostics["request_id"] = str(job_id)
     logger.info("Horde job id: %s", job_id)
 
     start = time.time()
@@ -531,6 +639,8 @@ def _fetch_from_horde_once(
             check_resp = requests.get(status_url, headers=headers, timeout=10)
         except Exception as exc:
             logger.warning("Horde check error: %s", exc)
+            diagnostics["exception_type"] = exc.__class__.__name__
+            diagnostics["error_message"] = " ".join(str(exc).split())[:300]
             time.sleep(5)
             continue
 
@@ -541,6 +651,13 @@ def _fetch_from_horde_once(
                 len(check_resp.content or b""),
                 check_resp.headers.get("Content-Type", ""),
             )
+            diagnostics["http_status"] = check_resp.status_code
+            diagnostics["content_type"] = check_resp.headers.get("Content-Type", "")
+            diagnostics["payload_byte_count"] = len(check_resp.content or b"")
+            if check_resp.status_code == 429 or check_resp.status_code >= 500:
+                category = "rate_limited" if check_resp.status_code == 429 else "server_error"
+                fail(category, f"queue check HTTP {check_resp.status_code}")
+                return finish(None, check_resp.status_code, "CheckNon200")
             time.sleep(5)
             continue
 
@@ -548,9 +665,20 @@ def _fetch_from_horde_once(
             check = check_resp.json()
         except Exception as exc:
             logger.warning("Horde check JSON error: %s bytes=%d", exc, len(check_resp.content or b""))
-            time.sleep(5)
-            continue
+            diagnostics["exception_type"] = exc.__class__.__name__
+            fail("invalid_response", str(exc), exc=exc)
+            return finish(None, check_resp.status_code, "CheckJSONError")
 
+        diagnostics["queue_status"] = {
+            key: check.get(key)
+            for key in ("queue_position", "waiting", "processing", "done", "finished", "faulted")
+            if key in check
+        }
+        diagnostics["faulted"] = bool(check.get("faulted"))
+        diagnostics["cancelled"] = bool(check.get("cancelled"))
+        if diagnostics["faulted"] or diagnostics["cancelled"]:
+            fail("server_error", "Horde job faulted or cancelled")
+            return finish(None, check_resp.status_code, "FaultedOrCancelled")
         if check.get("done") or check.get("finished") or check.get("state") == "done":
             done = True
             break
@@ -563,7 +691,9 @@ def _fetch_from_horde_once(
 
     if not done:
         logger.warning("Horde timeout after %.1fs", time.time() - start)
-        return None, 200, "Timeout"
+        diagnostics["timeout"] = True
+        fail("provider_timeout", f"Horde timeout after {time.time() - start:.1f}s")
+        return finish(None, 200, "Timeout")
 
     try:
         gen_resp = requests.get(
@@ -573,8 +703,12 @@ def _fetch_from_horde_once(
         )
     except Exception as exc:
         logger.warning("Horde status error: %s", exc)
-        return None, None, "StatusRequestError"
+        fail("server_error", str(exc), exc=exc)
+        return finish(None, None, "StatusRequestError")
 
+    diagnostics["http_status"] = gen_resp.status_code
+    diagnostics["payload_byte_count"] = len(gen_resp.content or b"")
+    diagnostics["content_type"] = gen_resp.headers.get("Content-Type", "")
     if gen_resp.status_code != 200:
         logger.warning(
             "Horde status non-200: %s bytes=%d content_type=%s",
@@ -582,31 +716,45 @@ def _fetch_from_horde_once(
             len(gen_resp.content or b""),
             gen_resp.headers.get("Content-Type", ""),
         )
-        return None, gen_resp.status_code, "StatusNon200"
+        category = "rate_limited" if gen_resp.status_code == 429 else "server_error" if gen_resp.status_code >= 500 else "submission_rejected"
+        fail(category, f"status HTTP {gen_resp.status_code}")
+        return finish(None, gen_resp.status_code, "StatusNon200")
 
     try:
         gen_data = gen_resp.json()
     except Exception as exc:
         logger.warning("Horde status JSON error: %s bytes=%d", exc, len(gen_resp.content or b""))
-        return None, gen_resp.status_code, "StatusJSONError"
+        fail("invalid_response", str(exc), exc=exc)
+        return finish(None, gen_resp.status_code, "StatusJSONError")
 
     generations = gen_data.get("generations") or []
+    diagnostics["faulted"] = bool(gen_data.get("faulted"))
+    diagnostics["cancelled"] = bool(gen_data.get("cancelled"))
+    diagnostics["generations_count"] = len(generations) if isinstance(generations, list) else 0
     if not generations:
         logger.warning("Horde returned no generations: %s", str(gen_data)[:200])
-        return None, gen_resp.status_code, "NoGenerations"
+        category = "censored" if gen_data.get("censored") else "no_generations"
+        fail(category, "Horde returned no generations")
+        return finish(None, gen_resp.status_code, "NoGenerations")
 
     first = generations[0]
+    if first.get("censored"):
+        fail("censored", "Horde generation was censored")
+        return finish(None, gen_resp.status_code, "Censored")
     b64_img = first.get("img")
     if not b64_img:
         logger.warning("Horde generation missing 'img' field: %s", str(first)[:200])
-        return None, gen_resp.status_code, "MissingImgField"
+        fail("invalid_response", "Horde generation missing image payload")
+        return finish(None, gen_resp.status_code, "MissingImgField")
 
     try:
         img_bytes = base64.b64decode(b64_img)
     except Exception as exc:
         logger.warning("Horde base64 decode error: %s", exc)
-        return None, gen_resp.status_code, "Base64DecodeError"
+        fail("invalid_base64", str(exc), exc=exc)
+        return finish(None, gen_resp.status_code, "Base64DecodeError")
 
+    diagnostics["payload_byte_count"] = len(img_bytes)
     _ensure_parent_dir(out_path)
     out_path.write_bytes(img_bytes)
     result = _validate_generated_image(
@@ -617,13 +765,17 @@ def _fetch_from_horde_once(
         content_type=None,
     )
     if result is None:
-        return None, 200, "InvalidImage"
+        diagnostics["image_validation_failure"] = "Pillow/signature/content validation failed"
+        fail("invalid_image", diagnostics["image_validation_failure"])
+        return finish(None, 200, "InvalidImage")
     logger.info(
         "Horde image saved to %s (%d bytes)",
         out_path,
         out_path.stat().st_size,
     )
-    return result, 200, ""
+    diagnostics["error_category"] = ""
+    diagnostics["error_message"] = ""
+    return finish(result, 200, "")
 
 
 def _fetch_from_horde(
@@ -638,13 +790,17 @@ def _fetch_from_horde(
     Используется HORDE_API_KEY (см. описание выше).
     Если получаем 401 и HORDE_TRY_ANON_ON_401=1 — пробуем один раз "0000000000".
     """
-    img, status, err = _fetch_from_horde_once(prompt, out_path, size, timeout, HORDE_API_KEY)
+    img, status, err, diagnostics = _fetch_from_horde_once(prompt, out_path, size, timeout, HORDE_API_KEY)
+    _set_backend_diagnostics("stable_horde", diagnostics)
     if img is not None:
         return img
 
     if status == 401 and HORDE_TRY_ANON_ON_401 and (HORDE_API_KEY.strip() != "0000000000"):
         logger.warning("Horde returned 401 for provided key — trying anonymous key 0000000000 once")
-        img2, _, _ = _fetch_from_horde_once(prompt, out_path, size, timeout, "0000000000")
+        img2, _, _, retry_diagnostics = _fetch_from_horde_once(prompt, out_path, size, timeout, "0000000000")
+        retry_diagnostics["anonymous_retry"] = True
+        retry_diagnostics["initial_attempt"] = diagnostics
+        _set_backend_diagnostics("stable_horde", retry_diagnostics)
         return img2
 
     return None
@@ -665,6 +821,24 @@ def _fetch_from_custom_backend(
     if not CUSTOM_IMAGE_BASE_URL:
         return None
 
+    started = time.monotonic()
+    diagnostics: dict[str, Any] = {
+        "http_status": None,
+        "payload_byte_count": 0,
+        "content_type": "",
+        "exception_type": "",
+        "error_category": "",
+        "error_message": "",
+        "elapsed_seconds": 0.0,
+    }
+
+    def finish(category: str = "", message: str = "", exc: BaseException | None = None) -> None:
+        diagnostics["error_category"] = category
+        diagnostics["error_message"] = " ".join(str(message or "").split())[:300]
+        diagnostics["exception_type"] = exc.__class__.__name__ if exc is not None else ""
+        diagnostics["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        _set_backend_diagnostics("custom", diagnostics)
+
     query = quote_plus(prompt)
     url = CUSTOM_IMAGE_BASE_URL + f"?prompt={query}&width={size[0]}&height={size[1]}"
 
@@ -681,8 +855,12 @@ def _fetch_from_custom_backend(
         resp = requests.get(url, headers=headers, timeout=CUSTOM_IMAGE_TIMEOUT)
     except Exception as exc:
         logger.warning("Custom backend error: %s", exc)
+        finish("provider_timeout", str(exc), exc)
         return None
 
+    diagnostics["http_status"] = resp.status_code
+    diagnostics["payload_byte_count"] = len(resp.content or b"")
+    diagnostics["content_type"] = resp.headers.get("Content-Type", "")
     if resp.status_code != 200:
         logger.warning(
             "Custom backend non-200: %s bytes=%d content_type=%s",
@@ -690,10 +868,13 @@ def _fetch_from_custom_backend(
             len(resp.content or b""),
             resp.headers.get("Content-Type", ""),
         )
+        category = "rate_limited" if resp.status_code == 429 else "server_error" if resp.status_code >= 500 else "submission_rejected"
+        finish(category, f"custom backend HTTP {resp.status_code}")
         return None
 
     if not resp.content:
         logger.warning("Custom backend returned empty content")
+        finish("invalid_response", "custom backend returned empty content")
         return None
 
     _ensure_parent_dir(out_path)
@@ -706,12 +887,14 @@ def _fetch_from_custom_backend(
         content_type=resp.headers.get("Content-Type"),
     )
     if result is None:
+        finish("invalid_image", "custom backend image validation failed")
         return None
     logger.info(
         "Custom backend image saved to %s (%d bytes)",
         out_path,
         out_path.stat().st_size,
     )
+    finish()
     return result
 
 
@@ -732,13 +915,22 @@ def _generate_astro_image_outcome(
     *,
     excluded_backends: set[str] | None = None,
     max_backend_calls: int | None = None,
+    backend_call_limits: dict[str, int] | None = None,
 ) -> ImageGenerationOutcome:
     out = Path(out_path)
     excluded = {str(item).strip().lower() for item in (excluded_backends or set()) if str(item).strip()}
     call_limit = _normalise_backend_call_limit(max_backend_calls)
     backend_attempts: list[dict] = []
+    backend_calls: dict[str, int] = {}
     last_error_type = ""
     last_error_message = ""
+    limits: dict[str, int] = {}
+    for name, raw_value in (backend_call_limits or {}).items():
+        try:
+            limits[str(name).strip().lower()] = max(0, int(raw_value))
+        except Exception:
+            limits[str(name).strip().lower()] = 0
+    availability = configured_image_backends(excluded_backends=excluded)
 
     backend_specs = []
     if "pollinations" not in excluded:
@@ -747,6 +939,12 @@ def _generate_astro_image_outcome(
         backend_specs.append(("stable_horde", lambda: _fetch_from_horde(prompt, out, size=size)))
     if CUSTOM_IMAGE_BASE_URL and "custom" not in excluded:
         backend_specs.append(("custom", lambda: _fetch_from_custom_backend(prompt, out, size=size)))
+    backend_specs = [
+        (name, fetch)
+        for name, fetch in backend_specs
+        if limits.get(name, call_limit) > 0
+    ]
+    availability["available_backends"] = [name for name, _fetch in backend_specs]
 
     logger.info(
         "Requested astro image at %s; max attempts=%d backend_call_limit=%d excluded=%s",
@@ -763,6 +961,7 @@ def _generate_astro_image_outcome(
             error_message="all configured image backends are excluded or unavailable",
             exhausted=True,
             actual_backend_call_count=0,
+            **availability,
         )
     if call_limit == 0:
         return ImageGenerationOutcome(
@@ -772,11 +971,16 @@ def _generate_astro_image_outcome(
             error_message="no backend calls remain",
             exhausted=True,
             actual_backend_call_count=0,
+            **availability,
         )
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         logger.info("Image generation attempt %d/%d", attempt, MAX_ATTEMPTS)
+        attempted_this_round = False
         for backend_name, fetch in backend_specs:
+            provider_limit = limits.get(backend_name, call_limit)
+            if backend_calls.get(backend_name, 0) >= provider_limit:
+                continue
             if len(backend_attempts) >= call_limit:
                 return ImageGenerationOutcome(
                     result=None,
@@ -785,9 +989,12 @@ def _generate_astro_image_outcome(
                     error_message=last_error_message or "backend call budget exhausted",
                     exhausted=True,
                     actual_backend_call_count=len(backend_attempts),
+                    **availability,
                 )
             entry = {"attempt": attempt, "backend": backend_name}
             backend_attempts.append(entry)
+            backend_calls[backend_name] = backend_calls.get(backend_name, 0) + 1
+            attempted_this_round = True
             try:
                 img = fetch()
             except Exception as exc:
@@ -801,7 +1008,9 @@ def _generate_astro_image_outcome(
                     }
                 )
                 logger.warning("%s backend raised %s", backend_name, last_error_type)
+                entry.update(_take_backend_diagnostics(backend_name))
                 continue
+            entry.update(_take_backend_diagnostics(backend_name))
             if img is not None:
                 entry["result"] = "success"
                 img.backend_attempts = list(backend_attempts)
@@ -810,12 +1019,18 @@ def _generate_astro_image_outcome(
                     backend_attempts=backend_attempts,
                     exhausted=False,
                     actual_backend_call_count=len(backend_attempts),
+                    **availability,
                 )
             entry["result"] = "failed"
             last_error_type = "BackendReturnedNoImage"
             last_error_message = f"{backend_name} returned no valid image"
+        if not attempted_this_round:
+            break
 
-    exhausted = len(backend_attempts) >= call_limit
+    exhausted = len(backend_attempts) >= call_limit or all(
+        backend_calls.get(name, 0) >= limits.get(name, call_limit)
+        for name, _fetch in backend_specs
+    )
     return ImageGenerationOutcome(
         result=None,
         backend_attempts=backend_attempts,
@@ -823,6 +1038,7 @@ def _generate_astro_image_outcome(
         error_message=last_error_message or "all image backends failed",
         exhausted=exhausted,
         actual_backend_call_count=len(backend_attempts),
+        **availability,
     )
 
 
@@ -832,12 +1048,14 @@ def generate_astro_image_outcome(
     size: Tuple[int, int] = (512, 512),
     *,
     max_backend_calls: int | None = None,
+    backend_call_limits: dict[str, int] | None = None,
 ) -> ImageGenerationOutcome:
     return _generate_astro_image_outcome(
         prompt,
         out_path,
         size=size,
         max_backend_calls=max_backend_calls,
+        backend_call_limits=backend_call_limits,
     )
 
 
@@ -848,6 +1066,7 @@ def generate_astro_image_outcome_with_exclusions(
     excluded_backends: set[str] | None = None,
     *,
     max_backend_calls: int | None = None,
+    backend_call_limits: dict[str, int] | None = None,
 ) -> ImageGenerationOutcome:
     return _generate_astro_image_outcome(
         prompt,
@@ -855,6 +1074,7 @@ def generate_astro_image_outcome_with_exclusions(
         size=size,
         excluded_backends=excluded_backends,
         max_backend_calls=max_backend_calls,
+        backend_call_limits=backend_call_limits,
     )
 
 
@@ -873,6 +1093,7 @@ def generate_astro_image_result_with_exclusions(
     excluded_backends: set[str] | None = None,
     *,
     max_backend_calls: int | None = None,
+    backend_call_limits: dict[str, int] | None = None,
 ) -> Optional[ImageGenerationResult]:
     return generate_astro_image_outcome_with_exclusions(
         prompt,
@@ -880,6 +1101,7 @@ def generate_astro_image_result_with_exclusions(
         size=size,
         excluded_backends=excluded_backends,
         max_backend_calls=max_backend_calls,
+        backend_call_limits=backend_call_limits,
     ).result
 
 

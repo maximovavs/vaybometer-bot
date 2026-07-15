@@ -181,6 +181,7 @@ def _with_temp_delivery_dir(callback) -> None:
     old_text_dir = os.environ.get("CY_TEXT_DELIVERY_DIR")
     old_image_dir = os.environ.get("CY_IMAGE_DELIVERY_DIR")
     old_diag_dir = os.environ.get("CY_IMAGE_DIAGNOSTICS_DIR")
+    old_health_dir = os.environ.get("CY_IMAGE_PROVIDER_HEALTH_DIR")
     old_run = os.environ.get("GITHUB_RUN_ID")
     old_attempt = os.environ.get("GITHUB_RUN_ATTEMPT")
     old_schedule = os.environ.get("GITHUB_EVENT_SCHEDULE")
@@ -190,6 +191,7 @@ def _with_temp_delivery_dir(callback) -> None:
             os.environ["CY_TEXT_DELIVERY_DIR"] = str(Path(tmp) / "cy_text_delivery")
             os.environ["CY_IMAGE_DELIVERY_DIR"] = str(Path(tmp) / "cy_image_delivery")
             os.environ["CY_IMAGE_DIAGNOSTICS_DIR"] = str(Path(tmp) / "cy_image_diagnostics")
+            os.environ["CY_IMAGE_PROVIDER_HEALTH_DIR"] = str(Path(tmp) / "cy_image_provider_health")
             os.environ["GITHUB_RUN_ID"] = "fixture-run"
             os.environ["GITHUB_RUN_ATTEMPT"] = "2"
             callback(Path(tmp))
@@ -210,6 +212,10 @@ def _with_temp_delivery_dir(callback) -> None:
                 os.environ.pop("CY_IMAGE_DIAGNOSTICS_DIR", None)
             else:
                 os.environ["CY_IMAGE_DIAGNOSTICS_DIR"] = old_diag_dir
+            if old_health_dir is None:
+                os.environ.pop("CY_IMAGE_PROVIDER_HEALTH_DIR", None)
+            else:
+                os.environ["CY_IMAGE_PROVIDER_HEALTH_DIR"] = old_health_dir
             if old_run is None:
                 os.environ.pop("GITHUB_RUN_ID", None)
             else:

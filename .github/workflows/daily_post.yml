@@ -451,6 +451,7 @@ jobs:
             .cache/cyprus_visual_history_test.json
             .cache/cy_image_delivery
             .cache/cy_text_delivery
+            .cache/cy_image_provider_health
           if-no-files-found: ignore
           retention-days: 30
 
@@ -620,6 +621,7 @@ jobs:
             .cache/cyprus_visual_history_test.json
             .cache/cy_image_delivery
             .cache/cy_text_delivery
+            .cache/cy_image_provider_health
           if-no-files-found: ignore
           retention-days: 30
 
@@ -715,6 +717,7 @@ jobs:
             .cache/cyprus_visual_history_test.json
             .cache/cy_image_delivery
             .cache/cy_text_delivery
+            .cache/cy_image_provider_health
           if-no-files-found: ignore
           retention-days: 30
 
@@ -810,6 +813,7 @@ jobs:
             .cache/cyprus_visual_history_test.json
             .cache/cy_image_delivery
             .cache/cy_text_delivery
+            .cache/cy_image_provider_health
           if-no-files-found: ignore
           retention-days: 30
 

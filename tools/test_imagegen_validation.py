@@ -19,11 +19,24 @@ import world_en.imagegen as imagegen  # noqa: E402
 
 
 class FakeResponse:
-    def __init__(self, *, content: bytes, content_type: str, status_code: int = 200) -> None:
+    def __init__(
+        self,
+        *,
+        content: bytes,
+        content_type: str,
+        status_code: int = 200,
+        json_data: object | None = None,
+    ) -> None:
         self.content = content
         self.headers = {"Content-Type": content_type}
         self.status_code = status_code
         self.text = ""
+        self._json_data = json_data
+
+    def json(self):
+        if self._json_data is None:
+            raise ValueError("fixture has no JSON payload")
+        return self._json_data
 
 
 def _png_bytes(color: tuple[int, int, int]) -> bytes:
@@ -163,6 +176,118 @@ def repeated_provider_none_results_stop_at_shared_limit() -> None:
     assert len(calls) == 10
 
 
+def per_provider_budgets_are_fair_and_bounded() -> None:
+    old_pollinations = imagegen._fetch_from_pollinations
+    old_horde = imagegen._fetch_from_horde
+    old_custom_url = imagegen.CUSTOM_IMAGE_BASE_URL
+    old_attempts = imagegen.MAX_ATTEMPTS
+    calls: list[str] = []
+
+    def fail(name: str):
+        def _inner(*_args, **_kwargs):
+            calls.append(name)
+            return None
+
+        return _inner
+
+    try:
+        imagegen._fetch_from_pollinations = fail("pollinations")
+        imagegen._fetch_from_horde = fail("stable_horde")
+        imagegen.CUSTOM_IMAGE_BASE_URL = ""
+        imagegen.MAX_ATTEMPTS = 5
+        outcome = imagegen.generate_astro_image_outcome(
+            "prompt",
+            "unused.jpg",
+            max_backend_calls=10,
+            backend_call_limits={"pollinations": 2, "stable_horde": 3, "custom": 0},
+        )
+    finally:
+        imagegen._fetch_from_pollinations = old_pollinations
+        imagegen._fetch_from_horde = old_horde
+        imagegen.CUSTOM_IMAGE_BASE_URL = old_custom_url
+        imagegen.MAX_ATTEMPTS = old_attempts
+
+    assert outcome.result is None
+    assert calls.count("pollinations") == 2
+    assert calls.count("stable_horde") == 3
+    assert outcome.actual_backend_call_count == 5
+    assert outcome.configured_backends == ["pollinations", "stable_horde"]
+    assert outcome.unconfigured_backends == ["custom"]
+
+
+def stable_horde_failure_exposes_detailed_safe_diagnostics() -> None:
+    old_post = imagegen.requests.post
+    old_get = imagegen.requests.get
+    old_sleep = imagegen.time.sleep
+    old_attempts = imagegen.MAX_ATTEMPTS
+
+    def fake_post(*_args, **_kwargs):
+        return FakeResponse(
+            content=b'{"id":"fixture-job-1"}',
+            content_type="application/json",
+            status_code=202,
+            json_data={"id": "fixture-job-1"},
+        )
+
+    def fake_get(url: str, *_args, **_kwargs):
+        if "/generate/check/" in url:
+            return FakeResponse(
+                content=b'{"done":true}',
+                content_type="application/json",
+                json_data={"done": True, "queue_position": 0, "waiting": 0, "processing": 0},
+            )
+        return FakeResponse(
+            content=b'{"generations":[]}',
+            content_type="application/json",
+            json_data={"generations": [], "faulted": False, "cancelled": False},
+        )
+
+    try:
+        imagegen.requests.post = fake_post
+        imagegen.requests.get = fake_get
+        imagegen.time.sleep = lambda _seconds: None
+        imagegen.MAX_ATTEMPTS = 1
+        outcome = imagegen.generate_astro_image_outcome_with_exclusions(
+            "prompt",
+            "unused.jpg",
+            excluded_backends={"pollinations", "custom"},
+            max_backend_calls=1,
+            backend_call_limits={"stable_horde": 1},
+        )
+    finally:
+        imagegen.requests.post = old_post
+        imagegen.requests.get = old_get
+        imagegen.time.sleep = old_sleep
+        imagegen.MAX_ATTEMPTS = old_attempts
+
+    assert outcome.result is None
+    assert len(outcome.backend_attempts) == 1
+    diag = outcome.backend_attempts[0]
+    required = {
+        "http_status",
+        "submission_result",
+        "request_id",
+        "queue_status",
+        "timeout",
+        "faulted",
+        "cancelled",
+        "generations_count",
+        "payload_byte_count",
+        "content_type",
+        "image_validation_failure",
+        "exception_type",
+        "error_category",
+        "error_message",
+        "elapsed_seconds",
+    }
+    assert required <= set(diag)
+    assert diag["submission_result"] == "accepted"
+    assert diag["request_id"] == "fixture-job-1"
+    assert diag["generations_count"] == 0
+    assert diag["error_category"] == "no_generations"
+    assert "apikey" not in str(diag).lower()
+
+
 def all_backends_excluded_fail_immediately() -> None:
     old_custom_url = imagegen.CUSTOM_IMAGE_BASE_URL
     try:
@@ -218,6 +343,8 @@ def main() -> None:
         pollinations_invalid_jpeg_falls_back_to_horde,
         failed_pollinations_and_horde_count_as_two_backend_calls,
         repeated_provider_none_results_stop_at_shared_limit,
+        per_provider_budgets_are_fair_and_bounded,
+        stable_horde_failure_exposes_detailed_safe_diagnostics,
         all_backends_excluded_fail_immediately,
         pillow_unavailable_rejects_otherwise_valid_image,
     )
