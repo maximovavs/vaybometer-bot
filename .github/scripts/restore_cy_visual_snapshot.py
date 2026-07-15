@@ -19,6 +19,8 @@ import zipfile
 SNAPSHOT_PREFIX = "cyprus-visual-history-prod-snapshot"
 HISTORY_NAME = "cyprus_visual_history_prod.json"
 TEST_HISTORY_NAME = "cyprus_visual_history_test.json"
+PROVIDER_HEALTH_BACKENDS = ("pollinations", "stable_horde", "custom")
+PROVIDER_HEALTH_COUNTERS = ("duplicate_count", "invalid_response_count", "consecutive_failures")
 
 
 def _parse_date(value: object) -> date | None:
@@ -33,9 +35,12 @@ def _parse_time(value: object) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _load_json(path: Path) -> Any:
@@ -175,7 +180,7 @@ def _valid_provider_health(
     providers = data.get("providers")
     if not isinstance(providers, dict):
         return False
-    return all(isinstance(providers.get(name), dict) for name in ("pollinations", "stable_horde", "custom"))
+    return all(isinstance(providers.get(name), dict) for name in PROVIDER_HEALTH_BACKENDS)
 
 
 def _receipt_is_newer_or_equal(local_data: dict[str, Any], snapshot_data: dict[str, Any]) -> bool:
@@ -184,6 +189,104 @@ def _receipt_is_newer_or_equal(local_data: dict[str, Any], snapshot_data: dict[s
     if local_time and snapshot_time:
         return local_time >= snapshot_time
     return True
+
+
+def _provider_health_time(data: dict[str, Any]) -> datetime | None:
+    updated_at = _parse_time(data.get("updated_at_utc"))
+    if updated_at is not None:
+        return updated_at
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        return None
+    attempts = [
+        parsed
+        for name in PROVIDER_HEALTH_BACKENDS
+        if isinstance(providers.get(name), dict)
+        for parsed in [_parse_time(providers[name].get("last_attempt_utc"))]
+        if parsed is not None
+    ]
+    return max(attempts) if attempts else None
+
+
+def _provider_health_is_newer_or_equal(
+    local_data: dict[str, Any],
+    snapshot_data: dict[str, Any],
+) -> bool:
+    local_time = _provider_health_time(local_data)
+    if local_time is None:
+        return False
+    snapshot_time = _provider_health_time(snapshot_data)
+    return snapshot_time is None or local_time >= snapshot_time
+
+
+def _provider_counter(record: dict[str, Any], field: str) -> int:
+    value = record.get(field)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _later_time_value(first: object, second: object) -> str:
+    candidates = [
+        (parsed, str(raw).strip())
+        for raw in (first, second)
+        for parsed in [_parse_time(raw)]
+        if parsed is not None
+    ]
+    return max(candidates, key=lambda item: item[0])[1] if candidates else ""
+
+
+def _merge_provider_record(
+    local_record: dict[str, Any],
+    snapshot_record: dict[str, Any],
+) -> dict[str, Any]:
+    local_attempt = _parse_time(local_record.get("last_attempt_utc"))
+    snapshot_attempt = _parse_time(snapshot_record.get("last_attempt_utc"))
+    if local_attempt is not None and (snapshot_attempt is None or local_attempt >= snapshot_attempt):
+        newer = local_record
+    else:
+        newer = snapshot_record
+
+    merged = dict(newer)
+    for field in PROVIDER_HEALTH_COUNTERS:
+        merged[field] = max(_provider_counter(local_record, field), _provider_counter(snapshot_record, field))
+    merged["excluded_until_utc"] = _later_time_value(
+        local_record.get("excluded_until_utc"),
+        snapshot_record.get("excluded_until_utc"),
+    )
+    return merged
+
+
+def _merge_provider_health(
+    local_data: dict[str, Any],
+    snapshot_data: dict[str, Any],
+    *,
+    local_is_newer_or_equal: bool,
+) -> dict[str, Any]:
+    preferred = local_data if local_is_newer_or_equal else snapshot_data
+    merged = dict(preferred)
+    local_providers = local_data["providers"]
+    snapshot_providers = snapshot_data["providers"]
+    merged["providers"] = {
+        name: _merge_provider_record(local_providers[name], snapshot_providers[name])
+        for name in PROVIDER_HEALTH_BACKENDS
+    }
+    merged["updated_at_utc"] = _later_time_value(
+        local_data.get("updated_at_utc"),
+        snapshot_data.get("updated_at_utc"),
+    )
+    if not merged["updated_at_utc"]:
+        merged["updated_at_utc"] = _later_time_value(
+            max(
+                (record.get("last_attempt_utc") for record in local_providers.values()),
+                key=lambda value: _parse_time(value) or datetime.min.replace(tzinfo=timezone.utc),
+                default="",
+            ),
+            max(
+                (record.get("last_attempt_utc") for record in snapshot_providers.values()),
+                key=lambda value: _parse_time(value) or datetime.min.replace(tzinfo=timezone.utc),
+                default="",
+            ),
+        )
+    return merged
 
 
 def _receipt_source_dir(source_root: Path, name: str) -> Path:
@@ -305,13 +408,22 @@ def _restore_provider_health(
                 target_date=target_date,
                 post_type=post_type,
                 namespace=namespace,
-            ) and _receipt_is_newer_or_equal(local_data, snapshot_data):
-                status = "already_newer"
-                continue
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            ):
+                local_is_newer = _provider_health_is_newer_or_equal(local_data, snapshot_data)
+                merged_data = _merge_provider_health(
+                    local_data,
+                    snapshot_data,
+                    local_is_newer_or_equal=local_is_newer,
+                )
+                if merged_data == local_data:
+                    status = "already_newer" if local_is_newer else "already_merged"
+                    continue
+                _write_json_atomic(destination, merged_data)
+                status = "merged"
+            else:
+                _write_json_atomic(destination, snapshot_data)
+                status = "restored"
             restored += 1
-            status = "restored"
     if not (target_date and post_type) and restored:
         status = "bulk_restored"
     return restored, status

@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import zipfile
 
@@ -32,6 +34,18 @@ def _load_snapshot_helper():
     spec = importlib.util.spec_from_file_location("restore_cy_visual_snapshot_test", SNAPSHOT_HELPER)
     if spec is None or spec.loader is None:
         raise AssertionError("cannot load restore_cy_visual_snapshot helper")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_image_recovery_helper():
+    module_path = ROOT / "cyprus_image_recovery.py"
+    spec = importlib.util.spec_from_file_location("cyprus_image_recovery_workflow_test", module_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("cannot load cyprus_image_recovery helper")
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -106,6 +120,21 @@ def _provider_health(day: str, post_type: str = "morning", namespace: str = "pro
             "custom": dict(base),
         },
     }
+
+
+def _provider_health_fixture(
+    day: str,
+    *,
+    updated_at: str,
+    post_type: str = "morning",
+    namespace: str = "prod",
+    records: dict[str, dict] | None = None,
+) -> dict:
+    payload = _provider_health(day, post_type, namespace)
+    payload["updated_at_utc"] = updated_at
+    for backend, values in (records or {}).items():
+        payload["providers"][backend].update(values)
+    return payload
 
 
 def _write_json(path: Path, payload) -> None:
@@ -201,6 +230,41 @@ def _run_snapshot_helper(tmp: Path, artifacts: list[tuple[int, str, Path]], *, t
             else:
                 os.environ[name] = value
     return result
+
+
+def _restore_provider_health_pair(tmp: Path, local_health: dict, snapshot_health: dict) -> dict:
+    day = str(local_health["target_date"])
+    post_type = str(local_health["post_type"])
+    namespace = str(local_health["namespace"])
+    _assert("health_pair_identity", (
+        day,
+        post_type,
+        namespace,
+    ) == (
+        snapshot_health["target_date"],
+        snapshot_health["post_type"],
+        snapshot_health["namespace"],
+    ))
+    history = [_history_entry(day, post_type, "e" * 64)]
+    _write_json(tmp / ".cache" / "cyprus_visual_history_prod.json", history)
+    destination = tmp / ".cache" / "cy_image_provider_health" / namespace / f"{day}-{post_type}.json"
+    _write_json(destination, local_health)
+    snapshot = _make_snapshot_zip(
+        tmp,
+        711,
+        history=history,
+        text_receipts=[_text_receipt(day, post_type)],
+        image_receipts=[_image_receipt(day, post_type)],
+        provider_health=[snapshot_health],
+    )
+    result = _run_snapshot_helper(
+        tmp,
+        [(711, f"{day}T02:30:00Z", snapshot)],
+        target_date=day,
+        post_type=post_type,
+    )
+    _assert("health_pair_restore_result", result == 0, str(result))
+    return json.loads(destination.read_text("utf-8"))
 
 
 def _block(text: str, start: str, end: str | None = None) -> str:
@@ -489,6 +553,245 @@ def test_snapshot_restores_date_scoped_provider_health() -> None:
     print("PASS snapshot_restores_date_scoped_provider_health")
 
 
+def test_provider_health_newer_snapshot_overrides_stale_local() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        local = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T01:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T00:59:00Z",
+                    "excluded_until_utc": "",
+                    "last_error_type": "",
+                    "run_id": "stale-local",
+                }
+            },
+        )
+        snapshot = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T02:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T01:59:00Z",
+                    "excluded_until_utc": "2026-07-17T00:00:00Z",
+                    "last_error_type": "ProviderRepeatedPerceptualOutput",
+                    "run_id": "fresh-snapshot",
+                }
+            },
+        )
+        restored = _restore_provider_health_pair(tmp, local, snapshot)
+        pollinations = restored["providers"]["pollinations"]
+        _assert("health_snapshot_updated_at_wins", restored["updated_at_utc"] == "2026-07-15T02:00:00Z", restored)
+        _assert("health_snapshot_exclusion_wins", pollinations["excluded_until_utc"] == "2026-07-17T00:00:00Z", pollinations)
+        _assert("health_snapshot_error_wins", pollinations["last_error_type"] == "ProviderRepeatedPerceptualOutput", pollinations)
+    print("PASS provider_health_newer_snapshot_overrides_stale_local")
+
+
+def test_provider_health_freshness_falls_back_to_last_attempt() -> None:
+    helper = _load_snapshot_helper()
+    local = _provider_health_fixture(
+        "2026-07-15",
+        updated_at="",
+        records={"stable_horde": {"last_attempt_utc": "2026-07-15T03:00:00Z"}},
+    )
+    snapshot = _provider_health_fixture(
+        "2026-07-15",
+        updated_at="",
+        records={"stable_horde": {"last_attempt_utc": "2026-07-15T02:00:00Z"}},
+    )
+    _assert(
+        "health_last_attempt_fallback_marks_local_newer",
+        helper._provider_health_is_newer_or_equal(local, snapshot),
+    )
+    for record in local["providers"].values():
+        record["last_attempt_utc"] = ""
+    _assert(
+        "health_missing_local_time_is_not_newer",
+        not helper._provider_health_is_newer_or_equal(local, snapshot),
+    )
+    print("PASS provider_health_freshness_falls_back_to_last_attempt")
+
+
+def test_provider_health_newer_local_is_not_overwritten() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        local = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T03:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T02:59:00Z",
+                    "duplicate_count": 5,
+                    "excluded_until_utc": "2026-07-19T00:00:00Z",
+                    "last_error_type": "LocalNewerError",
+                    "run_id": "newer-local",
+                }
+            },
+        )
+        snapshot = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T02:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T01:59:00Z",
+                    "duplicate_count": 2,
+                    "excluded_until_utc": "2026-07-17T00:00:00Z",
+                    "last_error_type": "SnapshotOlderError",
+                    "run_id": "older-snapshot",
+                }
+            },
+        )
+        restored = _restore_provider_health_pair(tmp, local, snapshot)
+        _assert("health_newer_local_unchanged", restored == local, restored)
+    print("PASS provider_health_newer_local_is_not_overwritten")
+
+
+def test_provider_health_merges_each_backend_by_last_attempt() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        local = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T03:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T03:00:00Z",
+                    "repeated_dhash": "local-poll-dhash",
+                    "repeated_phash": "local-poll-phash",
+                    "last_error_type": "LocalPollinationsError",
+                    "run_id": "local-pollinations",
+                },
+                "stable_horde": {
+                    "last_attempt_utc": "2026-07-15T01:00:00Z",
+                    "last_error_type": "OldLocalHordeError",
+                    "run_id": "old-local-horde",
+                },
+            },
+        )
+        snapshot = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T04:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T02:00:00Z",
+                    "repeated_dhash": "old-snapshot-poll-dhash",
+                    "repeated_phash": "old-snapshot-poll-phash",
+                    "last_error_type": "OldSnapshotPollinationsError",
+                    "run_id": "old-snapshot-pollinations",
+                },
+                "stable_horde": {
+                    "last_attempt_utc": "2026-07-15T04:00:00Z",
+                    "last_error_type": "FreshSnapshotHordeError",
+                    "run_id": "fresh-snapshot-horde",
+                },
+            },
+        )
+        restored = _restore_provider_health_pair(tmp, local, snapshot)
+        _assert("health_pollinations_uses_newer_local_record", restored["providers"]["pollinations"]["run_id"] == "local-pollinations", restored)
+        _assert("health_pollinations_hash_from_newer_record", restored["providers"]["pollinations"]["repeated_dhash"] == "local-poll-dhash", restored)
+        _assert("health_pollinations_phash_from_newer_record", restored["providers"]["pollinations"]["repeated_phash"] == "local-poll-phash", restored)
+        _assert("health_horde_uses_newer_snapshot_record", restored["providers"]["stable_horde"]["run_id"] == "fresh-snapshot-horde", restored)
+        _assert("health_horde_error_from_newer_record", restored["providers"]["stable_horde"]["last_error_type"] == "FreshSnapshotHordeError", restored)
+        _assert("health_merged_updated_at_is_latest", restored["updated_at_utc"] == "2026-07-15T04:00:00Z", restored)
+    print("PASS provider_health_merges_each_backend_by_last_attempt")
+
+
+def test_provider_health_counters_never_decrease() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        local = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T01:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T00:59:00Z",
+                    "duplicate_count": 9,
+                    "invalid_response_count": 7,
+                    "consecutive_failures": 6,
+                }
+            },
+        )
+        snapshot = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T02:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T01:59:00Z",
+                    "duplicate_count": 2,
+                    "invalid_response_count": 3,
+                    "consecutive_failures": 4,
+                    "run_id": "newer-snapshot",
+                }
+            },
+        )
+        restored = _restore_provider_health_pair(tmp, local, snapshot)
+        pollinations = restored["providers"]["pollinations"]
+        _assert("health_duplicate_count_not_decreased", pollinations["duplicate_count"] == 9, pollinations)
+        _assert("health_invalid_count_not_decreased", pollinations["invalid_response_count"] == 7, pollinations)
+        _assert("health_failure_count_not_decreased", pollinations["consecutive_failures"] == 6, pollinations)
+        _assert("health_newer_record_fields_still_win", pollinations["run_id"] == "newer-snapshot", pollinations)
+    print("PASS provider_health_counters_never_decrease")
+
+
+def test_generic_cache_excludes_provider_health() -> None:
+    text = _read(DAILY)
+    cache_blocks = _blocks(text, "Restore .cache (FX + intermarket deltas)") + _blocks(
+        text,
+        "Restore .cache (delivery receipts)",
+    )
+    _assert("generic_cache_block_count", len(cache_blocks) == 5, str(len(cache_blocks)))
+    for idx, block in enumerate(cache_blocks, start=1):
+        _assert(
+            f"generic_cache_{idx}_excludes_provider_health",
+            "!.cache/cy_image_provider_health" in block,
+            block,
+        )
+    print("PASS generic_cache_excludes_provider_health")
+
+
+def test_recovery_immediately_excludes_restored_stuck_pollinations() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        local = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T01:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T00:59:00Z",
+                    "excluded_until_utc": "",
+                }
+            },
+        )
+        snapshot = _provider_health_fixture(
+            "2026-07-15",
+            updated_at="2026-07-15T02:00:00Z",
+            records={
+                "pollinations": {
+                    "last_attempt_utc": "2026-07-15T01:59:00Z",
+                    "excluded_until_utc": "2026-07-17T00:00:00Z",
+                    "last_error_type": "ProviderRepeatedPerceptualOutput",
+                }
+            },
+        )
+        _restore_provider_health_pair(tmp, local, snapshot)
+        recovery = _load_image_recovery_helper()
+        old_health_dir = os.environ.get("CY_IMAGE_PROVIDER_HEALTH_DIR")
+        try:
+            os.environ["CY_IMAGE_PROVIDER_HEALTH_DIR"] = str(tmp / ".cache" / "cy_image_provider_health")
+            restored = recovery.load_provider_health("2026-07-15", "morning", "prod")
+            excluded = recovery.provider_health_exclusions(
+                restored,
+                now=datetime(2026, 7, 15, 2, 30, tzinfo=timezone.utc),
+            )
+        finally:
+            if old_health_dir is None:
+                os.environ.pop("CY_IMAGE_PROVIDER_HEALTH_DIR", None)
+            else:
+                os.environ["CY_IMAGE_PROVIDER_HEALTH_DIR"] = old_health_dir
+        _assert("recovery_excludes_restored_pollinations", "pollinations" in excluded, excluded)
+    print("PASS recovery_immediately_excludes_restored_stuck_pollinations")
+
+
 def test_snapshot_merges_recent_history_without_21_day_gap() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
@@ -709,6 +1012,13 @@ TESTS = [
     test_main_morning_snapshot_restore_is_targeted,
     test_snapshot_restores_receipts_even_when_history_current,
     test_snapshot_restores_date_scoped_provider_health,
+    test_provider_health_newer_snapshot_overrides_stale_local,
+    test_provider_health_freshness_falls_back_to_last_attempt,
+    test_provider_health_newer_local_is_not_overwritten,
+    test_provider_health_merges_each_backend_by_last_attempt,
+    test_provider_health_counters_never_decrease,
+    test_generic_cache_excludes_provider_health,
+    test_recovery_immediately_excludes_restored_stuck_pollinations,
     test_snapshot_merges_recent_history_without_21_day_gap,
     test_snapshot_skips_malformed_newest_artifact,
     test_snapshot_receipt_validation_and_newer_local_protection,

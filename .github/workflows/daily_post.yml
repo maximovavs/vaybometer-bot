@@ -145,6 +145,7 @@ jobs:
             !.cache/cyprus_visual_history_test.json
             !.cache/cy_safe_images
             !.cache/cy_morning_delivery
+            !.cache/cy_image_provider_health
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -477,6 +478,7 @@ jobs:
             !.cache/cyprus_visual_history_test.json
             !.cache/cy_safe_images
             !.cache/cy_morning_delivery
+            !.cache/cy_image_provider_health
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -640,6 +642,7 @@ jobs:
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
             !.cache/cy_safe_images
+            !.cache/cy_image_provider_health
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -736,6 +739,7 @@ jobs:
             !.cache/cyprus_visual_history_prod.json
             !.cache/cyprus_visual_history_test.json
             !.cache/cy_safe_images
+            !.cache/cy_image_provider_health
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -837,6 +841,7 @@ jobs:
             !.cache/cyprus_visual_history_test.json
             !.cache/cy_safe_images
             !.cache/cy_morning_delivery
+            !.cache/cy_image_provider_health
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
