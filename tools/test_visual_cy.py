@@ -17,6 +17,8 @@ from visual_rules_cy import apply_visual_rules_cy
 from image_prompt_cy_scene import (
     CYPRUS_VISUAL_PROMPT_VERSION,
     _CY_COASTAL_COMPOSITIONS,
+    _CY_SCENE_COMPOSITIONS,
+    _dedupe_semantic_items,
     build_cyprus_scene_prompt,
     build_cyprus_scene_prompt_with_metadata,
     build_cyprus_visual_cache_key,
@@ -25,9 +27,34 @@ from format_v2 import build_evening_format_v2
 
 
 def _macro_scene_cue(prompt: str) -> str:
-    match = re.search(r"dominant macro scene variant: ([^;]+)", prompt, flags=re.I)
-    assert match is not None
-    return match.group(1).lower()
+    positive, _negative = _prompt_sections(prompt)
+    clauses = [part.strip() for part in positive.split(";") if part.strip()]
+    assert len(clauses) >= 2
+    assert clauses[1].lower().startswith("dominant ")
+    return clauses[1].lower()
+
+
+def _prompt_sections(prompt: str) -> tuple[str, str]:
+    assert prompt.count(". Avoid: ") == 1
+    return tuple(prompt.split(". Avoid: ", 1))  # type: ignore[return-value]
+
+
+def _assert_compact_prompt_contract(prompt: str, metadata: dict[str, object]) -> None:
+    positive, negative = _prompt_sections(prompt)
+    positive_clauses = [part.strip(" .") for part in positive.split(";") if part.strip()]
+    negative_items = [part.strip(" .") for part in negative.split(";") if part.strip(" .")]
+    assert 450 <= len(prompt) <= 900
+    assert len(prompt) <= 1200
+    assert len(positive_clauses) <= 8
+    assert len(negative_items) <= 10
+    assert positive_clauses == _dedupe_semantic_items(positive_clauses)
+    assert negative_items == _dedupe_semantic_items(negative_items)
+    assert positive_clauses[0].lower().startswith("photorealistic")
+    assert positive_clauses[1].lower().startswith("dominant ")
+    assert metadata["prompt_length_chars"] == len(prompt)
+    assert metadata["positive_clause_count"] == len(positive_clauses)
+    assert metadata["negative_item_count"] == len(negative_items)
+    assert int(metadata["pollinations_encoded_url_length"]) <= 3500
 
 
 def _all_cues(scene) -> str:
@@ -247,45 +274,28 @@ def cy_prompt_morning_sanitized() -> None:
     Море спокойное, на побережье лёгкая дымка.
     Moon poster weather card with logo, text and Baltic sunset.
     """
-    prompt, style = build_cyprus_scene_prompt(message, post_type="morning")
+    prompt, style, metadata = build_cyprus_scene_prompt_with_metadata(message, post_type="morning")
     low = prompt.lower()
+    positive, negative = _prompt_sections(prompt)
     assert "mediterranean" in low
     assert "daylight" in low
-    assert "fresh morning daylight" in low
-    assert "neutral daylight" in low
+    assert "fresh neutral morning daylight" in low
+    assert "neutral morning daylight" in low
     assert "pale blue sky" in low
-    assert "cool fresh morning atmosphere" in low
-    assert "soft neutral sunlight" in low
-    assert "sun from left" in low
-    assert "light direction from left" in low
-    assert "left side of frame" in low
-    assert "no visible sun disk" in low
-    assert "no bright illumination from the right side of frame" in low
-    assert "no warm low-angle glow" in low
-    assert "crisp daytime visibility" in low
-    assert "natural daytime shadows" in low
-    assert "clear early morning daylight" in low
+    assert "light from the left" in low
+    assert "natural shadows" in low
     assert "weather card" not in low
     assert "baltic sunset" not in low
-    assert "no text" in low
-    assert "no watermark" in low
-    assert "no logo" in low
-    assert "no poster" in low
-    assert "no painting" in low
-    assert "no illustration" in low
-    assert "no digital art" in low
-    assert "no watercolor" in low
-    assert "no fantasy landscape" in low
-    assert "no sunset" in low
-    assert "no golden hour" in low
-    assert "no orange horizon" in low
-    assert "no low sun on the right" in low
-    assert "no evening glow" in low
-    assert "no dusk" in low
-    for forbidden in ("sunrise", "baltic", "kaliningrad"):
-        assert not re.search(rf"\b{forbidden}\b", low)
+    assert "no text or logo" in negative.lower()
+    assert "no watermark or signature" in negative.lower()
+    assert "no illustration or fantasy" in negative.lower()
+    assert "no sunset and no orange golden-hour sky" in negative.lower()
+    assert "no moon and no night" in negative.lower()
+    for forbidden in ("sunrise", "sunset", "moon", "night", "baltic", "kaliningrad"):
+        assert not re.search(rf"\b{forbidden}\b", positive.lower())
     assert style.startswith("cyprus_morning_mediterranean_landscape_")
     assert re.search(r"_[0-9a-f]{8}$", style)
+    _assert_compact_prompt_contract(prompt, metadata)
 
 
 def cy_prompt_evening_dust_heat() -> None:
@@ -312,12 +322,12 @@ def cy_prompt_rain_not_leisure() -> None:
     """
     prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
     low = prompt.lower()
-    assert "wet promenade" in low
-    assert "dramatic rain clouds" in low
-    assert "practical rain mood" in low
+    assert "rain clouds" in low
+    assert "factual rain" in low
+    assert "wet coastal surfaces" in low
     for forbidden in ("beach leisure", "party", "vacation", "carefree swimming"):
         assert forbidden not in low
-    assert "no poster" in low
+    assert "no illustration or fantasy" in low
 
 
 def cy_prompt_generic_warning_gust_10_is_windy_not_storm() -> None:
@@ -329,9 +339,7 @@ def cy_prompt_generic_warning_gust_10_is_windy_not_storm() -> None:
     """
     prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
     low = prompt.lower()
-    assert "visible wind response in palm fronds and coastal grass" in low
-    assert "textured mediterranean water surface" in low
-    assert "small wind-driven ripples" in low
+    assert "gusty wind visible in textured water and leaning coastal grass" in low
     assert "dramatic rain clouds" not in low
     assert "storm" not in low
 
@@ -344,12 +352,10 @@ def cy_prompt_gust_13_has_whitecaps_without_flat_water() -> None:
     """
     prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
     low = prompt.lower()
-    assert "textured mediterranean water surface" in low
-    assert "visible wind response in palm fronds and coastal grass" in low
+    assert "gusty wind visible in textured water and leaning coastal grass" in low
     assert "occasional small whitecaps" in low
     assert "no mirror-flat water" in low
-    assert "no perfect tourist calm" in low
-    assert "no completely still vegetation" in low
+    assert "still vegetation" in low
 
 
 def cy_prompt_dry_gust_17_does_not_create_rain() -> None:
@@ -360,9 +366,9 @@ def cy_prompt_dry_gust_17_does_not_create_rain() -> None:
     """
     prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
     low = prompt.lower()
-    assert "strongly textured mediterranean water surface" in low
+    assert "strong dry coastal wind in textured water" in low
     assert "frequent small whitecaps" in low
-    assert "visibly bent palm fronds and coastal grass" in low
+    assert "leaning coastal grass" in low
     assert "dry promenade" in low
     assert "dry coastal" in low
     assert "dramatic rain clouds" not in low
@@ -391,7 +397,7 @@ def cy_prompt_morning_high_uv_keeps_direct_sun_cue() -> None:
     """
     prompt, _style = build_cyprus_scene_prompt(message, post_type="morning")
     low = prompt.lower()
-    assert "strong direct sunlight with crisp daylight contrast" in low
+    assert "crisp direct sunlight" in low
 
 
 def cy_prompt_real_evening_wind_moon_haze_has_no_rain_or_dust_contradictions() -> None:
@@ -407,12 +413,11 @@ def cy_prompt_real_evening_wind_moon_haze_has_no_rain_or_dust_contradictions() -
     prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
     low = prompt.lower()
     assert "realistic waning gibbous moon, 92% illuminated" in low
-    assert "blue-hour or late twilight" in low
-    assert "visible wind response in palm fronds and coastal grass" in low
-    assert "textured mediterranean water surface" in low
+    assert "blue-hour late twilight" in low
+    assert "strong dry coastal wind in textured water and leaning coastal grass" in low
     assert "frequent small whitecaps" in low
     assert "dry promenade" in low
-    assert "dry coastal" in low
+    assert "dry promenade and rocks" in low
     assert "dramatic rain clouds" not in low
     assert "wet promenade" not in low
     assert "rain-darkened coast" not in low
@@ -421,8 +426,8 @@ def cy_prompt_real_evening_wind_moon_haze_has_no_rain_or_dust_contradictions() -
     assert "suspended dust" not in low
     assert "no perfect full moon" in low
     assert "no oversized moon" in low
-    assert "no fantasy supermoon" in low
-    assert "natural-scale moon only" in low
+    assert "no fantasy planet" in low
+    assert "natural moon scale" in low
 
 
 DRY_SEVERE_WIND_SOURCE = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
@@ -465,9 +470,9 @@ def cy_prompt_format_v2_dry_severe_wind_advice_does_not_create_rain() -> None:
     assert "порывы лучше перепроверить утром" in final_text
     prompt, _style = build_cyprus_scene_prompt(final_text, post_type="evening")
     low = prompt.lower()
-    assert "strong dry coastal wind response" in low
+    assert "strong dry coastal wind in textured water" in low
     assert "frequent small whitecaps" in low
-    assert "visibly bent palm fronds and coastal grass" in low
+    assert "leaning coastal grass" in low
     assert "dry promenade" in low
     assert "realistic waning gibbous moon, 92% illuminated" in low
     assert "dramatic rain clouds" not in low
@@ -502,21 +507,13 @@ def cy_prompt_local_mountain_thunder_keeps_coast_dry_and_windy() -> None:
     prompt, _style, meta = build_cyprus_scene_prompt_with_metadata(final_text, post_type="evening")
     low = prompt.lower()
     assert meta["cloud_haze_category"] == "inland_cloud_development"
-    assert "distant inland cloud development" in low
-    assert "convective cloud build-up toward troodos/inland" in low
-    assert "towering cumulus over inland hills" in low
-    assert "cloud towers over inland hills" in low
-    assert "wind-ruffled sea with uneven texture" in low
-    assert "textured mediterranean water surface" in low
-    assert "visible wind response in palm fronds and coastal grass" in low
+    assert "distant convective cloud towers over troodos" in low
+    assert "gusty wind visible in textured water and leaning coastal grass" in low
     assert "occasional small whitecaps" in low
-    assert "dry coastal surfaces" in low
-    assert "no perfect tourist calm" in low
-    assert "no ideal postcard sunset scene" in low
+    assert "dry coast" in low
     assert "dramatic rain clouds" not in low
     assert "wet promenade" not in low
     assert "rain-darkened coast" not in low
-    assert "whole-coast storm scene" in low
 
 
 def cy_prompt_small_harbour_scene_has_harbour_logic() -> None:
@@ -540,20 +537,19 @@ def cy_prompt_small_harbour_scene_has_harbour_logic() -> None:
     prompt, _style, meta = selected
     low = prompt.lower()
     assert meta["selected_scene"] == "small_harbour"
-    assert "protected harbour basin" in low
-    assert "harbour edge as main motif" in low
+    assert "linear stone harbour basin and quay" in low
     assert "mooring posts" in low
-    assert "low coastal human structure" in low
-    assert "not a generic cliff bay" in low
+    assert "low waterfront buildings" in low
+    assert "no scenic curved tourist bay" in low
 
 
 def cy_prompt_format_v2_wet_severe_wind_keeps_rain_visual() -> None:
     final_text = build_evening_format_v2("Кипр", WET_SEVERE_WIND_SOURCE)
     prompt, _style = build_cyprus_scene_prompt(final_text, post_type="evening")
     low = prompt.lower()
-    assert "dramatic rain clouds" in low
-    assert "wet promenade" in low
-    assert "rain-darkened coast" in low
+    assert "rain clouds" in low
+    assert "factual rain" in low
+    assert "wet coastal surfaces" in low
 
 
 def cy_prompt_no_raw_source_hints() -> None:
@@ -575,9 +571,15 @@ def cy_prompt_coastal_priority_over_nicosia() -> None:
     Лимассол +34°, Ларнака +35°, Никосия +39°.
     Море у Ларнаки +28°, вода спокойная, на побережье жарко.
     """
-    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(message, post_type="evening")
     low = prompt.lower()
-    assert "mediterranean coast" in low or "coastal" in low
+    assert metadata["selected_scene"] not in {
+        "inland_urban_rooftop",
+        "troodos_landscape",
+        "inland_village",
+        "dry_inland_landscape",
+    }
+    assert any(term in low for term in ("sea", "water", "beach", "harbour", "coastal", "salt-lake"))
     assert "nicosia inland" not in low
 
 
@@ -587,10 +589,15 @@ def cy_prompt_inland_only_when_no_coast() -> None:
     Никосия: жара до +40°, сухой воздух, УФ-индекс 10.
     Ветер 3 м/с, порывы до 6 м/с.
     """
-    prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
+    prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(message, post_type="evening")
     low = prompt.lower()
-    assert "nicosia" in low
-    assert "inland" in low
+    assert metadata["selected_scene"] in {
+        "inland_urban_rooftop",
+        "troodos_landscape",
+        "inland_village",
+        "dry_inland_landscape",
+    }
+    assert any(term in low for term in ("nicosia", "troodos", "inland"))
     assert "uninterrupted sea and coast" not in low
     assert "mediterranean coast" not in low
     assert "coastal promenade" not in low
@@ -603,12 +610,13 @@ def cy_prompt_controlled_variety_is_stable() -> None:
     Лимассол +34°, Ларнака +35°.
     Море спокойное, на побережье солнечно и жарко.
     """
-    prompt_a, _ = build_cyprus_scene_prompt(message, post_type="evening")
-    prompt_b, _ = build_cyprus_scene_prompt(message, post_type="evening")
+    prompt_a, _, metadata_a = build_cyprus_scene_prompt_with_metadata(message, post_type="evening")
+    prompt_b, _, metadata_b = build_cyprus_scene_prompt_with_metadata(message, post_type="evening")
     assert prompt_a == prompt_b
-    assert "dominant macro scene variant" in prompt_a.lower()
-    assert "controlled foreground variant" in prompt_a.lower()
-    assert "controlled composition variant" in prompt_a.lower()
+    assert metadata_a["selected_scene"] == metadata_b["selected_scene"]
+    assert metadata_a["visual_archetype"] == metadata_b["visual_archetype"]
+    assert metadata_a["cache_key"] == metadata_b["cache_key"]
+    assert _macro_scene_cue(prompt_a).startswith("dominant ")
     assert "heat shimmer" in prompt_a.lower()
     assert "baltic" not in prompt_a.lower()
 
@@ -626,10 +634,8 @@ def cy_prompt_morning_evening_same_date_differ() -> None:
     assert morning_style != evening_style
     assert "daylight" in morning.lower()
     assert "pale blue sky" in morning.lower()
-    assert "late-day" in evening.lower() or "twilight" in evening.lower()
-    assert "restrained twilight color" in evening.lower()
-    assert "no mandatory visible sun disk" in evening.lower()
-    assert "default postcard golden sunset" in evening.lower()
+    assert "twilight" in evening.lower()
+    assert "restrained cyprus late twilight" in evening.lower()
     assert _macro_scene_cue(morning) != _macro_scene_cue(evening)
 
 
@@ -656,17 +662,18 @@ def cy_prompt_controlled_variety_changes_by_date() -> None:
     assert prompt_a != prompt_b
     for prompt in (prompt_a, prompt_b):
         low = prompt.lower()
-        assert "wet promenade" in low
-        assert "dramatic rain clouds" in low
-        assert "practical rain mood" in low
+        assert "rain clouds" in low
+        assert "factual rain" in low
+        assert "wet coastal surfaces" in low
         assert "baltic" not in low
 
     morning, _ = build_cyprus_scene_prompt("20.06.2026\n" + scenario, post_type="morning")
-    low = morning.lower()
+    positive, negative = _prompt_sections(morning)
+    low = positive.lower()
     for forbidden in ("lunar", "crescent", "night"):
         assert not re.search(rf"\b{forbidden}\b", low)
-    assert "no sunset" in low
-    assert "no evening glow" in low
+    assert "sunset" not in positive.lower()
+    assert "no sunset" in negative.lower()
 
 
 def cy_prompt_full_moon_evening_uses_blue_hour_moonlight() -> None:
@@ -679,21 +686,14 @@ def cy_prompt_full_moon_evening_uses_blue_hour_moonlight() -> None:
     """
     prompt, style = build_cyprus_scene_prompt(message, post_type="evening")
     low = prompt.lower()
-    assert "visible realistic full moon" in low
-    assert "soft moonlit water" in low
+    assert "realistic full moon, 100% illuminated" in low
     assert "blue-hour" in low
-    assert "residual warm horizon glow" in low
-    assert "right side of frame" in low
-    assert "soft golden dusk light" not in low
-    assert "not a sun-dominant scene" in low
-    assert "no bright golden sunset" in low
+    assert "residual right-side horizon glow" in low
     assert "no oversized moon" in low
     assert "no fantasy planet" in low
-    assert "no fantasy supermoon" in low
-    assert "no visible text anywhere" in low
-    assert "no pseudo-caption" in low
+    assert "no text or logo" in low
     assert "no watermark" in low
-    assert "no artist signature" in low
+    assert "signature" in low
     assert "baltic" not in low
     assert style.startswith("cyprus_evening_mediterranean_landscape_")
 
@@ -709,12 +709,12 @@ def cy_prompt_waning_92_uses_near_full_moon_context() -> None:
     prompt, _style = build_cyprus_scene_prompt(message, post_type="evening")
     low = prompt.lower()
     assert "realistic waning gibbous moon, 92% illuminated" in low
-    assert "blue-hour or late twilight" in low
+    assert "blue-hour late twilight" in low
     assert "residual right-side horizon glow" in low
     assert "no perfect full moon" in low
     assert "no oversized moon" in low
-    assert "no fantasy supermoon" in low
-    assert "natural-scale moon only" in low
+    assert "no fantasy planet" in low
+    assert "natural moon scale" in low
 
 
 def cy_visual_cache_key_contains_identity_fields() -> None:
@@ -776,13 +776,7 @@ def cy_scene_rotation_week_has_no_obvious_repeats() -> None:
         if previous_evening:
             assert evening_scene != previous_evening
         families.extend([morning_scene, evening_scene])
-        composition = re.search(
-            r"controlled composition variant: ([^;]+)",
-            morning_prompt,
-            flags=re.I,
-        )
-        assert composition is not None
-        morning_compositions.append(composition.group(1).lower())
+        morning_compositions.append(str(morning_meta["composition"]).lower())
         previous_morning = morning_scene
         previous_evening = evening_scene
     assert len(set(families)) >= 5
@@ -917,7 +911,8 @@ def cy_composition_selection_uses_lru_when_everything_recent() -> None:
         variation_attempt=0,
         blocked_compositions=recent,
     )
-    assert meta["composition"] == recent[0]
+    scene_options = _CY_SCENE_COMPOSITIONS[str(meta["selected_scene"])]
+    assert meta["composition"] == scene_options[0]
 
 
 def cy_disable_bay_visuals_excludes_bays_and_adds_negative_constraints() -> None:
@@ -942,21 +937,165 @@ def cy_disable_bay_visuals_excludes_bays_and_adds_negative_constraints() -> None
             assert not any(token in composition for token in ("aerial", "raised", "wide panorama", "beach curve"))
             low = prompt.lower()
             for clause in (
-                "no bay",
-                "no cove",
-                "no enclosed lagoon",
-                "no elevated cliff panorama",
-                "no palm-framed bay",
-                "no curved coastline viewed from above",
-                "no generic mediterranean postcard composition",
-                "no repeated sunset-on-the-right composition",
+                "no scenic curved bay",
+                "no natural cove",
+                "no enclosed tourist lagoon",
+                "no elevated postcard coastline",
             ):
                 assert clause in low
+            _assert_compact_prompt_contract(prompt, meta)
     finally:
         if old_value is None:
             os.environ.pop("CY_DISABLE_BAY_VISUALS", None)
         else:
             os.environ["CY_DISABLE_BAY_VISUALS"] = old_value
+
+
+def cy_prompt_compact_contract_covers_weather_and_inland_matrix() -> None:
+    cases = (
+        ("morning", "2026-07-01\nЛарнака: ясно, УФ-индекс 4. Море спокойное."),
+        ("morning", "2026-07-02\nЛимассол: жара 36°, УФ-индекс 9. Море спокойное."),
+        ("evening", "2026-07-03\nЛарнака: ясно, ветер 7 м/с, порывы до 13 м/с. Море у побережья."),
+        ("morning", "2026-07-04\nПафос: облачно, ветер 4 м/с. Море у побережья."),
+        ("evening", "2026-07-05\nЛимассол: местами дождь, ветер 6 м/с. На побережье мокро."),
+        ("evening", "2026-07-06\nЛарнака: пылевая дымка, AQI 125. Море у побережья."),
+        ("evening", "2026-07-07\nНикосия: жара 39°, сухо, ветер 3 м/с."),
+    )
+    for post_type, text in cases:
+        prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(
+            text,
+            post_type=post_type,
+        )
+        _assert_compact_prompt_contract(prompt, metadata)
+        assert prompt.count("no text") == 1
+        assert prompt.count("logo") == 1
+        assert prompt.count("watermark") == 1
+
+
+def cy_prompt_semantic_dedupe_collapses_equivalent_cues() -> None:
+    items = [
+        "no text",
+        "no visible text",
+        "no letters or pseudo-caption",
+        "no logo",
+        "no brand marks",
+        "no watermark",
+        "no artist signature",
+        "natural moon scale",
+        "small-to-medium Moon",
+        "no oversized moon",
+        "textured water",
+        "wind-ruffled sea with uneven water",
+        "no perfect tourist calm",
+        "no tourist calm",
+        "palms distant",
+        "no foreground palms",
+    ]
+    assert len(_dedupe_semantic_items(items)) == 7
+
+
+def _find_prompt_for_scene(scene_family: str) -> tuple[str, dict[str, object]]:
+    for day_offset in range(7):
+        forecast_date = (date(2026, 7, 8) + timedelta(days=day_offset)).isoformat()
+        text = (
+            forecast_date
+            + "\nКипр: ясная погода у моря."
+            + "\nЛимассол и Ларнака: ветер 4 м/с, море спокойное."
+        )
+        for attempt in range(32):
+            prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(
+                text,
+                post_type="evening",
+                variation_attempt=attempt,
+            )
+            if metadata["selected_scene"] == scene_family:
+                return prompt, metadata
+    raise AssertionError(f"scene was not selected: {scene_family}")
+
+
+def cy_prompt_scene_foundations_are_specific_and_compatible() -> None:
+    old_value = os.environ.pop("CY_DISABLE_BAY_VISUALS", None)
+    try:
+        infrastructure_scenes = (
+            "coastal_promenade",
+            "marina_walkway",
+            "small_harbour",
+            "harbour_pier_waterlevel",
+            "breakwater_coast",
+            "coastal_urban_rooftop",
+            "beach_cafe_terrace",
+        )
+        for scene_family in infrastructure_scenes:
+            prompt, metadata = _find_prompt_for_scene(scene_family)
+            assert "human-made elements distant and non-focal" not in prompt.lower()
+            _assert_compact_prompt_contract(prompt, metadata)
+
+        beach_prompt, _beach_meta = _find_prompt_for_scene("open_beach_horizon")
+        beach_positive, _beach_negative = _prompt_sections(beach_prompt)
+        for unrelated in ("marina", "harbour", "coastal road"):
+            assert unrelated not in beach_positive.lower()
+
+        marina_prompt, _marina_meta = _find_prompt_for_scene("marina_walkway")
+        marina_positive, _marina_negative = _prompt_sections(marina_prompt)
+        assert "cliff" not in marina_positive.lower()
+        assert "coastal road" not in marina_positive.lower()
+
+        harbour_prompt, _harbour_meta = _find_prompt_for_scene("small_harbour")
+        assert "linear stone harbour basin and quay" in harbour_prompt.lower()
+        assert "no scenic curved tourist bay" in harbour_prompt.lower()
+        assert "no enclosed water" not in harbour_prompt.lower()
+    finally:
+        if old_value is not None:
+            os.environ["CY_DISABLE_BAY_VISUALS"] = old_value
+
+
+def cy_prompt_no_bay_mode_keeps_small_harbour_basin() -> None:
+    old_value = os.environ.get("CY_DISABLE_BAY_VISUALS")
+    os.environ["CY_DISABLE_BAY_VISUALS"] = "1"
+    try:
+        prompt, metadata = _find_prompt_for_scene("small_harbour")
+        low = prompt.lower()
+        assert "harbour basin" in low
+        assert "no scenic curved bay" in low
+        assert "no enclosed tourist lagoon" in low
+        assert "no enclosed water" not in low
+        _assert_compact_prompt_contract(prompt, metadata)
+    finally:
+        if old_value is None:
+            os.environ.pop("CY_DISABLE_BAY_VISUALS", None)
+        else:
+            os.environ["CY_DISABLE_BAY_VISUALS"] = old_value
+
+
+def cy_prompt_evening_moon_context_is_not_forced_or_duplicated() -> None:
+    ordinary = "2026-07-09\nЛимассол: ясно, море спокойно, ветер 3 м/с."
+    prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(
+        ordinary,
+        post_type="evening",
+    )
+    positive, negative = _prompt_sections(prompt)
+    assert "moon" not in positive.lower()
+    assert "moon" not in negative.lower()
+    _assert_compact_prompt_contract(prompt, metadata)
+
+    lunar_cases = (
+        (
+            "2026-07-10\nЛимассол: ясно, море спокойно. 🌕 Полнолуние. ✨ 100% освещённости.",
+            "realistic full moon, 100% illuminated",
+        ),
+        (
+            "2026-07-11\nЛимассол: ясно, море спокойно. 🌖 Убывающая Луна. ✨ 92% освещённости.",
+            "realistic waning gibbous moon, 92% illuminated",
+        ),
+    )
+    for text, moon_cue in lunar_cases:
+        lunar_prompt, _style, lunar_meta = build_cyprus_scene_prompt_with_metadata(
+            text,
+            post_type="evening",
+        )
+        lunar_positive, _lunar_negative = _prompt_sections(lunar_prompt)
+        assert lunar_positive.lower().count(moon_cue) == 1
+        _assert_compact_prompt_contract(lunar_prompt, lunar_meta)
 
 
 TESTS = [
@@ -1005,6 +1144,11 @@ TESTS = [
     cy_composition_selection_uses_eligible_before_backend,
     cy_composition_selection_uses_lru_when_everything_recent,
     cy_disable_bay_visuals_excludes_bays_and_adds_negative_constraints,
+    cy_prompt_compact_contract_covers_weather_and_inland_matrix,
+    cy_prompt_semantic_dedupe_collapses_equivalent_cues,
+    cy_prompt_scene_foundations_are_specific_and_compatible,
+    cy_prompt_no_bay_mode_keeps_small_harbour_basin,
+    cy_prompt_evening_moon_context_is_not_forced_or_duplicated,
 ]
 
 

@@ -8,12 +8,18 @@ import hashlib
 import os
 import re
 from datetime import date, timedelta
+from urllib.parse import quote_plus
 
 from visual_context_cy import VisualContextCY, parse_visual_context_cy
 from visual_rules_cy import SceneCuesCY, apply_visual_rules_cy
 
 
-CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v5"
+CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v6"
+
+_PROMPT_TARGET_MIN_CHARS = 450
+_PROMPT_TARGET_MAX_CHARS = 900
+_PROMPT_HARD_MAX_CHARS = 1200
+_POLLINATIONS_URL_HARD_MAX_CHARS = 3500
 
 _GENERAL_TRIGGER_PATTERNS = (
     r"\bweather\s+card\b",
@@ -63,39 +69,6 @@ _FOCAL_OBJECT_PATTERNS = (
     r"\byachts?\b",
     r"\bmasts?\b",
 )
-_EVENING_TEXT_GUARD = (
-    "No visible text anywhere, no tiny white bottom text, no pseudo-caption, "
-    "no watermark, no artist signature, no letters, no logo, no brand marks."
-)
-
-_CITY_PATTERNS = (
-    ("Paphos", (r"\bpaphos\b", r"\bpafos\b", r"пафос")),
-    ("Nicosia", (r"\bnicosia\b", r"никос")),
-    ("Limassol", (r"\blimassol\b", r"лимассол")),
-    ("Larnaca", (r"\blarnaca\b", r"ларнак")),
-    ("Ayia Napa", (r"\bayia[\s-]+napa\b", r"айя[\s-]+напа")),
-)
-
-_COASTAL_FOUNDATION = (
-    "pure full-frame Mediterranean landscape",
-    "natural open sky",
-    "distinct Cyprus coastal geography filling the frame",
-    "clean scenic composition",
-    "human-made objects only distant and non-focal",
-    "practical weather mood",
-    "Mediterranean coastal weather mood",
-    "local stone, sea, cliffs, marina edges, or coastal roads as the main structure",
-    "palms only optional and distant as background accents",
-)
-_INLAND_FOUNDATION = (
-    "pure full-frame inland Cyprus landscape",
-    "natural open sky",
-    "sun-baked Nicosia urban depth",
-    "clean scenic composition",
-    "human-made objects only distant and non-focal",
-    "practical hot-weather mood",
-)
-
 _CYPRUS_SCENE_FAMILIES = (
     "rocky_cove_overlook",
     "long_sandy_beach",
@@ -116,68 +89,68 @@ _CYPRUS_SCENE_FAMILIES = (
 )
 _CY_COASTAL_SCENE_TEMPLATES = {
     "rocky_cove_overlook": {
-        "morning": "dominant rocky Paphos coast overlook with limestone shelves, clear blue morning water, rugged shoreline geometry filling the frame",
-        "evening": "dominant rocky Paphos coast overlook in blue-hour twilight with limestone shelves, long shadows, and darkening Mediterranean water",
+        "morning": "Dominant rocky Paphos coast overlook with limestone shelves and rugged open shoreline, human-made elements distant and non-focal",
+        "evening": "Dominant rocky Paphos coast overlook with limestone shelves and rugged open shoreline, human-made elements distant and non-focal",
     },
     "long_sandy_beach": {
-        "morning": "dominant long sandy Cyprus beach curve in clear daylight, pale sand, low dunes, open sea horizon, and no foreground palms",
-        "evening": "dominant long sandy Cyprus beach curve in late-day light, low dunes, long shoreline shadows, and restrained warm horizon glow",
+        "morning": "Dominant long sandy Cyprus beach with pale sand, low dunes and an open sea horizon, human-made elements distant and non-focal",
+        "evening": "Dominant long sandy Cyprus beach with pale sand, low dunes and an open sea horizon, human-made elements distant and non-focal",
     },
     "open_beach_horizon": {
-        "morning": "dominant eye-level open Cyprus beach facing the straight sea horizon in clear daylight, flat shoreline, pale sand, and no enclosing headlands",
-        "evening": "dominant eye-level open Cyprus beach facing the straight sea horizon in late twilight, flat shoreline, textured water, and no enclosing headlands",
+        "morning": "Dominant eye-level open Cyprus beach with pale sand, a straight sea horizon and no enclosing headlands, human-made elements distant and non-focal",
+        "evening": "Dominant eye-level open Cyprus beach with pale sand, a straight sea horizon and no enclosing headlands, human-made elements distant and non-focal",
     },
     "coastal_promenade": {
-        "morning": "dominant Larnaca seafront promenade in clean morning daylight, broad paved edge, low sea wall, and open water as the main structure",
-        "evening": "dominant Larnaca seafront promenade in late twilight, broad paved edge, low sea wall, and water reflections kept realistic",
+        "morning": "Dominant Larnaca seafront promenade with broad paving and a low seawall beside open water",
+        "evening": "Dominant Larnaca seafront promenade with broad paving and a low seawall beside open water",
     },
     "marina_walkway": {
-        "morning": "dominant Limassol-style marina walkway close-up at street level, stone paving, railings, mooring details, and open water beyond",
-        "evening": "dominant Limassol-style marina walkway close-up in restrained twilight, stone paving, railings, mooring details, and textured water beyond",
+        "morning": "Dominant Limassol marina walkway with stone paving, railings and mooring details beside open water",
+        "evening": "Dominant Limassol marina walkway with stone paving, railings and mooring details beside open water",
     },
     "small_harbour": {
-        "morning": "dominant small Cyprus harbour in crisp daylight, protected harbour basin, stone quay edge, mooring posts, low waterfront buildings, and open sea beyond",
-        "evening": "dominant small Cyprus harbour in restrained twilight, protected harbour basin, stone quay edge, mooring posts, low waterfront buildings, and textured water inside the harbour",
+        "morning": "Dominant small Cyprus harbour with a linear stone harbour basin and quay, mooring posts and low waterfront buildings",
+        "evening": "Dominant small Cyprus harbour with a linear stone harbour basin and quay, mooring posts and low waterfront buildings",
     },
     "harbour_pier_waterlevel": {
-        "morning": "dominant Cyprus harbour pier at water level in crisp daylight, linear stone edge, mooring posts, and open horizon beyond",
-        "evening": "dominant Cyprus harbour pier at water level in late twilight, linear stone edge, mooring posts, and realistic moving water",
+        "morning": "Dominant Cyprus harbour pier at water level with a linear stone edge, mooring posts and an open horizon",
+        "evening": "Dominant Cyprus harbour pier at water level with a linear stone edge, mooring posts and an open horizon",
     },
     "open_sea_cliffs": {
-        "morning": "dominant Ayia Napa sea caves and open-sea cliffs in daylight, sculpted pale rock arches, turquoise water, and cliff-shadow detail",
-        "evening": "dominant Ayia Napa sea caves and open-sea cliffs in evening blue hour, sculpted pale rock arches, textured water, and long cliff shadows",
+        "morning": "Dominant Ayia Napa sea-cave coast with sculpted pale rock arches and open Mediterranean water, human-made elements distant and non-focal",
+        "evening": "Dominant Ayia Napa sea-cave coast with sculpted pale rock arches and open Mediterranean water, human-made elements distant and non-focal",
     },
     "mountain_coast_view": {
-        "morning": "dominant sea-view from a Cyprus hillside in clear early daylight, terraced stone foreground, mountain-to-coast depth, and wide coastal drop",
-        "evening": "dominant sea-view from a Cyprus hillside in late twilight, terraced stone foreground, layered coast below, and residual right-side horizon glow",
+        "morning": "Dominant Cyprus hillside sea view with terraced stone, layered mountain-to-coast depth and wide open water, human-made elements distant and non-focal",
+        "evening": "Dominant Cyprus hillside sea view with terraced stone, layered mountain-to-coast depth and wide open water, human-made elements distant and non-focal",
     },
     "breakwater_coast": {
-        "morning": "dominant breakwater and coastal road viewpoint in daylight, angular stone blocks, dry promenade edge, guardrail, rocky slope, and sea beyond",
-        "evening": "dominant breakwater and coastal road viewpoint near dusk, angular stone blocks, dry promenade edge, rocky slope, and glowing sea beyond",
+        "morning": "Dominant coastal road viewpoint with angular breakwater stone, a dry road edge and sea beyond",
+        "evening": "Dominant coastal road viewpoint with angular breakwater stone, a dry road edge and sea beyond",
     },
     "protected_bay": {
-        "morning": "dominant protected Cyprus bay in fresh daylight, curved shoreline, shallow turquoise water, sheltered rocks, and realistic local vegetation",
-        "evening": "dominant protected Cyprus bay in blue-hour twilight, curved shoreline, sheltered rocks, small ripples, and quiet residual horizon glow",
+        "morning": "Dominant protected Cyprus bay with a sheltered natural shoreline and shallow water, human-made elements distant and non-focal",
+        "evening": "Dominant protected Cyprus bay with a sheltered natural shoreline and shallow water, human-made elements distant and non-focal",
     },
     "windy_exposed_coast": {
-        "morning": "dominant exposed Cyprus coast in clear daylight, open horizon, dry rocks, wind-shaped coastal grass, and visibly textured sea surface",
-        "evening": "dominant exposed Cyprus coast in late twilight, open horizon, dry rocks, wind-shaped coastal grass, and stronger textured water",
+        "morning": "Dominant exposed Cyprus coast with an open horizon, dry rocks and wind-shaped coastal grass, human-made elements distant and non-focal",
+        "evening": "Dominant exposed Cyprus coast with an open horizon, dry rocks and wind-shaped coastal grass, human-made elements distant and non-focal",
     },
     "quiet_blue_lagoon": {
-        "morning": "dominant open sea horizon and quiet blue lagoon with local stone architecture in the foreground, pale walls, clean morning sky, and natural depth",
-        "evening": "dominant open sea horizon and quiet blue lagoon with local stone architecture in the foreground, pale walls, late twilight, and natural depth",
+        "morning": "Dominant quiet Cyprus blue lagoon with an open sea horizon and pale local stone in the foreground",
+        "evening": "Dominant quiet Cyprus blue lagoon with an open sea horizon and pale local stone in the foreground",
     },
     "coastal_urban_rooftop": {
-        "morning": "dominant Cyprus urban rooftop under the forecast morning sky, low pale buildings, practical city depth, and a distant strip of open sea",
-        "evening": "dominant Cyprus urban rooftop under the forecast twilight sky, low pale buildings, practical city depth, and a distant strip of open sea",
+        "morning": "Dominant Cyprus coastal rooftop with low pale buildings, practical urban depth and a distant strip of open sea",
+        "evening": "Dominant Cyprus coastal rooftop with low pale buildings, practical urban depth and a distant strip of open sea",
     },
     "salt_lake_landscape": {
-        "morning": "dominant flat Cyprus salt-lake landscape in clear daylight, low reeds, pale mineral shore, wide sky, and distant low city edge",
-        "evening": "dominant flat Cyprus salt-lake landscape in late twilight, low reeds, pale mineral shore, wide sky, and restrained horizon color",
+        "morning": "Dominant flat Cyprus salt-lake landscape with low reeds, a pale mineral shore and wide sky, human-made elements distant and non-focal",
+        "evening": "Dominant flat Cyprus salt-lake landscape with low reeds, a pale mineral shore and wide sky, human-made elements distant and non-focal",
     },
     "beach_cafe_terrace": {
-        "morning": "dominant street-level Cyprus beach cafe terrace facing open sea, simple shaded tables, low railing, straight horizon, and no people as focal subjects",
-        "evening": "dominant street-level Cyprus beach cafe terrace facing open sea, simple tables, low railing, textured water, and restrained twilight light",
+        "morning": "Dominant street-level Cyprus beach cafe terrace with simple shaded tables, a low railing and a straight open-sea horizon",
+        "evening": "Dominant street-level Cyprus beach cafe terrace with simple tables, a low railing and a straight open-sea horizon",
     },
 }
 _CY_INLAND_SCENES = (
@@ -186,50 +159,101 @@ _CY_INLAND_SCENES = (
     "traditional inland Cyprus village landscape with stone houses and narrow shaded lanes",
     "dry inland Cyprus landscape with ochre fields, sparse scrub, and low rolling terrain",
 )
-_CY_COASTAL_FOREGROUNDS = (
-    "rough limestone foreground",
-    "warm stone foreground",
-    "low seawall and paved edge in the foreground",
-    "marina stone quay in the foreground",
-    "coastal road shoulder and rock cut in the foreground",
-    "terraced hillside stone in the foreground",
-    "sea surface close texture in the lower frame",
+_CY_INLAND_SCENE_PROMPTS = {
+    "inland_urban_rooftop": "Dominant Nicosia urban rooftop with low pale buildings and practical inland city depth",
+    "troodos_landscape": "Dominant Troodos mountain landscape with dry pine slopes and layered ridges, human-made elements distant and non-focal",
+    "inland_village": "Dominant traditional inland Cyprus village with stone houses and narrow shaded lanes",
+    "dry_inland_landscape": "Dominant dry inland Cyprus landscape with ochre fields, sparse scrub and low rolling terrain, human-made elements distant and non-focal",
+}
+_CY_SCENE_COMPOSITIONS = {
+    "rocky_cove_overlook": (
+        "Raised natural overlook with limestone foreground and open-shore depth",
+        "Diagonal rocky-coast composition led by limestone shelves",
+    ),
+    "long_sandy_beach": (
+        "Eye-level shoreline composition along the open beach",
+        "Low beach composition led by sand, dunes and a straight horizon",
+    ),
+    "open_beach_horizon": (
+        "Eye-level composition facing the straight open-sea horizon",
+        "Low shoreline composition with uninterrupted beach depth",
+    ),
+    "coastal_promenade": (
+        "Street-level promenade composition led by paving and seawall",
+        "Linear seafront composition with the promenade as the main structure",
+    ),
+    "marina_walkway": (
+        "Close street-level marina-walkway composition led by quay details",
+        "Linear marina composition along paving, railings and water",
+    ),
+    "small_harbour": (
+        "Water-level linear harbour composition led by the stone basin and quay",
+        "Quayside composition following the harbour edge and low buildings",
+    ),
+    "harbour_pier_waterlevel": (
+        "Water-level pier composition along the linear stone edge",
+        "Low harbour-pier viewpoint facing the open horizon",
+    ),
+    "open_sea_cliffs": (
+        "Cliff-edge composition with pale rock arches framing open water",
+        "Low sea-cave viewpoint led by sculpted rock and open water",
+    ),
+    "mountain_coast_view": (
+        "Hillside overlook composition with terraced foreground and coast below",
+        "Layered highland-to-sea composition led by terraced stone",
+    ),
+    "breakwater_coast": (
+        "Road-edge viewpoint led by angular breakwater stone",
+        "Linear coastal-road composition with dry stone and sea beyond",
+    ),
+    "protected_bay": (
+        "Shore-level composition following the sheltered natural shoreline",
+        "Low sheltered-water composition led by rocks and shallow water",
+    ),
+    "windy_exposed_coast": (
+        "Eye-level exposed-shore composition with an open horizon",
+        "Low rocky-coast composition shaped by wind and open water",
+    ),
+    "quiet_blue_lagoon": (
+        "Shore-level open-horizon composition with pale stone foreground",
+        "Low lagoon-edge composition facing the open sea horizon",
+    ),
+    "coastal_urban_rooftop": (
+        "Rooftop composition led by low buildings and wide sky",
+        "Urban-depth composition with pale roofs and distant open sea",
+    ),
+    "salt_lake_landscape": (
+        "Low flat-landscape composition with reeds in the foreground",
+        "Wide salt-lake composition led by mineral shore and open sky",
+    ),
+    "beach_cafe_terrace": (
+        "Street-level terrace composition led by shade and open horizon",
+        "Linear cafe-edge composition with tables, railing and sea beyond",
+    ),
+}
+_CY_COASTAL_COMPOSITIONS = tuple(
+    composition
+    for scene_family in _CYPRUS_SCENE_FAMILIES
+    for composition in _CY_SCENE_COMPOSITIONS[scene_family]
 )
-_CY_INLAND_FOREGROUNDS = (
-    "warm stone foreground",
-    "shaded pavement edge in the foreground",
-    "dry urban planting in the foreground",
-)
-_CY_COASTAL_COMPOSITIONS = (
-    "aerial or raised viewpoint",
-    "eye-level coast view",
-    "wide panorama composition",
-    "closer foreground rocks composition",
-    "open horizon composition",
-    "promenade or harbour foreground composition",
-    "beach curve composition",
-    "cliffs without foreground palms composition",
-    "street-level promenade composition",
-    "eye-level open beach horizon composition",
-    "marina walkway close-up composition",
-    "harbour pier water-level composition",
-    "urban rooftop sky composition",
-    "flat coastal landscape composition",
-    "beach cafe terrace composition",
-)
-_CY_INLAND_COMPOSITIONS = (
-    "layered street-and-sky composition",
-    "framed inland urban view",
-    "diagonal shaded-street composition",
-)
-
-_CY_NO_BAY_NEGATIVE = (
-    "no bay; no cove; no enclosed lagoon; no elevated cliff panorama; no palm-framed bay; "
-    "no curved coastline viewed from above; no generic Mediterranean postcard composition; "
-    "no repeated sunset-on-the-right composition"
-)
-
-
+_CY_INLAND_SCENE_COMPOSITIONS = {
+    "inland_urban_rooftop": (
+        "Layered Nicosia rooftop-and-sky composition",
+        "Framed inland urban view led by pale buildings",
+    ),
+    "troodos_landscape": (
+        "Layered Troodos ridge composition with dry pines",
+        "Wide mountain composition led by receding ridges",
+    ),
+    "inland_village": (
+        "Street-level village composition along a shaded stone lane",
+        "Framed inland village view led by local stone houses",
+    ),
+    "dry_inland_landscape": (
+        "Low inland composition across ochre fields and scrub",
+        "Layered dry-land composition with low rolling terrain",
+    ),
+}
 def _bay_visuals_disabled() -> bool:
     return str(os.getenv("CY_DISABLE_BAY_VISUALS", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -246,15 +270,16 @@ def _available_scene_families(options: tuple[str, ...]) -> tuple[str, ...]:
     return filtered or ("open_beach_horizon", "coastal_promenade", "marina_walkway")
 
 
-def _available_compositions() -> tuple[str, ...]:
+def _available_compositions(scene_family: str = "") -> tuple[str, ...]:
+    options = _CY_SCENE_COMPOSITIONS.get(scene_family, _CY_COASTAL_COMPOSITIONS)
     if not _bay_visuals_disabled():
-        return _CY_COASTAL_COMPOSITIONS
-    blocked_terms = ("aerial", "raised", "wide panorama", "beach curve", "closer foreground rocks")
+        return options
+    blocked_terms = ("aerial", "raised", "bay", "cove", "lagoon", "sheltered")
     filtered = tuple(
-        value for value in _CY_COASTAL_COMPOSITIONS
+        value for value in options
         if not any(term in value.lower() for term in blocked_terms)
     )
-    return filtered or ("street-level promenade composition", "eye-level open beach horizon composition")
+    return filtered or ("Scene-specific eye-level composition",)
 
 
 def _inland_scene_family(scene_text: str) -> str:
@@ -274,7 +299,7 @@ def _visual_archetype(scene_family: str, composition: str) -> str:
     if _scene_is_bay_or_cove(scene):
         return "bay_panorama"
     if scene in {"open_sea_cliffs", "mountain_coast_view", "rocky_cove_overlook"} and any(
-        token in comp for token in ("aerial", "raised", "wide panorama", "cliff")
+        token in comp for token in ("aerial", "raised", "wide panorama")
     ):
         return "elevated_cliff_panorama"
     if scene in {"long_sandy_beach", "open_beach_horizon"}:
@@ -405,27 +430,6 @@ def _select_scene_family(
     return _CYPRUS_SCENE_FAMILIES[idx]
 
 
-def _select_composition(
-    date_key: str,
-    post_type: str,
-    weather_main: str,
-    scene_family: str,
-    *,
-    variation_attempt: int = 0,
-    _history_depth: int = 5,
-    blocked_compositions: tuple[str, ...] = (),
-) -> str:
-    composition, _mode = _select_composition_with_mode(
-        date_key,
-        post_type,
-        weather_main,
-        scene_family,
-        variation_attempt=variation_attempt,
-        blocked_compositions=blocked_compositions,
-    )
-    return composition
-
-
 def _select_composition_with_mode(
     date_key: str,
     post_type: str,
@@ -435,7 +439,7 @@ def _select_composition_with_mode(
     variation_attempt: int = 0,
     blocked_compositions: tuple[str, ...] = (),
 ) -> tuple[str, str]:
-    options = _available_compositions()
+    options = _available_compositions(scene_family)
     count = len(options)
     seed = "|".join([post_type, weather_main, "cyprus_composition"])
     offset = _stable_index(seed, "composition_offset", count)
@@ -660,16 +664,9 @@ def _coastal_visual_variants(
         composition_selection_mode,
     ) = selected
     scene_text = _CY_COASTAL_SCENE_TEMPLATES[scene_family][post_type]
-    seed = _variant_seed(message, ctx, post_type)
-    foreground = _stable_variant(
-        f"{seed}|{scene_family}|{variation_attempt}",
-        "foreground",
-        _CY_COASTAL_FOREGROUNDS,
-    )
     return {
         "scene_family": scene_family,
         "scene_text": scene_text,
-        "foreground": foreground,
         "composition": composition,
         "visual_archetype": visual_archetype,
         "scene_selection_mode": scene_selection_mode,
@@ -700,16 +697,6 @@ def _lunar_illumination_percent(message: str) -> float | None:
     return None
 
 
-def _has_full_moon_evening_context(message: str) -> bool:
-    text = str(message or "")
-    if re.search(r"полнолу", text, flags=re.I):
-        return True
-    if re.search(r"\b100\s*%\s*освещ", text, flags=re.I):
-        return True
-    illumination = _lunar_illumination_percent(text)
-    return illumination is not None and illumination >= 95
-
-
 def _moon_phase_direction(message: str) -> str:
     text = str(message or "").lower()
     if re.search(r"убыва|waning", text, flags=re.I):
@@ -735,54 +722,6 @@ def _evening_moon_visual_context(message: str) -> dict[str, object]:
     if has_full_word or re.search(r"\b100\s*%\s*освещ", text, flags=re.I):
         return {"kind": "full", "illumination": illumination}
     return {"kind": "", "illumination": illumination}
-
-
-def _controlled_variety(
-    message: str,
-    ctx: VisualContextCY,
-    post_type: str,
-    *,
-    variation_attempt: int = 0,
-    blocked_scenes: tuple[str, ...] = (),
-    blocked_compositions: tuple[str, ...] = (),
-    blocked_archetypes: tuple[str, ...] = (),
-) -> list[str]:
-    seed = _variant_seed(message, ctx, post_type)
-    inland_only = ctx.inland_heat_focus and not ctx.coastal_focus
-    if inland_only:
-        scenes = _CY_INLAND_SCENES
-        foregrounds = _CY_INLAND_FOREGROUNDS
-        compositions = _CY_INLAND_COMPOSITIONS
-        scene_text = _stable_variant(seed, "scene", scenes)
-        foreground = _stable_variant(seed, "foreground", foregrounds)
-        composition = _stable_variant(seed, "composition", compositions)
-        scene_family = _inland_scene_family(scene_text)
-    else:
-        variants = _coastal_visual_variants(
-            message,
-            ctx,
-            post_type,
-            variation_attempt=variation_attempt,
-            blocked_scenes=blocked_scenes,
-            blocked_compositions=blocked_compositions,
-            blocked_archetypes=blocked_archetypes,
-        )
-        scene_text = variants["scene_text"]
-        foreground = variants["foreground"]
-        composition = variants["composition"]
-        scene_family = variants["scene_family"]
-    parts = [
-        "dominant Cyprus scene family: " + scene_family,
-        "dominant macro scene variant: " + scene_text,
-        "controlled foreground variant: " + foreground,
-        "controlled composition variant: " + composition,
-        "avoid repeating previous postcard composition, avoid foreground palms as the main subject, avoid identical centered bay curve, avoid cliff walls on both sides",
-    ]
-    if scene_family == "small_harbour":
-        parts.append(
-            "small harbour adherence: protected harbour basin, harbour edge as main motif, mooring posts, low coastal human structure, not a generic cliff bay"
-        )
-    return parts
 
 
 def sanitize_cyprus_scene_prompt(prompt: str, *, post_type: str) -> str:
@@ -827,131 +766,200 @@ def sanitize_cyprus_scene_prompt(prompt: str, *, post_type: str) -> str:
     return cleaned.strip(" ,;:.")
 
 
-def _location_cue(message: str, ctx: VisualContextCY) -> str:
-    low = message.lower()
-    found = [
-        name
-        for name, patterns in _CITY_PATTERNS
-        if any(re.search(pattern, low, flags=re.I) for pattern in patterns)
+def _semantic_keys(value: str) -> set[str]:
+    low = re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
+    groups = (
+        ("visible_text", ("no text", "visible text", "letters", "pseudo caption")),
+        ("logo", ("no logo", "brand marks")),
+        ("watermark_signature", ("watermark", "artist signature", "no signature")),
+        ("moon_scale", ("natural moon scale", "small to medium", "oversized moon", "fantasy planet", "fantasy supermoon")),
+        ("wind_water", ("textured water", "wind ruffled", "uneven water", "mirror flat water")),
+        ("tourist_calm", ("tourist calm", "perfect calm")),
+        ("background_palms", ("palms optional", "palms distant", "foreground palms", "background accents")),
+        ("curved_bay", ("scenic curved bay", "scenic curved tourist bay")),
+    )
+    keys = {
+        key
+        for key, phrases in groups
+        if any(phrase in low for phrase in phrases)
+    }
+    return keys or {low}
+
+
+def _dedupe_semantic_items(items: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        cleaned = re.sub(r"\s+", " ", str(item)).strip(" ,;:.")
+        if not cleaned:
+            continue
+        keys = _semantic_keys(cleaned)
+        if seen.intersection(keys):
+            continue
+        seen.update(keys)
+        result.append(cleaned)
+    return result
+
+
+def _selected_scene_clause(metadata: dict[str, str], post_type: str) -> str:
+    scene_family = metadata["selected_scene"]
+    if scene_family in _CY_INLAND_SCENE_PROMPTS:
+        return _CY_INLAND_SCENE_PROMPTS[scene_family]
+    return _CY_COASTAL_SCENE_TEMPLATES[scene_family][post_type]
+
+
+def _format_illumination(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return ""
+    return f"{value:.0f}" if float(value).is_integer() else f"{value:.1f}"
+
+
+def _compact_time_cue(
+    post_type: str,
+    moon_context: dict[str, object],
+    ctx: VisualContextCY,
+) -> str:
+    if post_type == "morning":
+        cue = "Fresh neutral morning daylight, pale blue sky, natural shadows and light from the left"
+        if ctx.uv_level in {"high", "extreme"}:
+            cue += ", with crisp direct sunlight"
+        return cue
+    kind = str(moon_context.get("kind") or "")
+    illumination = _format_illumination(moon_context.get("illumination"))
+    if kind == "near_full":
+        direction = str(moon_context.get("direction") or "waxing")
+        amount = f", {illumination}% illuminated" if illumination else ""
+        return f"Blue-hour late twilight with a realistic {direction} gibbous Moon{amount} and residual right-side horizon glow"
+    if kind == "full":
+        amount = f", {illumination}% illuminated" if illumination else ""
+        return f"Blue-hour twilight with a realistic full Moon{amount} and residual right-side horizon glow"
+    return "Restrained Cyprus late twilight with soft residual horizon glow and natural shadows"
+
+
+def _compact_weather_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
+    diagnostics = scene.diagnostics
+    if diagnostics.get("wet_rule"):
+        return "Layered Mediterranean rain clouds with factual rain and wet coastal surfaces"
+    if diagnostics.get("dust_rule"):
+        return "Muted Mediterranean sky with explicit beige-gold dust haze"
+    if diagnostics.get("visibility_haze_rule"):
+        return "Soft humid haze with reduced distant visibility"
+    if diagnostics.get("inland_unsettled_rule"):
+        return "Dry coast under clearer sky with distant convective cloud towers over Troodos"
+    if ctx.weather_main == "cloudy":
+        return "Layered Mediterranean cloud cover"
+    if diagnostics.get("severe_wind_rule"):
+        return "Layered wind-driven Mediterranean clouds over dry coastal surfaces"
+    if ctx.weather_main == "mixed":
+        return "Passing Mediterranean clouds with clear intervals"
+    return "Clear Mediterranean sky"
+
+
+def _compact_wind_sea_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
+    diagnostics = scene.diagnostics
+    wet = bool(diagnostics.get("wet_rule"))
+    windy = bool(diagnostics.get("wind_rule"))
+    severe = bool(diagnostics.get("severe_wind_rule"))
+    inland_only = ctx.inland_heat_focus and not ctx.coastal_focus
+    if inland_only:
+        if severe:
+            return "Strong wind visibly moving dry inland vegetation"
+        if windy:
+            return "Breezy inland air with visible movement in dry vegetation"
+        return "Light natural movement in dry inland vegetation"
+    if severe:
+        if wet:
+            return "Strong coastal wind in textured water and leaning coastal grass, with frequent small whitecaps"
+        return "Strong dry coastal wind in textured water and leaning coastal grass, frequent small whitecaps, dry promenade and rocks"
+    if windy:
+        cue = "Gusty wind visible in textured water and leaning coastal grass"
+        if ctx.gust_max is not None and ctx.gust_max >= 12:
+            cue += ", with occasional small whitecaps"
+        return cue
+    if wet:
+        return "Rain-rippled Mediterranean water with an active natural surface"
+    if ctx.sea_state_hint == "rough":
+        return "Active Mediterranean water with irregular natural wave texture"
+    if ctx.sea_state_hint == "calm":
+        return "Calm Mediterranean water with light natural ripples"
+    return "Natural Mediterranean water with restrained surface movement"
+
+
+def _compact_finish_cue(ctx: VisualContextCY) -> str:
+    cue = "Natural Mediterranean colors, realistic atmospheric perspective and restrained editorial weather photography, with palms optional as background accents"
+    if ctx.temp_max is not None and ctx.temp_max >= 33:
+        cue += " and subtle heat shimmer over sun-warmed stone"
+    return cue
+
+
+def _negative_items(
+    post_type: str,
+    moon_context: dict[str, object],
+    metadata: dict[str, str],
+    scene: SceneCuesCY,
+) -> list[str]:
+    items = [
+        "no text or logo",
+        "no watermark or signature",
+        "no illustration or fantasy",
     ]
-
-    if ctx.coastal_focus:
-        coastal_found = [name for name in found if name in {"Paphos", "Larnaca", "Limassol", "Ayia Napa"}]
-        if len(coastal_found) > 1:
-            return "Cyprus Mediterranean coast with local stone architecture and varied shoreline"
-        if "Paphos" in found:
-            return "Paphos rocky Mediterranean coast as the geographic setting"
-        if "Larnaca" in found:
-            return "Larnaca seafront promenade with low seawall, broad paving, and open water"
-        if "Limassol" in found:
-            return "Limassol marina edge with stone quay, waterfront depth, and open sea nearby"
-        if "Ayia Napa" in found:
-            return "Ayia Napa sea caves and eastern Cyprus rocky shoreline"
-        return "Cyprus Mediterranean coast with local stone architecture and varied shoreline"
-    if "Nicosia" in found and ctx.inland_heat_focus:
-        return "Nicosia inland Cyprus with sun-baked stone streets and shaded urban depth"
-    if ctx.inland_heat_focus:
-        return "dry inland Cyprus urban setting with Nicosia character"
-    return "Cyprus Mediterranean coast with local stone architecture and varied shoreline"
-
-
-def _weather_cues(ctx: VisualContextCY, scene: SceneCuesCY) -> list[str]:
-    cues = [
-        scene.sky_cue,
-        scene.light_cue,
-        scene.sea_cue,
-        scene.air_cue,
-    ]
-
-    if scene.diagnostics.get("wet_rule"):
-        cues.extend(
+    if _bay_visuals_disabled():
+        items.extend(
             [
-                "wet promenade surfaces",
-                "dramatic rain clouds",
-                "sheltered pedestrians moving with practical rain awareness",
-                "practical rain mood",
+                "no scenic curved bay",
+                "no natural cove",
+                "no enclosed tourist lagoon",
+                "no elevated postcard coastline",
             ]
         )
-    else:
-        cues.append(scene.mood_cue)
-        if scene.diagnostics.get("inland_unsettled_rule"):
-            cues.extend(
-                [
-                    "distant inland cloud development toward the Troodos mountains",
-                    "convective cloud build-up toward Troodos/inland",
-                    "towering cumulus over inland hills",
-                    "cloud towers over inland hills while the coastal foreground remains dry",
-                    "clearer warm Cyprus coast with weather building inland",
-                    "no whole-coast storm scene",
-                    "no perfect tourist calm",
-                    "no ideal postcard sunset scene",
-                    "dry coastal surfaces, not a rainy shoreline",
-                ]
-            )
-        if scene.diagnostics.get("wind_rule"):
-            cues.extend(
-                [
-                    "visible wind response in palm fronds and coastal grass",
-                    "coastal vegetation visibly leaning in gusts",
-                    "wind-ruffled sea with uneven texture",
-                    "textured Mediterranean water surface",
-                    "small wind-driven ripples",
-                    "no mirror-flat water",
-                    "no perfect tourist calm",
-                    "no completely still vegetation",
-                ]
-            )
-            if ctx.gust_max is not None and ctx.gust_max >= 12:
-                cues.append("occasional small whitecaps, not storm-scale")
-            if scene.diagnostics.get("severe_wind_rule"):
-                cues.extend(
-                    [
-                        "strong dry coastal wind response",
-                        "frequent small whitecaps on textured Mediterranean water",
-                        "visibly bent palm fronds and coastal grass",
-                        "dry promenade and dry coastal surfaces",
-                    ]
-                )
-
-    if scene.diagnostics.get("dust_rule"):
-        cues.append("dust haze with muted beige-gold atmospheric depth")
-    if scene.diagnostics.get("hot_rule"):
-        cues.append("visible heat shimmer above sun-warmed stone and dry air")
-        if ctx.coastal_focus and ctx.post_type == "evening":
-            cues.append("clear hot Cyprus evening air")
-    if ctx.post_type == "morning" and ctx.uv_level in {"high", "extreme"}:
-        cues.append("strong direct sunlight with crisp daylight contrast")
-    if ctx.humidity_hint in {"high", "present"}:
-        cues.append("soft humid sea haze along the coast")
-    if (
-        ctx.coastal_focus
-        and ctx.sea_state_hint == "calm"
-        and not scene.diagnostics.get("wind_rule")
-        and not scene.diagnostics.get("wet_rule")
-        and not scene.diagnostics.get("inland_unsettled_rule")
-    ):
-        cues.append("calm warm sea surface")
-
-    return cues
+    elif metadata["selected_scene"] == "small_harbour":
+        items.append("no scenic curved tourist bay")
+    if post_type == "morning":
+        items.extend(
+            [
+                "no sunset and no orange golden-hour sky",
+                "no moon and no night",
+                "no bright light source on the right",
+            ]
+        )
+    elif moon_context.get("kind"):
+        items.append("natural moon scale, no oversized moon and no fantasy planet")
+        if moon_context.get("kind") == "near_full":
+            items.append("no perfect full moon")
+    if scene.diagnostics.get("wind_rule"):
+        items.append("no mirror-flat water or still vegetation")
+    return _dedupe_semantic_items(items)[:10]
 
 
-def _selected_scene_family(
-    message: str,
-    ctx: VisualContextCY,
-    post_type: str,
-    *,
-    variation_attempt: int,
-    blocked_scenes: tuple[str, ...] = (),
-) -> str:
-    if ctx.inland_heat_focus and not ctx.coastal_focus:
-        return "inland_urban_heat"
-    return _coastal_visual_variants(
-        message,
-        ctx,
-        post_type,
-        variation_attempt=variation_attempt,
-        blocked_scenes=blocked_scenes,
-    )["scene_family"]
+def _compose_prompt(positive: list[str], negative: list[str]) -> str:
+    return "; ".join(positive).rstrip(" .;") + ". Avoid: " + "; ".join(negative) + "."
+
+
+def _fit_prompt_budget(positive: list[str], negative: list[str]) -> tuple[str, list[str]]:
+    positive = _dedupe_semantic_items(positive)
+    negative = _dedupe_semantic_items(negative)[:10]
+    prompt = _compose_prompt(positive, negative)
+    if len(prompt) < _PROMPT_TARGET_MIN_CHARS:
+        positive[-1] += ", natural depth and balanced local detail without postcard exaggeration"
+        prompt = _compose_prompt(positive, negative)
+    if len(prompt) > _PROMPT_TARGET_MAX_CHARS:
+        positive[0] = "Photorealistic Cyprus landscape photography"
+        positive[-1] = "Natural colors, realistic detail and palms only as optional background accents"
+        prompt = _compose_prompt(positive, negative)
+    if len(prompt) > _PROMPT_TARGET_MAX_CHARS:
+        positive[5] = "Coherent scene-specific composition"
+        positive[-1] = "Natural Mediterranean colors and realistic detail"
+        prompt = _compose_prompt(positive, negative)
+    if len(prompt) > _PROMPT_HARD_MAX_CHARS:
+        raise ValueError("Cyprus visual prompt exceeds the hard length limit")
+    return prompt, positive
+
+
+def _pollinations_encoded_url_length(prompt: str) -> int:
+    base = os.getenv("POLLINATIONS_BASE_URL", "https://image.pollinations.ai/prompt/").rstrip("/")
+    referrer = os.getenv("POLLINATIONS_REFERRER", "worldvibemeter").strip()
+    encoded = quote_plus(f"{prompt} :: {'0' * 32}")
+    return len(f"{base}/{encoded}?width=1024&height=1024&referrer={quote_plus(referrer)}")
 
 
 def _visual_cache_metadata(
@@ -969,7 +977,11 @@ def _visual_cache_metadata(
         seed = _variant_seed(message, ctx, post_type)
         scene_text = _stable_variant(seed, "scene", _CY_INLAND_SCENES)
         selected_scene = _inland_scene_family(scene_text)
-        composition = _stable_variant(seed, "composition", _CY_INLAND_COMPOSITIONS)
+        composition = _stable_variant(
+            seed,
+            "composition",
+            _CY_INLAND_SCENE_COMPOSITIONS[selected_scene],
+        )
         visual_archetype = _visual_archetype(selected_scene, composition)
         scene_selection_mode = "eligible"
         composition_selection_mode = "eligible"
@@ -1054,18 +1066,6 @@ def build_cyprus_visual_cache_key(
     )["cache_key"]
 
 
-_GLOBAL_PHOTOREALISM_GUARD = (
-    "Photorealistic natural coastal photography; realistic Mediterranean vegetation; "
-    "natural atmospheric perspective; realistic sea texture; no painting; no illustration; "
-    "no digital art; no watercolor; no poster; no fantasy landscape; no text; no watermark; no logo."
-)
-_MORNING_LIGHT_GUARD = (
-    "Morning-only constraints: fresh neutral daylight, pale blue sky, primary light from the left, "
-    "no visible sun disk by default, no sunset, no golden hour, no orange horizon, no amber wash, "
-    "no low sun on the right, no evening glow, no dusk, no heavy cinematic sunset grading."
-)
-
-
 def build_cyprus_scene_prompt_with_metadata(
     final_format_v2_message: str,
     *,
@@ -1074,7 +1074,7 @@ def build_cyprus_scene_prompt_with_metadata(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
-) -> tuple[str, str, dict[str, str]]:
+) -> tuple[str, str, dict[str, object]]:
     """Return a sanitized Cyprus prompt, stable style name, and visual cache metadata."""
     mode = post_type.strip().lower()
     if mode not in {"morning", "evening"}:
@@ -1083,8 +1083,6 @@ def build_cyprus_scene_prompt_with_metadata(
     ctx = build_visual_context_cy(final_format_v2_message, post_type=mode)
     scene = apply_visual_rules_cy(ctx)
     moon_context = _evening_moon_visual_context(final_format_v2_message) if mode == "evening" else {}
-    full_moon_evening = moon_context.get("kind") == "full"
-    near_full_moon_evening = moon_context.get("kind") == "near_full"
     metadata = _visual_cache_metadata(
         final_format_v2_message,
         ctx,
@@ -1094,134 +1092,37 @@ def build_cyprus_scene_prompt_with_metadata(
         blocked_compositions=blocked_compositions,
         blocked_archetypes=blocked_archetypes,
     )
-
-    if mode == "morning":
-        time_cue = (
-            "fresh morning daylight, clear early morning daylight, pale blue sky, neutral daylight, "
-            "cool fresh morning atmosphere, crisp visibility, crisp daytime visibility, "
-            "soft natural light from the left side of frame, soft neutral sunlight from the left side of frame, "
-            "sun from left, light direction from left, no visible sun disk, natural daytime shadows, "
-            "no bright illumination from the right side of frame, no warm low-angle glow"
-        )
-    elif near_full_moon_evening:
-        direction = str(moon_context.get("direction") or "waxing")
-        time_cue = (
-            f"Mediterranean blue-hour or late twilight, visible realistic {direction} gibbous Moon "
-            "above the sea, residual warm horizon glow on the right side of frame, "
-            "small-to-medium natural moon scale"
-        )
-    elif full_moon_evening:
-        time_cue = (
-            "Mediterranean blue-hour twilight, visible realistic full moon above the sea, "
-            "soft moonlit water, residual warm horizon glow on the right side of frame, "
-            "natural moonrise balance"
-        )
-    else:
-        time_cue = (
-            "Mediterranean late-day atmosphere with restrained twilight color, "
-            "subtle residual horizon glow that does not have to sit on the right side, "
-            "not a default postcard golden sunset, no mandatory visible sun disk"
-        )
-    foundation = _COASTAL_FOUNDATION if ctx.coastal_focus or not ctx.inland_heat_focus else _INLAND_FOUNDATION
-    prompt_parts = [
-        *foundation,
-        _location_cue(final_format_v2_message, ctx),
-        time_cue,
-        *_weather_cues(ctx, scene),
-        *_controlled_variety(
-            final_format_v2_message,
-            ctx,
-            mode,
-            variation_attempt=variation_attempt,
-            blocked_scenes=blocked_scenes,
-            blocked_compositions=blocked_compositions,
-            blocked_archetypes=blocked_archetypes,
-        ),
+    positive = [
+        "Photorealistic natural Cyprus landscape photography",
+        _selected_scene_clause(metadata, mode),
+        _compact_time_cue(mode, moon_context, ctx),
+        _compact_weather_cue(ctx, scene),
+        _compact_wind_sea_cue(ctx, scene),
+        metadata["composition"],
+        _compact_finish_cue(ctx),
     ]
-    require_no_bay = _bay_visuals_disabled() or metadata["visual_archetype"] not in {
-        "bay_panorama",
-        "elevated_cliff_panorama",
-    }
-    if ctx.coastal_focus or not ctx.inland_heat_focus:
-        prompt_parts.extend(
-            [
-                "palms may appear only as small background accents",
-            ]
-        )
-    if full_moon_evening:
-        prompt_parts.extend(
-            [
-                "moonrise blue-hour emphasis dominates over late-day warmth",
-                "visible realistic full moon if clouds allow",
-                "subtle moonlit reflection on Mediterranean water",
-                "realistic moon scale and natural position, not oversized moon",
-                "not a sun-dominant scene",
-                "no bright golden sunset",
-                "no oversized moon",
-                "no fantasy planet",
-                "no fantasy supermoon",
-            ]
-        )
-    elif near_full_moon_evening:
-        direction = str(moon_context.get("direction") or "waxing")
-        prompt_parts.extend(
-            [
-                f"realistic {direction} gibbous Moon at small-to-medium natural scale",
-                "blue-hour or late twilight moon context",
-                "residual right-side horizon glow",
-                "not a sun-dominant scene",
-                "no bright golden sunset",
-                "avoid exact circular full-moon disk",
-                "natural-scale moon only",
-                "no surreal lunar scale",
-                "no perfect full moon",
-                "no oversized moon",
-                "no fantasy supermoon",
-            ]
-        )
-    prompt = sanitize_cyprus_scene_prompt(
-        "; ".join(part for part in prompt_parts if part),
-        post_type=mode,
-    )
-    if near_full_moon_evening:
-        direction = str(moon_context.get("direction") or "waxing")
-        illumination = moon_context.get("illumination")
-        if isinstance(illumination, (int, float)):
-            pct = f"{illumination:.0f}" if float(illumination).is_integer() else f"{illumination:.1f}"
-            near_full_cue = f"realistic {direction} gibbous Moon, {pct}% illuminated"
-        else:
-            near_full_cue = f"realistic {direction} gibbous Moon"
-        prompt = (
-            prompt.rstrip(" .;")
-            + ". "
-            + "; ".join(
-                [
-                    near_full_cue,
-                    "blue-hour or late twilight",
-                    "residual right-side horizon glow",
-                    "small-to-medium natural moon scale",
-                    "avoid exact circular full-moon disk",
-                    "natural-scale moon only",
-                    "no surreal lunar scale",
-                    "no perfect full moon",
-                    "no oversized moon",
-                    "no fantasy supermoon",
-                ]
-            )
-        )
-    if mode == "evening" and _EVENING_TEXT_GUARD.lower() not in prompt.lower():
-        prompt = prompt.rstrip(" .;") + ". " + _EVENING_TEXT_GUARD
-    if _GLOBAL_PHOTOREALISM_GUARD.lower() not in prompt.lower():
-        prompt = prompt.rstrip(" .;") + ". " + _GLOBAL_PHOTOREALISM_GUARD
-    if mode == "morning" and "morning-only constraints" not in prompt.lower():
-        prompt = prompt.rstrip(" .;") + " " + _MORNING_LIGHT_GUARD
-    if require_no_bay and _CY_NO_BAY_NEGATIVE.lower() not in prompt.lower():
-        prompt = prompt.rstrip(" .;") + ". " + _CY_NO_BAY_NEGATIVE + "."
+    sanitized_positive = [
+        sanitize_cyprus_scene_prompt(part, post_type=mode)
+        for part in positive
+    ]
+    # The time cue is controlled text; restore its factual lunar percentage after
+    # the general sanitizer removes raw percentages from source-derived content.
+    sanitized_positive[2] = _compact_time_cue(mode, moon_context, ctx)
+    negative = _negative_items(mode, moon_context, metadata, scene)
+    prompt, final_positive = _fit_prompt_budget(sanitized_positive, negative)
+    final_negative = _dedupe_semantic_items(negative)[:10]
+    encoded_url_length = _pollinations_encoded_url_length(prompt)
+    if encoded_url_length > _POLLINATIONS_URL_HARD_MAX_CHARS:
+        raise ValueError("Cyprus visual prompt exceeds the Pollinations URL length limit")
     style_digest = hashlib.sha256(
         f"{metadata['cache_key']}|{prompt}".encode("utf-8")
     ).hexdigest()[:8]
     style_name = f"cyprus_{mode}_mediterranean_landscape_{style_digest}"
     metadata["style_name"] = style_name
+    metadata["prompt_length_chars"] = len(prompt)
+    metadata["positive_clause_count"] = len(final_positive)
+    metadata["negative_item_count"] = len(final_negative)
+    metadata["pollinations_encoded_url_length"] = encoded_url_length
     return prompt, style_name, metadata
 
 
