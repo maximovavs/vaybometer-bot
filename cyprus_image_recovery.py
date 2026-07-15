@@ -7,18 +7,19 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import random
 import re
 from typing import Any, Iterable
 
-from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
+from PIL import Image, ImageDraw, ImageFilter, PngImagePlugin
 
 from visual_context_cy import parse_visual_context_cy
 
 
-LOCAL_WEATHER_CARD_VERSION = "cy_local_weather_card_v1"
+LOCAL_WEATHER_CARD_VERSION = "cy_local_atmospheric_visual_v2"
 PROVIDER_HEALTH_SCHEMA_VERSION = 1
 _PROVIDER_NAMES = ("pollinations", "stable_horde", "custom")
 _INVALID_ERROR_CATEGORIES = {
@@ -218,50 +219,183 @@ def mark_provider_duplicate(
         record["last_error_type"] = "ProviderRepeatedPerceptualOutput"
 
 
-def _font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
-    filename = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
-    candidates = (
-        filename,
-        f"/usr/share/fonts/truetype/dejavu/{filename}",
-        f"C:/Windows/Fonts/{'arialbd.ttf' if bold else 'arial.ttf'}",
-    )
-    for candidate in candidates:
-        try:
-            return ImageFont.truetype(candidate, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
 def _mix(a: tuple[int, int, int], b: tuple[int, int, int], ratio: float) -> tuple[int, int, int]:
     return tuple(round(a[index] * (1.0 - ratio) + b[index] * ratio) for index in range(3))
 
 
-def _draw_cloud(draw: ImageDraw.ImageDraw, x: int, y: int, scale: float, fill: tuple[int, int, int, int]) -> None:
-    parts = (
-        (x, y + 28 * scale, x + 120 * scale, y + 88 * scale),
-        (x + 28 * scale, y, x + 100 * scale, y + 78 * scale),
-        (x + 72 * scale, y + 10 * scale, x + 154 * scale, y + 86 * scale),
+_LOCAL_VISUAL_VARIANTS = (
+    "open_sea_dawn",
+    "evening_sea_horizon",
+    "windy_coastal_twilight",
+    "hazy_hot_inland",
+    "troodos_evening",
+    "cloudy_promontory",
+    "minimal_moonlit_coast",
+)
+
+
+def _has_near_full_moon(text: str) -> bool:
+    return bool(
+        re.search(r"полнолун|full\s+moon|(?:9[5-9]|100)\s*%", text or "", re.I)
     )
-    for box in parts:
-        draw.ellipse(tuple(round(value) for value in box), fill=fill)
 
 
-def _weather_label(weather: str, *, haze: bool, severe_wind: bool) -> str:
-    if severe_wind and weather not in {"rain", "storm"}:
-        return "ВЕТЕР У МОРЯ"
-    labels = {
-        "storm": "ГРОЗОВОЙ ФРОНТ",
-        "rain": "ЛОКАЛЬНЫЕ ДОЖДИ",
-        "dusty": "ПЫЛЬНАЯ ДЫМКА",
-        "hot": "ЖАРКИЙ ДЕНЬ",
-        "cloudy": "ОБЛАЧНЫЙ ДЕНЬ",
-        "mixed": "ПЕРЕМЕННАЯ ПОГОДА",
-        "clear": "ЯСНЫЙ ДЕНЬ",
-    }
-    if haze and weather not in {"rain", "storm", "dusty"}:
-        return "ВЛАЖНАЯ ДЫМКА"
-    return labels.get(weather, "ПОГОДА НА ДЕНЬ")
+def _select_local_visual_variant(
+    *,
+    mode: str,
+    weather: str,
+    focus: str,
+    severe_wind: bool,
+    near_full_moon: bool,
+    digest: str,
+) -> str:
+    if mode == "morning":
+        if focus == "inland" or weather in {"hot", "dusty"}:
+            candidates = ("hazy_hot_inland", "open_sea_dawn")
+        elif weather in {"cloudy", "rain", "storm"}:
+            candidates = ("cloudy_promontory", "open_sea_dawn")
+        else:
+            candidates = ("open_sea_dawn", "cloudy_promontory")
+    elif near_full_moon:
+        candidates = ("minimal_moonlit_coast", "evening_sea_horizon")
+    elif severe_wind:
+        candidates = ("windy_coastal_twilight", "evening_sea_horizon")
+    elif focus == "inland":
+        candidates = ("troodos_evening", "hazy_hot_inland")
+    elif weather in {"cloudy", "rain", "storm"}:
+        candidates = ("cloudy_promontory", "windy_coastal_twilight")
+    else:
+        candidates = ("evening_sea_horizon", "minimal_moonlit_coast")
+    return candidates[int(digest[16:24], 16) % len(candidates)]
+
+
+def _radial_glow(
+    image: Image.Image,
+    center: tuple[int, int],
+    radius: int,
+    color: tuple[int, int, int],
+    opacity: int,
+) -> Image.Image:
+    glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow, "RGBA")
+    x, y = center
+    glow_draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(*color, opacity))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=max(18, radius // 2)))
+    return Image.alpha_composite(image.convert("RGBA"), glow)
+
+
+def _cloud_layer(
+    image: Image.Image,
+    rng: random.Random,
+    *,
+    mode: str,
+    weather: str,
+    windy: bool,
+) -> Image.Image:
+    cloud = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    cloud_draw = ImageDraw.Draw(cloud, "RGBA")
+    count = 12 if weather in {"cloudy", "rain", "storm"} else 6
+    base_alpha = 70 if mode == "morning" else 78
+    if weather in {"rain", "storm"}:
+        base_alpha += 45
+    for index in range(count):
+        width = rng.randint(190, 470) + (100 if windy else 0)
+        height = rng.randint(35, 105)
+        x = rng.randint(-180, 1000)
+        y = rng.randint(60, 520)
+        shade = rng.randint(175, 228) if mode == "morning" else rng.randint(82, 150)
+        alpha = min(180, base_alpha + rng.randint(-20, 25))
+        cloud_draw.ellipse((x, y, x + width, y + height), fill=(shade, shade + 4, shade + 10, alpha))
+        if index % 3 == 0:
+            cloud_draw.ellipse(
+                (x + width * 0.2, y - height * 0.35, x + width * 0.76, y + height * 0.7),
+                fill=(shade, shade + 4, shade + 10, max(20, alpha - 20)),
+            )
+    cloud = cloud.filter(ImageFilter.GaussianBlur(radius=26 if windy else 34))
+    return Image.alpha_composite(image.convert("RGBA"), cloud)
+
+
+def _draw_sea(
+    image: Image.Image,
+    rng: random.Random,
+    *,
+    horizon_y: int,
+    windy: bool,
+    moon_x: int | None,
+) -> Image.Image:
+    water = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(water, "RGBA")
+    line_count = 20 if windy else 15
+    for index in range(line_count):
+        depth = (index + 1) / line_count
+        y = horizon_y + 12 + round(depth * (1080 - horizon_y - 22))
+        amplitude = 1.5 + depth * (8 if windy else 4)
+        frequency = 0.009 + rng.random() * 0.012
+        phase = rng.random() * math.tau
+        alpha = round(16 + depth * (58 if windy else 42))
+        segment_count = 4 if windy else 3
+        for _ in range(segment_count):
+            start_x = rng.randint(-40, 960)
+            length = rng.randint(90, 330)
+            points = [
+                (
+                    x,
+                    round(y + math.sin(x * frequency + phase) * amplitude + rng.uniform(-1.5, 1.5)),
+                )
+                for x in range(start_x, min(1120, start_x + length), 18)
+            ]
+            if len(points) > 1:
+                draw.line(points, fill=(205, 231, 232, alpha), width=1 + (index % 6 == 0))
+    if moon_x is not None:
+        for index in range(15):
+            y = horizon_y + 22 + index * 22
+            spread = 16 + index * 6
+            x_shift = rng.randint(-22, 22)
+            segment_width = max(18, round(spread * rng.uniform(0.45, 1.05)))
+            draw.line(
+                (moon_x - segment_width + x_shift, y, moon_x + segment_width + x_shift, y),
+                fill=(225, 230, 211, max(12, 68 - index * 3)),
+                width=1 + (index % 4 == 0),
+            )
+    water = water.filter(ImageFilter.GaussianBlur(radius=0.7 if windy else 1.0))
+    return Image.alpha_composite(image.convert("RGBA"), water)
+
+
+def _draw_mountain_layers(
+    image: Image.Image,
+    rng: random.Random,
+    *,
+    horizon_y: int,
+    mode: str,
+) -> Image.Image:
+    colors = (
+        (111, 113, 102, 90),
+        (63, 78, 76, 155),
+        (32, 55, 57, 235),
+    ) if mode == "evening" else (
+        (154, 139, 113, 80),
+        (104, 108, 91, 150),
+        (57, 82, 70, 225),
+    )
+    mountains = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    mountain_draw = ImageDraw.Draw(mountains, "RGBA")
+    for layer, color in enumerate(colors):
+        base_y = horizon_y + 28 + layer * 105
+        amplitude = 42 + layer * 24
+        phase_a = rng.random() * math.tau
+        phase_b = rng.random() * math.tau
+        ridge: list[tuple[int, int]] = []
+        for x in range(-30, 1111, 18):
+            y = (
+                base_y
+                - math.sin(x * (0.0048 + layer * 0.0005) + phase_a) * amplitude
+                - math.sin(x * 0.0105 + phase_b) * amplitude * 0.34
+                + rng.uniform(-3.5, 3.5)
+            )
+            ridge.append((x, round(y)))
+        mountain_draw.polygon([(-30, 1080), *ridge, (1110, 1080)], fill=color)
+    mountains = mountains.filter(ImageFilter.GaussianBlur(radius=1.2))
+    return Image.alpha_composite(image.convert("RGBA"), mountains)
 
 
 def render_local_weather_card(
@@ -272,7 +406,7 @@ def render_local_weather_card(
     output_path: str | Path,
     minimum_bytes: int,
 ) -> dict[str, Any]:
-    """Render a deterministic, deliberately graphic weather card without a network call."""
+    """Render a deterministic full-bleed atmospheric Cyprus visual without a network call."""
 
     safe_date = _safe_target_date(target_date)
     mode = str(post_type or "").strip().lower()
@@ -281,6 +415,7 @@ def render_local_weather_card(
     ctx = parse_visual_context_cy(final_text, post_type=mode)
     focus = "inland" if ctx.inland_heat_focus and not ctx.coastal_focus else "coastal"
     wind = ctx.gust_max if ctx.gust_max is not None else ctx.wind_max
+    near_full_moon = mode == "evening" and _has_near_full_moon(final_text)
     seed_text = "|".join(
         [
             safe_date,
@@ -290,112 +425,140 @@ def render_local_weather_card(
             str(ctx.visibility_haze),
             str(ctx.actual_precipitation),
             focus,
+            str(near_full_moon),
             LOCAL_WEATHER_CARD_VERSION,
         ]
     )
     digest = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
     rng = random.Random(int(digest[:16], 16))
+    weather = str(ctx.weather_main)
+    variant = _select_local_visual_variant(
+        mode=mode,
+        weather=weather,
+        focus=focus,
+        severe_wind=bool(ctx.severe_wind or (wind is not None and wind >= 12)),
+        near_full_moon=near_full_moon,
+        digest=digest,
+    )
+
+    palette_map = {
+        "open_sea_dawn": ("aegean_dawn", "soft_daylight", (55, 102, 146), (190, 206, 195), (23, 91, 120)),
+        "evening_sea_horizon": ("violet_afterglow", "blue_hour", (24, 31, 72), (176, 112, 104), (13, 47, 73)),
+        "windy_coastal_twilight": ("wind_slate_twilight", "twilight", (37, 49, 78), (133, 125, 137), (15, 58, 78)),
+        "hazy_hot_inland": ("copper_haze", "hazy_daylight" if mode == "morning" else "late_twilight", (122, 116, 108), (222, 176, 126), (85, 72, 57)),
+        "troodos_evening": ("troodos_indigo", "blue_hour", (29, 35, 70), (132, 104, 115), (27, 53, 58)),
+        "cloudy_promontory": ("clouded_cyprus", "soft_daylight" if mode == "morning" else "twilight", (61, 77, 94), (151, 158, 157), (20, 66, 82)),
+        "minimal_moonlit_coast": ("moonlit_ink", "moonlit_evening", (16, 24, 57), (84, 92, 119), (9, 39, 62)),
+    }
+    palette_name, time_of_day, top, horizon, lower = palette_map[variant]
+    if weather in {"rain", "storm"}:
+        top = _mix(top, (34, 47, 61), 0.42)
+        horizon = _mix(horizon, (91, 109, 119), 0.38)
 
     size = 1080
-    image = Image.new("RGB", (size, size))
-    draw = ImageDraw.Draw(image)
-    if mode == "morning":
-        top, horizon, sea = (54, 112, 166), (163, 208, 220), (24, 116, 150)
-    else:
-        top, horizon, sea = (24, 34, 79), (127, 111, 146), (18, 69, 104)
-    if ctx.weather_main in {"rain", "storm", "cloudy"}:
-        top = _mix(top, (55, 67, 82), 0.45)
-        horizon = _mix(horizon, (122, 139, 147), 0.42)
-    elif ctx.weather_main in {"hot", "dusty"}:
-        horizon = _mix(horizon, (224, 171, 111), 0.35)
-
-    horizon_y = 590 if focus == "coastal" else 650
+    image = Image.new("RGBA", (size, size), (*top, 255))
+    draw = ImageDraw.Draw(image, "RGBA")
+    inland_variant = variant in {"hazy_hot_inland", "troodos_evening"}
+    horizon_y = 625 if inland_variant else 590
     for y in range(size):
         if y <= horizon_y:
             ratio = y / max(1, horizon_y)
             color = _mix(top, horizon, ratio)
         else:
             ratio = (y - horizon_y) / max(1, size - horizon_y)
-            color = _mix(sea, (7, 45, 69), ratio)
-        draw.line((0, y, size, y), fill=color)
+            color = _mix(lower, _mix(lower, (4, 21, 34), 0.62), ratio)
+        draw.line((0, y, size, y), fill=(*color, 255))
+
+    if mode == "morning":
+        glow_x = 230 + int(digest[24:28], 16) % 520
+        image = _radial_glow(image, (glow_x, 250), 190, (255, 218, 159), 90)
+    else:
+        glow_x = 120 + int(digest[24:28], 16) % 360
+        image = _radial_glow(image, (glow_x, horizon_y - 25), 190, (235, 151, 117), 62)
+    image = _cloud_layer(
+        image,
+        rng,
+        mode=mode,
+        weather=weather,
+        windy=variant == "windy_coastal_twilight" or bool(ctx.severe_wind),
+    )
+    draw = ImageDraw.Draw(image, "RGBA")
+
+    moon_x: int | None = None
+    if mode == "evening" and (near_full_moon or variant == "minimal_moonlit_coast"):
+        moon_x = 760 + int(digest[28:32], 16) % 150
+        moon_y = 185 + int(digest[32:36], 16) % 85
+        moon_radius = 34 + int(digest[36:38], 16) % 7
+        image = _radial_glow(image, (moon_x, moon_y), 92, (225, 229, 213), 82)
+        moon = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        moon_draw = ImageDraw.Draw(moon, "RGBA")
+        moon_draw.ellipse(
+            (moon_x - moon_radius, moon_y - moon_radius, moon_x + moon_radius, moon_y + moon_radius),
+            fill=(230, 230, 210, 238),
+        )
+        for _ in range(6):
+            crater_radius = rng.randint(2, 7)
+            crater_x = moon_x + rng.randint(-moon_radius // 2, moon_radius // 2)
+            crater_y = moon_y + rng.randint(-moon_radius // 2, moon_radius // 2)
+            moon_draw.ellipse(
+                (crater_x - crater_radius, crater_y - crater_radius, crater_x + crater_radius, crater_y + crater_radius),
+                fill=(172, 178, 169, rng.randint(14, 32)),
+            )
+        image = Image.alpha_composite(image.convert("RGBA"), moon)
+        draw = ImageDraw.Draw(image, "RGBA")
+
+    if inland_variant:
+        image = _draw_mountain_layers(image, rng, horizon_y=horizon_y, mode=mode)
+    else:
+        image = _draw_sea(
+            image,
+            rng,
+            horizon_y=horizon_y,
+            windy=variant == "windy_coastal_twilight" or bool(ctx.severe_wind),
+            moon_x=moon_x,
+        )
+        land = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        land_draw = ImageDraw.Draw(land, "RGBA")
+        if variant == "cloudy_promontory":
+            land_draw.polygon(
+                ((690, 695), (790, 625), (900, 648), (1000, 590), (1080, 610), (1080, 1080), (790, 1080)),
+                fill=(19, 48, 52, 232),
+            )
+        elif variant in {"evening_sea_horizon", "minimal_moonlit_coast"}:
+            land_draw.polygon(
+                ((0, 915), (180, 875), (350, 902), (545, 840), (720, 888), (890, 825), (1080, 855), (1080, 1080), (0, 1080)),
+                fill=(9, 31, 38, 225),
+            )
+        else:
+            land_draw.polygon(
+                ((0, 930), (170, 870), (340, 900), (545, 855), (720, 914), (900, 860), (1080, 900), (1080, 1080), (0, 1080)),
+                fill=(31, 61, 52, 190 if mode == "morning" else 225),
+            )
+        land = land.filter(ImageFilter.GaussianBlur(radius=0.8))
+        image = Image.alpha_composite(image.convert("RGBA"), land)
+        draw = ImageDraw.Draw(image, "RGBA")
+
+    if variant == "windy_coastal_twilight":
+        for index in range(34):
+            x = 40 + index * 34 + rng.randint(-8, 8)
+            height = rng.randint(65, 160)
+            draw.line((x, 1080, x + rng.randint(18, 45), 1080 - height), fill=(14, 39, 36, 220), width=3)
+    if weather in {"rain", "storm"} or ctx.actual_precipitation:
+        for _ in range(90):
+            x = rng.randint(-50, 1120)
+            y = rng.randint(250, 900)
+            length = rng.randint(16, 44)
+            draw.line((x, y, x - 9, y + length), fill=(183, 207, 216, rng.randint(24, 70)), width=1)
 
     texture = Image.new("RGBA", image.size, (0, 0, 0, 0))
     texture_draw = ImageDraw.Draw(texture)
-    for _ in range(9000):
+    for _ in range(15000):
         x = rng.randrange(size)
         y = rng.randrange(size)
-        alpha = rng.randrange(4, 18)
+        alpha = rng.randrange(2, 13)
         shade = 255 if rng.random() > 0.45 else 0
         texture_draw.point((x, y), fill=(shade, shade, shade, alpha))
     image = Image.alpha_composite(image.convert("RGBA"), texture)
-    draw = ImageDraw.Draw(image, "RGBA")
-
-    if focus == "coastal":
-        for offset in range(0, 280, 34):
-            y = horizon_y + 45 + offset
-            amplitude = 10 + (offset // 34) * 2
-            points = []
-            for x in range(-30, size + 31, 30):
-                points.append((x, y + round(amplitude * ((x // 30 + rng.randrange(3)) % 3 - 1) / 2)))
-            draw.line(points, fill=(207, 235, 235, 95), width=4)
-        draw.polygon(
-            [(0, 830), (240, 784), (500, 816), (790, 748), (1080, 805), (1080, 1080), (0, 1080)],
-            fill=(230, 206, 158, 110),
-        )
-    else:
-        draw.polygon(
-            [(0, 765), (170, 650), (325, 722), (520, 570), (735, 728), (900, 610), (1080, 750), (1080, 1080), (0, 1080)],
-            fill=(38, 80, 72, 190),
-        )
-        draw.polygon(
-            [(0, 830), (220, 738), (435, 830), (660, 710), (860, 810), (1080, 730), (1080, 1080), (0, 1080)],
-            fill=(21, 57, 59, 225),
-        )
-
-    if ctx.weather_main in {"clear", "hot", "mixed"} and mode == "morning":
-        draw.ellipse((785, 120, 935, 270), fill=(255, 231, 151, 225))
-    if ctx.weather_main in {"cloudy", "rain", "storm", "mixed"} or ctx.visibility_haze:
-        cloud_fill = (221, 228, 229, 215) if mode == "morning" else (166, 172, 192, 205)
-        _draw_cloud(draw, 700, 155, 1.25, cloud_fill)
-        _draw_cloud(draw, 825, 250, 0.72, cloud_fill)
-    if ctx.weather_main in {"rain", "storm"} or ctx.actual_precipitation:
-        for x in range(725, 1015, 34):
-            draw.line((x, 345, x - 19, 418), fill=(191, 224, 239, 190), width=5)
-    if ctx.severe_wind or (wind is not None and wind >= 12):
-        for y, width in ((445, 220), (490, 300), (535, 175)):
-            draw.arc((650, y - 45, 650 + width, y + 38), 190, 350, fill=(225, 244, 246, 185), width=5)
-
-    # A clean abstract Cyprus silhouette: graphic brand element, not a generic photograph.
-    island = [(135, 520), (205, 470), (315, 455), (390, 485), (465, 470), (520, 510), (455, 540), (365, 548), (300, 585), (210, 565)]
-    draw.polygon(island, fill=(242, 181, 83, 225))
-    draw.line(island + [island[0]], fill=(255, 224, 154, 235), width=5)
-
-    title_font = _font(62, bold=True)
-    label_font = _font(39, bold=True)
-    detail_font = _font(27)
-    tiny_font = _font(21, bold=True)
-    label = "КИПР СЕГОДНЯ" if mode == "morning" else "КИПР ЗАВТРА"
-    date_label = date.fromisoformat(safe_date).strftime("%d.%m.%Y")
-    weather_label = _weather_label(
-        str(ctx.weather_main),
-        haze=bool(ctx.visibility_haze or ctx.dust_hint),
-        severe_wind=bool(ctx.severe_wind),
-    )
-    detail_parts = ["побережье" if focus == "coastal" else "внутренние районы"]
-    if wind is not None:
-        detail_parts.append(f"ветер до {wind:g} м/с")
-    if ctx.visibility_haze or ctx.dust_hint:
-        detail_parts.append("дымка")
-    if ctx.actual_precipitation:
-        detail_parts.append("локальные осадки")
-
-    panel = (68, 70, 650, 390)
-    draw.rounded_rectangle(panel, radius=34, fill=(7, 26, 47, 178), outline=(255, 255, 255, 60), width=2)
-    draw.text((105, 102), label, font=title_font, fill=(248, 250, 246, 255))
-    draw.text((108, 183), date_label, font=detail_font, fill=(205, 226, 225, 255))
-    draw.text((105, 245), weather_label, font=label_font, fill=(250, 193, 94, 255))
-    draw.text((108, 318), " · ".join(detail_parts), font=detail_font, fill=(230, 238, 234, 255))
-    draw.text((70, 1015), "VAYBOMETER · CYPRUS", font=tiny_font, fill=(230, 240, 236, 190))
 
     output = Path(output_path).with_suffix(".png")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -403,13 +566,19 @@ def render_local_weather_card(
     metadata = {
         "backend": "local_weather_card",
         "generator_version": LOCAL_WEATHER_CARD_VERSION,
+        "renderer_version": LOCAL_WEATHER_CARD_VERSION,
         "target_date": safe_date,
         "post_type": mode,
-        "weather_scenario": str(ctx.weather_main),
+        "weather_scenario": weather,
         "wind": "" if wind is None else f"{wind:g}",
         "cloud_haze": "1" if (ctx.visibility_haze or ctx.dust_hint) else "0",
         "focus": focus,
         "seed_sha256": digest,
+        "local_visual_variant": variant,
+        "local_palette": palette_name,
+        "local_time_of_day": time_of_day,
+        "local_weather_scenario": weather,
+        "rendered_text": "",
     }
     for key, value in metadata.items():
         png_info.add_text(key, str(value))

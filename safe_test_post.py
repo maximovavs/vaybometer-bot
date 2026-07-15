@@ -1834,6 +1834,7 @@ async def _build_safe_test_image(
         available_backends: list[str] = []
         unconfigured_backends: list[str] = []
         local_fallback_generated = False
+        horde_credential_state: dict[str, object] = {}
 
         def _remaining_provider_calls() -> dict[str, int]:
             return {
@@ -1843,7 +1844,7 @@ async def _build_safe_test_image(
 
         def _network_backends_exhausted() -> bool:
             network = [name for name in configured_backends if name in provider_call_limits]
-            return bool(network) and all(
+            return not network or all(
                 name in excluded_backends
                 or provider_call_counts.get(name, 0) >= provider_call_limits[name]
                 for name in network
@@ -2003,6 +2004,7 @@ async def _build_safe_test_image(
                             excluded_backends=set(excluded_backends),
                             max_backend_calls=remaining_backend_calls,
                             backend_call_limits=_remaining_provider_calls(),
+                            horde_credential_state=horde_credential_state,
                         )
                         structured_outcome_returned = True
                         backend_attempts = _cy_image_backend_attempts(outcome)
@@ -2274,22 +2276,37 @@ async def _build_safe_test_image(
             variation_attempt += 1
 
         if selected_candidate is None:
-            fallback_allowed = bool(
+            network_backends_exhausted = bool(
+                _network_backends_exhausted() or backend_generation_calls >= backend_call_limit
+            )
+            valid_image_receipt = bool(
+                target_date_for_diag != "undated"
+                and is_valid_cy_image_receipt(target_date_for_diag, mode)
+            )
+            primary_fallback_allowed = bool(
+                production_image_send
+                and not image_only_recovery
+                and last_metadata
+                and not valid_image_receipt
+                and network_backends_exhausted
+            )
+            recovery_fallback_allowed = bool(
                 production_image_send
                 and image_only_recovery
                 and last_metadata
                 and has_valid_cy_text_delivery(target_date_for_diag, mode)
-                and not is_valid_cy_image_receipt(target_date_for_diag, mode)
-                and (_network_backends_exhausted() or backend_generation_calls >= backend_call_limit)
+                and not valid_image_receipt
+                and network_backends_exhausted
             )
+            fallback_allowed = primary_fallback_allowed or recovery_fallback_allowed
             if fallback_allowed:
                 local_metadata = dict(last_metadata or {})
                 local_metadata.update(
                     {
                         "prompt_version": LOCAL_WEATHER_CARD_VERSION,
                         "selected_scene": "local_weather_card",
-                        "composition": "weather_card",
-                        "visual_archetype": "weather_card",
+                        "composition": "atmospheric_full_bleed",
+                        "visual_archetype": "local_atmospheric_visual",
                         "scene_selection_mode": "local_fallback",
                         "composition_selection_mode": "local_fallback",
                         "cache_key": (
@@ -2310,6 +2327,19 @@ async def _build_safe_test_image(
                 )
                 local_path = Path(str(local_result["path"]))
                 local_size = int(local_result["bytes"])
+                renderer_metadata = dict(local_result.get("metadata") or {})
+                local_metadata.update(
+                    {
+                        key: renderer_metadata.get(key, "")
+                        for key in (
+                            "local_visual_variant",
+                            "local_palette",
+                            "local_time_of_day",
+                            "local_weather_scenario",
+                            "renderer_version",
+                        )
+                    }
+                )
                 local_sha256 = sha256_file(local_path)
                 existing_local_exact = next(
                     (
@@ -2336,8 +2366,8 @@ async def _build_safe_test_image(
                         "attempt": generation_attempt + 1,
                         "variation_attempt": variation_attempt,
                         "selected_scene": "local_weather_card",
-                        "composition": "weather_card",
-                        "visual_archetype": "weather_card",
+                        "composition": "atmospheric_full_bleed",
+                        "visual_archetype": "local_atmospheric_visual",
                         "style_name": "local_weather_card",
                         "cache_key": local_metadata["cache_key"],
                         "cache_status": "local_generated",
@@ -2356,7 +2386,9 @@ async def _build_safe_test_image(
                             else "local_exact_sha_clear"
                         ),
                         "sha256": local_sha256,
-                        "local_metadata": local_result.get("metadata") or {},
+                        "local_metadata": renderer_metadata,
+                        "primary_fallback_allowed": primary_fallback_allowed,
+                        "recovery_fallback_allowed": recovery_fallback_allowed,
                     }
                 )
                 local_fallback_generated = True

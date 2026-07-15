@@ -51,13 +51,16 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from io import BytesIO
+import ipaddress
 import logging
 import os
+import socket
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional, Tuple, Dict
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import requests
 
@@ -130,6 +133,12 @@ HORDE_API_KEY = (
 )
 
 HORDE_TRY_ANON_ON_401 = os.environ.get("HORDE_TRY_ANON_ON_401", "1").strip() == "1"
+HORDE_IMAGE_DOWNLOAD_TIMEOUT = min(30.0, max(3.0, float(os.environ.get("HORDE_IMAGE_DOWNLOAD_TIMEOUT", "15"))))
+try:
+    HORDE_IMAGE_MAX_BYTES = min(25 * 1024 * 1024, max(1024 * 1024, int(os.environ.get("HORDE_IMAGE_MAX_BYTES", str(15 * 1024 * 1024)))))
+except Exception:
+    HORDE_IMAGE_MAX_BYTES = 15 * 1024 * 1024
+HORDE_IMAGE_MAX_REDIRECTS = 3
 
 # ---------- Общие настройки ретраев ----------
 
@@ -243,6 +252,7 @@ def _validate_generated_image(
     status_code: int | None = None,
     content_type: str | None = None,
 ) -> ImageGenerationResult | None:
+    _delete_invalid(out_path)
     byte_count = len(payload or b"")
     content_type_clean = (content_type or "").split(";", 1)[0].strip().lower()
     if content_type is not None and not content_type_clean.startswith("image/"):
@@ -288,7 +298,7 @@ def _validate_generated_image(
         _delete_invalid(out_path)
         return None
     try:
-        with Image.open(out_path) as im:  # type: ignore[attr-defined]
+        with Image.open(BytesIO(payload)) as im:  # type: ignore[attr-defined]
             width, height = im.size
             im.verify()
         if width < 256 or height < 256:
@@ -314,6 +324,8 @@ def _validate_generated_image(
         )
         _delete_invalid(out_path)
         return None
+    _ensure_parent_dir(out_path)
+    out_path.write_bytes(payload)
     return ImageGenerationResult(
         path=str(out_path),
         backend=backend,
@@ -481,8 +493,6 @@ def _fetch_from_pollinations(
         finish("invalid_response", "Pollinations returned empty content")
         return None
 
-    _ensure_parent_dir(out_path)
-    out_path.write_bytes(resp.content)
     result = _validate_generated_image(
         backend="pollinations",
         out_path=out_path,
@@ -521,6 +531,225 @@ def _horde_headers(api_key: str) -> Dict[str, str]:
     }
 
 
+def _horde_image_url_hostname(url: str) -> tuple[str, str]:
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").strip().lower()
+    if scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password:
+        raise ValueError("unsupported or malformed Horde image URL")
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ValueError("local Horde image hostname is not allowed")
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError as exc:
+        raise ValueError("invalid Horde image URL port") from exc
+    try:
+        direct_ip = ipaddress.ip_address(hostname)
+        addresses = [direct_ip]
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise ValueError("Horde image hostname could not be resolved") from exc
+        addresses = []
+        for item in resolved:
+            try:
+                addresses.append(ipaddress.ip_address(item[4][0]))
+            except (ValueError, IndexError):
+                continue
+    if not addresses or any(not address.is_global for address in addresses):
+        raise ValueError("private or non-global Horde image address is not allowed")
+    return hostname, scheme
+
+
+def _download_horde_image_url(
+    url: str,
+    diagnostics: dict[str, Any],
+    *,
+    timeout: float,
+    max_bytes: int,
+) -> tuple[bytes | None, str | None]:
+    current_url = url
+    for redirect_index in range(HORDE_IMAGE_MAX_REDIRECTS + 1):
+        try:
+            hostname, scheme = _horde_image_url_hostname(current_url)
+        except ValueError as exc:
+            diagnostics["horde_img_payload_kind"] = "invalid"
+            diagnostics["horde_img_validation_result"] = "rejected_unsafe_url"
+            diagnostics["error_category"] = "unsafe_url"
+            diagnostics["error_message"] = str(exc)
+            return None, None
+        diagnostics["horde_img_url_hostname"] = hostname
+        diagnostics["horde_img_url_scheme"] = scheme
+        try:
+            response = requests.get(
+                current_url,
+                headers={
+                    "User-Agent": "WorldVibeMeterBot/1.0 (+https://t.me/worldvibemeter)",
+                    "Accept": "image/*",
+                },
+                timeout=(min(5.0, timeout), timeout),
+                allow_redirects=False,
+                stream=True,
+            )
+        except Exception as exc:
+            diagnostics["horde_img_validation_result"] = "download_failed"
+            diagnostics["error_category"] = "provider_timeout"
+            diagnostics["error_message"] = " ".join(str(exc).split())[:300]
+            diagnostics["exception_type"] = exc.__class__.__name__
+            return None, None
+
+        status = int(getattr(response, "status_code", 0) or 0)
+        content_type = str(getattr(response, "headers", {}).get("Content-Type", "")).split(";", 1)[0].strip().lower()
+        diagnostics["horde_img_download_http_status"] = status
+        diagnostics["horde_img_download_content_type"] = content_type
+        if status in {301, 302, 303, 307, 308}:
+            location = str(getattr(response, "headers", {}).get("Location", "")).strip()
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+            if not location or redirect_index >= HORDE_IMAGE_MAX_REDIRECTS:
+                diagnostics["horde_img_validation_result"] = "rejected_redirect"
+                diagnostics["error_category"] = "invalid_response"
+                diagnostics["error_message"] = "Horde image redirect was missing or exceeded the limit"
+                return None, None
+            current_url = urljoin(current_url, location)
+            continue
+        if status != 200:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+            diagnostics["horde_img_validation_result"] = "rejected_http_status"
+            diagnostics["error_category"] = "rate_limited" if status == 429 else "server_error" if status >= 500 else "invalid_response"
+            diagnostics["error_message"] = f"Horde image download HTTP {status}"
+            return None, None
+        if not content_type.startswith("image/"):
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+            diagnostics["horde_img_validation_result"] = "rejected_content_type"
+            diagnostics["error_category"] = "invalid_response"
+            diagnostics["error_message"] = "Horde image URL returned a non-image content type"
+            return None, None
+        content_length = str(getattr(response, "headers", {}).get("Content-Length", "")).strip()
+        if content_length.isdigit() and int(content_length) > max_bytes:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+            diagnostics["horde_img_validation_result"] = "rejected_too_large"
+            diagnostics["error_category"] = "invalid_response"
+            diagnostics["error_message"] = "Horde image URL exceeded the payload limit"
+            return None, None
+
+        chunks: list[bytes] = []
+        byte_count = 0
+        iterator = getattr(response, "iter_content", None)
+        stream = iterator(chunk_size=64 * 1024) if callable(iterator) else [getattr(response, "content", b"")]
+        try:
+            for chunk in stream:
+                if not chunk:
+                    continue
+                byte_count += len(chunk)
+                if byte_count > max_bytes:
+                    diagnostics["horde_img_validation_result"] = "rejected_too_large"
+                    diagnostics["error_category"] = "invalid_response"
+                    diagnostics["error_message"] = "Horde image URL exceeded the payload limit"
+                    return None, None
+                chunks.append(bytes(chunk))
+        except Exception as exc:
+            diagnostics["horde_img_validation_result"] = "download_failed"
+            diagnostics["error_category"] = "provider_timeout"
+            diagnostics["error_message"] = " ".join(str(exc).split())[:300]
+            diagnostics["exception_type"] = exc.__class__.__name__
+            return None, None
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+        payload = b"".join(chunks)
+        diagnostics["horde_img_downloaded_byte_count"] = len(payload)
+        diagnostics["horde_img_validation_result"] = "downloaded"
+        return payload, content_type
+    diagnostics["horde_img_validation_result"] = "rejected_redirect"
+    diagnostics["error_category"] = "invalid_response"
+    diagnostics["error_message"] = "Horde image redirect limit exceeded"
+    return None, None
+
+
+def decode_or_fetch_horde_image(
+    img_value: object,
+    *,
+    timeout: float = HORDE_IMAGE_DOWNLOAD_TIMEOUT,
+    max_bytes: int = HORDE_IMAGE_MAX_BYTES,
+) -> tuple[bytes | None, dict[str, Any]]:
+    """Decode a Horde image payload or safely fetch its public HTTP(S) URL."""
+
+    diagnostics: dict[str, Any] = {
+        "horde_img_payload_kind": "invalid",
+        "horde_img_source_length": len(img_value) if isinstance(img_value, (str, bytes)) else 0,
+        "horde_img_url_hostname": "",
+        "horde_img_url_scheme": "",
+        "horde_img_download_http_status": None,
+        "horde_img_download_content_type": "",
+        "horde_img_downloaded_byte_count": 0,
+        "horde_img_validation_result": "not_started",
+        "horde_img_effective_content_type": "",
+        "error_category": "",
+        "error_message": "",
+        "exception_type": "",
+    }
+    if not isinstance(img_value, str) or not img_value:
+        diagnostics["horde_img_validation_result"] = "rejected_missing_payload"
+        diagnostics["error_category"] = "invalid_response"
+        diagnostics["error_message"] = "Horde image payload was missing or not a string"
+        return None, diagnostics
+
+    raw = img_value.strip()
+    if raw.lower().startswith("data:"):
+        diagnostics["horde_img_payload_kind"] = "data_url"
+        header, separator, encoded = raw.partition(",")
+        media_type = header[5:].split(";", 1)[0].strip().lower()
+        if not separator or ";base64" not in header.lower() or not media_type.startswith("image/"):
+            diagnostics["horde_img_payload_kind"] = "invalid"
+            diagnostics["horde_img_validation_result"] = "rejected_data_url"
+            diagnostics["error_category"] = "invalid_base64"
+            diagnostics["error_message"] = "Horde data URL was malformed or not an image"
+            return None, diagnostics
+        diagnostics["horde_img_effective_content_type"] = media_type
+        encoded_value = encoded
+    elif raw.lower().startswith(("https://", "http://")):
+        diagnostics["horde_img_payload_kind"] = "https_url"
+        payload, content_type = _download_horde_image_url(
+            raw,
+            diagnostics,
+            timeout=min(30.0, max(3.0, float(timeout))),
+            max_bytes=min(25 * 1024 * 1024, max(1024 * 1024, int(max_bytes))),
+        )
+        diagnostics["horde_img_effective_content_type"] = content_type or ""
+        return payload, diagnostics
+    else:
+        diagnostics["horde_img_payload_kind"] = "base64"
+        encoded_value = raw
+
+    try:
+        payload = base64.b64decode(encoded_value, validate=True)
+    except Exception as exc:
+        diagnostics["horde_img_payload_kind"] = "invalid"
+        diagnostics["horde_img_validation_result"] = "rejected_invalid_base64"
+        diagnostics["error_category"] = "invalid_base64"
+        diagnostics["error_message"] = "Horde image payload was not valid strict base64"
+        diagnostics["exception_type"] = exc.__class__.__name__
+        return None, diagnostics
+    if len(payload) > max_bytes:
+        diagnostics["horde_img_validation_result"] = "rejected_too_large"
+        diagnostics["error_category"] = "invalid_response"
+        diagnostics["error_message"] = "Horde decoded image exceeded the payload limit"
+        return None, diagnostics
+    diagnostics["horde_img_downloaded_byte_count"] = len(payload)
+    diagnostics["horde_img_validation_result"] = "decoded"
+    return payload, diagnostics
+
+
 def _fetch_from_horde_once(
     prompt: str,
     out_path: Path,
@@ -528,10 +757,8 @@ def _fetch_from_horde_once(
     timeout: float,
     api_key: str,
 ) -> Tuple[Optional[ImageGenerationResult], Optional[int], str, dict[str, Any]]:
-    """
-    Одна попытка Horde с конкретным api_key.
-    Возвращает (result|None, http_status|None, error_code_str, safe_diagnostics).
-    """
+    """Run one Horde request with a concrete API credential."""
+
     headers = _horde_headers(api_key)
     started = time.monotonic()
     diagnostics: dict[str, Any] = {
@@ -546,6 +773,14 @@ def _fetch_from_horde_once(
         "payload_byte_count": 0,
         "content_type": "",
         "image_validation_failure": "",
+        "horde_img_payload_kind": "invalid",
+        "horde_img_source_length": 0,
+        "horde_img_url_hostname": "",
+        "horde_img_url_scheme": "",
+        "horde_img_download_http_status": None,
+        "horde_img_download_content_type": "",
+        "horde_img_downloaded_byte_count": 0,
+        "horde_img_validation_result": "not_started",
         "exception_type": "",
         "error_category": "",
         "error_message": "",
@@ -741,30 +976,30 @@ def _fetch_from_horde_once(
     if first.get("censored"):
         fail("censored", "Horde generation was censored")
         return finish(None, gen_resp.status_code, "Censored")
-    b64_img = first.get("img")
-    if not b64_img:
+    img_value = first.get("img")
+    if not img_value:
         logger.warning("Horde generation missing 'img' field: %s", str(first)[:200])
         fail("invalid_response", "Horde generation missing image payload")
         return finish(None, gen_resp.status_code, "MissingImgField")
 
-    try:
-        img_bytes = base64.b64decode(b64_img)
-    except Exception as exc:
-        logger.warning("Horde base64 decode error: %s", exc)
-        fail("invalid_base64", str(exc), exc=exc)
-        return finish(None, gen_resp.status_code, "Base64DecodeError")
+    img_bytes, img_diagnostics = decode_or_fetch_horde_image(img_value)
+    diagnostics.update(img_diagnostics)
+    if img_bytes is None:
+        category = str(img_diagnostics.get("error_category") or "invalid_response")
+        message = str(img_diagnostics.get("error_message") or "Horde image payload could not be decoded or fetched")
+        fail(category, message)
+        return finish(None, gen_resp.status_code, "ImagePayloadError")
 
     diagnostics["payload_byte_count"] = len(img_bytes)
-    _ensure_parent_dir(out_path)
-    out_path.write_bytes(img_bytes)
     result = _validate_generated_image(
         backend="stable_horde",
         out_path=out_path,
         payload=img_bytes,
         status_code=200,
-        content_type=None,
+        content_type=str(img_diagnostics.get("horde_img_effective_content_type") or "") or None,
     )
     if result is None:
+        diagnostics["horde_img_validation_result"] = "rejected_image_validation"
         diagnostics["image_validation_failure"] = "Pillow/signature/content validation failed"
         fail("invalid_image", diagnostics["image_validation_failure"])
         return finish(None, 200, "InvalidImage")
@@ -775,6 +1010,7 @@ def _fetch_from_horde_once(
     )
     diagnostics["error_category"] = ""
     diagnostics["error_message"] = ""
+    diagnostics["horde_img_validation_result"] = "accepted"
     return finish(result, 200, "")
 
 
@@ -783,6 +1019,7 @@ def _fetch_from_horde(
     out_path: Path,
     size: Tuple[int, int] = (512, 512),
     timeout: float = HORDE_TIMEOUT,
+    credential_state: dict[str, Any] | None = None,
 ) -> Optional[ImageGenerationResult]:
     """
     Фолбэк: генерация через Stable Horde / AI Horde.
@@ -790,15 +1027,32 @@ def _fetch_from_horde(
     Используется HORDE_API_KEY (см. описание выше).
     Если получаем 401 и HORDE_TRY_ANON_ON_401=1 — пробуем один раз "0000000000".
     """
-    img, status, err, diagnostics = _fetch_from_horde_once(prompt, out_path, size, timeout, HORDE_API_KEY)
+    state = credential_state if credential_state is not None else {}
+    configured_key_present = HORDE_API_KEY.strip() != "0000000000"
+    configured_key_rejected = bool(state.get("configured_key_rejected")) and configured_key_present
+    initial_status = state.get("initial_http_status") if configured_key_rejected else None
+    key_for_attempt = "0000000000" if configured_key_rejected else HORDE_API_KEY
+    img, status, err, diagnostics = _fetch_from_horde_once(prompt, out_path, size, timeout, key_for_attempt)
+    diagnostics["configured_key_rejected"] = configured_key_rejected
+    diagnostics["anonymous_retry_used"] = configured_key_rejected
+    diagnostics["initial_http_status"] = initial_status
     _set_backend_diagnostics("stable_horde", diagnostics)
     if img is not None:
         return img
 
-    if status == 401 and HORDE_TRY_ANON_ON_401 and (HORDE_API_KEY.strip() != "0000000000"):
+    if status == 401 and configured_key_present and not configured_key_rejected:
+        state["configured_key_rejected"] = True
+        state["initial_http_status"] = 401
+        diagnostics["configured_key_rejected"] = True
+        diagnostics["initial_http_status"] = 401
+        _set_backend_diagnostics("stable_horde", diagnostics)
+    if status == 401 and HORDE_TRY_ANON_ON_401 and configured_key_present and not configured_key_rejected:
         logger.warning("Horde returned 401 for provided key — trying anonymous key 0000000000 once")
         img2, _, _, retry_diagnostics = _fetch_from_horde_once(prompt, out_path, size, timeout, "0000000000")
         retry_diagnostics["anonymous_retry"] = True
+        retry_diagnostics["configured_key_rejected"] = True
+        retry_diagnostics["anonymous_retry_used"] = True
+        retry_diagnostics["initial_http_status"] = 401
         retry_diagnostics["initial_attempt"] = diagnostics
         _set_backend_diagnostics("stable_horde", retry_diagnostics)
         return img2
@@ -877,8 +1131,6 @@ def _fetch_from_custom_backend(
         finish("invalid_response", "custom backend returned empty content")
         return None
 
-    _ensure_parent_dir(out_path)
-    out_path.write_bytes(resp.content)
     result = _validate_generated_image(
         backend="custom",
         out_path=out_path,
@@ -916,6 +1168,7 @@ def _generate_astro_image_outcome(
     excluded_backends: set[str] | None = None,
     max_backend_calls: int | None = None,
     backend_call_limits: dict[str, int] | None = None,
+    horde_credential_state: dict[str, Any] | None = None,
 ) -> ImageGenerationOutcome:
     out = Path(out_path)
     excluded = {str(item).strip().lower() for item in (excluded_backends or set()) if str(item).strip()}
@@ -931,12 +1184,21 @@ def _generate_astro_image_outcome(
         except Exception:
             limits[str(name).strip().lower()] = 0
     availability = configured_image_backends(excluded_backends=excluded)
+    active_horde_credential_state = horde_credential_state if horde_credential_state is not None else {}
 
     backend_specs = []
     if "pollinations" not in excluded:
         backend_specs.append(("pollinations", lambda: _fetch_from_pollinations(prompt, out, size=size)))
     if "stable_horde" not in excluded and "horde" not in excluded:
-        backend_specs.append(("stable_horde", lambda: _fetch_from_horde(prompt, out, size=size)))
+        backend_specs.append((
+            "stable_horde",
+            lambda: _fetch_from_horde(
+                prompt,
+                out,
+                size=size,
+                credential_state=active_horde_credential_state,
+            ),
+        ))
     if CUSTOM_IMAGE_BASE_URL and "custom" not in excluded:
         backend_specs.append(("custom", lambda: _fetch_from_custom_backend(prompt, out, size=size)))
     backend_specs = [
@@ -1049,6 +1311,7 @@ def generate_astro_image_outcome(
     *,
     max_backend_calls: int | None = None,
     backend_call_limits: dict[str, int] | None = None,
+    horde_credential_state: dict[str, Any] | None = None,
 ) -> ImageGenerationOutcome:
     return _generate_astro_image_outcome(
         prompt,
@@ -1056,6 +1319,7 @@ def generate_astro_image_outcome(
         size=size,
         max_backend_calls=max_backend_calls,
         backend_call_limits=backend_call_limits,
+        horde_credential_state=horde_credential_state,
     )
 
 
@@ -1067,6 +1331,7 @@ def generate_astro_image_outcome_with_exclusions(
     *,
     max_backend_calls: int | None = None,
     backend_call_limits: dict[str, int] | None = None,
+    horde_credential_state: dict[str, Any] | None = None,
 ) -> ImageGenerationOutcome:
     return _generate_astro_image_outcome(
         prompt,
@@ -1075,6 +1340,7 @@ def generate_astro_image_outcome_with_exclusions(
         excluded_backends=excluded_backends,
         max_backend_calls=max_backend_calls,
         backend_call_limits=backend_call_limits,
+        horde_credential_state=horde_credential_state,
     )
 
 
@@ -1117,6 +1383,7 @@ def generate_astro_image(
 __all__ = [
     "ImageGenerationOutcome",
     "ImageGenerationResult",
+    "decode_or_fetch_horde_image",
     "generate_astro_image",
     "generate_astro_image_outcome",
     "generate_astro_image_outcome_with_exclusions",

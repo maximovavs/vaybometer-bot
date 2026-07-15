@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 from io import BytesIO
 import os
 from pathlib import Path
@@ -26,17 +27,26 @@ class FakeResponse:
         content_type: str,
         status_code: int = 200,
         json_data: object | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.content = content
-        self.headers = {"Content-Type": content_type}
+        self.headers = {"Content-Type": content_type, **(headers or {})}
         self.status_code = status_code
         self.text = ""
         self._json_data = json_data
+        self.closed = False
 
     def json(self):
         if self._json_data is None:
             raise ValueError("fixture has no JSON payload")
         return self._json_data
+
+    def iter_content(self, chunk_size: int = 64 * 1024):
+        for index in range(0, len(self.content), chunk_size):
+            yield self.content[index:index + chunk_size]
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _png_bytes(color: tuple[int, int, int]) -> bytes:
@@ -336,6 +346,237 @@ def pillow_unavailable_rejects_otherwise_valid_image() -> None:
         assert not out_path.exists()
 
 
+def horde_https_url_is_bounded_validated_and_accepted() -> None:
+    old_get = imagegen.requests.get
+    old_getaddrinfo = imagegen.socket.getaddrinfo
+    old_min = os.environ.get("IMAGEGEN_MIN_VALID_BYTES")
+    payload = _png_bytes((34, 91, 148))
+    responses: list[FakeResponse] = []
+
+    def fake_getaddrinfo(*_args, **_kwargs):
+        return [
+            (
+                imagegen.socket.AF_INET,
+                imagegen.socket.SOCK_STREAM,
+                6,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ]
+
+    def fake_get(url: str, *_args, **kwargs):
+        assert url == "https://images.example.test/horde/result.png"
+        assert kwargs["allow_redirects"] is False
+        assert kwargs["stream"] is True
+        response = FakeResponse(
+            content=payload,
+            content_type="image/png",
+            headers={"Content-Length": str(len(payload))},
+        )
+        responses.append(response)
+        return response
+
+    os.environ["IMAGEGEN_MIN_VALID_BYTES"] = "128"
+    with tempfile.TemporaryDirectory() as tmp_name:
+        out_path = Path(tmp_name) / "horde-url.png"
+        try:
+            imagegen.requests.get = fake_get
+            imagegen.socket.getaddrinfo = fake_getaddrinfo
+            decoded, diagnostics = imagegen.decode_or_fetch_horde_image(
+                "https://images.example.test/horde/result.png",
+                max_bytes=1024 * 1024,
+            )
+            assert decoded == payload
+            assert diagnostics["horde_img_payload_kind"] == "https_url"
+            assert diagnostics["horde_img_url_hostname"] == "images.example.test"
+            assert diagnostics["horde_img_download_http_status"] == 200
+            assert diagnostics["horde_img_download_content_type"] == "image/png"
+            assert diagnostics["horde_img_downloaded_byte_count"] == len(payload)
+            assert "https://" not in str(diagnostics)
+            result = imagegen._validate_generated_image(
+                backend="stable_horde",
+                out_path=out_path,
+                payload=decoded,
+                status_code=200,
+                content_type=diagnostics["horde_img_effective_content_type"],
+            )
+            assert result is not None
+            assert out_path.read_bytes() == payload
+            assert responses and responses[0].closed
+        finally:
+            imagegen.requests.get = old_get
+            imagegen.socket.getaddrinfo = old_getaddrinfo
+            if old_min is None:
+                os.environ.pop("IMAGEGEN_MIN_VALID_BYTES", None)
+            else:
+                os.environ["IMAGEGEN_MIN_VALID_BYTES"] = old_min
+
+
+def horde_data_url_and_plain_base64_are_strict_and_validated() -> None:
+    old_min = os.environ.get("IMAGEGEN_MIN_VALID_BYTES")
+    os.environ["IMAGEGEN_MIN_VALID_BYTES"] = "128"
+    payload = _png_bytes((84, 122, 166))
+    encoded = base64.b64encode(payload).decode("ascii")
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        try:
+            for source, expected_kind, name in (
+                (f"data:image/png;base64,{encoded}", "data_url", "data-url.png"),
+                (encoded, "base64", "base64.png"),
+            ):
+                decoded, diagnostics = imagegen.decode_or_fetch_horde_image(source)
+                assert decoded == payload
+                assert diagnostics["horde_img_payload_kind"] == expected_kind
+                assert diagnostics["horde_img_validation_result"] == "decoded"
+                out_path = tmp / name
+                result = imagegen._validate_generated_image(
+                    backend="stable_horde",
+                    out_path=out_path,
+                    payload=decoded,
+                    status_code=200,
+                    content_type=diagnostics["horde_img_effective_content_type"] or "image/png",
+                )
+                assert result is not None
+                assert out_path.read_bytes() == payload
+        finally:
+            if old_min is None:
+                os.environ.pop("IMAGEGEN_MIN_VALID_BYTES", None)
+            else:
+                os.environ["IMAGEGEN_MIN_VALID_BYTES"] = old_min
+
+
+def horde_invalid_base64_and_92_byte_payload_never_write_output() -> None:
+    old_min = os.environ.get("IMAGEGEN_MIN_VALID_BYTES")
+    os.environ["IMAGEGEN_MIN_VALID_BYTES"] = "128"
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        try:
+            invalid, invalid_diag = imagegen.decode_or_fetch_horde_image("%%%not-base64%%%")
+            assert invalid is None
+            assert invalid_diag["horde_img_payload_kind"] == "invalid"
+            assert invalid_diag["horde_img_validation_result"] == "rejected_invalid_base64"
+
+            decoded, diagnostics = imagegen.decode_or_fetch_horde_image(
+                base64.b64encode(b"x" * 92).decode("ascii")
+            )
+            assert decoded == b"x" * 92
+            assert diagnostics["horde_img_downloaded_byte_count"] == 92
+            out_path = tmp / "invalid-92.png"
+            out_path.write_bytes(b"stale-output")
+            result = imagegen._validate_generated_image(
+                backend="stable_horde",
+                out_path=out_path,
+                payload=decoded,
+                status_code=200,
+                content_type="image/png",
+            )
+            assert result is None
+            assert not out_path.exists()
+        finally:
+            if old_min is None:
+                os.environ.pop("IMAGEGEN_MIN_VALID_BYTES", None)
+            else:
+                os.environ["IMAGEGEN_MIN_VALID_BYTES"] = old_min
+
+
+def horde_image_url_blocks_private_and_local_addresses() -> None:
+    old_get = imagegen.requests.get
+    old_getaddrinfo = imagegen.socket.getaddrinfo
+    network_calls: list[str] = []
+
+    def forbidden_get(url: str, *_args, **_kwargs):
+        network_calls.append(url)
+        raise AssertionError("unsafe Horde image URL reached requests.get")
+
+    try:
+        imagegen.requests.get = forbidden_get
+        for source in (
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1/horde.png",
+            "http://localhost/horde.png",
+        ):
+            payload, diagnostics = imagegen.decode_or_fetch_horde_image(source)
+            assert payload is None
+            assert diagnostics["horde_img_payload_kind"] == "invalid"
+            assert diagnostics["horde_img_validation_result"] == "rejected_unsafe_url"
+            assert diagnostics["error_category"] == "unsafe_url"
+        assert network_calls == []
+
+        def fake_getaddrinfo(*_args, **_kwargs):
+            return [
+                (
+                    imagegen.socket.AF_INET,
+                    imagegen.socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("93.184.216.34", 443),
+                )
+            ]
+
+        def redirect_get(url: str, *_args, **_kwargs):
+            network_calls.append(url)
+            return FakeResponse(
+                content=b"",
+                content_type="application/octet-stream",
+                status_code=302,
+                headers={"Location": "http://169.254.169.254/latest/meta-data/"},
+            )
+
+        imagegen.socket.getaddrinfo = fake_getaddrinfo
+        imagegen.requests.get = redirect_get
+        payload, diagnostics = imagegen.decode_or_fetch_horde_image(
+            "https://images.example.test/redirect"
+        )
+        assert payload is None
+        assert diagnostics["horde_img_payload_kind"] == "invalid"
+        assert diagnostics["horde_img_validation_result"] == "rejected_unsafe_url"
+        assert network_calls == ["https://images.example.test/redirect"]
+    finally:
+        imagegen.requests.get = old_get
+        imagegen.socket.getaddrinfo = old_getaddrinfo
+
+
+def horde_configured_key_401_switches_once_to_anonymous() -> None:
+    old_once = imagegen._fetch_from_horde_once
+    old_key = imagegen.HORDE_API_KEY
+    old_retry = imagegen.HORDE_TRY_ANON_ON_401
+    keys: list[str] = []
+
+    def fake_once(_prompt, _out_path, _size, _timeout, api_key):
+        keys.append(api_key)
+        if api_key == "fixture-configured-key":
+            return None, 401, "AsyncNon2xx", {"http_status": 401, "submission_result": "rejected"}
+        return None, 200, "NoGenerations", {"http_status": 200, "submission_result": "accepted"}
+
+    state: dict[str, object] = {}
+    try:
+        imagegen._fetch_from_horde_once = fake_once
+        imagegen.HORDE_API_KEY = "fixture-configured-key"
+        imagegen.HORDE_TRY_ANON_ON_401 = True
+        imagegen._fetch_from_horde("prompt", Path("unused-1.png"), credential_state=state)
+        first_diag = imagegen._take_backend_diagnostics("stable_horde")
+        imagegen._fetch_from_horde("prompt", Path("unused-2.png"), credential_state=state)
+        second_diag = imagegen._take_backend_diagnostics("stable_horde")
+        imagegen._fetch_from_horde("prompt", Path("unused-3.png"), credential_state=state)
+        third_diag = imagegen._take_backend_diagnostics("stable_horde")
+    finally:
+        imagegen._fetch_from_horde_once = old_once
+        imagegen.HORDE_API_KEY = old_key
+        imagegen.HORDE_TRY_ANON_ON_401 = old_retry
+
+    assert keys == ["fixture-configured-key", "0000000000", "0000000000", "0000000000"]
+    assert state == {"configured_key_rejected": True, "initial_http_status": 401}
+    assert first_diag["configured_key_rejected"] is True
+    assert first_diag["anonymous_retry_used"] is True
+    assert first_diag["initial_http_status"] == 401
+    assert first_diag["initial_attempt"]["http_status"] == 401
+    for diagnostics in (second_diag, third_diag):
+        assert diagnostics["configured_key_rejected"] is True
+        assert diagnostics["anonymous_retry_used"] is True
+        assert diagnostics["initial_http_status"] == 401
+    assert "fixture-configured-key" not in str((first_diag, second_diag, third_diag))
+
+
 def main() -> None:
     checks = (
         pollinations_json_92_bytes_falls_back_to_horde,
@@ -347,6 +588,11 @@ def main() -> None:
         stable_horde_failure_exposes_detailed_safe_diagnostics,
         all_backends_excluded_fail_immediately,
         pillow_unavailable_rejects_otherwise_valid_image,
+        horde_https_url_is_bounded_validated_and_accepted,
+        horde_data_url_and_plain_base64_are_strict_and_validated,
+        horde_invalid_base64_and_92_byte_payload_never_write_output,
+        horde_image_url_blocks_private_and_local_addresses,
+        horde_configured_key_401_switches_once_to_anonymous,
     )
     for check in checks:
         check()

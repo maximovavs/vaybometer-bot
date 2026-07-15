@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -57,11 +59,29 @@ MESSAGE = """🌅 Кипр сегодня (15.07.2026)
 """
 
 
-def _write_ppm(path: Path, *, color: tuple[int, int, int], comment: str) -> None:
+EVENING_MESSAGE = """🌅 Кипр завтра (16.07.2026)
+✨ VayboMeter завтра: 6.8/10 — с оговорками; жара и порывы у моря.
+🏙 Лимассол — 34/26 °C • переменная облачность • ветер 8 м/с, порывы 14 м/с • 🌊 27°C
+🏙 Ларнака — 35/25 °C • локальная облачность • ветер 7 м/с, порывы 13 м/с • 🌊 27°C
+⚠️ Нюанс: локальные осадки возможны ближе к внутренним районам.
+🌕 Полнолуние — 100% освещённости.
+✅ План завтра: море до усиления ветра, затем тень и вода.
+#Кипр #погода #здоровье
+"""
+
+
+def _write_dhash_fixture(path: Path, *, flipped_rows: int) -> None:
+    rows: list[int] = []
+    for row in range(8):
+        if row < flipped_rows:
+            rows.extend((220, 20, 40, 60, 80, 100, 120, 140, 160))
+        else:
+            rows.extend((0, 20, 40, 60, 80, 100, 120, 140, 160))
+    image = Image.new("L", (9, 8))
+    image.putdata(rows)
+    image = image.resize((288, 256), Image.Resampling.NEAREST).convert("RGB")
     path.parent.mkdir(parents=True, exist_ok=True)
-    width = height = 300
-    header = f"P6\n# {comment}\n{width} {height}\n255\n".encode("ascii")
-    path.write_bytes(header + bytes(color) * width * height)
+    image.save(path, format="PPM")
 
 
 def _sha256(path: Path) -> str:
@@ -85,11 +105,49 @@ def local_weather_card_is_valid_deterministic_and_metadata_rich() -> None:
             output_path=tmp / "second.png",
             minimum_bytes=12000,
         )
+        evening = render_local_weather_card(
+            EVENING_MESSAGE,
+            target_date="2026-07-16",
+            post_type="evening",
+            output_path=tmp / "evening.png",
+            minimum_bytes=12000,
+        )
         first_path = Path(first["path"])
         second_path = Path(second["path"])
+        evening_path = Path(evening["path"])
         assert first_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
         assert first_path.stat().st_size > 12000
         assert _sha256(first_path) == _sha256(second_path)
+        assert _sha256(first_path) != _sha256(evening_path)
+        required_metadata = {
+            "local_visual_variant",
+            "local_palette",
+            "local_time_of_day",
+            "local_weather_scenario",
+            "renderer_version",
+        }
+        assert required_metadata <= set(first["metadata"])
+        assert required_metadata <= set(evening["metadata"])
+        assert first["metadata"]["renderer_version"] == "cy_local_atmospheric_visual_v2"
+        assert first["metadata"]["rendered_text"] == ""
+        assert evening["metadata"]["rendered_text"] == ""
+        renderer_source = inspect.getsource(render_local_weather_card)
+        assert "rounded_rectangle" not in renderer_source
+        assert "draw.text" not in renderer_source
+        assert "VAYBOMETER" not in renderer_source.upper()
+        assert "м/с" not in first["metadata"]["rendered_text"]
+        assert safe_module._cy_image_caption(
+            "morning",
+            "2026-07-16",
+            test_label=False,
+            current_date=dt.date(2026, 7, 16),
+        ) == "Визуальный вайб сегодняшнего дня на Кипре 🌊"
+        assert safe_module._cy_image_caption(
+            "evening",
+            "2026-07-16",
+            test_label=False,
+            current_date=dt.date(2026, 7, 15),
+        ) == "Визуальный вайб погоды на Кипре завтра 🌊"
         with Image.open(first_path) as image:
             assert image.size == (1080, 1080)
             assert image.format == "PNG"
@@ -97,6 +155,17 @@ def local_weather_card_is_valid_deterministic_and_metadata_rich() -> None:
             assert image.info["target_date"] == "2026-07-15"
             assert image.info["post_type"] == "morning"
             assert image.info["focus"] == "coastal"
+            assert image.info["rendered_text"] == ""
+            image.verify()
+        with Image.open(evening_path) as image:
+            assert image.size == (1080, 1080)
+            assert image.info["post_type"] == "evening"
+            assert image.info["local_time_of_day"] in {
+                "blue_hour",
+                "twilight",
+                "moonlit_evening",
+                "late_twilight",
+            }
             image.verify()
 
 
@@ -143,7 +212,7 @@ def provider_health_is_date_and_namespace_scoped() -> None:
                 os.environ["CY_IMAGE_PROVIDER_HEALTH_DIR"] = old_root
 
 
-def production_failure_simulation_sends_local_card_once() -> None:
+def primary_evening_incident_sends_local_visual_before_text() -> None:
     async def run_case(tmp: Path) -> None:
         old_env = {name: os.environ.get(name) for name in (
             "CHANNEL_ID",
@@ -166,13 +235,13 @@ def production_failure_simulation_sends_local_card_once() -> None:
         history_path = tmp / "cyprus_visual_history_prod.json"
         test_history_path = tmp / "cyprus_visual_history_test.json"
         seed_path = tmp / "seed.ppm"
-        _write_ppm(seed_path, color=(74, 92, 112), comment="history-seed")
+        _write_dhash_fixture(seed_path, flipped_rows=0)
         history_path.write_text(
             json.dumps(
                 [
                     {
-                        "date": "2026-07-14",
-                        "post_type": "morning",
+                        "date": "2026-07-15",
+                        "post_type": "evening",
                         "sha256": cyprus_visual_dedup.sha256_file(seed_path),
                         "perceptual_hash": cyprus_visual_dedup.dhash_file(seed_path),
                         "phash": cyprus_visual_dedup.phash_file(seed_path),
@@ -191,7 +260,6 @@ def production_failure_simulation_sends_local_card_once() -> None:
         test_history_path.write_text("[]", "utf-8")
 
         calls = {"pollinations": 0, "stable_horde": 0}
-        excluded_seen: list[set[str]] = []
         photo_calls: list[dict] = []
 
         def fake_outcome(
@@ -202,64 +270,92 @@ def production_failure_simulation_sends_local_card_once() -> None:
             backend_call_limits=None,
             **_kwargs,
         ):
-            excluded = set(excluded_backends or set())
             limits = dict(backend_call_limits or {})
-            excluded_seen.append(excluded)
             path = Path(requested_path)
-            if "pollinations" not in excluded and limits.get("pollinations", 0) > 0:
-                calls["pollinations"] += 1
-                _write_ppm(
-                    path,
-                    color=(74, 92, 112),
-                    comment=f"pollinations-file-{calls['pollinations']}",
-                )
-                attempt = {"backend": "pollinations", "result": "success"}
+            if calls == {"pollinations": 0, "stable_horde": 0}:
+                assert limits["pollinations"] == 2
+                assert limits["stable_horde"] == 3
+                calls["pollinations"] += 2
+                calls["stable_horde"] += 1
+                _write_dhash_fixture(path, flipped_rows=3)
+                attempts = [
+                    {
+                        "backend": "pollinations",
+                        "result": "failed",
+                        "http_status": 500,
+                        "content_type": "application/json",
+                        "payload_byte_count": 58,
+                        "error_category": "server_error",
+                    },
+                    {
+                        "backend": "stable_horde",
+                        "result": "failed",
+                        "http_status": 200,
+                        "submission_result": "accepted",
+                        "request_id": "fixture-horde-invalid-1",
+                        "configured_key_rejected": True,
+                        "anonymous_retry_used": True,
+                        "initial_http_status": 401,
+                        "horde_img_payload_kind": "base64",
+                        "horde_img_source_length": 124,
+                        "horde_img_downloaded_byte_count": 92,
+                        "horde_img_validation_result": "rejected_image_validation",
+                        "image_validation_failure": "Pillow/signature/content validation failed",
+                        "error_category": "invalid_image",
+                    },
+                    {
+                        "backend": "pollinations",
+                        "result": "success",
+                        "http_status": 200,
+                        "content_type": "image/jpeg",
+                        "payload_byte_count": path.stat().st_size,
+                    },
+                ]
                 result = types.SimpleNamespace(
                     path=str(path),
                     backend="pollinations",
                     byte_count=path.stat().st_size,
-                    backend_attempts=[attempt],
+                    backend_attempts=attempts,
                 )
                 return types.SimpleNamespace(
                     result=result,
-                    backend_attempts=[attempt],
+                    backend_attempts=attempts,
                     error_type="",
                     error_message="",
                     exhausted=False,
-                    actual_backend_call_count=1,
+                    actual_backend_call_count=3,
                 )
-            horde_limit = min(3, int(limits.get("stable_horde", 0) or 0))
-            if "stable_horde" not in excluded and horde_limit > 0:
-                calls["stable_horde"] += horde_limit
+            horde_limit = int(limits.get("stable_horde", 0) or 0)
+            if horde_limit > 0:
+                assert limits.get("pollinations", 0) == 0
+                assert horde_limit == 2
+                calls["stable_horde"] += 2
                 attempts = [
                     {
                         "backend": "stable_horde",
                         "result": "failed",
                         "http_status": 200,
                         "submission_result": "accepted",
-                        "request_id": f"fixture-horde-{index}",
-                        "queue_status": {"done": False},
-                        "timeout": True,
-                        "faulted": False,
-                        "cancelled": False,
-                        "generations_count": 0,
-                        "payload_byte_count": 0,
-                        "content_type": "application/json",
-                        "image_validation_failure": "",
-                        "exception_type": "TimeoutError",
-                        "error_category": "provider_timeout",
-                        "error_message": "fixture timeout",
-                        "elapsed_seconds": 90.0,
+                        "request_id": f"fixture-horde-invalid-{index + 2}",
+                        "configured_key_rejected": True,
+                        "anonymous_retry_used": True,
+                        "initial_http_status": 401,
+                        "horde_img_payload_kind": "base64",
+                        "horde_img_source_length": 124,
+                        "horde_img_downloaded_byte_count": 92,
+                        "horde_img_validation_result": "rejected_image_validation",
+                        "image_validation_failure": "Pillow/signature/content validation failed",
+                        "error_category": "invalid_image",
                     }
-                    for index in range(horde_limit)
+                    for index in range(2)
                 ]
                 return types.SimpleNamespace(
                     result=None,
                     backend_attempts=attempts,
-                    error_type="ProviderTimeout",
-                    error_message="stable_horde returned no valid image",
+                    error_type="InvalidImage",
+                    error_message="Stable Horde decoded a 92-byte invalid image payload",
                     exhausted=True,
-                    actual_backend_call_count=horde_limit,
+                    actual_backend_call_count=2,
                 )
             return types.SimpleNamespace(
                 result=None,
@@ -275,8 +371,14 @@ def production_failure_simulation_sends_local_card_once() -> None:
                 assert token == "fixture-token"
 
             async def send_photo(self, **kwargs):
-                photo_calls.append(kwargs)
-                return types.SimpleNamespace(message_id=81501)
+                photo_calls.append(
+                    {
+                        "chat_id": kwargs["chat_id"],
+                        "caption": kwargs["caption"],
+                        "photo_bytes": kwargs["photo"].read(),
+                    }
+                )
+                return types.SimpleNamespace(message_id=81602)
 
         try:
             os.environ.update(
@@ -288,7 +390,7 @@ def production_failure_simulation_sends_local_card_once() -> None:
                     "CY_TEXT_DELIVERY_DIR": str(tmp / "cy_text_delivery"),
                     "CY_IMAGE_DIAGNOSTICS_DIR": str(tmp / "cy_image_diagnostics"),
                     "CY_IMAGE_PROVIDER_HEALTH_DIR": str(tmp / "cy_image_provider_health"),
-                    "GITHUB_RUN_ID": "29397408676",
+                    "GITHUB_RUN_ID": "29424885298",
                     "GITHUB_RUN_ATTEMPT": "1",
                 }
             )
@@ -303,59 +405,59 @@ def production_failure_simulation_sends_local_card_once() -> None:
                 "unconfigured_backends": ["custom"],
             }
 
-            text_path = safe_module._cy_text_receipt_path("2026-07-15", "morning")
-            text_path.parent.mkdir(parents=True, exist_ok=True)
-            text_path.write_text(
-                json.dumps(
-                    {
-                        "target_date": "2026-07-15",
-                        "post_type": "morning",
-                        "chat_type": "production",
-                        "telegram_message_ids": [70001],
-                        "text_chunk_count": 1,
-                        "sent_at_utc": "2026-07-15T01:03:00Z",
-                    }
-                ),
-                "utf-8",
-            )
+            text_path = safe_module._cy_text_receipt_path("2026-07-16", "evening")
+            assert not text_path.exists()
 
             result = await safe_module._build_safe_test_image(
-                MESSAGE,
-                "morning",
+                EVENING_MESSAGE,
+                "evening",
                 generate_image=True,
                 send_image_to_test=False,
                 send_image_to_chat=True,
                 image_chat_id=777,
-                image_only_recovery=True,
+                image_only_recovery=False,
             )
             assert result["result"] == "sent"
             assert result["backend"] == "local_weather_card"
             assert calls == {"pollinations": 2, "stable_horde": 3}
             assert len(photo_calls) == 1
+            assert photo_calls[0]["chat_id"] == 777
+            assert photo_calls[0]["caption"] == "Визуальный вайб погоды на Кипре завтра 🌊"
+            assert photo_calls[0]["photo_bytes"].startswith(b"\x89PNG\r\n\x1a\n")
+            assert not text_path.exists()
 
-            receipt_path = safe_module._cy_image_receipt_path("2026-07-15", "morning")
+            receipt_path = safe_module._cy_image_receipt_path("2026-07-16", "evening")
             receipt = json.loads(receipt_path.read_text("utf-8"))
             assert receipt["backend"] == "local_weather_card"
             assert receipt["selected_scene"] == "local_weather_card"
-            assert receipt["visual_archetype"] == "weather_card"
-            assert receipt["telegram_message_id"] == 81501
+            assert receipt["composition"] == "atmospheric_full_bleed"
+            assert receipt["visual_archetype"] == "local_atmospheric_visual"
+            assert receipt["telegram_message_id"] == 81602
             assert receipt["sha256"] == _sha256(Path(result["path"]))
 
-            health_path = provider_health_path("2026-07-15", "morning", "prod")
+            health_path = provider_health_path("2026-07-16", "evening", "prod")
             health = json.loads(health_path.read_text("utf-8"))
             pollinations = health["providers"]["pollinations"]
             assert pollinations["repeated_dhash"]
             assert pollinations["repeated_phash"]
-            assert pollinations["duplicate_count"] >= 2
-            assert pollinations["excluded_until_utc"]
-            assert provider_health_exclusions(health) == {"pollinations"}
-            assert not provider_health_path("2026-07-15", "morning", "test").exists()
+            assert pollinations["duplicate_count"] >= 1
+            assert health["providers"]["stable_horde"]["invalid_response_count"] >= 3
+            assert not provider_health_path("2026-07-16", "evening", "test").exists()
 
             diagnostics = json.loads(
-                (tmp / "cy_image_diagnostics" / "2026-07-15-morning" / "image_result.json").read_text("utf-8")
+                (tmp / "cy_image_diagnostics" / "2026-07-16-evening" / "image_result.json").read_text("utf-8")
             )
             assert diagnostics["image_result"] == "sent"
             assert diagnostics["selected_backend"] == "local_weather_card"
+            assert diagnostics["provider_call_counts"] == {
+                "pollinations": 2,
+                "stable_horde": 3,
+                "custom": 0,
+            }
+            assert diagnostics["valid_candidate_count"] == 1
+            assert diagnostics["duplicate_candidate_count"] == 1
+            assert diagnostics["provider_failure_count"] == 4
+            assert diagnostics["local_fallback_generated"] is True
             assert diagnostics["configured_backends"] == ["pollinations", "stable_horde"]
             assert diagnostics["unconfigured_backends"] == ["custom"]
             horde_attempts = [
@@ -365,12 +467,26 @@ def production_failure_simulation_sends_local_card_once() -> None:
                 if backend_attempt.get("backend") == "stable_horde"
             ]
             assert len(horde_attempts) == 3
-            assert all("elapsed_seconds" in item and "request_id" in item for item in horde_attempts)
+            assert horde_attempts[0]["configured_key_rejected"] is True
+            assert horde_attempts[0]["anonymous_retry_used"] is True
+            assert horde_attempts[0]["initial_http_status"] == 401
+            assert all(item["horde_img_downloaded_byte_count"] == 92 for item in horde_attempts)
+            local_attempt = diagnostics["selected_scene_attempts"][-1]
+            assert local_attempt["primary_fallback_allowed"] is True
+            assert local_attempt["recovery_fallback_allowed"] is False
+            assert local_attempt["local_metadata"]["renderer_version"] == "cy_local_atmospheric_visual_v2"
+            assert local_attempt["local_metadata"]["local_visual_variant"]
+
+            amain_source = inspect.getsource(safe_module.main)
+            image_index = amain_source.index("image_result = await _build_safe_test_image(")
+            recovery_return_index = amain_source.index("if args.image_only_recovery:", image_index)
+            text_send_index = amain_source.index("await _send_telegram_text_chunks(", recovery_return_index)
+            assert image_index < recovery_return_index < text_send_index
 
             calls_after_send = dict(calls)
             second = await safe_module._build_safe_test_image(
-                MESSAGE,
-                "morning",
+                EVENING_MESSAGE,
+                "evening",
                 generate_image=True,
                 send_image_to_test=False,
                 send_image_to_chat=True,
@@ -381,22 +497,20 @@ def production_failure_simulation_sends_local_card_once() -> None:
             assert calls == calls_after_send
             assert len(photo_calls) == 1
 
-            # A lost receipt must still reuse provider health: Pollinations is not called again,
-            # and exact-SHA local history prevents a second weather-card send.
+            # Recovery still requires a successful text receipt; primary image-first does not.
             receipt_path.unlink()
             third = await safe_module._build_safe_test_image(
-                MESSAGE,
-                "morning",
+                EVENING_MESSAGE,
+                "evening",
                 generate_image=True,
                 send_image_to_test=False,
                 send_image_to_chat=True,
                 image_chat_id=777,
                 image_only_recovery=True,
             )
-            assert third["result"] == "skipped_duplicate_local_weather_card"
-            assert calls["pollinations"] == 2
+            assert third["result"] == "skipped_no_text_receipt"
+            assert calls == calls_after_send
             assert len(photo_calls) == 1
-            assert any("pollinations" in excluded for excluded in excluded_seen[4:])
         finally:
             safe_module.TOKEN = old_token
             safe_module.Bot = old_bot
@@ -418,7 +532,7 @@ def main() -> None:
     checks = (
         local_weather_card_is_valid_deterministic_and_metadata_rich,
         provider_health_is_date_and_namespace_scoped,
-        production_failure_simulation_sends_local_card_once,
+        primary_evening_incident_sends_local_visual_before_text,
     )
     for check in checks:
         check()
