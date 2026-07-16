@@ -640,9 +640,8 @@ def _cyprus_evening_score_line(v2_text: str) -> str:
     max_t = max(daily_highs) if daily_highs else None
     max_gust = max(gusts) if gusts else None
     max_wind = max(winds) if winds else None
-    conditions = _cyprus_conditions(v2_text)
-    aqi = conditions.get("aqi")
     visibility_condition = _cyprus_visibility_condition(v2_text)
+    forecast_aqi = _cyprus_evening_forecast_aqi(v2_text)
 
     score = 10.0
     reasons: list[str] = []
@@ -663,7 +662,7 @@ def _cyprus_evening_score_line(v2_text: str) -> str:
             score -= 0.5; reasons.append("порывы у моря")
     if isinstance(max_wind, (int, float)) and max_wind >= 6:
         score -= 0.4; reasons.append("ветер у моря")
-    air_penalty = 0.8 if isinstance(aqi, (int, float)) and aqi > 80 else 0.0
+    air_penalty = 0.8 if isinstance(forecast_aqi, (int, float)) and forecast_aqi > 80 else 0.0
     atmospheric_penalty = visibility_air_penalty(visibility_condition, air_penalty)
     if atmospheric_penalty:
         score -= atmospheric_penalty
@@ -688,6 +687,26 @@ def _cyprus_evening_score_line(v2_text: str) -> str:
         cleaned = _dedupe_score_reasons(reasons[:3])
         return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; " + _format_reason_list(cleaned) + "."
     return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
+
+
+def _cyprus_evening_forecast_aqi(v2_text: str) -> float | None:
+    """Read only explicitly tomorrow/forecast-labelled AQI from an evening post."""
+    for raw_line in str(v2_text or "").splitlines():
+        line = _plain(raw_line).strip()
+        low = line.lower()
+        if "aqi" not in low:
+            continue
+        is_forecast = bool(
+            re.search(r"\bвоздух\s+завтра(?:\s+утром)?\b", low)
+            or re.search(r"\bпрогноз\w*\s+(?:воздуха|aqi)\b", low)
+            or re.search(r"\baqi\s+завтра(?:\s+утром)?\b", low)
+        )
+        if not is_forecast:
+            continue
+        value = _num(r"\bAQI\s*(\d+(?:[\.,]\d+)?)", line)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
 
 
 def _translate_shore_notes(text: str) -> str:

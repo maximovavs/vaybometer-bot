@@ -105,6 +105,7 @@ class VisualContextCY:
     dust_hint: Optional[str] = None
     visibility_haze: bool = False
     visibility_condition: str = "clear"
+    visibility_forecast_window: str = "none"
     current_visibility_m: Optional[float] = None
     morning_min_visibility_m: Optional[float] = None
     humidity_pct: Optional[float] = None
@@ -307,6 +308,20 @@ def _visibility_metadata_values(metadata: Optional[Mapping[str, Any]]) -> dict[s
     }
 
 
+def _visibility_forecast_window(
+    post_type: str,
+    condition: str,
+    finalized_visibility_line: Optional[str],
+) -> str:
+    if condition == "clear":
+        return "none"
+    if post_type == "morning":
+        return "current_morning"
+    if post_type == "evening" and "завтра утром" in str(finalized_visibility_line or "").lower():
+        return "tomorrow_morning"
+    return "none"
+
+
 def parse_visual_context_cy(
     text: str,
     post_type: Optional[str] = None,
@@ -362,6 +377,12 @@ def parse_visual_context_cy(
     visibility_metadata_values = _visibility_metadata_values(visibility_metadata)
     visibility_condition = (
         visibility_metadata_values["condition"] or visibility_facts["condition"]
+    )
+    resolved_post_type = _detect_post_type(text, post_type)
+    visibility_forecast_window = _visibility_forecast_window(
+        resolved_post_type,
+        visibility_condition,
+        visibility_facts["evidence"],
     )
 
     for line in lines:
@@ -562,7 +583,7 @@ def parse_visual_context_cy(
     )
 
     return VisualContextCY(
-        post_type=_detect_post_type(text, post_type),
+        post_type=resolved_post_type,
         weather_main=weather_main,
         temp_max=temp_max,
         temp_min=temp_min,
@@ -574,6 +595,7 @@ def parse_visual_context_cy(
         dust_hint="; ".join(dust_lines) if dust_lines else None,
         visibility_haze=bool(haze_lines),
         visibility_condition=visibility_condition,
+        visibility_forecast_window=visibility_forecast_window,
         current_visibility_m=visibility_metadata_values["current_visibility_m"],
         morning_min_visibility_m=visibility_metadata_values["morning_min_visibility_m"],
         humidity_pct=visibility_metadata_values["humidity_pct"],

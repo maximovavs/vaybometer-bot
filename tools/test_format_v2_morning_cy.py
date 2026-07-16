@@ -1848,6 +1848,7 @@ def cy_morning_fog_survives_format_and_changes_score_nuance_plan() -> None:
         get_cyprus_visibility_context(_visibility_payload(320), target_date="2026-07-16")
     )
     assert fog_line
+    assert "сильный утренний туман в Лимассоле" in fog_line
     legacy = MORNING_WITH_SEA.replace("☀️ <b>УФ-индекс", fog_line + "\n☀️ <b>УФ-индекс")
     formatted = build_morning_format_v2("Кипр", legacy)
     assert formatted.index("💨 Ветер") < formatted.index("🌫 Видимость:") < formatted.index("☀️ УФ")

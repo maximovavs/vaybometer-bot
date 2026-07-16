@@ -684,7 +684,7 @@ def cy_prompt_full_moon_evening_uses_blue_hour_moonlight() -> None:
     🌕 Полнолуние в ♑ — пик эмоций и результатов.
     ✨ 100% освещённости — Луна яркая.
     """
-    prompt, style = build_cyprus_scene_prompt(message, post_type="evening")
+    prompt, style, metadata = build_cyprus_scene_prompt_with_metadata(message, post_type="evening")
     low = prompt.lower()
     assert "realistic full moon, 100% illuminated" in low
     assert "blue-hour" in low
@@ -695,6 +695,7 @@ def cy_prompt_full_moon_evening_uses_blue_hour_moonlight() -> None:
     assert "no watermark" in low
     assert "signature" in low
     assert "baltic" not in low
+    assert metadata["visibility_forecast_window"] == "none"
     assert style.startswith("cyprus_evening_mediterranean_landscape_")
 
 
@@ -1104,7 +1105,7 @@ def cy_morning_dense_fog_overrides_hot_clear_visuals() -> None:
     Никосия: 36/25 °C • ясно
     Лимассол: 33/26 °C • ясно • 🌊 Море 28°C
     ☀️ УФ-индекс 10 — очень высокий.
-    🌫 Видимость: сильный утренний туман в районе Лимассол — местами около 320 м.
+    🌫 Видимость: сильный утренний туман в Лимассоле — местами около 320 м.
     #Кипр #погода
     """
     ctx = parse_visual_context_cy(text, post_type="morning")
@@ -1192,7 +1193,7 @@ def cy_morning_visibility_states_have_distinct_prompt_cues_and_metadata() -> Non
             post_type="morning",
             visibility_metadata=visibility_metadata,
         )
-        positive, _negative = _prompt_sections(prompt)
+        positive, negative = _prompt_sections(prompt)
         positive_low = positive.lower()
         for cue in required:
             assert cue in positive_low, (condition, cue, prompt)
@@ -1206,8 +1207,9 @@ def cy_morning_visibility_states_have_distinct_prompt_cues_and_metadata() -> Non
         if condition == "dust_haze":
             assert "no humid fog cues" in positive_low
         if condition == "mixed_visibility":
-            assert "no exaggerated sahara palette" in positive_low
-        assert metadata["prompt_version"] == "cyprus_visual_v7"
+            assert "exaggerated sahara palette" not in positive_low
+            assert "no exaggerated sahara palette" in negative.lower()
+        assert metadata["prompt_version"] == "cyprus_visual_v8"
         assert metadata["current_visibility_m"] == 7000
         assert metadata["morning_min_visibility_m"] == 2200
         assert metadata["humidity_pct"] == 91
@@ -1229,6 +1231,85 @@ def cy_morning_visibility_states_have_distinct_prompt_cues_and_metadata() -> Non
     assert fallback_context.visibility_condition == "mist"
     assert fallback_context.current_visibility_m is None
     assert fallback_context.morning_min_visibility_m is None
+
+
+def _evening_visibility_prompt(visibility_line: str) -> tuple[str, str, dict[str, object]]:
+    message = f"""
+    <b>🌅 Кипр завтра (17.07.2026)</b>
+    Лимассол: 29/23 °C • облачно • 🌊 Море 27°C
+    {visibility_line}
+    🌕 Полнолуние в ♑ — пик эмоций и результатов.
+    ✨ 100% освещённости — Луна яркая.
+    #Кипр #погода
+    """
+    prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(
+        message,
+        post_type="evening",
+    )
+    positive, negative = _prompt_sections(prompt)
+    assert metadata["visibility_forecast_window"] == "tomorrow_morning"
+    assert "next-day early-morning forecast window only" in positive.lower()
+    assert "restrained cyprus late twilight" not in positive.lower()
+    assert "blue-hour" not in positive.lower()
+    assert "realistic full moon" not in positive.lower()
+    assert "no evening twilight or moon-led scene" in negative.lower()
+    return positive.lower(), negative.lower(), metadata
+
+
+def cy_evening_tomorrow_morning_fog_overrides_moon_twilight() -> None:
+    positive, negative, metadata = _evening_visibility_prompt(
+        "🌫 Видимость: завтра утром туман, местами около 900 м; дальние объекты плохо различимы."
+    )
+    assert "humid coastal fog" in positive
+    for cue in (
+        "no crisp distant horizon",
+        "no perfectly clear horizon",
+        "no sharp postcard visibility",
+        "no completely transparent air",
+    ):
+        assert cue in negative
+    assert metadata["visibility_condition"] == "fog"
+
+
+def cy_evening_tomorrow_morning_mist_is_not_dense_fog() -> None:
+    positive, _negative, metadata = _evening_visibility_prompt(
+        "🌫 Видимость: завтра утром влажная дымка, местами около 2200 м; у моря видимость снижена."
+    )
+    assert "humid morning mist" in positive
+    assert "dense humid fog" not in positive
+    assert metadata["visibility_condition"] == "mist"
+
+
+def cy_evening_tomorrow_morning_reduced_visibility_has_no_fog_claim() -> None:
+    positive, negative, metadata = _evening_visibility_prompt(
+        "🌫 Видимость: завтра утром местами снижена, местами около 4000 м; нужна дополнительная дистанция."
+    )
+    assert "reduced distant clarity" in positive
+    assert "humid fog" not in positive
+    assert "no invented humid fog or wet atmosphere" in negative
+    assert metadata["visibility_condition"] == "reduced_visibility"
+
+
+def cy_evening_tomorrow_morning_dust_haze_is_dry() -> None:
+    positive, negative, metadata = _evening_visibility_prompt(
+        "🌫 Видимость: завтра утром возможна сухая пылевая дымка, местами около 4000 м; проверить дальность обзора."
+    )
+    assert "muted beige-grey dry atmospheric haze" in positive
+    assert "humid coastal fog" not in positive
+    assert "no humid coastal fog" in negative
+    assert metadata["visibility_condition"] == "dust_haze"
+
+
+def cy_evening_tomorrow_morning_mixed_visibility_stays_mixed() -> None:
+    positive, negative, metadata = _evening_visibility_prompt(
+        "🌫 Видимость: завтра утром снижена, местами около 600 м; возможна смесь влажной дымки и загрязнения воздуха."
+    )
+    assert "mixed grey haze" in positive
+    assert "dense wall of fog" not in positive
+    assert "exaggerated sahara palette" not in positive
+    assert "no dense wall of fog" in negative
+    assert "no exaggerated sahara palette" in negative
+    assert metadata["visibility_condition"] == "mixed_visibility"
 
 
 TESTS = [
@@ -1285,6 +1366,11 @@ TESTS = [
     cy_morning_dense_fog_overrides_hot_clear_visuals,
     cy_morning_mixed_haze_does_not_become_dry_dust_scene,
     cy_morning_visibility_states_have_distinct_prompt_cues_and_metadata,
+    cy_evening_tomorrow_morning_fog_overrides_moon_twilight,
+    cy_evening_tomorrow_morning_mist_is_not_dense_fog,
+    cy_evening_tomorrow_morning_reduced_visibility_has_no_fog_claim,
+    cy_evening_tomorrow_morning_dust_haze_is_dry,
+    cy_evening_tomorrow_morning_mixed_visibility_stays_mixed,
 ]
 
 

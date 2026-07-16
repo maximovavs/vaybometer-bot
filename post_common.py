@@ -2251,7 +2251,7 @@ def build_message(
     air_now = get_air(CY_LAT, CY_LON) or {}
     air_line = _air_quality_line_from_data(air_now, include_pollen=False)
     if air_line:
-        P.append(air_line)
+        P.append(re.sub(r"^🏭\s*Воздух\s*:", "🏭 Воздух сейчас:", air_line, count=1))
         by_city = _air_by_city_line(sea_pairs + other_pairs)
         if by_city:
             P.append(by_city)

@@ -395,7 +395,7 @@ def build_cyprus_visibility_line(
         return f"🌫 Видимость: {timing} возможна сухая пылевая дымка{distance}; ориентируйтесь на фактическую дальность обзора."
     if context.condition == "dense_fog":
         fog_timing = "сильный утренний туман" if post_type.startswith("morn") else "завтра утром сильный туман"
-        place = f" в районе {context.location_label}" if context.location_label else ""
+        place = _visibility_location_phrase(context.location_label)
         return f"🌫 Видимость: {fog_timing}{place} — местами около {int(round(value))} м." if value is not None else f"🌫 Видимость: {fog_timing}{place}."
     if context.condition == "fog":
         return f"🌫 Видимость: {timing} туман{distance}; дальние объекты и побережье местами плохо различимы."
@@ -404,6 +404,19 @@ def build_cyprus_visibility_line(
     if context.condition == "reduced_visibility":
         return f"🌫 Видимость: {timing} местами снижена{distance}; на дорогах и у моря нужна дополнительная дистанция."
     return None
+
+
+def _visibility_location_phrase(location_label: Any) -> str:
+    label = str(location_label or "").strip()
+    if not label:
+        return ""
+    forms = {
+        "лимассол": "в Лимассоле",
+        "ларнака": "в Ларнаке",
+        "пафос": "в Пафосе",
+        "никосия": "в Никосии",
+    }
+    return " " + forms.get(label.casefold(), f"в районе города {label}")
 
 
 def visibility_condition_from_text(text: str) -> str:

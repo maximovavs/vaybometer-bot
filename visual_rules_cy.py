@@ -110,14 +110,13 @@ def _visibility_visual_cues(condition: str) -> dict[str, object]:
         "mixed_visibility": {
             "sky": "muted grey atmospheric haze with restrained humid softness",
             "light": "soft neutral morning light through a mixed grey atmosphere",
-            "air": "muted grey atmospheric haze; reduced distant clarity; restrained humid softness; restrained polluted-air haze; no exaggerated Sahara palette",
+            "air": "muted grey atmospheric haze; reduced distant clarity; restrained humid softness; restrained polluted-air haze",
             "mood": "cautious practical morning under mixed humid and polluted-air haze",
             "show": [
                 "muted grey atmospheric haze",
                 "reduced distant clarity",
                 "restrained humid softness",
                 "restrained polluted-air haze",
-                "no exaggerated Sahara palette",
             ],
         },
     }
@@ -135,7 +134,7 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     severe_wind = bool(ctx.severe_wind)
     wet = rain
     visibility_visual = (
-        ctx.post_type == "morning"
+        ctx.visibility_forecast_window in {"current_morning", "tomorrow_morning"}
         and ctx.visibility_condition in _VISIBILITY_VISUAL_CONDITIONS
     )
     fog_visual = visibility_visual and ctx.visibility_condition in _WET_VISIBILITY_CONDITIONS
@@ -274,6 +273,8 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         mood_cue += "; softened by local humid haze"
     elif hot:
         mood_cue += "; sun-baked and heat-aware"
+    if ctx.visibility_forecast_window == "tomorrow_morning" and visibility_visual:
+        mood_cue += "; next-day early-morning forecast only, not an all-day condition"
 
     must_show = ["recognizable Cyprus Mediterranean character"]
     if ctx.coastal_focus:
@@ -396,6 +397,7 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
             "dust_rule": dusty,
             "visibility_haze_rule": visibility_haze,
             "visibility_condition": ctx.visibility_condition,
+            "visibility_forecast_window": ctx.visibility_forecast_window,
             "visibility_evidence": ctx.visibility_evidence,
             "visibility_visual_rule": visibility_visual,
             "fog_visual_rule": fog_visual,

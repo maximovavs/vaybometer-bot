@@ -587,7 +587,18 @@ def _clean_air_line(line: str) -> str:
     for chunk in re.split(r"\s*[;•]\s*", s):
         if re.search(r"\b(Никос|Ларнак|Лимассол|Пафос|Айя|Тродос)\b", chunk, flags=re.I):
             city_bits.append(chunk.strip())
-    main = "🏭 Воздух: " + " • ".join(parts)
+    low = s.lower()
+    if "воздух сейчас" in low:
+        prefix = "🏭 Воздух сейчас: "
+    elif "воздух завтра утром" in low:
+        prefix = "🏭 Воздух завтра утром: "
+    elif "воздух завтра" in low:
+        prefix = "🏭 Воздух завтра: "
+    elif "прогноз воздуха" in low:
+        prefix = "🏭 Прогноз воздуха: "
+    else:
+        prefix = "🏭 Воздух: "
+    main = prefix + " • ".join(parts)
     if pollen:
         main += f" • 🌿 пыльца: {pollen}"
     if city_bits:

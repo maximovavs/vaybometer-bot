@@ -15,7 +15,7 @@ from visual_context_cy import VisualContextCY, parse_visual_context_cy
 from visual_rules_cy import SceneCuesCY, apply_visual_rules_cy
 
 
-CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v7"
+CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v8"
 
 _PROMPT_TARGET_MIN_CHARS = 450
 _PROMPT_TARGET_MAX_CHARS = 900
@@ -543,8 +543,8 @@ def _weather_constrained_scene_family_with_mode(
         )
     elif (
         (
-            ctx.post_type == "morning"
-            and ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}
+            ctx.visibility_forecast_window in {"current_morning", "tomorrow_morning"}
+            and ctx.visibility_condition != "clear"
         )
         or (ctx.visibility_haze and not ctx.dust_hint)
     ):
@@ -587,7 +587,14 @@ def _wind_category(ctx: VisualContextCY) -> str:
 
 
 def _cloud_haze_category(ctx: VisualContextCY) -> str:
-    if ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}:
+    if ctx.visibility_condition in {
+        "dense_fog",
+        "fog",
+        "mist",
+        "reduced_visibility",
+        "dust_haze",
+        "mixed_visibility",
+    }:
         return ctx.visibility_condition
     if ctx.dust_hint:
         return "dust_haze"
@@ -833,19 +840,22 @@ def _compact_time_cue(
     moon_context: dict[str, object],
     ctx: VisualContextCY,
 ) -> str:
-    if post_type == "morning":
+    visibility_window = ctx.visibility_forecast_window
+    if visibility_window in {"current_morning", "tomorrow_morning"}:
+        prefix = "Next-day early-morning forecast window only: " if visibility_window == "tomorrow_morning" else ""
         if ctx.visibility_condition == "dense_fog":
-            return "Early morning daylight filtered through humid coastal fog, soft diffused neutral light, muted contrast and moist atmospheric depth"
+            return prefix + "Early morning daylight filtered through humid coastal fog, soft diffused neutral light, muted contrast and moist atmospheric depth"
         if ctx.visibility_condition == "fog":
-            return "Early morning daylight diffused through humid coastal fog with a softly obscured horizon"
+            return prefix + "Early morning daylight diffused through humid coastal fog with a softly obscured horizon"
         if ctx.visibility_condition == "mist":
-            return "Fresh early morning daylight through light humid mist with gentle atmospheric depth"
+            return prefix + "Fresh early morning daylight through light humid mist with gentle atmospheric depth"
         if ctx.visibility_condition == "reduced_visibility":
-            return "Neutral early morning daylight with softened distant clarity and restrained contrast"
+            return prefix + "Neutral early morning daylight with softened distant clarity and restrained contrast"
         if ctx.visibility_condition == "dust_haze":
-            return "Neutral early morning daylight filtered by dry suspended particles"
+            return prefix + "Neutral early morning daylight filtered by dry suspended particles"
         if ctx.visibility_condition == "mixed_visibility":
-            return "Soft neutral early morning daylight through a muted grey mixed atmosphere"
+            return prefix + "Soft neutral early morning daylight through a muted grey mixed atmosphere"
+    if post_type == "morning":
         cue = "Fresh neutral morning daylight, pale blue sky, natural shadows and light from the left"
         if ctx.uv_level in {"high", "extreme"}:
             cue += ", with crisp direct sunlight"
@@ -870,7 +880,7 @@ def _compact_weather_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
         "mist": "Humid morning mist, softened distant clarity, gentle atmospheric depth",
         "reduced_visibility": "Reduced distant clarity, softened horizon, restrained contrast",
         "dust_haze": "Muted beige-grey dry atmospheric haze, dry suspended particles, reduced clarity, no humid fog cues",
-        "mixed_visibility": "Muted grey atmospheric haze, reduced distant clarity, restrained humid softness, restrained polluted-air haze, no exaggerated Sahara palette",
+        "mixed_visibility": "Muted grey atmospheric haze, restrained mixed grey haze, reduced distant clarity, restrained humid softness, restrained polluted-air haze",
     }
     if diagnostics.get("visibility_visual_rule") and ctx.visibility_condition in visibility_cues:
         cue = visibility_cues[ctx.visibility_condition]
@@ -927,7 +937,7 @@ def _compact_wind_sea_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
 def _compact_finish_cue(ctx: VisualContextCY) -> str:
     cue = "Natural Mediterranean colors, realistic atmospheric perspective and restrained editorial weather photography, with palms optional as background accents"
     suppress_heat_shimmer = (
-        ctx.post_type == "morning"
+        ctx.visibility_forecast_window in {"current_morning", "tomorrow_morning"}
         and ctx.visibility_condition in {"dense_fog", "fog", "mist", "mixed_visibility"}
     )
     if ctx.temp_max is not None and ctx.temp_max >= 33 and not suppress_heat_shimmer:
@@ -952,15 +962,24 @@ def _negative_items(
         )
     elif metadata["selected_scene"] == "small_harbour":
         items.append("no scenic curved tourist bay")
-    if post_type == "morning":
-        items.extend(
-            [
-                "no sunset and no orange golden-hour sky",
-                "no moon and no night",
-                "no bright light source on the right",
-            ]
-        )
-        visibility_condition = str(scene.diagnostics.get("visibility_condition") or "clear")
+    visibility_window = str(scene.diagnostics.get("visibility_forecast_window") or "none")
+    visibility_condition = str(scene.diagnostics.get("visibility_condition") or "clear")
+    if visibility_window in {"current_morning", "tomorrow_morning"}:
+        if visibility_window == "current_morning":
+            items.extend(
+                [
+                    "no sunset and no orange golden-hour sky",
+                    "no moon and no night",
+                    "no bright light source on the right",
+                ]
+            )
+        else:
+            items.extend(
+                [
+                    "no evening twilight or moon-led scene",
+                    "no all-day fog implication",
+                ]
+            )
         if visibility_condition in {"dense_fog", "fog", "mist"}:
             items.append(
                 "no crisp distant horizon, no perfectly clear horizon, no sharp postcard visibility, no completely transparent air"
@@ -972,6 +991,14 @@ def _negative_items(
             items.append("no humid coastal fog or moist fog depth")
         elif visibility_condition == "mixed_visibility":
             items.append("no dense wall of fog and no exaggerated Sahara palette")
+    elif post_type == "morning":
+        items.extend(
+            [
+                "no sunset and no orange golden-hour sky",
+                "no moon and no night",
+                "no bright light source on the right",
+            ]
+        )
     elif moon_context.get("kind"):
         items.append("natural moon scale, no oversized moon and no fantasy planet")
         if moon_context.get("kind") == "near_full":
@@ -1075,12 +1102,13 @@ def _visual_cache_metadata(
         "observation_time": ctx.observation_time,
         "confidence": ctx.confidence,
         "visibility_condition": str(ctx.visibility_condition),
+        "visibility_forecast_window": ctx.visibility_forecast_window,
         "visibility_evidence": ctx.visibility_evidence,
         "classification_reason": ctx.classification_reason,
         "location_label": ctx.location_label,
         "fog_text_added": str(bool(ctx.visibility_evidence)).lower(),
         "fog_visual_rule": str(
-            post_type == "morning"
+            ctx.visibility_forecast_window in {"current_morning", "tomorrow_morning"}
             and ctx.visibility_condition in {"dense_fog", "fog", "mist"}
         ).lower(),
         "dust_vs_fog_classification": str(ctx.dust_vs_fog_classification),
@@ -1104,6 +1132,7 @@ def _visual_cache_metadata(
         "wind_gust_category",
         "cloud_haze_category",
         "visibility_condition",
+        "visibility_forecast_window",
         "dust_vs_fog_classification",
         "lunar_phase",
         "lunar_illumination",

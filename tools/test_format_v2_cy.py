@@ -681,6 +681,70 @@ def cy_evening_title_is_compact() -> None:
     assert text.splitlines()[0] == "<b>🌅 Кипр завтра (27.06.2026)</b>"
 
 
+def _evening_visibility_score_fixture(visibility_line: str = "", air_line: str = "") -> str:
+    return "\n".join(
+        line
+        for line in (
+            "<b>🌅 Кипр завтра (17.07.2026)</b>",
+            "🏙 Лимассол — 28/22 °C • ясно",
+            air_line,
+            visibility_line,
+            "✅ План завтра: обычные дела и прогулки.",
+            "#Кипр #погода",
+        )
+        if line
+    )
+
+
+def _evening_score_value(text: str) -> float:
+    line = _cyprus_evening_score_line(text)
+    match = re.search(r"VayboMeter завтра:\s*(\d+(?:[\.,]\d+)?)", line)
+    assert match, line
+    return float(match.group(1).replace(",", "."))
+
+
+def cy_evening_current_aqi_does_not_change_tomorrow_score() -> None:
+    without_air = _evening_visibility_score_fixture()
+    with_current_air = _evening_visibility_score_fixture(
+        air_line="🏭 Воздух сейчас: AQI 150 • PM₂.₅ 42 • PM₁₀ 91"
+    )
+    assert _evening_score_value(with_current_air) == _evening_score_value(without_air)
+    formatted = build_evening_format_v2("Кипр", with_current_air)
+    assert "🏭 Воздух сейчас: AQI 150" in formatted
+
+
+def cy_evening_current_aqi_plus_fog_uses_only_fog_penalty() -> None:
+    clear = _evening_visibility_score_fixture(
+        air_line="🏭 Воздух сейчас: AQI 150 • PM₂.₅ 42 • PM₁₀ 91"
+    )
+    fog = _evening_visibility_score_fixture(
+        visibility_line="🌫 Видимость: завтра утром туман, местами около 900 м; дальние объекты плохо различимы.",
+        air_line="🏭 Воздух сейчас: AQI 150 • PM₂.₅ 42 • PM₁₀ 91",
+    )
+    assert round(_evening_score_value(clear) - _evening_score_value(fog), 1) == 0.5
+
+
+def cy_evening_current_aqi_plus_reduced_visibility_uses_point_two() -> None:
+    clear = _evening_visibility_score_fixture(
+        air_line="🏭 Воздух сейчас: AQI 150 • PM₂.₅ 42 • PM₁₀ 91"
+    )
+    reduced = _evening_visibility_score_fixture(
+        visibility_line="🌫 Видимость: завтра утром местами снижена, местами около 4000 м; нужна дополнительная дистанция.",
+        air_line="🏭 Воздух сейчас: AQI 150 • PM₂.₅ 42 • PM₁₀ 91",
+    )
+    assert round(_evening_score_value(clear) - _evening_score_value(reduced), 1) == 0.2
+
+
+def cy_evening_explicit_forecast_aqi_can_affect_tomorrow_score() -> None:
+    clear = _evening_visibility_score_fixture()
+    forecast_air = _evening_visibility_score_fixture(
+        air_line="🏭 Воздух завтра утром: AQI 150 • PM₂.₅ 42 • PM₁₀ 91"
+    )
+    assert round(_evening_score_value(clear) - _evening_score_value(forecast_air), 1) == 0.8
+    formatted = build_evening_format_v2("Кипр", forecast_air)
+    assert "🏭 Воздух завтра утром: AQI 150" in formatted
+
+
 def cy_morning_preserves_quake_line() -> None:
     text = build_morning_format_v2("Кипр", MORNING_WITH_QUAKE)
     assert "🌍 Сейсмика 24ч: 1 микрособытие M0.9–1.9; заметных событий M2.0+ не найдено." in text
@@ -809,6 +873,10 @@ def main() -> None:
         cy_evening_critical_safecast_is_explicitly_labeled,
         cy_evening_uncertain_has_short_confidence_line,
         cy_evening_title_is_compact,
+        cy_evening_current_aqi_does_not_change_tomorrow_score,
+        cy_evening_current_aqi_plus_fog_uses_only_fog_penalty,
+        cy_evening_current_aqi_plus_reduced_visibility_uses_point_two,
+        cy_evening_explicit_forecast_aqi_can_affect_tomorrow_score,
         cy_workflow_morning_schedule_is_earlier,
     )
     for check in checks:
