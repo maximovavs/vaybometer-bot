@@ -69,6 +69,7 @@ _DUST_RE = re.compile(
     re.I,
 )
 _HAZE_RE = re.compile(r"дымк\w*|туман\w*|fog|haze", re.I)
+_VISIBILITY_METERS_RE = re.compile(r"(?:менее|около|до)?\s*(\d+(?:[.,]\d+)?)\s*м\b", re.I)
 _MOON_PHASE_PREFIXES = ("🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🌙")
 _DERIVED_SUMMARY_PREFIXES = (
     "✨ VayboMeter",
@@ -96,6 +97,13 @@ class VisualContextCY:
     aqi_level: Optional[str] = None
     dust_hint: Optional[str] = None
     visibility_haze: bool = False
+    visibility_condition: str = "clear"
+    visibility_m: Optional[float] = None
+    morning_min_visibility_m: Optional[float] = None
+    dew_point_c: Optional[float] = None
+    dew_point_spread_c: Optional[float] = None
+    visibility_evidence: Optional[str] = None
+    dust_vs_fog_classification: str = "clear"
     actual_precipitation: bool = False
     coastal_precipitation: bool = False
     inland_precipitation: bool = False
@@ -107,7 +115,7 @@ class VisualContextCY:
     inland_heat_focus: bool = False
     city_weather_lines: list[str] = field(default_factory=list)
     coastal_weather_lines: list[str] = field(default_factory=list)
-    evidence: dict[str, list[Any]] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def _plain_line(raw: str) -> str:
@@ -229,6 +237,33 @@ def _has_visibility_haze(line: str) -> bool:
     return bool(_HAZE_RE.search(str(line or ""))) and not _has_dust_signal(line)
 
 
+def _visibility_facts(lines: list[str]) -> tuple[str, Optional[float], str]:
+    visibility_lines = [line for line in lines if line.startswith("🌫 Видимость:")]
+    if not visibility_lines:
+        return "clear", None, "clear"
+    line = visibility_lines[0]
+    low = line.lower()
+    match = _VISIBILITY_METERS_RE.search(line)
+    visibility_m = _number(match.group(1)) if match else None
+    mixed = "смесь влажной дымки и загрязнения" in low
+    if "пылевая дымка" in low:
+        return "dust_haze", visibility_m, "dust_haze"
+    if "сильный" in low and "туман" in low:
+        condition = "dense_fog"
+    elif visibility_m is not None and visibility_m <= 500:
+        condition = "dense_fog"
+    elif "туман" in low or (visibility_m is not None and visibility_m <= 1000):
+        condition = "fog"
+    elif "влажная дымка" in low:
+        condition = "mist"
+    else:
+        condition = "reduced_visibility"
+    classification = "mixed_humid_haze_and_pollution" if mixed else (
+        "humid_fog" if condition in {"dense_fog", "fog", "mist"} else "reduced_visibility"
+    )
+    return condition, visibility_m, classification
+
+
 def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> VisualContextCY:
     """Parse finalized Cyprus FORMAT_V2 text without network or model calls."""
     if not isinstance(text, str):
@@ -236,7 +271,7 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
 
     lines = [_plain_line(raw) for raw in text.splitlines()]
     lines = [line for line in lines if line]
-    evidence: dict[str, list[Any]] = {
+    evidence: dict[str, Any] = {
         "weather_lines": [],
         "coastal_lines": [],
         "temp_candidates": [],
@@ -244,6 +279,7 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
         "uv_candidates": [],
         "dust_lines": [],
         "haze_lines": [],
+        "visibility_lines": [],
         "precipitation_lines": [],
         "coastal_precipitation_lines": [],
         "inland_precipitation_lines": [],
@@ -275,6 +311,7 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
     weather_hits: set[str] = set()
     nicosia_hot = False
     troodos_relevant = False
+    visibility_condition, visibility_m, dust_vs_fog_classification = _visibility_facts(lines)
 
     for line in lines:
         low = line.lower()
@@ -288,6 +325,8 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
             continue
         if is_weather:
             evidence["weather_lines"].append(line)
+        if line.startswith("🌫 Видимость:"):
+            evidence["visibility_lines"].append(line)
         if cities and is_weather:
             city_lines.append(line)
         if is_coastal:
@@ -483,6 +522,11 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
         aqi_level=aqi_level,
         dust_hint="; ".join(dust_lines) if dust_lines else None,
         visibility_haze=bool(haze_lines),
+        visibility_condition=visibility_condition,
+        visibility_m=visibility_m,
+        morning_min_visibility_m=visibility_m,
+        visibility_evidence="; ".join(evidence["visibility_lines"]) or None,
+        dust_vs_fog_classification=dust_vs_fog_classification,
         actual_precipitation=actual_precipitation,
         coastal_precipitation=coastal_precipitation,
         inland_precipitation=inland_precipitation,

@@ -535,7 +535,13 @@ def _weather_constrained_scene_family_with_mode(
             "coastal_promenade",
             "mountain_coast_view",
         )
-    elif ctx.visibility_haze and not ctx.dust_hint:
+    elif (
+        (
+            ctx.post_type == "morning"
+            and ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}
+        )
+        or (ctx.visibility_haze and not ctx.dust_hint)
+    ):
         options = ("coastal_promenade", "small_harbour")
     elif getattr(ctx, "inland_precipitation", False) or getattr(ctx, "inland_thunder_risk", False):
         options = ("mountain_coast_view", "open_sea_cliffs", "breakwater_coast")
@@ -575,6 +581,8 @@ def _wind_category(ctx: VisualContextCY) -> str:
 
 
 def _cloud_haze_category(ctx: VisualContextCY) -> str:
+    if ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}:
+        return ctx.visibility_condition
     if ctx.dust_hint:
         return "dust_haze"
     if ctx.visibility_haze:
@@ -820,6 +828,8 @@ def _compact_time_cue(
     ctx: VisualContextCY,
 ) -> str:
     if post_type == "morning":
+        if ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}:
+            return "Early morning daylight filtered through humid coastal fog, soft diffused neutral light, muted contrast and moist atmospheric depth"
         cue = "Fresh neutral morning daylight, pale blue sky, natural shadows and light from the left"
         if ctx.uv_level in {"high", "extreme"}:
             cue += ", with crisp direct sunlight"
@@ -838,6 +848,11 @@ def _compact_time_cue(
 
 def _compact_weather_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
     diagnostics = scene.diagnostics
+    if diagnostics.get("fog_visual_rule"):
+        cue = "Dense humid coastal fog, reduced distant visibility, partially obscured horizon and hills"
+        if diagnostics.get("wet_rule"):
+            cue += ", with factual rain and wet coastal surfaces"
+        return cue
     if diagnostics.get("wet_rule"):
         return "Layered Mediterranean rain clouds with factual rain and wet coastal surfaces"
     if diagnostics.get("dust_rule"):
@@ -887,7 +902,8 @@ def _compact_wind_sea_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
 
 def _compact_finish_cue(ctx: VisualContextCY) -> str:
     cue = "Natural Mediterranean colors, realistic atmospheric perspective and restrained editorial weather photography, with palms optional as background accents"
-    if ctx.temp_max is not None and ctx.temp_max >= 33:
+    fog_visual = ctx.post_type == "morning" and ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}
+    if ctx.temp_max is not None and ctx.temp_max >= 33 and not fog_visual:
         cue += " and subtle heat shimmer over sun-warmed stone"
     return cue
 
@@ -904,13 +920,8 @@ def _negative_items(
         "no illustration or fantasy",
     ]
     if _bay_visuals_disabled():
-        items.extend(
-            [
-                "no scenic curved bay",
-                "no natural cove",
-                "no enclosed tourist lagoon",
-                "no elevated postcard coastline",
-            ]
+        items.append(
+            "no scenic curved bay, no natural cove, no enclosed tourist lagoon, no elevated postcard coastline"
         )
     elif metadata["selected_scene"] == "small_harbour":
         items.append("no scenic curved tourist bay")
@@ -922,6 +933,12 @@ def _negative_items(
                 "no bright light source on the right",
             ]
         )
+        if scene.diagnostics.get("fog_visual_rule"):
+            items.append(
+                "no crisp distant mountains, no perfectly clear horizon, no sharp postcard visibility"
+            )
+            if scene.diagnostics.get("dust_vs_fog_classification") != "mixed_humid_haze_and_pollution":
+                items.append("no dry dust-colored sky unless dust evidence exists")
     elif moon_context.get("kind"):
         items.append("natural moon scale, no oversized moon and no fantasy planet")
         if moon_context.get("kind") == "near_full":
@@ -1014,6 +1031,20 @@ def _visual_cache_metadata(
         "weather_scenario": str(ctx.weather_main),
         "wind_gust_category": _wind_category(ctx),
         "cloud_haze_category": _cloud_haze_category(ctx),
+        "current_visibility_m": str(ctx.visibility_m or ""),
+        "morning_min_visibility_m": str(ctx.morning_min_visibility_m or ""),
+        "humidity_pct": "",
+        "dew_point_c": str(ctx.dew_point_c or ""),
+        "dew_point_spread_c": str(ctx.dew_point_spread_c or ""),
+        "weather_code": "",
+        "visibility_condition": str(ctx.visibility_condition),
+        "visibility_evidence": str(ctx.visibility_evidence or ""),
+        "fog_text_added": str(bool(ctx.visibility_evidence)).lower(),
+        "fog_visual_rule": str(
+            post_type == "morning"
+            and ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}
+        ).lower(),
+        "dust_vs_fog_classification": str(ctx.dust_vs_fog_classification),
         "lunar_phase": lunar_phase,
         "lunar_illumination": lunar_illumination,
         "variation_attempt": str(variation_attempt),
@@ -1033,6 +1064,8 @@ def _visual_cache_metadata(
         "weather_scenario",
         "wind_gust_category",
         "cloud_haze_category",
+        "visibility_condition",
+        "dust_vs_fog_classification",
         "lunar_phase",
         "lunar_illumination",
         "variation_attempt",

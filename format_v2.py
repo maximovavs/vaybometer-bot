@@ -996,9 +996,10 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     temp_note = _temperature_note(greeting)
     warning = _storm_line(lines)
     weather_line = _legacy_wind_pressure_line(lines) or _source_wind_pressure_line(date_s)
+    visibility = _morning_pick(lines, ("🌫 Видимость:",))
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌇",))
-    air = _air_lines(lines) or _morning_pick(lines, ("🏭", "🏙", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
+    air = _air_lines(lines) or _morning_pick(lines, ("🏭", "🏙", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️"))
     poor_air = _air_is_poor(air)
     radiation = _critical_safecast_cy_line(lines) or _safecast_private_sensor_line()
     quakes = _morning_pick(lines, ("🌍 Сейсмика",))
@@ -1013,6 +1014,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(temp_note)
     if weather_line:
         out.append(weather_line)
+    for line in visibility:
+        if line not in out:
+            out.append(line)
     if warning:
         out.append("⚠️ " + _compact_warning(warning))
     if uv:
@@ -1066,6 +1070,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     score = _polish_evening_score(score, flags)
     nuance = _evening_nuance(flags, bool(sea), bool(inland))
     confidence = _evening_confidence_line(flags)
+    visibility = _morning_pick(lines, ("🌫 Видимость:",))
 
     title_date = f" ({date_s})" if date_s else ""
     out: list[str] = [f"<b>🌅 Кипр завтра{title_date}</b>"]
@@ -1077,6 +1082,9 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(nuance)
     if confidence:
         out.append(confidence)
+    for line in visibility:
+        if line not in out:
+            out.append(line)
     out.append("")
 
     if storm:

@@ -23,7 +23,14 @@ import pendulum
 from telegram import Bot, constants
 
 from utils        import compass, get_fact, kmh_to_ms, smoke_index
-from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
+from weather      import (
+    build_cyprus_visibility_line,
+    day_night_stats,
+    fetch_tomorrow_temps,
+    get_cyprus_visibility_context,
+    get_weather,
+    save_cyprus_visibility_diagnostics,
+)
 from air          import get_air, get_air_for_cities, get_sst, get_solar_wind
 from pollen       import get_pollen
 from radiation    import get_radiation
@@ -2111,6 +2118,22 @@ def build_message(
 
         if storm_region.get("warning"):
             P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
+        air_now = get_air(CY_LAT, CY_LON) or {}
+        visibility_context = get_cyprus_visibility_context(
+            wm_region,
+            post_type="morning",
+            target_date=today.date(),
+            tz=tz_obj.name,
+            air_data=air_now,
+        )
+        visibility_line = build_cyprus_visibility_line(visibility_context, post_type="morning")
+        if visibility_line:
+            P.append(visibility_line)
+        save_cyprus_visibility_diagnostics(
+            visibility_context,
+            post_type="morning",
+            fog_text_added=bool(visibility_line),
+        )
         # UV предупреждение (только при UV >= 6)
         uv_line = _uv_warning_line_for_morning(wm_region, tz_obj)
         if uv_line:
@@ -2127,9 +2150,6 @@ def build_message(
             by_city = _air_by_city_line(sea_pairs + other_pairs)
             if by_city:
                 P.append(by_city)
-            air_now = get_air(CY_LAT, CY_LON) or {}
-        else:
-            air_now = get_air(CY_LAT, CY_LON) or {}
         quake_line = _cyprus_quake_line_for_morning()
         if quake_line and quake_line not in P:
             P.append(quake_line)
@@ -2239,6 +2259,22 @@ def build_message(
         if bad_air and tip:
             P.append(tip)
         P.append("———")
+
+    visibility_context = get_cyprus_visibility_context(
+        wm_region,
+        post_type="evening",
+        target_date=tom.date(),
+        tz=tz_obj.name,
+        air_data=air_now,
+    )
+    visibility_line = build_cyprus_visibility_line(visibility_context, post_type="evening")
+    if visibility_line:
+        P.append(visibility_line)
+    save_cyprus_visibility_diagnostics(
+        visibility_context,
+        post_type="evening",
+        fog_text_added=bool(visibility_line),
+    )
 
     la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
     sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)

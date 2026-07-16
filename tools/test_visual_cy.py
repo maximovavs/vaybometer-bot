@@ -1098,6 +1098,57 @@ def cy_prompt_evening_moon_context_is_not_forced_or_duplicated() -> None:
         _assert_compact_prompt_contract(lunar_prompt, lunar_meta)
 
 
+def cy_morning_dense_fog_overrides_hot_clear_visuals() -> None:
+    text = """
+    <b>🌅 Кипр сегодня (16.07.2026)</b>
+    Никосия: 36/25 °C • ясно
+    Лимассол: 33/26 °C • ясно • 🌊 Море 28°C
+    ☀️ УФ-индекс 10 — очень высокий.
+    🌫 Видимость: сильный утренний туман в Лимассоле — местами менее 320 м.
+    #Кипр #погода
+    """
+    ctx = parse_visual_context_cy(text, post_type="morning")
+    scene = apply_visual_rules_cy(ctx)
+    prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(text, post_type="morning")
+    low = prompt.lower()
+    assert ctx.visibility_condition == "dense_fog"
+    assert scene.diagnostics["fog_visual_rule"] is True
+    for cue in (
+        "dense humid coastal fog",
+        "reduced distant visibility",
+        "partially obscured horizon and hills",
+        "soft diffused",
+        "muted contrast",
+        "moist atmospheric depth",
+        "no crisp distant mountains",
+        "no perfectly clear horizon",
+        "no sharp postcard visibility",
+    ):
+        assert cue in low
+    assert "heat shimmer" not in low
+    assert "crisp direct sunlight" not in low
+    assert metadata["visibility_condition"] == "dense_fog"
+    assert metadata["fog_visual_rule"] == "true"
+    _assert_compact_prompt_contract(prompt, metadata)
+
+
+def cy_morning_mixed_haze_does_not_become_dry_dust_scene() -> None:
+    text = """
+    <b>🌅 Кипр сегодня (16.07.2026)</b>
+    Лимассол: 31/25 °C • облачно • 🌊 Море 27°C
+    🏭 Воздух: AQI 130 • PM₁₀ 65
+    🌫 Видимость: утром снижена, местами около 600 м; возможна смесь влажной дымки и загрязнения воздуха.
+    #Кипр #погода
+    """
+    ctx = parse_visual_context_cy(text, post_type="morning")
+    prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(text, post_type="morning")
+    assert ctx.visibility_condition == "fog"
+    assert ctx.dust_vs_fog_classification == "mixed_humid_haze_and_pollution"
+    assert "dense humid coastal fog" in prompt.lower()
+    assert "beige-gold atmospheric dust" not in prompt.lower()
+    _assert_compact_prompt_contract(prompt, metadata)
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -1149,6 +1200,8 @@ TESTS = [
     cy_prompt_scene_foundations_are_specific_and_compatible,
     cy_prompt_no_bay_mode_keeps_small_harbour_basin,
     cy_prompt_evening_moon_context_is_not_forced_or_duplicated,
+    cy_morning_dense_fog_overrides_hot_clear_visuals,
+    cy_morning_mixed_haze_does_not_become_dry_dust_scene,
 ]
 
 

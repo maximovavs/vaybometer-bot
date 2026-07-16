@@ -44,8 +44,11 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     inland_unsettled = bool(ctx.inland_precipitation or ctx.inland_thunder_risk) and ctx.coastal_focus and not rain
     severe_wind = bool(ctx.severe_wind)
     wet = rain
-    dusty = ctx.weather_main == "dusty" or bool(ctx.dust_hint)
-    visibility_haze = bool(ctx.visibility_haze) and not dusty
+    fog_visual = ctx.post_type == "morning" and ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}
+    dense_fog = ctx.visibility_condition == "dense_fog"
+    mixed_haze = ctx.dust_vs_fog_classification == "mixed_humid_haze_and_pollution"
+    dusty = (ctx.weather_main == "dusty" or bool(ctx.dust_hint)) and not fog_visual
+    visibility_haze = (bool(ctx.visibility_haze) or fog_visual) and not dusty
     windy = _is_windy(ctx)
 
     if ctx.coastal_focus:
@@ -55,7 +58,9 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     else:
         base_scene = "Cyprus Mediterranean coast with palms and local stone architecture"
 
-    if wet:
+    if fog_visual:
+        sky_cue = "dense humid coastal fog with a partially obscured Cyprus horizon and hills"
+    elif wet:
         sky_cue = "dramatic rain clouds over Cyprus"
     elif inland_unsettled:
         sky_cue = "warm Cyprus coast with distant inland cloud development and convective cloud build-up toward the Troodos mountains"
@@ -74,16 +79,18 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     else:
         sky_cue = "clear bright Mediterranean sky"
 
-    if ctx.post_type == "morning":
+    if ctx.post_type == "morning" and fog_visual:
+        light_cue = "soft diffused morning light with muted contrast and moist atmospheric depth"
+    elif ctx.post_type == "morning":
         light_cue = "daylight Mediterranean morning, bright practical light for the day ahead"
     else:
         light_cue = "Mediterranean evening with restrained twilight light and residual horizon glow"
 
-    if ctx.post_type == "morning" and ctx.uv_level in {"high", "extreme"}:
+    if ctx.post_type == "morning" and ctx.uv_level in {"high", "extreme"} and not fog_visual:
         light_cue += "; strong sun cue with crisp sunlit surfaces"
     if dusty:
         light_cue += "; muted filtered sun"
-    if hot:
+    if hot and not fog_visual:
         light_cue += "; visible heat shimmer"
 
     if wet:
@@ -122,13 +129,15 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         sea_cue = "Mediterranean sea present as quiet geographic context"
 
     air_parts: list[str] = []
-    if dusty:
+    if fog_visual:
+        air_parts.append("dense humid coastal fog with reduced distant visibility and moist atmospheric depth")
+    elif dusty:
         air_parts.append("hazy beige-gold air with suspended dust")
     elif visibility_haze:
         air_parts.append("soft humid atmospheric depth with reduced distant visibility")
     elif ctx.humidity_hint in {"high", "present"}:
         air_parts.append("soft sea haze from humid coastal air")
-    if hot:
+    if hot and not fog_visual:
         air_parts.append("dry hot air and heat shimmer")
     if ctx.aqi_level in {"poor", "very_poor"}:
         air_parts.append("reduced atmospheric clarity")
@@ -149,11 +158,15 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     else:
         activity_cue = "subtle everyday Cyprus life, not object-focused"
 
-    if ctx.post_type == "morning":
+    if ctx.post_type == "morning" and fog_visual:
+        mood_cue = "cautious practical morning mood until the coastal fog disperses"
+    elif ctx.post_type == "morning":
         mood_cue = "bright practical weather-for-the-day mood"
     else:
         mood_cue = "warm Mediterranean evening mood"
-    if wet:
+    if fog_visual:
+        mood_cue = "soft cautious Cyprus morning with reduced visibility and no all-day fog implication"
+    elif wet:
         mood_cue = "weather-alert, dramatic and practical; not a leisure beach scene"
     elif inland_unsettled:
         mood_cue = "warm coastal evening with practical awareness of inland weather changes"
@@ -204,13 +217,24 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
         )
         if ctx.gust_max is not None and ctx.gust_max >= 12:
             must_show.append("occasional small whitecaps, not storm-scale")
-    if dusty:
+    if fog_visual:
+        must_show.extend(
+            [
+                "dense humid coastal fog",
+                "reduced distant visibility",
+                "partially obscured horizon and hills",
+                "soft diffused morning light",
+                "muted contrast",
+                "moist atmospheric depth",
+            ]
+        )
+    elif dusty:
         must_show.append("hazy muted beige-gold atmosphere")
     elif visibility_haze:
         must_show.append("soft humid haze and reduced distant visibility")
-    if hot:
+    if hot and not fog_visual:
         must_show.append("heat shimmer")
-    if ctx.post_type == "morning" and ctx.uv_level in {"high", "extreme"}:
+    if ctx.post_type == "morning" and ctx.uv_level in {"high", "extreme"} and not fog_visual:
         must_show.append("strong sunlight cue")
 
     must_avoid = [
@@ -223,6 +247,16 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
     ]
     if ctx.post_type == "morning":
         must_avoid.extend(["sunset", "night", "moon-led scene"])
+    if fog_visual:
+        must_avoid.extend(
+            [
+                "crisp distant mountains",
+                "perfectly clear horizon",
+                "sharp postcard visibility",
+            ]
+        )
+        if not mixed_haze:
+            must_avoid.append("dry dust-colored sky unless dust evidence exists")
     if wet:
         must_avoid.extend(["beach leisure mood", "sunbathing", "carefree swimming scene"])
     elif inland_unsettled:
@@ -268,6 +302,11 @@ def apply_visual_rules_cy(ctx: VisualContextCY) -> SceneCuesCY:
             "severe_wind_rule": severe_wind,
             "dust_rule": dusty,
             "visibility_haze_rule": visibility_haze,
+            "visibility_condition": ctx.visibility_condition,
+            "visibility_evidence": ctx.visibility_evidence,
+            "fog_visual_rule": fog_visual,
+            "dense_fog_rule": dense_fog,
+            "dust_vs_fog_classification": ctx.dust_vs_fog_classification,
             "wind_rule": windy,
             "coastal_focus": ctx.coastal_focus,
             "inland_heat_focus": ctx.inland_heat_focus,

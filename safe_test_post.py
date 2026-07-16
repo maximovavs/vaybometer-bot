@@ -533,6 +533,23 @@ def _cyprus_best_window_line(v2_text: str) -> str:
     return ""
 
 
+def _cyprus_visibility_condition(v2_text: str) -> str:
+    low = _plain(v2_text).lower()
+    if "смесь влажной дымки и загрязнения" in low:
+        return "mixed"
+    if "пылевая дымка" in low:
+        return "dust_haze"
+    if "сильный утренний туман" in low or "сильный туман" in low:
+        return "dense_fog"
+    if "видимость:" in low and "туман" in low:
+        return "fog"
+    if "видимость:" in low and "влажная дымка" in low:
+        return "mist"
+    if "видимость:" in low and "снижен" in low:
+        return "reduced_visibility"
+    return "clear"
+
+
 def _cyprus_smart_plan_line(v2_text: str) -> str:
     c = _cyprus_conditions(v2_text)
     warm_t = c.get("warm_t")
@@ -541,6 +558,12 @@ def _cyprus_smart_plan_line(v2_text: str) -> str:
     hot = isinstance(warm_t, (int, float)) and warm_t >= 31
     high_uv = isinstance(uv, (int, float)) and uv >= 8
     windy = isinstance(gust, (int, float)) and gust >= 15
+    visibility_condition = _cyprus_visibility_condition(v2_text)
+
+    if visibility_condition in {"dense_fog", "fog"} and (hot or high_uv):
+        return "✅ План: утром снизить скорость и увеличить дистанцию; после прояснения — вода, SPF и тень."
+    if visibility_condition in {"dense_fog", "fog"}:
+        return "✅ План: утром снизить скорость и увеличить дистанцию; прогулку у моря перенести на время после прояснения."
 
     if hot and high_uv and windy:
         return "✅ План: дела и прогулка до 11:00; 11–16 — тень/помещение; SPF 50 и вода с собой; у моря — защищённые места."
@@ -575,6 +598,7 @@ def _cyprus_score_line(v2_text: str) -> str:
     gust = c.get("gust")
     wind = c.get("wind")
     aqi = c.get("aqi")
+    visibility_condition = _cyprus_visibility_condition(v2_text)
 
     score = 10.0
     reasons: list[str] = []
@@ -599,8 +623,23 @@ def _cyprus_score_line(v2_text: str) -> str:
             score -= 0.8; reasons.append("ветер у моря")
     elif isinstance(wind, (int, float)) and wind >= 6:
         score -= 0.5; reasons.append("ветер")
-    if isinstance(aqi, (int, float)) and aqi > 80:
-        score -= 0.8; reasons.append("воздух похуже")
+    air_penalty = 0.8 if isinstance(aqi, (int, float)) and aqi > 80 else 0.0
+    fog_penalty = {
+        "dense_fog": 0.7,
+        "fog": 0.5,
+        "mist": 0.3,
+        "reduced_visibility": 0.2,
+        "mixed": 0.5,
+    }.get(visibility_condition, 0.0)
+    if visibility_condition == "mixed":
+        score -= max(air_penalty, fog_penalty)
+        reasons.append("видимость и воздух хуже")
+    else:
+        if air_penalty:
+            score -= air_penalty; reasons.append("воздух похуже")
+        if fog_penalty:
+            score -= fog_penalty
+            reasons.append("утренний туман" if visibility_condition in {"dense_fog", "fog"} else "видимость снижена")
 
     score = max(1.0, min(10.0, score))
     label = _score_label(score)
@@ -907,6 +946,11 @@ def _cyprus_main_nuance(v2_text: str) -> str:
     mist = any(x in low for x in ("туман", "дымк"))
     rain = _has_cyprus_precip_risk(v2_text)
     troodos = "тродос" in low or "горы" in low
+    visibility_condition = _cyprus_visibility_condition(v2_text)
+    if visibility_condition in {"dense_fog", "fog"}:
+        return "⚠️ Главный нюанс: до рассеивания тумана осторожнее на дорогах и развязках."
+    if visibility_condition in {"mist", "reduced_visibility", "mixed"}:
+        return "⚠️ Главный нюанс: утром видимость снижена — на дорогах и развязках нужна дополнительная дистанция."
     if rain and wind and (heat or troodos):
         return "⚠️ Главный нюанс: осадки возможны локально, особенно в горах; у моря жарко и порывисто."
     if rain:
