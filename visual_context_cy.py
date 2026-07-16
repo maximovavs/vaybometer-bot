@@ -6,7 +6,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
+
+from visibility_context import (
+    VISIBILITY_CONDITIONS,
+    normalize_number,
+    normalize_visibility_m,
+    visibility_condition_from_text,
+)
 
 
 _CITY_ALIASES = {
@@ -98,10 +105,18 @@ class VisualContextCY:
     dust_hint: Optional[str] = None
     visibility_haze: bool = False
     visibility_condition: str = "clear"
-    visibility_m: Optional[float] = None
+    current_visibility_m: Optional[float] = None
     morning_min_visibility_m: Optional[float] = None
+    humidity_pct: Optional[float] = None
+    temperature_c: Optional[float] = None
     dew_point_c: Optional[float] = None
     dew_point_spread_c: Optional[float] = None
+    weather_code: Optional[int] = None
+    weather_code_source: Optional[str] = None
+    observation_time: Optional[str] = None
+    confidence: Optional[str] = None
+    classification_reason: Optional[str] = None
+    location_label: Optional[str] = None
     visibility_evidence: Optional[str] = None
     dust_vs_fog_classification: str = "clear"
     actual_precipitation: bool = False
@@ -116,6 +131,13 @@ class VisualContextCY:
     city_weather_lines: list[str] = field(default_factory=list)
     coastal_weather_lines: list[str] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def visibility_m(self) -> Optional[float]:
+        """Compatibility alias without fabricating either source measurement."""
+        if self.morning_min_visibility_m is not None:
+            return self.morning_min_visibility_m
+        return self.current_visibility_m
 
 
 def _plain_line(raw: str) -> str:
@@ -237,34 +259,59 @@ def _has_visibility_haze(line: str) -> bool:
     return bool(_HAZE_RE.search(str(line or ""))) and not _has_dust_signal(line)
 
 
-def _visibility_facts(lines: list[str]) -> tuple[str, Optional[float], str]:
+def _visibility_facts(lines: list[str]) -> dict[str, Any]:
     visibility_lines = [line for line in lines if line.startswith("🌫 Видимость:")]
     if not visibility_lines:
-        return "clear", None, "clear"
+        return {
+            "condition": "clear",
+            "evidence": None,
+            "reported_visibility_m": None,
+            "classification_reason": "no finalized visibility line",
+        }
     line = visibility_lines[0]
-    low = line.lower()
     match = _VISIBILITY_METERS_RE.search(line)
-    visibility_m = _number(match.group(1)) if match else None
-    mixed = "смесь влажной дымки и загрязнения" in low
-    if "пылевая дымка" in low:
-        return "dust_haze", visibility_m, "dust_haze"
-    if "сильный" in low and "туман" in low:
-        condition = "dense_fog"
-    elif visibility_m is not None and visibility_m <= 500:
-        condition = "dense_fog"
-    elif "туман" in low or (visibility_m is not None and visibility_m <= 1000):
-        condition = "fog"
-    elif "влажная дымка" in low:
-        condition = "mist"
-    else:
-        condition = "reduced_visibility"
-    classification = "mixed_humid_haze_and_pollution" if mixed else (
-        "humid_fog" if condition in {"dense_fog", "fog", "mist"} else "reduced_visibility"
-    )
-    return condition, visibility_m, classification
+    reported_visibility = normalize_visibility_m(match.group(1)) if match else None
+    return {
+        "condition": visibility_condition_from_text(line),
+        "evidence": line,
+        # The compact human line describes an effective/local minimum, not
+        # necessarily the current observation. Keep it diagnostic-only unless
+        # the sidecar metadata supplies the source-specific measurements.
+        "reported_visibility_m": reported_visibility,
+        "classification_reason": "parsed from finalized visibility line",
+    }
 
 
-def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> VisualContextCY:
+def _visibility_metadata_values(metadata: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    data = metadata if isinstance(metadata, Mapping) else {}
+    condition = str(data.get("condition") or data.get("visibility_condition") or "").strip()
+    return {
+        "condition": condition if condition in VISIBILITY_CONDITIONS else None,
+        "current_visibility_m": normalize_visibility_m(data.get("current_visibility_m")),
+        "morning_min_visibility_m": normalize_visibility_m(data.get("morning_min_visibility_m")),
+        "humidity_pct": normalize_number(data.get("humidity_pct"), non_negative=True),
+        "temperature_c": normalize_number(data.get("temperature_c")),
+        "dew_point_c": normalize_number(data.get("dew_point_c")),
+        "dew_point_spread_c": normalize_number(data.get("dew_point_spread_c"), non_negative=True),
+        "weather_code": (
+            int(value)
+            if (value := normalize_number(data.get("weather_code"), non_negative=True)) is not None
+            else None
+        ),
+        "weather_code_source": str(data.get("weather_code_source") or "").strip() or None,
+        "observation_time": str(data.get("observation_time") or "").strip() or None,
+        "confidence": str(data.get("confidence") or "").strip() or None,
+        "classification_reason": str(data.get("classification_reason") or "").strip() or None,
+        "location_label": str(data.get("location_label") or "").strip() or None,
+        "evidence_source": str(data.get("evidence_source") or "").strip() or None,
+    }
+
+
+def parse_visual_context_cy(
+    text: str,
+    post_type: Optional[str] = None,
+    visibility_metadata: Optional[Mapping[str, Any]] = None,
+) -> VisualContextCY:
     """Parse finalized Cyprus FORMAT_V2 text without network or model calls."""
     if not isinstance(text, str):
         raise TypeError("text must be a string")
@@ -311,7 +358,11 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
     weather_hits: set[str] = set()
     nicosia_hot = False
     troodos_relevant = False
-    visibility_condition, visibility_m, dust_vs_fog_classification = _visibility_facts(lines)
+    visibility_facts = _visibility_facts(lines)
+    visibility_metadata_values = _visibility_metadata_values(visibility_metadata)
+    visibility_condition = (
+        visibility_metadata_values["condition"] or visibility_facts["condition"]
+    )
 
     for line in lines:
         low = line.lower()
@@ -523,10 +574,26 @@ def parse_visual_context_cy(text: str, post_type: Optional[str] = None) -> Visua
         dust_hint="; ".join(dust_lines) if dust_lines else None,
         visibility_haze=bool(haze_lines),
         visibility_condition=visibility_condition,
-        visibility_m=visibility_m,
-        morning_min_visibility_m=visibility_m,
-        visibility_evidence="; ".join(evidence["visibility_lines"]) or None,
-        dust_vs_fog_classification=dust_vs_fog_classification,
+        current_visibility_m=visibility_metadata_values["current_visibility_m"],
+        morning_min_visibility_m=visibility_metadata_values["morning_min_visibility_m"],
+        humidity_pct=visibility_metadata_values["humidity_pct"],
+        temperature_c=visibility_metadata_values["temperature_c"],
+        dew_point_c=visibility_metadata_values["dew_point_c"],
+        dew_point_spread_c=visibility_metadata_values["dew_point_spread_c"],
+        weather_code=visibility_metadata_values["weather_code"],
+        weather_code_source=visibility_metadata_values["weather_code_source"],
+        observation_time=visibility_metadata_values["observation_time"],
+        confidence=visibility_metadata_values["confidence"],
+        classification_reason=(
+            visibility_metadata_values["classification_reason"]
+            or visibility_facts["classification_reason"]
+        ),
+        location_label=visibility_metadata_values["location_label"],
+        visibility_evidence=(
+            visibility_metadata_values["evidence_source"]
+            or visibility_facts["evidence"]
+        ),
+        dust_vs_fog_classification=visibility_condition,
         actual_precipitation=actual_precipitation,
         coastal_precipitation=coastal_precipitation,
         inland_precipitation=inland_precipitation,

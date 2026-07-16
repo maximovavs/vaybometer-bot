@@ -2265,7 +2265,8 @@ def build_message(
         post_type="evening",
         target_date=tom.date(),
         tz=tz_obj.name,
-        air_data=air_now,
+        # Today's observed AQI is not evidence for tomorrow morning.
+        air_data=None,
     )
     visibility_line = build_cyprus_visibility_line(visibility_context, post_type="evening")
     if visibility_line:

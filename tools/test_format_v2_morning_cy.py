@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -58,17 +59,22 @@ from safe_test_post import (  # noqa: E402
     is_valid_cy_text_receipt,
     finalize_hashtags_at_end,
     _cyprus_main_nuance,
+    _cyprus_evening_score_line,
     _cyprus_score_line,
     _cyprus_smart_plan_line,
     _inject_morning_score,
     _inject_morning_smart_plan,
     _insert_main_nuance,
 )
-from weather import (  # noqa: E402
+from visibility_context import (  # noqa: E402
     build_cyprus_visibility_line,
+    classify_visibility_values,
+    dew_point_spread_c,
     get_cyprus_visibility_context,
-    save_cyprus_visibility_diagnostics,
+    normalize_visibility_m,
+    visibility_air_penalty,
 )
+from weather import save_cyprus_visibility_diagnostics  # noqa: E402
 
 
 MORNING_WITH_SEA = """<b>Кипр: погода, море, бури, Луна (27.06.2026)</b>
@@ -1713,29 +1719,70 @@ def _visibility_payload(
 
 
 def cy_visibility_thresholds_and_dust_classification_are_stable() -> None:
-    dense = get_cyprus_visibility_context(_visibility_payload(320), target_date="2026-07-16")
-    fog = get_cyprus_visibility_context(_visibility_payload(900, weather_code=3), target_date="2026-07-16")
-    mist = get_cyprus_visibility_context(_visibility_payload(2200, weather_code=3), target_date="2026-07-16")
+    dense = get_cyprus_visibility_context(_visibility_payload(300), target_date="2026-07-16")
+    dry_low = get_cyprus_visibility_context(
+        _visibility_payload(300, humidity=40, dew_point=16, weather_code=0),
+        target_date="2026-07-16",
+        air_data={"pm10": 90},
+    )
+    fog = get_cyprus_visibility_context(
+        _visibility_payload(900, humidity=94, weather_code=0),
+        target_date="2026-07-16",
+    )
+    dry_reduced = get_cyprus_visibility_context(
+        _visibility_payload(900, humidity=40, dew_point=16, weather_code=0),
+        target_date="2026-07-16",
+        air_data={"aqi": 20, "pm10": 10},
+    )
+    mist = get_cyprus_visibility_context(
+        _visibility_payload(2200, humidity=91, weather_code=0),
+        target_date="2026-07-16",
+    )
     clear = get_cyprus_visibility_context(_visibility_payload(8000, humidity=60, dew_point=16, weather_code=0), target_date="2026-07-16")
     mixed = get_cyprus_visibility_context(
-        _visibility_payload(600),
+        _visibility_payload(600, humidity=96, weather_code=0),
         target_date="2026-07-16",
-        air_data={"aqi": 130, "pm10": 65},
+        air_data={"aqi": 130},
     )
     dust = get_cyprus_visibility_context(
-        _visibility_payload(2500, humidity=55, dew_point=14, weather_code=3),
+        _visibility_payload(4000, humidity=40, dew_point=16, weather_code=0),
         target_date="2026-07-16",
-        air_data={"aqi": 125, "pm10": 90},
+        air_data={"pm10": 90},
     )
     assert dense.condition == "dense_fog"
+    assert dry_low.condition == "dust_haze"
+    assert dry_low.condition != "dense_fog"
     assert fog.condition == "fog"
+    assert dry_reduced.condition == "reduced_visibility"
+    assert dry_reduced.condition != "fog"
     assert mist.condition == "mist"
     assert clear.condition == "clear"
     assert build_cyprus_visibility_line(clear) is None
-    assert mixed.dust_vs_fog_classification == "mixed_humid_haze_and_pollution"
+    assert mixed.condition == "mixed_visibility"
     assert "смесь влажной дымки и загрязнения воздуха" in (build_cyprus_visibility_line(mixed) or "")
     assert dust.condition == "dust_haze"
-    assert dust.dust_vs_fog_classification == "dust_haze"
+
+
+def cy_visibility_number_normalization_and_uneven_hourly_arrays_are_safe() -> None:
+    for invalid in (-1, "-0.1", "", "bad", float("nan"), float("inf"), float("-inf")):
+        assert normalize_visibility_m(invalid) is None
+    assert dew_point_spread_c(20.0, 20.2) == 0.0
+
+    uneven = _visibility_payload(300, weather_code=0)
+    uneven["hourly"]["visibility"] = [300]
+    uneven["hourly"]["relative_humidity_2m"] = []
+    uneven["hourly"]["dew_point_2m"] = [float("nan")]
+    uneven["hourly"]["weather_code"] = []
+    context = get_cyprus_visibility_context(uneven, target_date="2026-07-16")
+    assert context.condition == "reduced_visibility"
+
+    assert classify_visibility_values(
+        visibility_m=300,
+        humidity_pct=40,
+        temperature_c=24,
+        dew_point_c=16,
+        weather_code=0,
+    )[0] == "reduced_visibility"
 
 
 def cy_visibility_wmo_fog_and_weather_request_fallback_are_safe() -> None:
@@ -1744,14 +1791,19 @@ def cy_visibility_wmo_fog_and_weather_request_fallback_are_safe() -> None:
     payload["current"]["weather_code"] = 45
     payload["hourly"]["visibility"] = []
     context = get_cyprus_visibility_context(payload, target_date="2026-07-16")
-    assert context.condition == "dense_fog"
+    assert context.condition == "fog"
+    assert context.condition != "dense_fog"
+    line = build_cyprus_visibility_line(context)
+    assert line and not re.search(r"\d+\s*м\b", line)
     unavailable = get_cyprus_visibility_context({}, target_date="2026-07-16")
     assert unavailable.condition == "clear"
     assert build_cyprus_visibility_line(unavailable) is None
     rich_url = weather_module._build_url(34.707, 33.022, "Asia/Nicosia", weather_module.ATTEMPTS[0])
     minimal_url = weather_module._build_url(34.707, 33.022, "Asia/Nicosia", weather_module.ATTEMPTS[2])
+    compatibility_url = weather_module._build_url(34.707, 33.022, "Asia/Nicosia", weather_module.ATTEMPTS[3])
     assert "visibility" in rich_url and "dew_point_2m" in rich_url
-    assert "visibility" not in minimal_url and "dew_point_2m" not in minimal_url
+    assert "visibility" in minimal_url and "dew_point_2m" in minimal_url
+    assert "visibility" in compatibility_url and "dew_point_2m" in compatibility_url
 
     old_dir = os.environ.get("CY_VISIBILITY_DIAGNOSTICS_DIR")
     with tempfile.TemporaryDirectory() as tmp:
@@ -1765,14 +1817,25 @@ def cy_visibility_wmo_fog_and_weather_request_fallback_are_safe() -> None:
             else:
                 os.environ["CY_VISIBILITY_DIAGNOSTICS_DIR"] = old_dir
     required = {
+        "condition",
+        "confidence",
         "current_visibility_m",
         "morning_min_visibility_m",
         "humidity_pct",
+        "temperature_c",
         "dew_point_c",
         "dew_point_spread_c",
         "weather_code",
-        "visibility_condition",
-        "visibility_evidence",
+        "weather_code_source",
+        "aqi",
+        "pm25",
+        "pm10",
+        "evidence_source",
+        "observation_time",
+        "target_date",
+        "location_label",
+        "classification_reason",
+        "score_penalty",
         "fog_text_added",
         "fog_visual_rule",
         "dust_vs_fog_classification",
@@ -1790,7 +1853,9 @@ def cy_morning_fog_survives_format_and_changes_score_nuance_plan() -> None:
     assert formatted.index("💨 Ветер") < formatted.index("🌫 Видимость:") < formatted.index("☀️ УФ")
     clear_score = _cyprus_score_line(build_morning_format_v2("Кипр", MORNING_WITH_SEA))
     fog_score = _cyprus_score_line(formatted)
-    assert float(fog_score.split(":", 1)[1].split("/", 1)[0].strip()) < float(clear_score.split(":", 1)[1].split("/", 1)[0].strip())
+    clear_value = float(clear_score.split(":", 1)[1].split("/", 1)[0].strip())
+    fog_value = float(fog_score.split(":", 1)[1].split("/", 1)[0].strip())
+    assert round(clear_value - fog_value, 1) == 0.5
     assert _cyprus_main_nuance(formatted) == "⚠️ Главный нюанс: до рассеивания тумана осторожнее на дорогах и развязках."
     assert _cyprus_smart_plan_line(formatted) == "✅ План: утром снизить скорость и увеличить дистанцию; после прояснения — вода, SPF и тень."
 
@@ -1807,6 +1872,34 @@ def cy_morning_fog_survives_format_and_changes_score_nuance_plan() -> None:
         high_air_legacy.replace("☀️ <b>УФ-индекс", (mixed_line or "") + "\n☀️ <b>УФ-индекс"),
     )
     assert _cyprus_score_line(mixed_air).split("/10", 1)[0] == _cyprus_score_line(high_air).split("/10", 1)[0]
+    assert visibility_air_penalty("fog", 0.0) == 0.5
+    assert visibility_air_penalty("mist", 0.0) == 0.2
+    assert visibility_air_penalty("mixed_visibility", 0.8) == 0.8
+    assert visibility_air_penalty("dust_haze", 0.8) == 0.8
+
+
+def cy_evening_does_not_use_current_aqi_for_tomorrow_visibility() -> None:
+    tomorrow_weather = _visibility_payload(
+        4000,
+        humidity=40,
+        temperature=24,
+        dew_point=16,
+        weather_code=0,
+    )
+    without_forecast_air = get_cyprus_visibility_context(
+        tomorrow_weather,
+        post_type="evening",
+        target_date="2026-07-16",
+        air_data=None,
+    )
+    with_today_air_incorrectly_reused = get_cyprus_visibility_context(
+        tomorrow_weather,
+        post_type="evening",
+        target_date="2026-07-16",
+        air_data={"aqi": 150},
+    )
+    assert without_forecast_air.condition == "reduced_visibility"
+    assert with_today_air_incorrectly_reused.condition == "dust_haze"
 
 
 def cy_evening_preserves_only_tomorrow_morning_visibility() -> None:
@@ -1831,6 +1924,11 @@ def cy_evening_preserves_only_tomorrow_morning_visibility() -> None:
     formatted = build_format_v2("Кипр", "evening", legacy)
     assert line in formatted
     assert "туман весь день" not in formatted.lower()
+    clear_score = _cyprus_evening_score_line(legacy.replace(line, ""))
+    fog_score = _cyprus_evening_score_line(legacy)
+    clear_value = float(clear_score.split(":", 1)[1].split("/", 1)[0].strip())
+    fog_value = float(fog_score.split(":", 1)[1].split("/", 1)[0].strip())
+    assert round(clear_value - fog_value, 1) == 0.5
 
 
 def cy_morning_safe_production_polish_keeps_fog_actions() -> None:
@@ -1904,8 +2002,10 @@ def main() -> None:
         cy_image_liveness_prefers_eligible_scene_when_available,
         cy_image_liveness_all_recent_compositions_lru_reaches_backend,
         cy_visibility_thresholds_and_dust_classification_are_stable,
+        cy_visibility_number_normalization_and_uneven_hourly_arrays_are_safe,
         cy_visibility_wmo_fog_and_weather_request_fallback_are_safe,
         cy_morning_fog_survives_format_and_changes_score_nuance_plan,
+        cy_evening_does_not_use_current_aqi_for_tomorrow_visibility,
         cy_evening_preserves_only_tomorrow_morning_visibility,
         cy_morning_safe_production_polish_keeps_fog_actions,
     )

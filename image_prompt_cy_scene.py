@@ -8,13 +8,14 @@ import hashlib
 import os
 import re
 from datetime import date, timedelta
+from typing import Any, Mapping
 from urllib.parse import quote_plus
 
 from visual_context_cy import VisualContextCY, parse_visual_context_cy
 from visual_rules_cy import SceneCuesCY, apply_visual_rules_cy
 
 
-CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v6"
+CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v7"
 
 _PROMPT_TARGET_MIN_CHARS = 450
 _PROMPT_TARGET_MAX_CHARS = 900
@@ -325,9 +326,14 @@ def build_visual_context_cy(
     final_format_v2_message: str,
     *,
     post_type: str = "evening",
+    visibility_metadata: Mapping[str, Any] | None = None,
 ) -> VisualContextCY:
     """Compatibility-named deterministic context step for the scene pipeline."""
-    return parse_visual_context_cy(final_format_v2_message, post_type=post_type)
+    return parse_visual_context_cy(
+        final_format_v2_message,
+        post_type=post_type,
+        visibility_metadata=visibility_metadata,
+    )
 
 
 def _extract_date_key(text: str) -> str:
@@ -828,8 +834,18 @@ def _compact_time_cue(
     ctx: VisualContextCY,
 ) -> str:
     if post_type == "morning":
-        if ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}:
+        if ctx.visibility_condition == "dense_fog":
             return "Early morning daylight filtered through humid coastal fog, soft diffused neutral light, muted contrast and moist atmospheric depth"
+        if ctx.visibility_condition == "fog":
+            return "Early morning daylight diffused through humid coastal fog with a softly obscured horizon"
+        if ctx.visibility_condition == "mist":
+            return "Fresh early morning daylight through light humid mist with gentle atmospheric depth"
+        if ctx.visibility_condition == "reduced_visibility":
+            return "Neutral early morning daylight with softened distant clarity and restrained contrast"
+        if ctx.visibility_condition == "dust_haze":
+            return "Neutral early morning daylight filtered by dry suspended particles"
+        if ctx.visibility_condition == "mixed_visibility":
+            return "Soft neutral early morning daylight through a muted grey mixed atmosphere"
         cue = "Fresh neutral morning daylight, pale blue sky, natural shadows and light from the left"
         if ctx.uv_level in {"high", "extreme"}:
             cue += ", with crisp direct sunlight"
@@ -848,8 +864,16 @@ def _compact_time_cue(
 
 def _compact_weather_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
     diagnostics = scene.diagnostics
-    if diagnostics.get("fog_visual_rule"):
-        cue = "Dense humid coastal fog, reduced distant visibility, partially obscured horizon and hills"
+    visibility_cues = {
+        "dense_fog": "Dense humid fog, heavily reduced distant visibility, partially obscured horizon, soft diffused light, muted contrast, moist atmospheric depth",
+        "fog": "Humid coastal fog, reduced distant visibility, softened horizon, diffused light",
+        "mist": "Humid morning mist, softened distant clarity, gentle atmospheric depth",
+        "reduced_visibility": "Reduced distant clarity, softened horizon, restrained contrast",
+        "dust_haze": "Muted beige-grey dry atmospheric haze, dry suspended particles, reduced clarity, no humid fog cues",
+        "mixed_visibility": "Muted grey atmospheric haze, reduced distant clarity, restrained humid softness, restrained polluted-air haze, no exaggerated Sahara palette",
+    }
+    if diagnostics.get("visibility_visual_rule") and ctx.visibility_condition in visibility_cues:
+        cue = visibility_cues[ctx.visibility_condition]
         if diagnostics.get("wet_rule"):
             cue += ", with factual rain and wet coastal surfaces"
         return cue
@@ -902,8 +926,11 @@ def _compact_wind_sea_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
 
 def _compact_finish_cue(ctx: VisualContextCY) -> str:
     cue = "Natural Mediterranean colors, realistic atmospheric perspective and restrained editorial weather photography, with palms optional as background accents"
-    fog_visual = ctx.post_type == "morning" and ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}
-    if ctx.temp_max is not None and ctx.temp_max >= 33 and not fog_visual:
+    suppress_heat_shimmer = (
+        ctx.post_type == "morning"
+        and ctx.visibility_condition in {"dense_fog", "fog", "mist", "mixed_visibility"}
+    )
+    if ctx.temp_max is not None and ctx.temp_max >= 33 and not suppress_heat_shimmer:
         cue += " and subtle heat shimmer over sun-warmed stone"
     return cue
 
@@ -933,12 +960,18 @@ def _negative_items(
                 "no bright light source on the right",
             ]
         )
-        if scene.diagnostics.get("fog_visual_rule"):
+        visibility_condition = str(scene.diagnostics.get("visibility_condition") or "clear")
+        if visibility_condition in {"dense_fog", "fog", "mist"}:
             items.append(
-                "no crisp distant mountains, no perfectly clear horizon, no sharp postcard visibility"
+                "no crisp distant horizon, no perfectly clear horizon, no sharp postcard visibility, no completely transparent air"
             )
-            if scene.diagnostics.get("dust_vs_fog_classification") != "mixed_humid_haze_and_pollution":
-                items.append("no dry dust-colored sky unless dust evidence exists")
+            items.append("no dry dust-colored sky unless dust evidence exists")
+        elif visibility_condition == "reduced_visibility":
+            items.append("no invented humid fog or wet atmosphere")
+        elif visibility_condition == "dust_haze":
+            items.append("no humid coastal fog or moist fog depth")
+        elif visibility_condition == "mixed_visibility":
+            items.append("no dense wall of fog and no exaggerated Sahara palette")
     elif moon_context.get("kind"):
         items.append("natural moon scale, no oversized moon and no fantasy planet")
         if moon_context.get("kind") == "near_full":
@@ -965,7 +998,7 @@ def _fit_prompt_budget(positive: list[str], negative: list[str]) -> tuple[str, l
         prompt = _compose_prompt(positive, negative)
     if len(prompt) > _PROMPT_TARGET_MAX_CHARS:
         positive[5] = "Coherent scene-specific composition"
-        positive[-1] = "Natural Mediterranean colors and realistic detail"
+        positive[-1] = "Natural colors and realistic detail"
         prompt = _compose_prompt(positive, negative)
     if len(prompt) > _PROMPT_HARD_MAX_CHARS:
         raise ValueError("Cyprus visual prompt exceeds the hard length limit")
@@ -988,7 +1021,7 @@ def _visual_cache_metadata(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
-) -> dict[str, str]:
+) -> dict[str, object]:
     forecast_date = _extract_date_key(message)
     if ctx.inland_heat_focus and not ctx.coastal_focus:
         seed = _variant_seed(message, ctx, post_type)
@@ -1031,18 +1064,24 @@ def _visual_cache_metadata(
         "weather_scenario": str(ctx.weather_main),
         "wind_gust_category": _wind_category(ctx),
         "cloud_haze_category": _cloud_haze_category(ctx),
-        "current_visibility_m": str(ctx.visibility_m or ""),
-        "morning_min_visibility_m": str(ctx.morning_min_visibility_m or ""),
-        "humidity_pct": "",
-        "dew_point_c": str(ctx.dew_point_c or ""),
-        "dew_point_spread_c": str(ctx.dew_point_spread_c or ""),
-        "weather_code": "",
+        "current_visibility_m": ctx.current_visibility_m,
+        "morning_min_visibility_m": ctx.morning_min_visibility_m,
+        "humidity_pct": ctx.humidity_pct,
+        "temperature_c": ctx.temperature_c,
+        "dew_point_c": ctx.dew_point_c,
+        "dew_point_spread_c": ctx.dew_point_spread_c,
+        "weather_code": ctx.weather_code,
+        "weather_code_source": ctx.weather_code_source,
+        "observation_time": ctx.observation_time,
+        "confidence": ctx.confidence,
         "visibility_condition": str(ctx.visibility_condition),
-        "visibility_evidence": str(ctx.visibility_evidence or ""),
+        "visibility_evidence": ctx.visibility_evidence,
+        "classification_reason": ctx.classification_reason,
+        "location_label": ctx.location_label,
         "fog_text_added": str(bool(ctx.visibility_evidence)).lower(),
         "fog_visual_rule": str(
             post_type == "morning"
-            and ctx.visibility_condition in {"dense_fog", "fog", "mist", "reduced_visibility"}
+            and ctx.visibility_condition in {"dense_fog", "fog", "mist"}
         ).lower(),
         "dust_vs_fog_classification": str(ctx.dust_vs_fog_classification),
         "lunar_phase": lunar_phase,
@@ -1083,11 +1122,16 @@ def build_cyprus_visual_cache_key(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
+    visibility_metadata: Mapping[str, Any] | None = None,
 ) -> str:
     mode = post_type.strip().lower()
     if mode not in {"morning", "evening"}:
         raise ValueError("post_type must be 'morning' or 'evening'")
-    ctx = build_visual_context_cy(final_format_v2_message, post_type=mode)
+    ctx = build_visual_context_cy(
+        final_format_v2_message,
+        post_type=mode,
+        visibility_metadata=visibility_metadata,
+    )
     return _visual_cache_metadata(
         final_format_v2_message,
         ctx,
@@ -1107,13 +1151,18 @@ def build_cyprus_scene_prompt_with_metadata(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
+    visibility_metadata: Mapping[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, object]]:
     """Return a sanitized Cyprus prompt, stable style name, and visual cache metadata."""
     mode = post_type.strip().lower()
     if mode not in {"morning", "evening"}:
         raise ValueError("post_type must be 'morning' or 'evening'")
 
-    ctx = build_visual_context_cy(final_format_v2_message, post_type=mode)
+    ctx = build_visual_context_cy(
+        final_format_v2_message,
+        post_type=mode,
+        visibility_metadata=visibility_metadata,
+    )
     scene = apply_visual_rules_cy(ctx)
     moon_context = _evening_moon_visual_context(final_format_v2_message) if mode == "evening" else {}
     metadata = _visual_cache_metadata(
@@ -1167,6 +1216,7 @@ def build_cyprus_scene_prompt(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
+    visibility_metadata: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Return a sanitized positive Cyprus landscape prompt and stable style name."""
     prompt, style_name, _metadata = build_cyprus_scene_prompt_with_metadata(
@@ -1176,6 +1226,7 @@ def build_cyprus_scene_prompt(
         blocked_scenes=blocked_scenes,
         blocked_compositions=blocked_compositions,
         blocked_archetypes=blocked_archetypes,
+        visibility_metadata=visibility_metadata,
     )
     return prompt, style_name
 

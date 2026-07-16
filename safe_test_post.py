@@ -27,6 +27,7 @@ except Exception:  # pragma: no cover - local lightweight telegram module fallba
 from editorial_voice import build_evening_human_line, build_morning_human_line
 from post_common import build_message
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
+from visibility_context import visibility_air_penalty, visibility_condition_from_text, visibility_penalty
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -534,20 +535,7 @@ def _cyprus_best_window_line(v2_text: str) -> str:
 
 
 def _cyprus_visibility_condition(v2_text: str) -> str:
-    low = _plain(v2_text).lower()
-    if "смесь влажной дымки и загрязнения" in low:
-        return "mixed"
-    if "пылевая дымка" in low:
-        return "dust_haze"
-    if "сильный утренний туман" in low or "сильный туман" in low:
-        return "dense_fog"
-    if "видимость:" in low and "туман" in low:
-        return "fog"
-    if "видимость:" in low and "влажная дымка" in low:
-        return "mist"
-    if "видимость:" in low and "снижен" in low:
-        return "reduced_visibility"
-    return "clear"
+    return visibility_condition_from_text(_plain(v2_text))
 
 
 def _cyprus_smart_plan_line(v2_text: str) -> str:
@@ -624,22 +612,17 @@ def _cyprus_score_line(v2_text: str) -> str:
     elif isinstance(wind, (int, float)) and wind >= 6:
         score -= 0.5; reasons.append("ветер")
     air_penalty = 0.8 if isinstance(aqi, (int, float)) and aqi > 80 else 0.0
-    fog_penalty = {
-        "dense_fog": 0.7,
-        "fog": 0.5,
-        "mist": 0.3,
-        "reduced_visibility": 0.2,
-        "mixed": 0.5,
-    }.get(visibility_condition, 0.0)
-    if visibility_condition == "mixed":
-        score -= max(air_penalty, fog_penalty)
+    atmospheric_penalty = visibility_air_penalty(visibility_condition, air_penalty)
+    if atmospheric_penalty:
+        score -= atmospheric_penalty
+    if visibility_condition == "mixed_visibility" or (air_penalty and visibility_penalty(visibility_condition)):
         reasons.append("видимость и воздух хуже")
-    else:
-        if air_penalty:
-            score -= air_penalty; reasons.append("воздух похуже")
-        if fog_penalty:
-            score -= fog_penalty
-            reasons.append("утренний туман" if visibility_condition in {"dense_fog", "fog"} else "видимость снижена")
+    elif air_penalty:
+        reasons.append("воздух похуже")
+    elif visibility_condition in {"dense_fog", "fog"}:
+        reasons.append("утренний туман")
+    elif visibility_condition != "clear":
+        reasons.append("видимость снижена")
 
     score = max(1.0, min(10.0, score))
     label = _score_label(score)
@@ -657,10 +640,9 @@ def _cyprus_evening_score_line(v2_text: str) -> str:
     max_t = max(daily_highs) if daily_highs else None
     max_gust = max(gusts) if gusts else None
     max_wind = max(winds) if winds else None
-    has_real_mist = any(
-        ("туман" in line.lower() or "дымк" in line.lower()) and not line.strip().startswith("🟡 Туман/дымка")
-        for line in str(v2_text or "").splitlines()
-    )
+    conditions = _cyprus_conditions(v2_text)
+    aqi = conditions.get("aqi")
+    visibility_condition = _cyprus_visibility_condition(v2_text)
 
     score = 10.0
     reasons: list[str] = []
@@ -681,8 +663,18 @@ def _cyprus_evening_score_line(v2_text: str) -> str:
             score -= 0.5; reasons.append("порывы у моря")
     if isinstance(max_wind, (int, float)) and max_wind >= 6:
         score -= 0.4; reasons.append("ветер у моря")
-    if has_real_mist:
-        score -= 0.3; reasons.append("дымка/туман")
+    air_penalty = 0.8 if isinstance(aqi, (int, float)) and aqi > 80 else 0.0
+    atmospheric_penalty = visibility_air_penalty(visibility_condition, air_penalty)
+    if atmospheric_penalty:
+        score -= atmospheric_penalty
+        if visibility_condition == "mixed_visibility" or (air_penalty and visibility_penalty(visibility_condition)):
+            reasons.append("видимость и воздух хуже")
+        elif air_penalty:
+            reasons.append("воздух похуже")
+        elif visibility_condition in {"dense_fog", "fog"}:
+            reasons.append("утренний туман")
+        else:
+            reasons.append("видимость снижена")
     if _has_cyprus_precip_risk(text):
         score -= 0.7; reasons.append("локальная погода")
     if _has_actual_cyprus_storm_signal(text, max_gust):
@@ -949,7 +941,7 @@ def _cyprus_main_nuance(v2_text: str) -> str:
     visibility_condition = _cyprus_visibility_condition(v2_text)
     if visibility_condition in {"dense_fog", "fog"}:
         return "⚠️ Главный нюанс: до рассеивания тумана осторожнее на дорогах и развязках."
-    if visibility_condition in {"mist", "reduced_visibility", "mixed"}:
+    if visibility_condition in {"mist", "reduced_visibility", "mixed_visibility"}:
         return "⚠️ Главный нюанс: утром видимость снижена — на дорогах и развязках нужна дополнительная дистанция."
     if rain and wind and (heat or troodos):
         return "⚠️ Главный нюанс: осадки возможны локально, особенно в горах; у моря жарко и порывисто."
@@ -977,6 +969,16 @@ def _insert_main_nuance(v2_text: str) -> str:
 def _date_from_text(v2_text: str) -> str:
     m = re.search(r"\((\d{2}\.\d{2}\.\d{4})\)", str(v2_text or ""))
     return m.group(1) if m else ""
+
+
+def _iso_date_from_text(v2_text: str) -> str:
+    value = _date_from_text(v2_text)
+    if not value:
+        return ""
+    try:
+        return dt.datetime.strptime(value, "%d.%m.%Y").date().isoformat()
+    except ValueError:
+        return ""
 
 
 def _without_editorial_voice(v2_text: str) -> list[str]:
@@ -1786,6 +1788,7 @@ async def _build_safe_test_image(
     reference_history_paths_for_diag: tuple[Path, ...] = ()
     before_history_count: int | None = None
     after_history_count: int | None = None
+    visibility_metadata: dict[str, object] | None = None
     try:
         from cyprus_visual_dedup import (
             cyprus_visual_history_path,
@@ -1807,7 +1810,15 @@ async def _build_safe_test_image(
             write_provider_health,
         )
         from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata
+        from weather import load_cyprus_visibility_diagnostics
         import world_en.imagegen as imagegen_module
+
+        visibility_target_date = _iso_date_from_text(final_text)
+        if visibility_target_date:
+            visibility_metadata = load_cyprus_visibility_diagnostics(
+                visibility_target_date,
+                mode,
+            )
 
         history_namespace = "test" if send_image_to_test else "prod" if send_image_to_chat else "test"
         write_history_path = cyprus_visual_history_path(history_namespace)
@@ -1927,6 +1938,7 @@ async def _build_safe_test_image(
                 blocked_scenes=recent_scene_values,
                 blocked_compositions=recent_composition_values,
                 blocked_archetypes=blocked_archetypes,
+                visibility_metadata=visibility_metadata,
             )
             last_metadata = dict(metadata)
             target_date_for_diag = str(metadata["forecast_date"])

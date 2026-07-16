@@ -1104,7 +1104,7 @@ def cy_morning_dense_fog_overrides_hot_clear_visuals() -> None:
     Никосия: 36/25 °C • ясно
     Лимассол: 33/26 °C • ясно • 🌊 Море 28°C
     ☀️ УФ-индекс 10 — очень высокий.
-    🌫 Видимость: сильный утренний туман в Лимассоле — местами менее 320 м.
+    🌫 Видимость: сильный утренний туман в районе Лимассол — местами около 320 м.
     #Кипр #погода
     """
     ctx = parse_visual_context_cy(text, post_type="morning")
@@ -1114,15 +1114,16 @@ def cy_morning_dense_fog_overrides_hot_clear_visuals() -> None:
     assert ctx.visibility_condition == "dense_fog"
     assert scene.diagnostics["fog_visual_rule"] is True
     for cue in (
-        "dense humid coastal fog",
-        "reduced distant visibility",
-        "partially obscured horizon and hills",
+        "dense humid fog",
+        "heavily reduced distant visibility",
+        "partially obscured horizon",
         "soft diffused",
         "muted contrast",
         "moist atmospheric depth",
-        "no crisp distant mountains",
+        "no crisp distant horizon",
         "no perfectly clear horizon",
         "no sharp postcard visibility",
+        "no completely transparent air",
     ):
         assert cue in low
     assert "heat shimmer" not in low
@@ -1142,11 +1143,92 @@ def cy_morning_mixed_haze_does_not_become_dry_dust_scene() -> None:
     """
     ctx = parse_visual_context_cy(text, post_type="morning")
     prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(text, post_type="morning")
-    assert ctx.visibility_condition == "fog"
-    assert ctx.dust_vs_fog_classification == "mixed_humid_haze_and_pollution"
-    assert "dense humid coastal fog" in prompt.lower()
+    assert ctx.visibility_condition == "mixed_visibility"
+    assert ctx.dust_vs_fog_classification == "mixed_visibility"
+    assert "muted grey atmospheric haze" in prompt.lower()
+    assert "restrained humid softness" in prompt.lower()
+    assert "restrained polluted-air haze" in prompt.lower()
+    assert "no exaggerated sahara palette" in prompt.lower()
+    assert "dense humid coastal fog" not in prompt.lower()
     assert "beige-gold atmospheric dust" not in prompt.lower()
     _assert_compact_prompt_contract(prompt, metadata)
+
+
+def cy_morning_visibility_states_have_distinct_prompt_cues_and_metadata() -> None:
+    text = """
+    <b>🌅 Кипр сегодня (16.07.2026)</b>
+    Лимассол: 29/24 °C • облачно • 🌊 Море 27°C
+    🌫 Видимость: утром местами снижена.
+    #Кипр #погода
+    """
+    cases = {
+        "dense_fog": ("dense humid fog", "heavily reduced distant visibility"),
+        "fog": ("humid coastal fog", "softened horizon"),
+        "mist": ("humid morning mist", "gentle atmospheric depth"),
+        "reduced_visibility": ("reduced distant clarity", "restrained contrast"),
+        "dust_haze": ("muted beige-grey dry atmospheric haze", "dry suspended particles"),
+        "mixed_visibility": ("muted grey atmospheric haze", "restrained polluted-air haze"),
+    }
+    prompts: dict[str, str] = {}
+    for condition, required in cases.items():
+        visibility_metadata = {
+            "condition": condition,
+            "current_visibility_m": 7000,
+            "morning_min_visibility_m": 2200,
+            "humidity_pct": 91,
+            "temperature_c": 24,
+            "dew_point_c": 23,
+            "dew_point_spread_c": 1,
+            "weather_code": 45,
+            "weather_code_source": "hourly_morning",
+            "evidence_source": "hourly_morning+air_quality",
+            "observation_time": "2026-07-16T06:00",
+            "confidence": "high",
+            "classification_reason": f"offline fixture: {condition}",
+            "location_label": "Лимассол",
+        }
+        prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(
+            text,
+            post_type="morning",
+            visibility_metadata=visibility_metadata,
+        )
+        positive, _negative = _prompt_sections(prompt)
+        positive_low = positive.lower()
+        for cue in required:
+            assert cue in positive_low, (condition, cue, prompt)
+        if condition in {"fog", "mist", "reduced_visibility", "mixed_visibility"}:
+            assert "dense humid fog" not in positive_low
+        if condition == "mist":
+            assert "dense" not in positive_low
+        if condition == "reduced_visibility":
+            assert "humid fog" not in positive_low
+            assert "wet atmosphere" not in positive_low
+        if condition == "dust_haze":
+            assert "no humid fog cues" in positive_low
+        if condition == "mixed_visibility":
+            assert "no exaggerated sahara palette" in positive_low
+        assert metadata["prompt_version"] == "cyprus_visual_v7"
+        assert metadata["current_visibility_m"] == 7000
+        assert metadata["morning_min_visibility_m"] == 2200
+        assert metadata["humidity_pct"] == 91
+        assert metadata["temperature_c"] == 24
+        assert metadata["dew_point_c"] == 23
+        assert metadata["dew_point_spread_c"] == 1
+        assert metadata["weather_code"] == 45
+        assert metadata["observation_time"] == "2026-07-16T06:00"
+        assert metadata["confidence"] == "high"
+        assert metadata["classification_reason"] == f"offline fixture: {condition}"
+        assert metadata["location_label"] == "Лимассол"
+        prompts[condition] = prompt
+
+    assert len(set(prompts.values())) == len(cases)
+    fallback_context = parse_visual_context_cy(
+        text.replace("местами снижена", "влажная дымка, местами около 2200 м"),
+        post_type="morning",
+    )
+    assert fallback_context.visibility_condition == "mist"
+    assert fallback_context.current_visibility_m is None
+    assert fallback_context.morning_min_visibility_m is None
 
 
 TESTS = [
@@ -1202,6 +1284,7 @@ TESTS = [
     cy_prompt_evening_moon_context_is_not_forced_or_duplicated,
     cy_morning_dense_fog_overrides_hot_clear_visuals,
     cy_morning_mixed_haze_does_not_become_dry_dust_scene,
+    cy_morning_visibility_states_have_distinct_prompt_cues_and_metadata,
 ]
 
 

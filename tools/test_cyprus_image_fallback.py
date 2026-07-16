@@ -422,7 +422,11 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
             assert calls == {"pollinations": 2, "stable_horde": 3}
             assert len(photo_calls) == 1
             assert photo_calls[0]["chat_id"] == 777
-            assert photo_calls[0]["caption"] == "Визуальный вайб погоды на Кипре завтра 🌊"
+            assert photo_calls[0]["caption"] == safe_module._cy_image_caption(
+                "evening",
+                "2026-07-16",
+                test_label=False,
+            )
             assert photo_calls[0]["photo_bytes"].startswith(b"\x89PNG\r\n\x1a\n")
             assert not text_path.exists()
 

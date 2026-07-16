@@ -36,9 +36,16 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import date as Date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from visibility_context import (
+    CyprusVisibilityContext,
+    build_cyprus_visibility_line,
+    get_cyprus_visibility_context,
+    visibility_air_penalty,
+    visibility_diagnostics,
+)
 
 try:
     import requests  # type: ignore
@@ -118,6 +125,8 @@ HOURLY_NO_TSTORM = [v for v in HOURLY_FULL if v != "thunderstorm_probability"]
 HOURLY_MIN = [
     "temperature_2m",
     "relative_humidity_2m",
+    "dew_point_2m",
+    "visibility",
     "weather_code",
     "wind_speed_10m",
     "wind_direction_10m",
@@ -163,6 +172,8 @@ CURRENT_FULL = [
 CURRENT_MIN = [
     "temperature_2m",
     "relative_humidity_2m",
+    "dew_point_2m",
+    "visibility",
     "apparent_temperature",
     "weather_code",
     "wind_speed_10m",
@@ -508,221 +519,6 @@ def _daily_index_for_date(daily_times: Any, target_date: Any, tz_name: str) -> O
     return None
 
 
-@dataclass
-class CyprusVisibilityContext:
-    visibility_m: Optional[float] = None
-    min_morning_visibility_m: Optional[float] = None
-    relative_humidity_pct: Optional[float] = None
-    dew_point_c: Optional[float] = None
-    temperature_c: Optional[float] = None
-    dew_point_spread_c: Optional[float] = None
-    weather_code: Optional[int] = None
-    condition: str = "clear"
-    evidence_source: str = "unavailable"
-    observation_time: Optional[str] = None
-    target_date: Optional[str] = None
-    current_visibility_m: Optional[float] = None
-    dust_vs_fog_classification: str = "clear"
-
-
-def _as_float(value: Any) -> Optional[float]:
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _local_datetime(value: Any, tz_name: str) -> Optional[datetime]:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    if pendulum is not None:
-        try:
-            return pendulum.parse(text, tz=tz_name)
-        except Exception:
-            pass
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _target_date_value(target_date: Any, post_type: str, tz_name: str) -> Date:
-    if isinstance(target_date, datetime):
-        return target_date.date()
-    if isinstance(target_date, Date):
-        return target_date
-    if isinstance(target_date, str) and target_date.strip():
-        try:
-            return Date.fromisoformat(target_date.strip()[:10])
-        except ValueError:
-            pass
-    if pendulum is not None:
-        base = pendulum.now(tz_name)
-        return base.add(days=0 if post_type.startswith("morn") else 1).date()
-    base = datetime.now().date()
-    return Date.fromordinal(base.toordinal() + (0 if post_type.startswith("morn") else 1))
-
-
-def _air_pollution_signal(air_data: Optional[Dict[str, Any]]) -> bool:
-    air = air_data if isinstance(air_data, dict) else {}
-    pm10 = _as_float(air.get("pm10"))
-    pm25 = _as_float(air.get("pm25"))
-    aqi = _as_float(air.get("aqi"))
-    return bool(
-        (pm10 is not None and pm10 >= 50)
-        or (pm25 is not None and pm25 >= 35)
-        or (aqi is not None and aqi >= 100)
-    )
-
-
-def get_cyprus_visibility_context(
-    weather_data: Optional[Dict[str, Any]],
-    *,
-    post_type: str = "morning",
-    target_date: Any = None,
-    tz: str = "Asia/Nicosia",
-    air_data: Optional[Dict[str, Any]] = None,
-) -> CyprusVisibilityContext:
-    """Build an offline fog/visibility context from an existing Open-Meteo payload."""
-    payload = weather_data if isinstance(weather_data, dict) else {}
-    target = _target_date_value(target_date, post_type, tz)
-    current = payload.get("current") if isinstance(payload.get("current"), dict) else {}
-    hourly = payload.get("hourly") if isinstance(payload.get("hourly"), dict) else {}
-    times = hourly.get("time_local") or hourly.get("time") or []
-
-    def hourly_value(key: str, idx: int) -> Any:
-        values = hourly.get(key)
-        return values[idx] if isinstance(values, list) and idx < len(values) else None
-
-    def first_present(*values: Any) -> Any:
-        return next((value for value in values if value is not None), None)
-
-    morning_records: List[Dict[str, Any]] = []
-    if isinstance(times, list):
-        for idx, raw_time in enumerate(times):
-            local_dt = _local_datetime(raw_time, tz)
-            if local_dt is None or local_dt.date() != target or not (4 <= local_dt.hour <= 10):
-                continue
-            visibility = _as_float(hourly_value("visibility", idx))
-            if visibility is None:
-                continue
-            morning_records.append(
-                {
-                    "visibility": visibility,
-                    "humidity": _as_float(hourly_value("relative_humidity_2m", idx)),
-                    "dew_point": _as_float(first_present(hourly_value("dew_point_2m", idx), hourly_value("dewpoint_2m", idx))),
-                    "temperature": _as_float(hourly_value("temperature_2m", idx)),
-                    "weather_code": _as_float(first_present(hourly_value("weather_code", idx), hourly_value("weathercode", idx))),
-                    "time": str(raw_time),
-                    "source": "hourly_morning",
-                }
-            )
-
-    morning_record = min(morning_records, key=lambda item: item["visibility"]) if morning_records else None
-    current_record = {
-        "visibility": _as_float(current.get("visibility")),
-        "humidity": _as_float(current.get("relative_humidity_2m")),
-        "dew_point": _as_float(first_present(current.get("dew_point_2m"), current.get("dewpoint_2m"))),
-        "temperature": _as_float(current.get("temperature_2m")),
-        "weather_code": _as_float(first_present(current.get("weather_code"), current.get("weathercode"))),
-        "time": str(current.get("time") or "") or None,
-        "source": "current",
-    }
-
-    candidates: List[Dict[str, Any]] = []
-    if morning_record:
-        candidates.append(morning_record)
-    if post_type.startswith("morn") and current_record["visibility"] is not None:
-        candidates.append(current_record)
-    selected = min(candidates, key=lambda item: item["visibility"]) if candidates else None
-    if selected is None and post_type.startswith("morn") and current_record["weather_code"] is not None:
-        selected = current_record
-
-    visibility = _as_float(selected.get("visibility")) if selected else None
-    humidity = _as_float(selected.get("humidity")) if selected else None
-    dew_point = _as_float(selected.get("dew_point")) if selected else None
-    temperature = _as_float(selected.get("temperature")) if selected else None
-    spread = temperature - dew_point if temperature is not None and dew_point is not None else None
-    weather_code_value = _as_float(selected.get("weather_code")) if selected else None
-    weather_code = int(weather_code_value) if weather_code_value is not None else None
-    high_humidity = humidity is not None and humidity >= 90
-    humid_fog_evidence = high_humidity or (spread is not None and spread <= 2.0)
-    fog_code = weather_code in {45, 48}
-
-    condition = "clear"
-    if (visibility is not None and visibility <= 500) or (fog_code and high_humidity):
-        condition = "dense_fog"
-    elif visibility is not None and visibility <= 1000:
-        condition = "fog"
-    elif visibility is not None and visibility <= 3000 and humid_fog_evidence:
-        condition = "mist"
-    elif visibility is not None and visibility <= 6000:
-        condition = "reduced_visibility"
-    elif fog_code:
-        condition = "fog"
-
-    pollution_signal = _air_pollution_signal(air_data)
-    if condition != "clear" and pollution_signal and humid_fog_evidence:
-        classification = "mixed_humid_haze_and_pollution"
-    elif condition != "clear" and pollution_signal and not humid_fog_evidence and not fog_code:
-        classification = "dust_haze"
-        condition = "dust_haze"
-    elif condition in {"dense_fog", "fog", "mist"}:
-        classification = "humid_fog"
-    elif condition == "reduced_visibility":
-        classification = "reduced_visibility"
-    else:
-        classification = "clear"
-
-    sources = [item["source"] for item in candidates]
-    if selected and selected.get("source") and selected["source"] not in sources:
-        sources.append(selected["source"])
-    return CyprusVisibilityContext(
-        visibility_m=visibility,
-        min_morning_visibility_m=_as_float(morning_record.get("visibility")) if morning_record else None,
-        relative_humidity_pct=humidity,
-        dew_point_c=dew_point,
-        temperature_c=temperature,
-        dew_point_spread_c=spread,
-        weather_code=weather_code,
-        condition=condition,
-        evidence_source="+".join(dict.fromkeys(sources)) if sources else "unavailable",
-        observation_time=str(selected.get("time")) if selected and selected.get("time") else None,
-        target_date=target.isoformat(),
-        current_visibility_m=_as_float(current_record.get("visibility")),
-        dust_vs_fog_classification=classification,
-    )
-
-
-def build_cyprus_visibility_line(
-    context: CyprusVisibilityContext,
-    *,
-    post_type: str = "morning",
-) -> Optional[str]:
-    tomorrow = "завтра утром" if not post_type.startswith("morn") else "утром"
-    if context.dust_vs_fog_classification == "mixed_humid_haze_and_pollution":
-        distance = f", местами около {max(1, int(round(context.visibility_m)))} м" if context.visibility_m is not None else ""
-        return f"🌫 Видимость: {tomorrow} снижена{distance}; возможна смесь влажной дымки и загрязнения воздуха."
-    if context.condition == "dust_haze":
-        return f"🌫 Видимость: {tomorrow} возможна пылевая дымка; ориентируйтесь на фактическую дальность обзора."
-    if context.condition == "dense_fog":
-        if context.visibility_m is not None:
-            value = max(1, int(round(context.visibility_m)))
-            prefix = "сильный утренний туман" if post_type.startswith("morn") else "завтра утром сильный туман"
-            return f"🌫 Видимость: {prefix} в Лимассоле — местами менее {value} м."
-        return f"🌫 Видимость: {tomorrow} сильный туман в Лимассоле."
-    if context.condition == "fog":
-        return f"🌫 Видимость: {tomorrow} туман, дальние объекты и побережье местами плохо различимы."
-    if context.condition == "mist":
-        return f"🌫 Видимость: {tomorrow} влажная дымка; на дорогах и у моря видимость снижена."
-    if context.condition == "reduced_visibility":
-        return f"🌫 Видимость: {tomorrow} местами снижена; на дорогах и у моря нужна дополнительная дистанция."
-    return None
-
-
 def save_cyprus_visibility_diagnostics(
     context: CyprusVisibilityContext,
     *,
@@ -733,22 +529,26 @@ def save_cyprus_visibility_diagnostics(
         root = Path(os.getenv("CY_VISIBILITY_DIAGNOSTICS_DIR", ".cache/cy_visibility_diagnostics"))
         root.mkdir(parents=True, exist_ok=True)
         target = root / f"{context.target_date or 'unknown'}-{post_type}.json"
-        data = {
-            "current_visibility_m": context.current_visibility_m,
-            "morning_min_visibility_m": context.min_morning_visibility_m,
-            "humidity_pct": context.relative_humidity_pct,
-            "dew_point_c": context.dew_point_c,
-            "dew_point_spread_c": context.dew_point_spread_c,
-            "weather_code": context.weather_code,
-            "visibility_condition": context.condition,
-            "visibility_evidence": context.evidence_source,
-            "fog_text_added": bool(fog_text_added),
-            "fog_visual_rule": context.condition in {"dense_fog", "fog", "mist", "reduced_visibility"},
-            "dust_vs_fog_classification": context.dust_vs_fog_classification,
-        }
+        aqi_penalty = 0.8 if context.aqi is not None and context.aqi > 80 else 0.0
+        data = visibility_diagnostics(
+            context,
+            aqi_penalty=aqi_penalty,
+            fog_text_added=fog_text_added,
+            fog_visual_rule=context.condition in {"dense_fog", "fog", "mist"},
+        )
         target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as exc:
         LOG.warning("Cyprus visibility diagnostics were not saved: %s", exc)
+
+
+def load_cyprus_visibility_diagnostics(target_date: str, post_type: str) -> Optional[Dict[str, Any]]:
+    try:
+        root = Path(os.getenv("CY_VISIBILITY_DIAGNOSTICS_DIR", ".cache/cy_visibility_diagnostics"))
+        path = root / f"{target_date}-{post_type}.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 def day_night_stats(lat: float, lon: float, tz: str = "auto", day_offset: int = 0) -> Dict[str, Any]:
@@ -842,5 +642,7 @@ __all__ = [
     "fetch_tomorrow_temps",
     "get_cyprus_visibility_context",
     "get_weather",
+    "load_cyprus_visibility_diagnostics",
     "save_cyprus_visibility_diagnostics",
+    "visibility_air_penalty",
 ]
