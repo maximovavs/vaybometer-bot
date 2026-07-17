@@ -6,14 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       publish_to:
-        description: "Куда публиковать?"
+        description: "Куда отправить weekly report?"
         type: choice
         required: false
-        default: both
+        default: telegram
         options:
-          - both       # Телеграм + Facebook
           - telegram   # только основной Телеграм
-          - facebook   # только Facebook-страница
           - test       # тестовый Телеграм
       send_to_test:
         type: boolean
@@ -26,10 +24,6 @@ jobs:
     env:
       TZ: UTC
       PYTHONPATH: ${{ github.workspace }}
-      # вынесем fb-секреты в окружение, чтобы можно было проверять в if:
-      FB_PAGE_ID: ${{ secrets.FB_PAGE_ID || '' }}
-      FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN || '' }}
-      TG_URL: ${{ secrets.TELEGRAM_CHANNEL_URL || 'https://t.me/WorldVibeMeter' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -59,10 +53,41 @@ jobs:
       - name: Render message
         run: python world_en/render.py world_en/templates/weekly_en.j2 world_en/weekly.json > world_en/weekly_msg.txt
 
+      - name: Build copy-ready YouTube Community text
+        run: |
+          python - <<'PY'
+          import html
+          import pathlib
+          import re
+
+          source = pathlib.Path('world_en/weekly_msg.txt').read_text(encoding='utf-8')
+          plain = re.sub(r'<[^>]+>', '', source)
+          plain = html.unescape(plain)
+          plain = re.sub(r'[ \t]+\n', '\n', plain)
+          plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
+          lines = plain.splitlines()
+          while lines and not lines[-1].strip():
+              lines.pop()
+          if lines and re.match(r'^Follow daily on Telegram\b', lines[-1].strip(), flags=re.I):
+              lines.pop()
+          output = '\n'.join(lines).strip() + '\n'
+          pathlib.Path('world_en/weekly_youtube.txt').write_text(output, encoding='utf-8')
+          PY
+
+      - name: Upload weekly report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-weekly-${{ github.run_number }}
+          path: |
+            world_en/weekly.json
+            world_en/weekly_msg.txt
+            world_en/weekly_youtube.txt
+          if-no-files-found: error
+          retention-days: 30
+
       # ===================== TELEGRAM (MAIN) =====================
       - name: Send text (MAIN TG)
         if: ${{ github.event_name == 'schedule'
-                || inputs.publish_to == 'both'
                 || inputs.publish_to == 'telegram'
                 || (inputs.publish_to == '' && inputs.send_to_test != true) }}
         env:
@@ -76,7 +101,6 @@ jobs:
 
       - name: Send Nature card (MAIN TG)
         if: ${{ github.event_name == 'schedule'
-                || inputs.publish_to == 'both'
                 || inputs.publish_to == 'telegram'
                 || (inputs.publish_to == '' && inputs.send_to_test != true) }}
         env:
@@ -109,71 +133,6 @@ jobs:
               -d disable_web_page_preview=false
           else
             echo "No weekly TOP_NATURE_URL — skipping TG card."
-          fi
-
-      # ===================== FACEBOOK =====================
-      - name: Build Facebook-safe weekly text
-        if: ${{ (github.event_name == 'schedule'
-                 || inputs.publish_to == 'both'
-                 || inputs.publish_to == 'facebook')
-                && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
-        run: |
-          python - <<'PY'
-          import re, html, pathlib, os
-          p = pathlib.Path('world_en/weekly_msg.txt').read_text('utf-8', errors='ignore')
-          plain = re.sub(r'<[^>]+>', '', p)
-          plain = html.unescape(plain)
-          plain = re.sub(r'[ \t]+\n', '\n', plain)
-          plain = re.sub(r'\n{3,}', '\n\n', plain).strip()
-          if len(plain) > 2500:
-            plain = plain[:2490].rsplit('\n',1)[0] + '\n…'
-          link = os.getenv('TG_URL', 'https://t.me/WorldVibeMeter')
-          out  = f"{plain}\n\nFollow daily on Telegram: {link}"
-          pathlib.Path('world_en/weekly_fb_msg.txt').write_text(out, 'utf-8')
-          print('FB text length:', len(out))
-          PY
-
-      - name: Post weekly to Facebook Page
-        if: ${{ (github.event_name == 'schedule'
-                 || inputs.publish_to == 'both'
-                 || inputs.publish_to == 'facebook')
-                && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
-        run: |
-          set -euo pipefail
-          MSG="$(cat world_en/weekly_fb_msg.txt)"
-          curl -s -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/feed" \
-            --data-urlencode "message=$MSG" \
-            --data-urlencode "access_token=${FB_PAGE_TOKEN}" \
-            > world_en/fb_weekly_response.json
-          echo "Facebook response:"; cat world_en/fb_weekly_response.json
-          grep -q '"id":' world_en/fb_weekly_response.json || { echo "Facebook post failed"; exit 1; }
-
-      - name: Post weekly Nature link to Facebook
-        if: ${{ (github.event_name == 'schedule'
-                 || inputs.publish_to == 'both'
-                 || inputs.publish_to == 'facebook')
-                && env.FB_PAGE_ID != '' && env.FB_PAGE_TOKEN != '' }}
-        run: |
-          set -euo pipefail
-          readarray -t L < <(python - <<'PY'
-          import json
-          d=json.load(open('world_en/weekly.json','r',encoding='utf-8'))
-          print(d.get('TOP_NATURE_URL',''))
-          title=d.get('TOP_NATURE_TITLE','Nature Break')
-          snip=d.get('TOP_NATURE_SNIPPET','Short calm from Miss Relax')
-          print(f"🌊 {title}\n{snip}")
-          PY
-          )
-          URL="${L[0]}"; CAP="${L[*]:1}"
-          if [ -n "$URL" ]; then
-            curl -s -X POST "https://graph.facebook.com/v19.0/${FB_PAGE_ID}/feed" \
-              --data-urlencode "message=$CAP" \
-              --data-urlencode "link=$URL" \
-              --data-urlencode "access_token=${FB_PAGE_TOKEN}" \
-              > world_en/fb_weekly_nature_response.json
-            echo "Facebook nature response:"; cat world_en/fb_weekly_nature_response.json
-          else
-            echo "No weekly TOP_NATURE_URL — skipping FB nature post."
           fi
 
       # ===================== TELEGRAM (TEST) =====================
