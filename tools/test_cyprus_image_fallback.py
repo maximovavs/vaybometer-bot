@@ -33,7 +33,7 @@ imghdr_stub = types.ModuleType("imghdr")
 imghdr_stub.what = lambda *args, **kwargs: None
 sys.modules.setdefault("imghdr", imghdr_stub)
 
-from PIL import Image  # type: ignore  # noqa: E402
+from PIL import Image, ImageDraw  # type: ignore  # noqa: E402
 
 import cyprus_visual_dedup  # noqa: E402
 import cyprus_image_recovery  # noqa: E402
@@ -77,6 +77,28 @@ PROBLEM_EVENING_MESSAGE = """🌅 Кипр завтра (20.07.2026)
 🏙 Лимассол — 33/24 °C • переменная облачность • ветер 8 м/с, порывы до 15 м/с • 🌊 28°C
 🏙 Ларнака — 32/24 °C • облачно • ветер 7 м/с • 🌊 29°C
 ✅ План завтра: тень в центре, у моря проверить порывы.
+#Кипр #погода
+"""
+
+
+AIR_ONLY_MESSAGE = """🌅 Кипр завтра (22.07.2026)
+🏭 Воздух сейчас: AQI 25 · хороший.
+✅ План завтра: обычные дела и прогулка.
+#Кипр #погода
+"""
+
+
+ISLAND_GUST_MESSAGE = """🌅 Кипр завтра (23.07.2026)
+🏙 Никосия — 36/24 °C • переменная облачность • порывы до 17.5 м/с.
+✅ План завтра: проверить порывы перед выездом.
+#Кипр #погода
+"""
+
+
+LONGEST_HOTTEST_CITY_MESSAGE = """🌅 Кипр завтра (24.07.2026)
+🏙 Айя-Напа — 39.5/27 °C • жарко • переменная облачность.
+🏙 Никосия — 38/25 °C • жарко.
+✅ План завтра: тень и вода в жаркие часы.
 #Кипр #погода
 """
 
@@ -187,6 +209,93 @@ def local_informative_cover_is_valid_deterministic_and_factual() -> None:
             assert image.info["visual_forecast_period"] == "representative_daytime"
             assert image.info["palette"] == "hot"
             image.verify()
+
+
+def informative_cover_long_facts_fit_pixel_bounds() -> None:
+    fixtures = (
+        ("air", AIR_ONLY_MESSAGE, "🏭 ВОЗДУХ СЕЙЧАС: AQI 25 · ХОРОШИЙ"),
+        ("gust", ISLAND_GUST_MESSAGE, "💨 ПОРЫВЫ ДО 17.5 М/С НА ОСТРОВЕ"),
+        ("hottest", LONGEST_HOTTEST_CITY_MESSAGE, "🔥 ДО 39.5° · АЙЯ-НАПА"),
+        ("three", PROBLEM_EVENING_MESSAGE, "🔥 ДО 38° В НИКОСИИ"),
+    )
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        rendered: dict[str, dict[str, object]] = {}
+        for name, message, expected_fact in fixtures:
+            result = render_local_informative_cover(
+                message,
+                target_date=f"2026-07-{22 + len(rendered):02d}",
+                post_type="evening",
+                output_path=tmp / f"{name}.png",
+                minimum_bytes=12000,
+            )
+            rendered[name] = result
+            metadata = result["metadata"]
+            full_facts = {
+                metadata["primary_fact"],
+                metadata["secondary_fact"],
+                metadata["tertiary_fact"],
+            }
+            assert expected_fact in full_facts
+            layout = json.loads(metadata["fact_layout"])
+            assert 1 <= len(layout) <= 3
+            assert {item["source_fact"] for item in layout} == {fact for fact in full_facts if fact}
+
+            previous_bottom = 0
+            with Image.open(result["path"]) as image:
+                assert image.size == (1080, 1080)
+                assert image.format == "PNG"
+                assert image.info["fact_layout"] == metadata["fact_layout"]
+                draw = ImageDraw.Draw(image)
+                for item in layout:
+                    card_left, card_top, card_right, card_bottom = item["card_bbox"]
+                    assert card_left == 92 and card_right == 988
+                    assert 0 <= card_top < card_bottom <= 988
+                    assert card_top >= previous_bottom
+                    previous_bottom = card_bottom
+                    assert 34 <= item["font_size"] <= 52
+                    assert 1 <= len(item["lines"]) <= 2
+                    assert " ".join(line["text"] for line in item["lines"]) == item["display_text"]
+                    font = cyprus_image_recovery._cover_font(item["font_size"], bold=True)
+                    for line in item["lines"]:
+                        bbox = line["bbox"]
+                        assert bbox[0] >= 128
+                        assert bbox[2] <= 952
+                        assert bbox[1] >= card_top
+                        assert bbox[3] <= card_bottom
+                        measured = list(draw.textbbox(tuple(line["origin"]), line["text"], font=font))
+                        assert measured == bbox
+
+        assert len(json.loads(rendered["three"]["metadata"]["fact_layout"])) == 3
+        assert any(
+            item["font_size"] < 52 or len(item["lines"]) == 2
+            for result in rendered.values()
+            for item in json.loads(result["metadata"]["fact_layout"])
+        )
+
+        repeat = render_local_informative_cover(
+            PROBLEM_EVENING_MESSAGE,
+            target_date="2026-07-25",
+            post_type="evening",
+            output_path=tmp / "three-repeat.png",
+            minimum_bytes=12000,
+        )
+        assert _sha256(Path(rendered["three"]["path"])) == _sha256(Path(repeat["path"]))
+        assert rendered["three"]["metadata"]["rain_graphics"] == "false"
+        assert rendered["three"]["metadata"]["storm_graphics"] == "false"
+
+        probe_image = Image.new("RGBA", (1080, 1080), (255, 255, 255, 255))
+        probe_draw = ImageDraw.Draw(probe_image, "RGBA")
+        wrap_probe = cyprus_image_recovery._draw_cover_fact_cards(
+            probe_draw,
+            ["💨 ПОРЫВЫ ДО 17.5 М/С НА ОСТРОВЕ — ПРОВЕРИТЬ УТРОМ"] * 3,
+            accent=(25, 76, 107),
+        )
+        assert len(wrap_probe) == 3
+        assert all(len(item["lines"]) == 2 for item in wrap_probe)
+        for previous, current in zip(wrap_probe, wrap_probe[1:]):
+            assert current["card_bbox"][1] >= previous["card_bbox"][3] + 24
+        assert wrap_probe[-1]["card_bbox"][3] <= 988
 
 
 def local_cover_graphics_and_cache_follow_confirmed_facts() -> None:
@@ -727,6 +836,7 @@ def informative_cover_failure_falls_through_to_text_without_stale_image() -> Non
 def main() -> None:
     checks = (
         local_informative_cover_is_valid_deterministic_and_factual,
+        informative_cover_long_facts_fit_pixel_bounds,
         local_cover_graphics_and_cache_follow_confirmed_facts,
         provider_health_is_date_and_namespace_scoped,
         primary_evening_incident_sends_local_visual_before_text,

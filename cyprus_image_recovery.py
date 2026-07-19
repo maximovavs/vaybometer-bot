@@ -620,6 +620,137 @@ def _cover_font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
     raise RuntimeError("no Cyrillic TrueType font available for Cyprus informative cover")
 
 
+_COVER_FACT_FONT_MAX = 52
+_COVER_FACT_FONT_MIN = 34
+_COVER_FACT_TEXT_LEFT = 128
+_COVER_FACT_TEXT_RIGHT = 952
+_COVER_FACT_CARD_LEFT = 92
+_COVER_FACT_CARD_RIGHT = 988
+_COVER_FACT_CARD_TOP = 431
+_COVER_FACT_CARD_BOTTOM_LIMIT = 988
+_COVER_FACT_PADDING_Y = 24
+_COVER_FACT_LINE_GAP = 10
+_COVER_FACT_CARD_GAP = 24
+
+
+def _cover_textbbox(
+    draw: ImageDraw.ImageDraw,
+    value: str,
+    font: ImageFont.FreeTypeFont,
+) -> tuple[int, int, int, int]:
+    left, top, right, bottom = draw.textbbox((0, 0), value, font=font)
+    return int(left), int(top), int(right), int(bottom)
+
+
+def _wrap_cover_fact_words(
+    draw: ImageDraw.ImageDraw,
+    value: str,
+    font: ImageFont.FreeTypeFont,
+    *,
+    max_width: int,
+    max_lines: int = 2,
+) -> list[str] | None:
+    words = value.split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        word_box = _cover_textbbox(draw, word, font)
+        if word_box[2] - word_box[0] > max_width:
+            return None
+        candidate = f"{current} {word}".strip()
+        box = _cover_textbbox(draw, candidate, font)
+        if box[2] - box[0] <= max_width:
+            current = candidate
+            continue
+        if not current or len(lines) >= max_lines - 1:
+            return None
+        lines.append(current)
+        current = word
+    if current:
+        lines.append(current)
+    return lines if len(lines) <= max_lines else None
+
+
+def _fit_cover_fact_lines(
+    draw: ImageDraw.ImageDraw,
+    value: str,
+) -> tuple[ImageFont.FreeTypeFont, int, list[str]]:
+    """Fit a complete fact without clipping or splitting any word."""
+    max_width = _COVER_FACT_TEXT_RIGHT - _COVER_FACT_TEXT_LEFT
+    for size in range(_COVER_FACT_FONT_MAX, _COVER_FACT_FONT_MIN - 1, -1):
+        font = _cover_font(size, bold=True)
+        box = _cover_textbbox(draw, value, font)
+        if box[2] - box[0] <= max_width:
+            return font, size, [value]
+    for size in range(_COVER_FACT_FONT_MAX, _COVER_FACT_FONT_MIN - 1, -1):
+        font = _cover_font(size, bold=True)
+        lines = _wrap_cover_fact_words(draw, value, font, max_width=max_width, max_lines=2)
+        if lines:
+            return font, size, lines
+    raise RuntimeError(f"Cyprus informative-cover fact cannot fit safely: {value!r}")
+
+
+def _draw_cover_fact_cards(
+    draw: ImageDraw.ImageDraw,
+    values: list[str],
+    *,
+    accent: tuple[int, int, int],
+) -> list[dict[str, Any]]:
+    """Draw up to three bounded fact cards and return pixel-layout diagnostics."""
+    layouts: list[dict[str, Any]] = []
+    card_top = _COVER_FACT_CARD_TOP
+    for source_value in values[:3]:
+        display = re.sub(r"^[^\wА-ЯЁ]+\s*", "", source_value, flags=re.I)
+        font, font_size, lines = _fit_cover_fact_lines(draw, display)
+        raw_boxes = [_cover_textbbox(draw, line, font) for line in lines]
+        line_heights = [box[3] - box[1] for box in raw_boxes]
+        content_height = sum(line_heights) + _COVER_FACT_LINE_GAP * max(0, len(lines) - 1)
+        card_bottom = card_top + _COVER_FACT_PADDING_Y * 2 + content_height
+        if card_bottom > _COVER_FACT_CARD_BOTTOM_LIMIT:
+            raise RuntimeError("Cyprus informative-cover fact cards exceed the safe vertical area")
+
+        card_bbox = (_COVER_FACT_CARD_LEFT, card_top, _COVER_FACT_CARD_RIGHT, card_bottom)
+        draw.rounded_rectangle(card_bbox, radius=28, fill=(255, 255, 255, 150))
+        line_top = card_top + _COVER_FACT_PADDING_Y
+        line_layouts: list[dict[str, Any]] = []
+        for line, raw_box in zip(lines, raw_boxes):
+            origin = (
+                _COVER_FACT_TEXT_LEFT - raw_box[0],
+                line_top - raw_box[1],
+            )
+            pixel_bbox = tuple(int(value) for value in draw.textbbox(origin, line, font=font))
+            if not (
+                pixel_bbox[0] >= _COVER_FACT_TEXT_LEFT
+                and pixel_bbox[2] <= _COVER_FACT_TEXT_RIGHT
+                and pixel_bbox[1] >= card_top
+                and pixel_bbox[3] <= card_bottom
+            ):
+                raise RuntimeError(f"Cyprus informative-cover line escaped its card: {line!r}")
+            draw.text(origin, line, font=font, fill=(*accent, 255))
+            line_layouts.append(
+                {
+                    "text": line,
+                    "origin": [int(origin[0]), int(origin[1])],
+                    "bbox": list(pixel_bbox),
+                }
+            )
+            line_top = pixel_bbox[3] + _COVER_FACT_LINE_GAP
+
+        layouts.append(
+            {
+                "source_fact": source_value,
+                "display_text": display,
+                "font_size": font_size,
+                "card_bbox": list(card_bbox),
+                "lines": line_layouts,
+            }
+        )
+        card_top = card_bottom + _COVER_FACT_CARD_GAP
+    return layouts
+
+
 def _cover_number(value: float | None) -> str:
     if not isinstance(value, (int, float)):
         return ""
@@ -769,17 +900,16 @@ def render_local_informative_cover(
     _draw_cover_weather_motif(draw, ctx, accent)
     draw.rounded_rectangle((68, 58, 1012, 1012), radius=48, fill=(255, 255, 255, 26), outline=(255, 255, 255, 88), width=3)
     title_font = _cover_font(74, bold=True)
-    fact_font = _cover_font(52, bold=True)
     small_font = _cover_font(28, bold=False)
     draw.text((100, 105), facts["headline"], font=title_font, fill=(*accent, 255))
     draw.text((102, 205), "VAYBOMETER · WEATHER BRIEF", font=small_font, fill=(*accent, 175))
     fact_values = [facts["primary_fact"], facts["secondary_fact"], facts["tertiary_fact"]]
-    y = 455
-    for value in (item for item in fact_values if item):
-        display = re.sub(r"^[^\wА-ЯЁ]+\s*", "", value, flags=re.I)
-        draw.rounded_rectangle((92, y - 24, 988, y + 96), radius=28, fill=(255, 255, 255, 150))
-        draw.text((128, y), display, font=fact_font, fill=(*accent, 255))
-        y += 145
+    fact_layout = _draw_cover_fact_cards(
+        draw,
+        [item for item in fact_values if item],
+        accent=accent,
+    )
+    fact_layout_json = json.dumps(fact_layout, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
     output = Path(output_path).with_suffix(".png")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -797,6 +927,7 @@ def render_local_informative_cover(
         "primary_fact": facts["primary_fact"],
         "secondary_fact": facts["secondary_fact"],
         "tertiary_fact": facts["tertiary_fact"],
+        "fact_layout": fact_layout_json,
         "actual_precipitation": str(bool(ctx.actual_precipitation)).lower(),
         "explicit_storm": str(bool(ctx.explicit_storm)).lower(),
         "severe_wind": str(bool(ctx.severe_wind)).lower(),
