@@ -24,6 +24,14 @@ _CITY_ALIASES = {
     "ayia_napa": ("ayia napa", "ayia-napa", "айя-напа", "айя напа"),
     "troodos": ("troodos", "троодос"),
 }
+_CITY_DISPLAY = {
+    "limassol": "Лимассол",
+    "larnaca": "Ларнака",
+    "paphos": "Пафос",
+    "nicosia": "Никосия",
+    "ayia_napa": "Айя-Напа",
+    "troodos": "Троодос",
+}
 _COASTAL_CITIES = {"limassol", "larnaca", "paphos", "ayia_napa"}
 
 _COASTAL_WORDS = (
@@ -39,6 +47,9 @@ _IGNORE_MARKERS = ("астро", "луна", "меркур", "венер", "ма
 
 _NUMBER = r"[-+]?\d+(?:[.,]\d+)?"
 _TEMP_RE = re.compile(rf"(?<!\w)({_NUMBER})\s*°\s*[cс]?", re.I)
+_DAY_NIGHT_TEMP_RE = re.compile(
+    rf"(?<!\w)({_NUMBER})\s*/\s*({_NUMBER})\s*°\s*[cс]?", re.I
+)
 _RANGE_RE = re.compile(
     rf"(?<!\w)({_NUMBER})\s*(?:°\s*)?[–—-]\s*({_NUMBER})\s*°\s*[cс]?", re.I
 )
@@ -52,13 +63,13 @@ _AQI_RE = re.compile(rf"\baqi\b\D{{0,12}}({_NUMBER})", re.I)
 _SEA_TEMP_RE = re.compile(
     rf"(?:море|вода|температура воды|sea)\D{{0,25}}({_NUMBER})\s*°", re.I
 )
+_SEA_EMOJI_TEMP_RE = re.compile(rf"🌊\s*({_NUMBER})\s*°?\s*[cс]?", re.I)
 _STORM_NEGATION_RE = re.compile(
     r"шторм\w*\s+не\s+ожида|без\s+шторма|штормов\w*\s+предупрежден\w*\s+нет|риск\s+шторма\s+низк",
     re.I,
 )
 _STORM_POSITIVE_RE = re.compile(r"\b(?:шторм\w*|шквал\w*|гроз\w*)\b|thunderstorm|squall|storm", re.I)
 _PRECIP_FACTUAL_RE = re.compile(r"дожд\w*|ливн\w*|морос\w*|rain|showers?", re.I)
-_PRECIP_WET_RE = re.compile(r"мокр\w*|wet\b", re.I)
 _PRECIP_EXPLICIT_RE = re.compile(
     r"осад\w*\s+(?:прогнозир\w*|ожида\w*)|ожида\w*\s+осад\w*|местами\s+осад\w*",
     re.I,
@@ -82,6 +93,7 @@ _DERIVED_SUMMARY_PREFIXES = (
     "✨ VayboMeter",
     "🧭 Главное",
     "⚠️ Нюанс",
+    "⚠️ Главный нюанс",
     "💬 Настрой",
     "🎯 Уверенность",
     "✅ План",
@@ -95,6 +107,10 @@ _DERIVED_SUMMARY_PREFIXES = (
 class VisualContextCY:
     post_type: str = "morning"
     weather_main: str = "unknown"
+    primary_weather: str = "unknown"
+    hazards: list[str] = field(default_factory=list)
+    visual_forecast_period: str = "representative_daytime"
+    scene_focus: str = "island_wide"
     temp_max: Optional[float] = None
     temp_min: Optional[float] = None
     wind_max: Optional[float] = None
@@ -124,11 +140,19 @@ class VisualContextCY:
     coastal_precipitation: bool = False
     inland_precipitation: bool = False
     inland_thunder_risk: bool = False
+    strong_wind: bool = False
     severe_wind: bool = False
+    explicit_storm: bool = False
     sea_temp: Optional[float] = None
+    sea_temp_min: Optional[float] = None
+    sea_temp_max: Optional[float] = None
     sea_state_hint: Optional[str] = None
     coastal_focus: bool = False
     inland_heat_focus: bool = False
+    inland_max_temp: Optional[float] = None
+    hottest_city: Optional[str] = None
+    coastal_temp_min: Optional[float] = None
+    coastal_temp_max: Optional[float] = None
     city_weather_lines: list[str] = field(default_factory=list)
     coastal_weather_lines: list[str] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
@@ -224,9 +248,9 @@ def _normalized_sea_state(lines: list[str]) -> Optional[str]:
     return "present"
 
 
-def _has_actual_storm_signal(line: str, gust_max: Optional[float]) -> bool:
-    if isinstance(gust_max, (int, float)) and gust_max >= 15:
-        return True
+def _has_actual_storm_signal(line: str) -> bool:
+    if _is_derived_summary_line(line):
+        return False
     if _STORM_NEGATION_RE.search(str(line or "")):
         return False
     return bool(_STORM_POSITIVE_RE.search(str(line or "")))
@@ -244,7 +268,7 @@ def _has_actual_precipitation(line: str) -> bool:
         return False
     if _PRECIP_NEGATION_RE.search(low) or _PRECIP_UNCERTAINTY_RE.search(low):
         return False
-    if _PRECIP_FACTUAL_RE.search(low) or _PRECIP_EXPLICIT_RE.search(low) or _PRECIP_WET_RE.search(low):
+    if _PRECIP_FACTUAL_RE.search(low) or _PRECIP_EXPLICIT_RE.search(low):
         return True
     if "гроз" in low and any(token in low for token in ("дожд", "лив", "осад", "мокр", "rain", "wet")):
         return True
@@ -322,6 +346,33 @@ def _visibility_forecast_window(
     return "none"
 
 
+def _visual_forecast_period(
+    post_type: str,
+    visibility_window: str,
+    factual_weather_lines: list[str],
+) -> str:
+    if visibility_window in {"current_morning", "tomorrow_morning"}:
+        return visibility_window
+    timed_event = re.compile(
+        r"дожд\w*|ливн\w*|морос\w*|осад\w*|шторм\w*|гроз\w*|шквал\w*|"
+        r"туман\w*|дымк\w*|пыл\w*|fog|rain|storm|thunder|squall|dust",
+        re.I,
+    )
+    for line in factual_weather_lines:
+        if _is_derived_summary_line(line) or not timed_event.search(line):
+            continue
+        low = line.lower()
+        if post_type == "morning" and re.search(r"утр\w*|this morning", low):
+            return "current_morning"
+        if post_type == "evening" and re.search(r"завтра\s+утр\w*|tomorrow morning", low):
+            return "tomorrow_morning"
+        if re.search(r"ноч\w*|overnight|at night", low):
+            return "overnight"
+        if re.search(r"вечер\w*|вечером|in the evening", low):
+            return "evening"
+    return "representative_daytime"
+
+
 def parse_visual_context_cy(
     text: str,
     post_type: Optional[str] = None,
@@ -364,6 +415,8 @@ def parse_visual_context_cy(
     coastal_lines: list[str] = []
     sea_temps: list[float] = []
     sea_state_lines: list[str] = []
+    city_day_temps: dict[str, float] = {}
+    coastal_day_temps: list[float] = []
     dust_lines: list[str] = []
     haze_lines: list[str] = []
     actual_precipitation = False
@@ -384,6 +437,8 @@ def parse_visual_context_cy(
         visibility_condition,
         visibility_facts["evidence"],
     )
+    if visibility_condition == "dust_haze":
+        weather_hits.add("dusty")
 
     for line in lines:
         low = line.lower()
@@ -405,18 +460,38 @@ def parse_visual_context_cy(
             coastal_lines.append(line)
             evidence["coastal_lines"].append(line)
 
-        range_values: list[float] = []
-        for match in _RANGE_RE.finditer(line):
+        day_night_values: list[float] = []
+        for match in _DAY_NIGHT_TEMP_RE.finditer(line):
             pair = [_number(match.group(1)), _number(match.group(2))]
-            range_values.extend(pair)
+            day_night_values.extend(pair)
             evidence["temp_candidates"].append({"line": line, "values": pair})
-        if range_values:
+            if cities:
+                for city in cities:
+                    city_day_temps[city] = max(city_day_temps.get(city, pair[0]), pair[0])
+            if is_coastal:
+                coastal_day_temps.append(pair[0])
+        range_values: list[float] = []
+        if not day_night_values:
+            for match in _RANGE_RE.finditer(line):
+                pair = [_number(match.group(1)), _number(match.group(2))]
+                range_values.extend(pair)
+                evidence["temp_candidates"].append({"line": line, "values": pair})
+                if is_coastal:
+                    coastal_day_temps.extend(pair)
+        if day_night_values:
+            temps.extend(day_night_values)
+        elif range_values:
             temps.extend(range_values)
         else:
             found_temps = [_number(match.group(1)) for match in _TEMP_RE.finditer(line)]
             if found_temps:
                 temps.extend(found_temps)
                 evidence["temp_candidates"].append({"line": line, "values": found_temps})
+                if cities:
+                    for city in cities:
+                        city_day_temps[city] = max(city_day_temps.get(city, found_temps[0]), found_temps[0])
+                if is_coastal:
+                    coastal_day_temps.append(found_temps[0])
 
         for match in _WIND_RE.finditer(line):
             value = _to_ms(match.group(1), match.group(2))
@@ -441,6 +516,7 @@ def parse_visual_context_cy(
         aqi_values.extend(_number(m.group(1)) for m in _AQI_RE.finditer(line))
 
         line_sea_temps = [_number(m.group(1)) for m in _SEA_TEMP_RE.finditer(line)]
+        line_sea_temps.extend(_number(m.group(1)) for m in _SEA_EMOJI_TEMP_RE.finditer(line))
         if line_sea_temps:
             sea_temps.extend(line_sea_temps)
         if any(word in low for word in _COASTAL_WORDS):
@@ -473,7 +549,7 @@ def parse_visual_context_cy(
             haze_lines.append(line)
             evidence["haze_lines"].append(line)
 
-        line_has_storm = _has_actual_storm_signal(line, max(line_gusts) if line_gusts else None)
+        line_has_storm = _has_actual_storm_signal(line)
         if line_has_storm:
             if is_coastal:
                 evidence["coastal_storm_lines"].append(line)
@@ -503,17 +579,30 @@ def parse_visual_context_cy(
         weather_hits.add("hot")
 
     coastal_focus = bool(coastal_lines)
-    if evidence["coastal_storm_lines"] or evidence["generic_storm_lines"] or (evidence["inland_storm_lines"] and not coastal_focus):
-        weather_hits.add("storm")
-    elif evidence["inland_storm_lines"] and coastal_focus:
-        weather_hits.add("cloudy")
+    weather_code_source = str(visibility_metadata_values["weather_code_source"] or "").lower()
+    structured_storm = bool(
+        visibility_metadata_values["weather_code"] in {95, 96, 99}
+        and (
+            resolved_post_type == "morning"
+            or any(token in weather_code_source for token in ("forecast", "hourly", "tomorrow"))
+        )
+    )
+    explicit_storm = bool(
+        structured_storm
+        or evidence["coastal_storm_lines"]
+        or evidence["generic_storm_lines"]
+        or evidence["inland_storm_lines"]
+    )
 
-    if "storm" in weather_hits:
-        weather_main = "storm"
-    elif "rain" in weather_hits:
+    if "rain" in weather_hits:
         weather_main = "rain"
     elif "dusty" in weather_hits:
         weather_main = "dusty"
+    elif (
+        visibility_forecast_window in {"current_morning", "tomorrow_morning"}
+        and visibility_condition in {"dense_fog", "fog", "mist"}
+    ):
+        weather_main = "fog"
     elif "hot" in weather_hits:
         weather_main = "hot"
     elif len(weather_hits & {"clear", "cloudy"}) > 1:
@@ -553,7 +642,7 @@ def parse_visual_context_cy(
                 if aqi_level:
                     break
 
-    if aqi_level in {"poor", "very_poor"} and not dust_lines:
+    if resolved_post_type == "morning" and aqi_level in {"poor", "very_poor"} and not dust_lines:
         dust_lines.append("poor AQI/PM visibility signal")
 
     humidity_hint = None
@@ -568,26 +657,58 @@ def parse_visual_context_cy(
         and temp_max >= 33
         and any("nicosia" in _cities_in_line(line.lower()) for line in city_lines)
     )
-    # An explicit Cyprus coast/sea/city mention wins over inland heat. Nicosia
-    # becomes the scene focus only for genuinely inland-only source material.
-    inland_heat_focus = inland_heat_candidate and not coastal_focus
+    inland_heat_focus = inland_heat_candidate
     if troodos_relevant:
         evidence["weather_lines"].append("INLAND_MOUNTAIN_RELEVANCE: Troodos")
 
     gust_max = max(gusts) if gusts else None
-    severe_wind = (
-        (gust_max is not None and gust_max >= 15)
-        or bool(evidence["coastal_storm_lines"])
-        or bool(evidence["generic_storm_lines"])
-        or (bool(evidence["inland_storm_lines"]) and not coastal_focus)
+    wind_max = max(winds) if winds else None
+    strongest_wind = max(
+        [value for value in (wind_max, gust_max) if isinstance(value, (int, float))],
+        default=None,
     )
+    strong_wind = bool(strongest_wind is not None and strongest_wind >= 9)
+    severe_wind = bool(gust_max is not None and gust_max >= 15)
+    if coastal_focus and inland_heat_focus:
+        scene_focus = "coast_inland_contrast"
+    elif coastal_focus:
+        scene_focus = "coastal"
+    elif inland_heat_focus:
+        scene_focus = "inland"
+    else:
+        scene_focus = "island_wide"
+    visual_forecast_period = _visual_forecast_period(
+        resolved_post_type,
+        visibility_forecast_window,
+        list(evidence["weather_lines"]),
+    )
+    hazards: list[str] = []
+    if inland_heat_candidate or (temp_max is not None and temp_max >= 33):
+        hazards.append("heat")
+    if severe_wind:
+        hazards.append("severe_wind")
+    elif strong_wind:
+        hazards.append("strong_wind")
+    if explicit_storm:
+        hazards.append("storm")
+    if actual_precipitation:
+        hazards.append("precipitation")
+    if dust_lines or visibility_condition == "dust_haze":
+        hazards.append("dust")
+    if visibility_condition in {"dense_fog", "fog", "mist"}:
+        hazards.append("fog")
+    hottest_city_key = max(city_day_temps, key=city_day_temps.get) if city_day_temps else None
 
     return VisualContextCY(
         post_type=resolved_post_type,
         weather_main=weather_main,
+        primary_weather=weather_main,
+        hazards=hazards,
+        visual_forecast_period=visual_forecast_period,
+        scene_focus=scene_focus,
         temp_max=temp_max,
         temp_min=temp_min,
-        wind_max=max(winds) if winds else None,
+        wind_max=wind_max,
         gust_max=gust_max,
         humidity_hint=humidity_hint,
         uv_level=uv_level,
@@ -620,11 +741,19 @@ def parse_visual_context_cy(
         coastal_precipitation=coastal_precipitation,
         inland_precipitation=inland_precipitation,
         inland_thunder_risk=inland_thunder_risk,
+        strong_wind=strong_wind,
         severe_wind=severe_wind,
+        explicit_storm=explicit_storm,
         sea_temp=max(sea_temps) if sea_temps else None,
+        sea_temp_min=min(sea_temps) if sea_temps else None,
+        sea_temp_max=max(sea_temps) if sea_temps else None,
         sea_state_hint=_normalized_sea_state(sea_state_lines),
         coastal_focus=coastal_focus,
         inland_heat_focus=inland_heat_focus,
+        inland_max_temp=city_day_temps.get("nicosia"),
+        hottest_city=_CITY_DISPLAY.get(hottest_city_key) if hottest_city_key else None,
+        coastal_temp_min=min(coastal_day_temps) if coastal_day_temps else None,
+        coastal_temp_max=max(coastal_day_temps) if coastal_day_temps else None,
         city_weather_lines=city_lines,
         coastal_weather_lines=coastal_lines,
         evidence=evidence,

@@ -15,11 +15,11 @@ from visual_context_cy import VisualContextCY, parse_visual_context_cy
 from visual_rules_cy import SceneCuesCY, apply_visual_rules_cy
 
 
-CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v8"
+CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v9"
 
 _PROMPT_TARGET_MIN_CHARS = 450
-_PROMPT_TARGET_MAX_CHARS = 900
-_PROMPT_HARD_MAX_CHARS = 1200
+_PROMPT_TARGET_MAX_CHARS = 1600
+_PROMPT_HARD_MAX_CHARS = 2200
 _POLLINATIONS_URL_HARD_MAX_CHARS = 3500
 
 _GENERAL_TRIGGER_PATTERNS = (
@@ -606,7 +606,7 @@ def _cloud_haze_category(ctx: VisualContextCY) -> str:
         return "cloudy"
     if ctx.weather_main == "rain":
         return "rain_clouds"
-    if ctx.weather_main == "storm":
+    if ctx.explicit_storm:
         return "wind_alert_clouds" if not ctx.actual_precipitation else "storm_rain_clouds"
     if ctx.weather_main in {"clear", "hot"}:
         return "clear"
@@ -855,7 +855,12 @@ def _compact_time_cue(
             return prefix + "Neutral early morning daylight filtered by dry suspended particles"
         if ctx.visibility_condition == "mixed_visibility":
             return prefix + "Soft neutral early morning daylight through a muted grey mixed atmosphere"
-    if post_type == "morning":
+    if ctx.visual_forecast_period == "representative_daytime":
+        cue = "Bright representative Cyprus daytime, warm or neutral Mediterranean daylight and natural shadows"
+        if ctx.uv_level in {"high", "extreme"}:
+            cue += ", with crisp direct sunlight"
+        return cue
+    if ctx.visual_forecast_period in {"current_morning", "tomorrow_morning"}:
         cue = "Fresh neutral morning daylight, pale blue sky, natural shadows and light from the left"
         if ctx.uv_level in {"high", "extreme"}:
             cue += ", with crisp direct sunlight"
@@ -895,6 +900,8 @@ def _compact_weather_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
         return "Soft humid haze with reduced distant visibility"
     if diagnostics.get("inland_unsettled_rule"):
         return "Dry coast under clearer sky with distant convective cloud towers over Troodos"
+    if diagnostics.get("explicit_storm_rule"):
+        return "Strong wind-alert cloud structure over a dry Cyprus landscape, without invented precipitation"
     if ctx.weather_main == "cloudy":
         return "Layered Mediterranean cloud cover"
     if diagnostics.get("severe_wind_rule"):
@@ -909,7 +916,7 @@ def _compact_wind_sea_cue(ctx: VisualContextCY, scene: SceneCuesCY) -> str:
     wet = bool(diagnostics.get("wet_rule"))
     windy = bool(diagnostics.get("wind_rule"))
     severe = bool(diagnostics.get("severe_wind_rule"))
-    inland_only = ctx.inland_heat_focus and not ctx.coastal_focus
+    inland_only = ctx.scene_focus == "inland"
     if inland_only:
         if severe:
             return "Strong wind visibly moving dry inland vegetation"
@@ -950,12 +957,21 @@ def _negative_items(
     moon_context: dict[str, object],
     metadata: dict[str, str],
     scene: SceneCuesCY,
+    ctx: VisualContextCY,
 ) -> list[str]:
     items = [
         "no text or logo",
         "no watermark or signature",
         "no illustration or fantasy",
     ]
+    if not ctx.actual_precipitation:
+        items.extend(["no rain", "no wet roads or wet rocks"])
+    if not ctx.explicit_storm:
+        items.extend(["no storm", "no lightning or rough storm sea"])
+    if ctx.visibility_condition == "clear":
+        items.append("no fog")
+    if ctx.visual_forecast_period == "representative_daytime":
+        items.extend(["no sunset", "no night", "no moon-led scene", "no gloomy twilight", "no cold winter palette"])
     if _bay_visuals_disabled():
         items.append(
             "no scenic curved bay, no natural cove, no enclosed tourist lagoon, no elevated postcard coastline"
@@ -991,11 +1007,11 @@ def _negative_items(
             items.append("no humid coastal fog or moist fog depth")
         elif visibility_condition == "mixed_visibility":
             items.append("no dense wall of fog and no exaggerated Sahara palette")
-    elif post_type == "morning":
+    elif ctx.visual_forecast_period in {"representative_daytime", "current_morning", "tomorrow_morning"}:
         items.extend(
             [
-                "no sunset and no orange golden-hour sky",
-                "no moon and no night",
+                "no night",
+                "no moon-led scene",
                 "no bright light source on the right",
             ]
         )
@@ -1005,7 +1021,81 @@ def _negative_items(
             items.append("no perfect full moon")
     if scene.diagnostics.get("wind_rule"):
         items.append("no mirror-flat water or still vegetation")
-    return _dedupe_semantic_items(items)[:10]
+    return _dedupe_semantic_items(items)[:15]
+
+
+def _fmt_fact_number(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "unknown"
+    return f"{float(value):.1f}".rstrip("0").rstrip(".")
+
+
+def _weather_truth_block(ctx: VisualContextCY) -> str:
+    period_labels = {
+        "current_morning": "current morning",
+        "representative_daytime": "representative daytime tomorrow" if ctx.post_type == "evening" else "representative daytime today",
+        "tomorrow_morning": "tomorrow morning",
+        "evening": "explicitly forecast evening period",
+        "overnight": "explicitly forecast overnight period",
+    }
+    dry_suffix = " and mostly dry" if not ctx.actual_precipitation else " with confirmed precipitation"
+    facts = [
+        f"forecast period: {period_labels.get(ctx.visual_forecast_period, ctx.visual_forecast_period)}",
+        f"primary weather: {ctx.primary_weather}{dry_suffix}",
+    ]
+    if ctx.inland_max_temp is not None:
+        facts.append(f"inland maximum: {_fmt_fact_number(ctx.inland_max_temp)} C")
+    elif ctx.temp_max is not None:
+        facts.append(f"island maximum: {_fmt_fact_number(ctx.temp_max)} C")
+    if ctx.coastal_temp_min is not None and ctx.coastal_temp_max is not None:
+        facts.append(
+            "coastal temperatures: "
+            f"{_fmt_fact_number(ctx.coastal_temp_min)}-{_fmt_fact_number(ctx.coastal_temp_max)} C"
+        )
+    if ctx.gust_max is not None:
+        facts.append(f"coastal gusts: up to {_fmt_fact_number(ctx.gust_max)} m/s")
+    facts.extend(
+        [
+            "precipitation: confirmed" if ctx.actual_precipitation else "precipitation: none confirmed",
+            "storm: explicitly confirmed" if ctx.explicit_storm else "storm: not confirmed",
+            f"visibility: {ctx.visibility_condition}",
+        ]
+    )
+
+    priorities: list[str] = []
+    must_show: list[str] = []
+    if ctx.inland_heat_focus:
+        priorities.append("strong inland heat")
+        must_show.extend(["hot Cyprus daytime", "inland heat haze"])
+    if ctx.coastal_focus:
+        priorities.append("breezy Mediterranean coast" if ctx.strong_wind else "Mediterranean coast")
+        must_show.append("breezy Mediterranean coast" if ctx.strong_wind else "Mediterranean coastal context")
+    if ctx.primary_weather in {"mixed", "cloudy", "hot"} and not ctx.actual_precipitation:
+        priorities.append("partly cloudy or mostly dry summer sky")
+        must_show.append("partly cloudy or mostly dry summer sky")
+    if ctx.actual_precipitation:
+        priorities.append("factual precipitation")
+        must_show.append("factual rain only where forecast")
+    if ctx.explicit_storm:
+        priorities.append("explicit storm warning")
+        must_show.append("storm wind structure")
+    if ctx.strong_wind:
+        must_show.append("visible wind on sea surface or vegetation")
+    if ctx.visibility_condition in {"dense_fog", "fog", "mist"}:
+        priorities.append("forecast visibility restriction")
+        must_show.append("factual fog or mist depth")
+    if not priorities:
+        priorities.append("factual Cyprus weather")
+    if not must_show:
+        must_show.append("dry Cyprus landscape in natural forecast-period light")
+    return (
+        "WEATHER TRUTH:\n- "
+        + ";\n- ".join(facts)
+        + ".\nVISUAL PRIORITY:\n"
+        + "\n".join(f"{index}. {value};" for index, value in enumerate(priorities[:4], start=1))
+        + "\nMUST SHOW:\n- "
+        + ";\n- ".join(must_show[:5])
+    )
 
 
 def _compose_prompt(positive: list[str], negative: list[str]) -> str:
@@ -1014,17 +1104,19 @@ def _compose_prompt(positive: list[str], negative: list[str]) -> str:
 
 def _fit_prompt_budget(positive: list[str], negative: list[str]) -> tuple[str, list[str]]:
     positive = _dedupe_semantic_items(positive)
-    negative = _dedupe_semantic_items(negative)[:10]
+    negative = _dedupe_semantic_items(negative)[:15]
     prompt = _compose_prompt(positive, negative)
     if len(prompt) < _PROMPT_TARGET_MIN_CHARS:
         positive[-1] += ", natural depth and balanced local detail without postcard exaggeration"
         prompt = _compose_prompt(positive, negative)
     if len(prompt) > _PROMPT_TARGET_MAX_CHARS:
-        positive[0] = "Photorealistic Cyprus landscape photography"
+        if len(positive) > 1:
+            positive[1] = "Photorealistic Cyprus landscape photography"
         positive[-1] = "Natural colors, realistic detail and palms only as optional background accents"
         prompt = _compose_prompt(positive, negative)
     if len(prompt) > _PROMPT_TARGET_MAX_CHARS:
-        positive[5] = "Coherent scene-specific composition"
+        if len(positive) > 6:
+            positive[6] = "Coherent scene-specific composition"
         positive[-1] = "Natural colors and realistic detail"
         prompt = _compose_prompt(positive, negative)
     if len(prompt) > _PROMPT_HARD_MAX_CHARS:
@@ -1050,7 +1142,7 @@ def _visual_cache_metadata(
     blocked_archetypes: tuple[str, ...] = (),
 ) -> dict[str, object]:
     forecast_date = _extract_date_key(message)
-    if ctx.inland_heat_focus and not ctx.coastal_focus:
+    if ctx.scene_focus == "inland":
         seed = _variant_seed(message, ctx, post_type)
         scene_text = _stable_variant(seed, "scene", _CY_INLAND_SCENES)
         selected_scene = _inland_scene_family(scene_text)
@@ -1077,7 +1169,8 @@ def _visual_cache_metadata(
         visual_archetype = variants["visual_archetype"]
         scene_selection_mode = variants["scene_selection_mode"]
         composition_selection_mode = variants["composition_selection_mode"]
-    lunar_phase, lunar_illumination = _moon_cache_fields(message, post_type)
+    lunar_mode = post_type if ctx.visual_forecast_period in {"evening", "overnight"} else "morning"
+    lunar_phase, lunar_illumination = _moon_cache_fields(message, lunar_mode)
     metadata = {
         "forecast_date": forecast_date,
         "post_type": post_type,
@@ -1089,6 +1182,13 @@ def _visual_cache_metadata(
         "scene_selection_mode": scene_selection_mode,
         "composition_selection_mode": composition_selection_mode,
         "weather_scenario": str(ctx.weather_main),
+        "primary_weather": str(ctx.primary_weather),
+        "hazards": ",".join(ctx.hazards),
+        "visual_forecast_period": ctx.visual_forecast_period,
+        "scene_focus": ctx.scene_focus,
+        "actual_precipitation": str(bool(ctx.actual_precipitation)).lower(),
+        "explicit_storm": str(bool(ctx.explicit_storm)).lower(),
+        "severe_wind": str(bool(ctx.severe_wind)).lower(),
         "wind_gust_category": _wind_category(ctx),
         "cloud_haze_category": _cloud_haze_category(ctx),
         "current_visibility_m": ctx.current_visibility_m,
@@ -1129,6 +1229,13 @@ def _visual_cache_metadata(
         "scene_selection_mode",
         "composition_selection_mode",
         "weather_scenario",
+        "primary_weather",
+        "hazards",
+        "visual_forecast_period",
+        "scene_focus",
+        "actual_precipitation",
+        "explicit_storm",
+        "severe_wind",
         "wind_gust_category",
         "cloud_haze_category",
         "visibility_condition",
@@ -1193,7 +1300,11 @@ def build_cyprus_scene_prompt_with_metadata(
         visibility_metadata=visibility_metadata,
     )
     scene = apply_visual_rules_cy(ctx)
-    moon_context = _evening_moon_visual_context(final_format_v2_message) if mode == "evening" else {}
+    moon_context = (
+        _evening_moon_visual_context(final_format_v2_message)
+        if ctx.visual_forecast_period in {"evening", "overnight"}
+        else {}
+    )
     metadata = _visual_cache_metadata(
         final_format_v2_message,
         ctx,
@@ -1219,9 +1330,10 @@ def build_cyprus_scene_prompt_with_metadata(
     # The time cue is controlled text; restore its factual lunar percentage after
     # the general sanitizer removes raw percentages from source-derived content.
     sanitized_positive[2] = _compact_time_cue(mode, moon_context, ctx)
-    negative = _negative_items(mode, moon_context, metadata, scene)
+    sanitized_positive.insert(0, _weather_truth_block(ctx))
+    negative = _negative_items(mode, moon_context, metadata, scene, ctx)
     prompt, final_positive = _fit_prompt_budget(sanitized_positive, negative)
-    final_negative = _dedupe_semantic_items(negative)[:10]
+    final_negative = _dedupe_semantic_items(negative)[:15]
     encoded_url_length = _pollinations_encoded_url_length(prompt)
     if encoded_url_length > _POLLINATIONS_URL_HARD_MAX_CHARS:
         raise ValueError("Cyprus visual prompt exceeds the Pollinations URL length limit")

@@ -346,6 +346,7 @@ def cy_morning_image_phase_for_result(image_result: str) -> str:
         "skipped_duplicate": "image_skipped",
         "skipped_duplicate_before_send": "image_skipped",
         "skipped_duplicate_local_weather_card": "image_skipped",
+        "skipped_duplicate_local_informative_cover": "image_skipped",
     }.get(str(image_result or "unknown"), "image_result")
 
 
@@ -1819,13 +1820,13 @@ async def _build_safe_test_image(
             sha256_file,
         )
         from cyprus_image_recovery import (
-            LOCAL_WEATHER_CARD_VERSION,
+            LOCAL_INFORMATIVE_COVER_VERSION,
             load_provider_health,
             mark_provider_duplicate,
             provider_health_exclusions,
             provider_health_path,
             record_provider_attempts,
-            render_local_weather_card,
+            render_local_informative_cover,
             write_provider_health,
         )
         from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata
@@ -2378,133 +2379,129 @@ async def _build_safe_test_image(
                 local_metadata = dict(last_metadata or {})
                 local_metadata.update(
                     {
-                        "prompt_version": LOCAL_WEATHER_CARD_VERSION,
-                        "selected_scene": "local_weather_card",
-                        "composition": "atmospheric_full_bleed",
-                        "visual_archetype": "local_atmospheric_visual",
+                        "prompt_version": LOCAL_INFORMATIVE_COVER_VERSION,
+                        "selected_scene": "local_informative_cover",
+                        "composition": "informative_cover",
+                        "visual_archetype": "factual_weather_cover",
                         "scene_selection_mode": "local_fallback",
                         "composition_selection_mode": "local_fallback",
-                        "cache_key": (
-                            f"region=cyprus|forecast_date={target_date_for_diag}|post_type={mode}"
-                            f"|prompt_version={LOCAL_WEATHER_CARD_VERSION}|selected_scene=local_weather_card"
-                        ),
                     }
                 )
                 local_path = _cy_safe_image_output_path(
-                    f"local_weather_card_{target_date_for_diag}_{mode}"
+                    f"local_informative_cover_{target_date_for_diag}_{mode}"
                 ).with_suffix(".png")
-                local_result = render_local_weather_card(
-                    final_text,
-                    target_date=target_date_for_diag,
-                    post_type=mode,
-                    output_path=local_path,
-                    minimum_bytes=minimum,
-                )
-                local_path = Path(str(local_result["path"]))
-                local_size = int(local_result["bytes"])
-                renderer_metadata = dict(local_result.get("metadata") or {})
-                local_metadata.update(
-                    {
-                        key: renderer_metadata.get(key, "")
-                        for key in (
-                            "local_visual_variant",
-                            "local_palette",
-                            "local_time_of_day",
-                            "local_weather_scenario",
-                            "renderer_version",
-                        )
-                    }
-                )
-                local_sha256 = sha256_file(local_path)
-                existing_local_exact = next(
-                    (
-                        entry
-                        for entry in restored_history
-                        if str(entry.get("sha256") or "") == local_sha256
-                        and str(entry.get("date") or "") == target_date_for_diag
-                        and str(entry.get("post_type") or "") == mode
-                    ),
-                    None,
-                )
-                existing_local_date = next(
-                    (
-                        entry
-                        for entry in restored_history
-                        if str(entry.get("date") or "") == target_date_for_diag
-                        and str(entry.get("post_type") or "") == mode
-                        and str(entry.get("selected_scene") or "") == "local_weather_card"
-                    ),
-                    None,
-                )
-                attempts.append(
-                    {
-                        "attempt": generation_attempt + 1,
-                        "variation_attempt": variation_attempt,
-                        "selected_scene": "local_weather_card",
-                        "composition": "atmospheric_full_bleed",
-                        "visual_archetype": "local_atmospheric_visual",
-                        "style_name": "local_weather_card",
-                        "cache_key": local_metadata["cache_key"],
-                        "cache_status": "local_generated",
-                        "backend": "local_weather_card",
-                        "backend_attempts": [],
-                        "backend_call_count": backend_generation_calls,
-                        "backend_call_limit": backend_call_limit,
-                        "backend_excluded": sorted(excluded_backends),
-                        "image_path": str(local_path),
-                        "image_bytes": local_size,
-                        "dedup_reason": (
-                            "exact_duplicate"
-                            if existing_local_exact
-                            else "local_date_post_type_duplicate"
-                            if existing_local_date
-                            else "local_exact_sha_clear"
-                        ),
-                        "sha256": local_sha256,
-                        "local_metadata": renderer_metadata,
-                        "primary_fallback_allowed": primary_fallback_allowed,
-                        "recovery_fallback_allowed": recovery_fallback_allowed,
-                    }
-                )
-                local_fallback_generated = True
-                last_metadata = local_metadata
-                if existing_local_exact or existing_local_date:
-                    final_reason = "skipped_duplicate_local_weather_card"
-                    _cy_write_image_diagnostics(
-                        mode=mode,
+                try:
+                    local_result = render_local_informative_cover(
+                        final_text,
                         target_date=target_date_for_diag,
-                        result=final_reason,
-                        prompt_metadata=local_metadata,
-                        attempts=attempts,
-                        telegram_attempts=telegram_attempts,
-                        write_history_path=write_history_path,
-                        reference_history_paths=reference_history_paths,
-                        history_count_before=before_history_count,
-                        generation_summary=_generation_summary(
-                            final_reason,
-                            "local_weather_card",
-                        ),
+                        post_type=mode,
+                        output_path=local_path,
+                        minimum_bytes=minimum,
                     )
-                    return {
-                        "result": final_reason,
-                        "message_ids": [],
-                        "backend": "local_weather_card",
-                        "attempts": attempts,
-                        **_generation_summary(final_reason, "local_weather_card"),
-                    }
-                selected_candidate = (
-                    "",
-                    "local_weather_card",
-                    local_metadata,
-                    local_path,
-                    local_size,
-                    None,
-                    "local_weather_card",
-                )
-                print(
-                    "CY_SAFE_IMAGE_LOCAL_FALLBACK: "
-                    f"path={local_path}; bytes={local_size}; sha256={local_sha256[:12]}"
-                )
+                except Exception as exc:
+                    attempts.append(
+                        {
+                            "attempt": generation_attempt + 1,
+                            "variation_attempt": variation_attempt,
+                            "selected_scene": "local_informative_cover",
+                            "composition": "informative_cover",
+                            "visual_archetype": "factual_weather_cover",
+                            "style_name": "local_informative_cover",
+                            "cache_status": "local_renderer_failed",
+                            "backend": "local_informative_cover",
+                            "backend_attempts": [],
+                            "backend_call_count": backend_generation_calls,
+                            "backend_call_limit": backend_call_limit,
+                            "backend_excluded": sorted(excluded_backends),
+                            "image_path": "",
+                            "image_bytes": 0,
+                            "error_type": exc.__class__.__name__,
+                            "error": str(exc),
+                            "primary_fallback_allowed": primary_fallback_allowed,
+                            "recovery_fallback_allowed": recovery_fallback_allowed,
+                        }
+                    )
+                    last_metadata = local_metadata
+                    logging.error("Cyprus local informative cover failed non-fatally: %s", exc)
+                else:
+                    local_path = Path(str(local_result["path"]))
+                    local_size = int(local_result["bytes"])
+                    renderer_metadata = dict(local_result.get("metadata") or {})
+                    local_metadata.update(renderer_metadata)
+                    local_sha256 = sha256_file(local_path)
+                    existing_local_exact = next(
+                        (
+                            entry
+                            for entry in restored_history
+                            if str(entry.get("sha256") or "") == local_sha256
+                            and str(entry.get("date") or "") == target_date_for_diag
+                            and str(entry.get("post_type") or "") == mode
+                        ),
+                        None,
+                    )
+                    attempts.append(
+                        {
+                            "attempt": generation_attempt + 1,
+                            "variation_attempt": variation_attempt,
+                            "selected_scene": "local_informative_cover",
+                            "composition": "informative_cover",
+                            "visual_archetype": "factual_weather_cover",
+                            "style_name": "local_informative_cover",
+                            "cache_key": local_metadata["cache_key"],
+                            "cache_status": "local_generated",
+                            "backend": "local_informative_cover",
+                            "backend_attempts": [],
+                            "backend_call_count": backend_generation_calls,
+                            "backend_call_limit": backend_call_limit,
+                            "backend_excluded": sorted(excluded_backends),
+                            "image_path": str(local_path),
+                            "image_bytes": local_size,
+                            "dedup_reason": "exact_duplicate" if existing_local_exact else "local_exact_sha_clear",
+                            "sha256": local_sha256,
+                            "local_metadata": renderer_metadata,
+                            "primary_fallback_allowed": primary_fallback_allowed,
+                            "recovery_fallback_allowed": recovery_fallback_allowed,
+                        }
+                    )
+                    local_fallback_generated = True
+                    last_metadata = local_metadata
+                    if existing_local_exact:
+                        final_reason = "skipped_duplicate_local_informative_cover"
+                        _cy_write_image_diagnostics(
+                            mode=mode,
+                            target_date=target_date_for_diag,
+                            result=final_reason,
+                            prompt_metadata=local_metadata,
+                            attempts=attempts,
+                            telegram_attempts=telegram_attempts,
+                            write_history_path=write_history_path,
+                            reference_history_paths=reference_history_paths,
+                            history_count_before=before_history_count,
+                            generation_summary=_generation_summary(
+                                final_reason,
+                                "local_informative_cover",
+                            ),
+                        )
+                        return {
+                            "result": final_reason,
+                            "message_ids": [],
+                            "backend": "local_informative_cover",
+                            "attempts": attempts,
+                            **_generation_summary(final_reason, "local_informative_cover"),
+                        }
+                    selected_candidate = (
+                        "",
+                        "local_informative_cover",
+                        local_metadata,
+                        local_path,
+                        local_size,
+                        None,
+                        "local_informative_cover",
+                    )
+                    print(
+                        "CY_SAFE_IMAGE_LOCAL_INFORMATIVE_COVER: "
+                        f"path={local_path}; bytes={local_size}; sha256={local_sha256[:12]}"
+                    )
 
         if selected_candidate is None:
             mixed_failure = bool(
@@ -2590,7 +2587,7 @@ async def _build_safe_test_image(
 
         sent_message_ids: list[int] = []
         if image_chat is not None:
-            if selected_backend != "local_weather_card":
+            if selected_backend != "local_informative_cover":
                 duplicate_result = evaluate_cyprus_visual_candidate(
                     image_path,
                     date_value=metadata["forecast_date"],

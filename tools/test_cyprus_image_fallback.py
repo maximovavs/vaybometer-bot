@@ -36,13 +36,15 @@ sys.modules.setdefault("imghdr", imghdr_stub)
 from PIL import Image  # type: ignore  # noqa: E402
 
 import cyprus_visual_dedup  # noqa: E402
+import cyprus_image_recovery  # noqa: E402
 from cyprus_image_recovery import (  # noqa: E402
+    LOCAL_INFORMATIVE_COVER_VERSION,
     load_provider_health,
     mark_provider_duplicate,
     provider_health_exclusions,
     provider_health_path,
     record_provider_attempts,
-    render_local_weather_card,
+    render_local_informative_cover,
     write_provider_health,
 )
 import safe_test_post as safe_module  # noqa: E402
@@ -70,6 +72,15 @@ EVENING_MESSAGE = """🌅 Кипр завтра (16.07.2026)
 """
 
 
+PROBLEM_EVENING_MESSAGE = """🌅 Кипр завтра (20.07.2026)
+🏙 Никосия — 38/24 °C • жарко • переменная облачность
+🏙 Лимассол — 33/24 °C • переменная облачность • ветер 8 м/с, порывы до 15 м/с • 🌊 28°C
+🏙 Ларнака — 32/24 °C • облачно • ветер 7 м/с • 🌊 29°C
+✅ План завтра: тень в центре, у моря проверить порывы.
+#Кипр #погода
+"""
+
+
 def _write_dhash_fixture(path: Path, *, flipped_rows: int) -> None:
     rows: list[int] = []
     for row in range(8):
@@ -88,26 +99,26 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def local_weather_card_is_valid_deterministic_and_metadata_rich() -> None:
+def local_informative_cover_is_valid_deterministic_and_factual() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
-        first = render_local_weather_card(
+        first = render_local_informative_cover(
             MESSAGE,
             target_date="2026-07-15",
             post_type="morning",
             output_path=tmp / "first.png",
             minimum_bytes=12000,
         )
-        second = render_local_weather_card(
+        second = render_local_informative_cover(
             MESSAGE,
             target_date="2026-07-15",
             post_type="morning",
             output_path=tmp / "second.png",
             minimum_bytes=12000,
         )
-        evening = render_local_weather_card(
-            EVENING_MESSAGE,
-            target_date="2026-07-16",
+        evening = render_local_informative_cover(
+            PROBLEM_EVENING_MESSAGE,
+            target_date="2026-07-20",
             post_type="evening",
             output_path=tmp / "evening.png",
             minimum_bytes=12000,
@@ -120,22 +131,35 @@ def local_weather_card_is_valid_deterministic_and_metadata_rich() -> None:
         assert _sha256(first_path) == _sha256(second_path)
         assert _sha256(first_path) != _sha256(evening_path)
         required_metadata = {
-            "local_visual_variant",
-            "local_palette",
-            "local_time_of_day",
-            "local_weather_scenario",
             "renderer_version",
+            "visual_forecast_period",
+            "primary_weather",
+            "hazards",
+            "scene_focus",
+            "headline",
+            "primary_fact",
+            "secondary_fact",
+            "tertiary_fact",
+            "actual_precipitation",
+            "explicit_storm",
+            "severe_wind",
+            "rendered_text",
+            "palette",
+            "cache_key",
         }
         assert required_metadata <= set(first["metadata"])
         assert required_metadata <= set(evening["metadata"])
-        assert first["metadata"]["renderer_version"] == "cy_local_atmospheric_visual_v2"
-        assert first["metadata"]["rendered_text"] == ""
-        assert evening["metadata"]["rendered_text"] == ""
-        renderer_source = inspect.getsource(render_local_weather_card)
-        assert "rounded_rectangle" not in renderer_source
-        assert "draw.text" not in renderer_source
-        assert "VAYBOMETER" not in renderer_source.upper()
-        assert "м/с" not in first["metadata"]["rendered_text"]
+        assert first["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
+        assert evening["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
+        assert evening["metadata"]["headline"] == "КИПР ЗАВТРА"
+        assert evening["metadata"]["primary_fact"] == "🔥 ДО 38° В НИКОСИИ"
+        assert evening["metadata"]["secondary_fact"] == "💨 ПОРЫВЫ ДО 15 М/С У МОРЯ"
+        assert evening["metadata"]["actual_precipitation"] == "false"
+        assert evening["metadata"]["explicit_storm"] == "false"
+        assert evening["metadata"]["severe_wind"] == "true"
+        assert evening["metadata"]["visual_forecast_period"] == "representative_daytime"
+        assert evening["metadata"]["scene_focus"] == "coast_inland_contrast"
+        assert "🌧" not in evening["metadata"]["rendered_text"]
         assert safe_module._cy_image_caption(
             "morning",
             "2026-07-16",
@@ -151,22 +175,65 @@ def local_weather_card_is_valid_deterministic_and_metadata_rich() -> None:
         with Image.open(first_path) as image:
             assert image.size == (1080, 1080)
             assert image.format == "PNG"
-            assert image.info["backend"] == "local_weather_card"
+            assert image.info["backend"] == "local_informative_cover"
             assert image.info["target_date"] == "2026-07-15"
             assert image.info["post_type"] == "morning"
-            assert image.info["focus"] == "coastal"
-            assert image.info["rendered_text"] == ""
+            assert image.info["headline"] == "КИПР СЕГОДНЯ"
+            assert image.info["rendered_text"]
             image.verify()
         with Image.open(evening_path) as image:
             assert image.size == (1080, 1080)
             assert image.info["post_type"] == "evening"
-            assert image.info["local_time_of_day"] in {
-                "blue_hour",
-                "twilight",
-                "moonlit_evening",
-                "late_twilight",
-            }
+            assert image.info["visual_forecast_period"] == "representative_daytime"
+            assert image.info["palette"] == "hot"
             image.verify()
+
+
+def local_cover_graphics_and_cache_follow_confirmed_facts() -> None:
+    dry_storm = """🌅 Кипр завтра (21.07.2026)
+⚠️ Официальное предупреждение: штормовой ветер у побережья, без осадков.
+🏙 Пафос — 29/23 °C • облачно • порывы до 16 м/с.
+"""
+    rain = """🌅 Кипр завтра (21.07.2026)
+🏙 Пафос — 29/23 °C • дождь • порывы до 16 м/с.
+"""
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        dry = render_local_informative_cover(
+            dry_storm,
+            target_date="2026-07-21",
+            post_type="evening",
+            output_path=tmp / "dry.png",
+            minimum_bytes=12000,
+        )
+        wet = render_local_informative_cover(
+            rain,
+            target_date="2026-07-21",
+            post_type="evening",
+            output_path=tmp / "wet.png",
+            minimum_bytes=12000,
+        )
+        changed = render_local_informative_cover(
+            PROBLEM_EVENING_MESSAGE.replace("38/24", "37/24"),
+            target_date="2026-07-20",
+            post_type="evening",
+            output_path=tmp / "changed.png",
+            minimum_bytes=12000,
+        )
+        baseline = render_local_informative_cover(
+            PROBLEM_EVENING_MESSAGE,
+            target_date="2026-07-20",
+            post_type="evening",
+            output_path=tmp / "baseline.png",
+            minimum_bytes=12000,
+        )
+        assert dry["metadata"]["storm_graphics"] == "true"
+        assert dry["metadata"]["rain_graphics"] == "false"
+        assert "🌧" not in dry["metadata"]["rendered_text"]
+        assert wet["metadata"]["actual_precipitation"] == "true"
+        assert wet["metadata"]["rain_graphics"] == "true"
+        assert "🌧 ДОЖДЬ МЕСТАМИ" in wet["metadata"]["rendered_text"]
+        assert changed["metadata"]["cache_key"] != baseline["metadata"]["cache_key"]
 
 
 def provider_health_is_date_and_namespace_scoped() -> None:
@@ -174,7 +241,7 @@ def provider_health_is_date_and_namespace_scoped() -> None:
         old_root = os.environ.get("CY_IMAGE_PROVIDER_HEALTH_DIR")
         os.environ["CY_IMAGE_PROVIDER_HEALTH_DIR"] = tmp_name
         try:
-            health = load_provider_health("2026-07-15", "morning", "test")
+            health = load_provider_health("2099-07-15", "morning", "test")
             record_provider_attempts(
                 health,
                 [
@@ -195,15 +262,15 @@ def provider_health_is_date_and_namespace_scoped() -> None:
                 run_id="fixture-run",
             )
             test_path = write_provider_health(health)
-            assert test_path == provider_health_path("2026-07-15", "morning", "test")
-            assert provider_health_exclusions(load_provider_health("2026-07-15", "morning", "test")) == {
+            assert test_path == provider_health_path("2099-07-15", "morning", "test")
+            assert provider_health_exclusions(load_provider_health("2099-07-15", "morning", "test")) == {
                 "pollinations"
             }
-            stored = load_provider_health("2026-07-15", "morning", "test")
+            stored = load_provider_health("2099-07-15", "morning", "test")
             assert stored["providers"]["stable_horde"]["invalid_response_count"] == 1
             assert stored["providers"]["stable_horde"]["consecutive_failures"] == 1
-            assert not provider_health_path("2026-07-15", "morning", "prod").exists()
-            next_day = load_provider_health("2026-07-16", "morning", "test")
+            assert not provider_health_path("2099-07-15", "morning", "prod").exists()
+            next_day = load_provider_health("2099-07-16", "morning", "test")
             assert provider_health_exclusions(next_day) == set()
         finally:
             if old_root is None:
@@ -418,7 +485,7 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
                 image_only_recovery=False,
             )
             assert result["result"] == "sent"
-            assert result["backend"] == "local_weather_card"
+            assert result["backend"] == "local_informative_cover"
             assert calls == {"pollinations": 2, "stable_horde": 3}
             assert len(photo_calls) == 1
             assert photo_calls[0]["chat_id"] == 777
@@ -432,10 +499,10 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
 
             receipt_path = safe_module._cy_image_receipt_path("2026-07-16", "evening")
             receipt = json.loads(receipt_path.read_text("utf-8"))
-            assert receipt["backend"] == "local_weather_card"
-            assert receipt["selected_scene"] == "local_weather_card"
-            assert receipt["composition"] == "atmospheric_full_bleed"
-            assert receipt["visual_archetype"] == "local_atmospheric_visual"
+            assert receipt["backend"] == "local_informative_cover"
+            assert receipt["selected_scene"] == "local_informative_cover"
+            assert receipt["composition"] == "informative_cover"
+            assert receipt["visual_archetype"] == "factual_weather_cover"
             assert receipt["telegram_message_id"] == 81602
             assert receipt["sha256"] == _sha256(Path(result["path"]))
 
@@ -452,7 +519,7 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
                 (tmp / "cy_image_diagnostics" / "2026-07-16-evening" / "image_result.json").read_text("utf-8")
             )
             assert diagnostics["image_result"] == "sent"
-            assert diagnostics["selected_backend"] == "local_weather_card"
+            assert diagnostics["selected_backend"] == "local_informative_cover"
             assert diagnostics["provider_call_counts"] == {
                 "pollinations": 2,
                 "stable_horde": 3,
@@ -478,8 +545,8 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
             local_attempt = diagnostics["selected_scene_attempts"][-1]
             assert local_attempt["primary_fallback_allowed"] is True
             assert local_attempt["recovery_fallback_allowed"] is False
-            assert local_attempt["local_metadata"]["renderer_version"] == "cy_local_atmospheric_visual_v2"
-            assert local_attempt["local_metadata"]["local_visual_variant"]
+            assert local_attempt["local_metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
+            assert local_attempt["local_metadata"]["rendered_text"]
 
             amain_source = inspect.getsource(safe_module.main)
             image_index = amain_source.index("image_result = await _build_safe_test_image(")
@@ -532,11 +599,138 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
         asyncio.run(run_case(Path(tmp_name)))
 
 
+def informative_cover_failure_falls_through_to_text_without_stale_image() -> None:
+    async def run_case(tmp: Path) -> None:
+        env_names = (
+            "CHANNEL_ID",
+            "CY_SAFE_IMAGE_DIR",
+            "CY_IMG_MIN_BYTES",
+            "CY_IMAGE_DELIVERY_DIR",
+            "CY_TEXT_DELIVERY_DIR",
+            "CY_IMAGE_DIAGNOSTICS_DIR",
+            "CY_IMAGE_PROVIDER_HEALTH_DIR",
+        )
+        old_env = {name: os.environ.get(name) for name in env_names}
+        old_token = safe_module.TOKEN
+        old_bot = safe_module.Bot
+        old_outcome = imagegen.generate_astro_image_outcome_with_exclusions
+        old_availability = imagegen.configured_image_backends
+        old_renderer = cyprus_image_recovery.render_local_informative_cover
+        old_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
+        photo_calls: list[dict[str, object]] = []
+        text_calls: list[dict[str, object]] = []
+
+        def exhausted_outcome(_prompt: str, _path: str, *, backend_call_limits=None, **_kwargs):
+            attempts: list[dict[str, object]] = []
+            for backend in ("pollinations", "stable_horde"):
+                for _ in range(int((backend_call_limits or {}).get(backend, 0) or 0)):
+                    attempts.append(
+                        {
+                            "backend": backend,
+                            "result": "failed",
+                            "error_category": "server_error",
+                            "error_type": "FixtureProviderExhausted",
+                        }
+                    )
+            return types.SimpleNamespace(
+                result=None,
+                backend_attempts=attempts,
+                error_type="FixtureProviderExhausted",
+                error_message="all fixture providers exhausted",
+                exhausted=True,
+                actual_backend_call_count=len(attempts),
+            )
+
+        def fail_renderer(*_args, **_kwargs):
+            raise RuntimeError("fixture informative cover renderer failed")
+
+        class FakeBot:
+            def __init__(self, token: str) -> None:
+                self.token = token
+
+            async def send_photo(self, **kwargs):
+                photo_calls.append(kwargs)
+                return types.SimpleNamespace(message_id=81001)
+
+            async def send_message(self, **kwargs):
+                text_calls.append(kwargs)
+                return types.SimpleNamespace(message_id=82000 + len(text_calls))
+
+        try:
+            os.environ.update(
+                {
+                    "CHANNEL_ID": "777",
+                    "CY_SAFE_IMAGE_DIR": str(tmp / "images"),
+                    "CY_IMG_MIN_BYTES": "12000",
+                    "CY_IMAGE_DELIVERY_DIR": str(tmp / "cy_image_delivery"),
+                    "CY_TEXT_DELIVERY_DIR": str(tmp / "cy_text_delivery"),
+                    "CY_IMAGE_DIAGNOSTICS_DIR": str(tmp / "cy_image_diagnostics"),
+                    "CY_IMAGE_PROVIDER_HEALTH_DIR": str(tmp / "cy_image_provider_health"),
+                }
+            )
+            history = tmp / "history.json"
+            history.write_text("[]", "utf-8")
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = history
+            stale_path = tmp / "images" / "local_informative_cover_2026-07-16_evening.png"
+            stale_path.parent.mkdir(parents=True, exist_ok=True)
+            stale_path.write_bytes(b"stale-image-must-not-send")
+            safe_module.TOKEN = "fixture-token"
+            safe_module.Bot = FakeBot
+            imagegen.generate_astro_image_outcome_with_exclusions = exhausted_outcome
+            imagegen.configured_image_backends = lambda **_kwargs: {
+                "configured_backends": ["pollinations", "stable_horde"],
+                "available_backends": ["pollinations", "stable_horde"],
+                "unconfigured_backends": ["custom"],
+            }
+            cyprus_image_recovery.render_local_informative_cover = fail_renderer
+
+            result = await safe_module._build_safe_test_image(
+                EVENING_MESSAGE,
+                "evening",
+                generate_image=True,
+                send_image_to_test=False,
+                send_image_to_chat=True,
+                image_chat_id=777,
+                image_only_recovery=False,
+            )
+            assert result["result"] == "failed_non_fatal"
+            assert photo_calls == []
+            assert not safe_module._cy_image_receipt_path("2026-07-16", "evening").exists()
+            assert stale_path.read_bytes() == b"stale-image-must-not-send"
+
+            bot = FakeBot("fixture-token")
+            message_ids = await safe_module._send_telegram_text_chunks(
+                bot,
+                chat_id=777,
+                chunks=["<b>Кипр завтра</b>\n✅ План завтра: текст опубликован."],
+                add_test_label=False,
+            )
+            assert message_ids == [82001]
+            assert len(text_calls) == 1
+        finally:
+            safe_module.TOKEN = old_token
+            safe_module.Bot = old_bot
+            imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
+            imagegen.configured_image_backends = old_availability
+            cyprus_image_recovery.render_local_informative_cover = old_renderer
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = old_history
+            for name, value in old_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        asyncio.run(run_case(Path(tmp_name)))
+
+
 def main() -> None:
     checks = (
-        local_weather_card_is_valid_deterministic_and_metadata_rich,
+        local_informative_cover_is_valid_deterministic_and_factual,
+        local_cover_graphics_and_cache_follow_confirmed_facts,
         provider_health_is_date_and_namespace_scoped,
         primary_evening_incident_sends_local_visual_before_text,
+        informative_cover_failure_falls_through_to_text_without_stale_image,
     )
     for check in checks:
         check()

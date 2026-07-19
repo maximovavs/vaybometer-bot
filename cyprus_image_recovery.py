@@ -14,12 +14,13 @@ import random
 import re
 from typing import Any, Iterable
 
-from PIL import Image, ImageDraw, ImageFilter, PngImagePlugin
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, PngImagePlugin
 
 from visual_context_cy import parse_visual_context_cy
 
 
 LOCAL_WEATHER_CARD_VERSION = "cy_local_atmospheric_visual_v2"
+LOCAL_INFORMATIVE_COVER_VERSION = "cy_local_informative_cover_v3"
 PROVIDER_HEALTH_SCHEMA_VERSION = 1
 _PROVIDER_NAMES = ("pollinations", "stable_horde", "custom")
 _INVALID_ERROR_CATEGORIES = {
@@ -398,7 +399,7 @@ def _draw_mountain_layers(
     return Image.alpha_composite(image.convert("RGBA"), mountains)
 
 
-def render_local_weather_card(
+def _render_local_atmospheric_visual_v2(
     final_text: str,
     *,
     target_date: str,
@@ -596,13 +597,260 @@ def render_local_weather_card(
     return {"path": str(output), "bytes": output.stat().st_size, "metadata": metadata}
 
 
+def _cover_font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
+    names = (
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "arialbd.ttf" if bold else "arial.ttf",
+    )
+    paths = [
+        *(Path("C:/Windows/Fonts") / name for name in names),
+        *(Path("/usr/share/fonts/truetype/dejavu") / name for name in names),
+        *(Path("/usr/local/share/fonts") / name for name in names),
+    ]
+    for candidate in paths:
+        try:
+            return ImageFont.truetype(str(candidate), size=size)
+        except OSError:
+            continue
+    for name in names:
+        try:
+            return ImageFont.truetype(name, size=size)
+        except OSError:
+            continue
+    raise RuntimeError("no Cyrillic TrueType font available for Cyprus informative cover")
+
+
+def _cover_number(value: float | None) -> str:
+    if not isinstance(value, (int, float)):
+        return ""
+    return f"{float(value):.1f}".rstrip("0").rstrip(".")
+
+
+def _cover_aqi(final_text: str) -> tuple[str, str] | None:
+    match = re.search(r"\bAQI\s*[:=]?\s*(\d{1,3})\b", str(final_text or ""), re.I)
+    if not match:
+        return None
+    value = int(match.group(1))
+    label = "ХОРОШИЙ" if value <= 50 else "УМЕРЕННЫЙ" if value <= 100 else "ПОВЫШЕННЫЙ"
+    return str(value), label
+
+
+def _informative_cover_facts(final_text: str, *, post_type: str) -> tuple[object, dict[str, str]]:
+    ctx = parse_visual_context_cy(final_text, post_type=post_type)
+    headline = "КИПР СЕГОДНЯ" if post_type == "morning" else "КИПР ЗАВТРА"
+    facts: list[str] = []
+    hottest = ctx.hottest_city or ""
+    if ctx.temp_max is not None:
+        if hottest == "Никосия":
+            facts.append(f"🔥 ДО {_cover_number(ctx.temp_max)}° В НИКОСИИ")
+        elif hottest:
+            facts.append(f"🔥 ДО {_cover_number(ctx.temp_max)}° · {hottest.upper()}")
+        else:
+            facts.append(f"🔥 ДО {_cover_number(ctx.temp_max)}° НА КИПРЕ")
+    if ctx.gust_max is not None:
+        location = "У МОРЯ" if ctx.coastal_focus else "НА ОСТРОВЕ"
+        facts.append(f"💨 ПОРЫВЫ ДО {_cover_number(ctx.gust_max)} М/С {location}")
+    if ctx.explicit_storm and not ctx.actual_precipitation:
+        facts.append("⚠️ ШТОРМОВОЙ ВЕТЕР")
+    elif ctx.actual_precipitation:
+        facts.append("🌧 ДОЖДЬ МЕСТАМИ")
+    elif ctx.visibility_condition in {"dense_fog", "fog", "mist"}:
+        facts.append("🌫 ТУМАН УТРОМ")
+    elif ctx.sea_temp_min is not None and ctx.sea_temp_max is not None:
+        low = _cover_number(ctx.sea_temp_min)
+        high = _cover_number(ctx.sea_temp_max)
+        facts.append(f"🌊 МОРЕ {low}°" if low == high else f"🌊 МОРЕ {low}–{high}°")
+    elif (aqi := _cover_aqi(final_text)) is not None:
+        value, label = aqi
+        prefix = "🏭 ВОЗДУХ СЕЙЧАС:" if post_type == "evening" else "🏭"
+        facts.append(f"{prefix} AQI {value} · {label}")
+    if not facts:
+        qualitative = {
+            "clear": "☀️ ЯСНЫЙ ДЕНЬ",
+            "mixed": "⛅ ПЕРЕМЕННАЯ ОБЛАЧНОСТЬ",
+            "cloudy": "☁️ ОБЛАЧНЫЙ ДЕНЬ",
+            "hot": "🔥 ЖАРКИЙ ДЕНЬ",
+            "dusty": "🌫 СУХАЯ ПЫЛЕВАЯ ДЫМКА",
+            "fog": "🌫 ТУМАН УТРОМ",
+            "rain": "🌧 ДОЖДЬ МЕСТАМИ",
+        }
+        facts.append(qualitative.get(ctx.primary_weather, "ПОГОДА НА КИПРЕ"))
+    primary_fact = facts[0]
+    secondary_fact = facts[1] if len(facts) > 1 else ""
+    tertiary_fact = facts[2] if len(facts) > 2 else ""
+    return ctx, {
+        "headline": headline,
+        "primary_fact": primary_fact,
+        "secondary_fact": secondary_fact,
+        "tertiary_fact": tertiary_fact,
+    }
+
+
+def _cover_palette(ctx: object) -> tuple[str, tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
+    primary = str(getattr(ctx, "primary_weather", "unknown"))
+    if bool(getattr(ctx, "explicit_storm", False)):
+        return "storm", (35, 50, 68), (85, 108, 126), (236, 242, 245)
+    if bool(getattr(ctx, "actual_precipitation", False)):
+        return "rain", (97, 126, 148), (184, 202, 213), (245, 249, 250)
+    if primary == "fog":
+        return "fog", (193, 202, 202), (237, 235, 224), (39, 67, 73)
+    if primary == "dusty":
+        return "dust", (202, 176, 130), (244, 226, 191), (70, 72, 62)
+    if primary == "hot":
+        return "hot", (231, 185, 103), (255, 242, 207), (24, 81, 119)
+    if bool(getattr(ctx, "strong_wind", False)):
+        return "wind", (107, 174, 211), (228, 244, 249), (23, 78, 113)
+    return "fair", (101, 177, 211), (245, 237, 199), (25, 76, 107)
+
+
+def _draw_cover_weather_motif(draw: ImageDraw.ImageDraw, ctx: object, accent: tuple[int, int, int]) -> None:
+    # Purposefully graphic, not pseudo-photographic: sun, sea and factual hazard marks.
+    draw.ellipse((770, 105, 945, 280), fill=(*accent, 42), outline=(*accent, 115), width=5)
+    for offset in range(4):
+        y = 835 + offset * 34
+        draw.arc((90, y - 30, 990, y + 55), 195, 345, fill=(*accent, 115 - offset * 15), width=5)
+    if bool(getattr(ctx, "strong_wind", False)):
+        for index, width in enumerate((280, 390, 330)):
+            y = 345 + index * 47
+            draw.arc((660 - width, y, 660, y + 60), 190, 350, fill=(*accent, 130), width=5)
+    if str(getattr(ctx, "primary_weather", "")) == "fog":
+        for index in range(5):
+            y = 305 + index * 28
+            draw.line((640, y, 965 - index * 22, y), fill=(*accent, 70), width=8)
+    if bool(getattr(ctx, "actual_precipitation", False)):
+        for x in range(720, 970, 48):
+            draw.line((x, 320, x - 13, 362), fill=(*accent, 145), width=5)
+
+
+def render_local_informative_cover(
+    final_text: str,
+    *,
+    target_date: str,
+    post_type: str,
+    output_path: str | Path,
+    minimum_bytes: int,
+) -> dict[str, Any]:
+    """Render a deterministic factual Cyprus cover after network providers fail."""
+
+    safe_date = _safe_target_date(target_date)
+    mode = str(post_type or "").strip().lower()
+    if mode not in {"morning", "evening"}:
+        raise ValueError(f"invalid Cyprus informative-cover post type: {post_type!r}")
+    ctx, facts = _informative_cover_facts(final_text, post_type=mode)
+    palette, top, bottom, accent = _cover_palette(ctx)
+    rendered_lines = [facts["headline"]]
+    rendered_lines.extend(value for key, value in facts.items() if key != "headline" and value)
+    rendered_text = "\n".join(rendered_lines[:4])
+    cache_payload = {
+        "renderer_version": LOCAL_INFORMATIVE_COVER_VERSION,
+        "target_date": safe_date,
+        "post_type": mode,
+        "visual_forecast_period": ctx.visual_forecast_period,
+        "primary_weather": ctx.primary_weather,
+        "hazards": ctx.hazards,
+        "scene_focus": ctx.scene_focus,
+        "headline": facts["headline"],
+        "primary_fact": facts["primary_fact"],
+        "secondary_fact": facts["secondary_fact"],
+        "tertiary_fact": facts["tertiary_fact"],
+        "actual_precipitation": ctx.actual_precipitation,
+        "explicit_storm": ctx.explicit_storm,
+        "severe_wind": ctx.severe_wind,
+        "visibility_condition": ctx.visibility_condition,
+    }
+    cache_json = json.dumps(cache_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    cache_key = f"{LOCAL_INFORMATIVE_COVER_VERSION}:{hashlib.sha256(cache_json.encode('utf-8')).hexdigest()}"
+
+    size = 1080
+    image = Image.new("RGBA", (size, size), (*top, 255))
+    draw = ImageDraw.Draw(image, "RGBA")
+    for y in range(size):
+        draw.line((0, y, size, y), fill=(*_mix(top, bottom, y / (size - 1)), 255))
+    _draw_cover_weather_motif(draw, ctx, accent)
+    draw.rounded_rectangle((68, 58, 1012, 1012), radius=48, fill=(255, 255, 255, 26), outline=(255, 255, 255, 88), width=3)
+    title_font = _cover_font(74, bold=True)
+    fact_font = _cover_font(52, bold=True)
+    small_font = _cover_font(28, bold=False)
+    draw.text((100, 105), facts["headline"], font=title_font, fill=(*accent, 255))
+    draw.text((102, 205), "VAYBOMETER · WEATHER BRIEF", font=small_font, fill=(*accent, 175))
+    fact_values = [facts["primary_fact"], facts["secondary_fact"], facts["tertiary_fact"]]
+    y = 455
+    for value in (item for item in fact_values if item):
+        display = re.sub(r"^[^\wА-ЯЁ]+\s*", "", value, flags=re.I)
+        draw.rounded_rectangle((92, y - 24, 988, y + 96), radius=28, fill=(255, 255, 255, 150))
+        draw.text((128, y), display, font=fact_font, fill=(*accent, 255))
+        y += 145
+
+    output = Path(output_path).with_suffix(".png")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    metadata: dict[str, Any] = {
+        "backend": "local_informative_cover",
+        "generator_version": LOCAL_INFORMATIVE_COVER_VERSION,
+        "renderer_version": LOCAL_INFORMATIVE_COVER_VERSION,
+        "target_date": safe_date,
+        "post_type": mode,
+        "visual_forecast_period": ctx.visual_forecast_period,
+        "primary_weather": ctx.primary_weather,
+        "hazards": ",".join(ctx.hazards),
+        "scene_focus": ctx.scene_focus,
+        "headline": facts["headline"],
+        "primary_fact": facts["primary_fact"],
+        "secondary_fact": facts["secondary_fact"],
+        "tertiary_fact": facts["tertiary_fact"],
+        "actual_precipitation": str(bool(ctx.actual_precipitation)).lower(),
+        "explicit_storm": str(bool(ctx.explicit_storm)).lower(),
+        "severe_wind": str(bool(ctx.severe_wind)).lower(),
+        "rain_graphics": str(bool(ctx.actual_precipitation)).lower(),
+        "storm_graphics": str(bool(ctx.explicit_storm)).lower(),
+        "rendered_text": rendered_text,
+        "palette": palette,
+        "cache_key": cache_key,
+    }
+    png_info = PngImagePlugin.PngInfo()
+    for key, value in metadata.items():
+        png_info.add_text(key, str(value))
+    image.convert("RGB").save(output, format="PNG", pnginfo=png_info, compress_level=6)
+    if output.stat().st_size <= int(minimum_bytes):
+        image.convert("RGB").save(output, format="PNG", pnginfo=png_info, compress_level=0)
+    with Image.open(output) as verify_image:
+        if verify_image.size != (size, size) or verify_image.format != "PNG":
+            raise RuntimeError("local informative cover has invalid dimensions or format")
+        verify_image.verify()
+    if output.stat().st_size <= int(minimum_bytes):
+        raise RuntimeError(
+            f"local informative cover is too small: {output.stat().st_size} bytes; must exceed {minimum_bytes}"
+        )
+    return {"path": str(output), "bytes": output.stat().st_size, "metadata": metadata}
+
+
+def render_local_weather_card(
+    final_text: str,
+    *,
+    target_date: str,
+    post_type: str,
+    output_path: str | Path,
+    minimum_bytes: int,
+) -> dict[str, Any]:
+    """Compatibility entry point; atmospheric v2 is retired from fallback selection."""
+
+    return render_local_informative_cover(
+        final_text,
+        target_date=target_date,
+        post_type=post_type,
+        output_path=output_path,
+        minimum_bytes=minimum_bytes,
+    )
+
+
 __all__ = [
     "LOCAL_WEATHER_CARD_VERSION",
+    "LOCAL_INFORMATIVE_COVER_VERSION",
     "load_provider_health",
     "mark_provider_duplicate",
     "provider_health_exclusions",
     "provider_health_path",
     "record_provider_attempts",
     "render_local_weather_card",
+    "render_local_informative_cover",
     "write_provider_health",
 ]
