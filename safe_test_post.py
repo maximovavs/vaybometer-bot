@@ -342,6 +342,7 @@ def cy_morning_image_phase_for_result(image_result: str) -> str:
         "failed_after_duplicates": "image_failed_non_fatal",
         "skipped": "image_skipped",
         "skipped_receipt_exists": "image_skipped",
+        "skipped_receipt_appeared_during_generation": "image_skipped",
         "skipped_no_text_receipt": "image_skipped",
         "skipped_duplicate": "image_skipped",
         "skipped_duplicate_before_send": "image_skipped",
@@ -2624,6 +2625,33 @@ async def _build_safe_test_image(
                         "backend": selected_backend,
                         **_generation_summary("skipped_duplicate_before_send", selected_backend),
                     }
+            if production_image_send and is_valid_cy_image_receipt(metadata["forecast_date"], mode):
+                receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
+                print(f"CY_SAFE_IMAGE_RECEIPT_APPEARED_DURING_GENERATION: {receipt_path}")
+                _cy_write_image_diagnostics(
+                    mode=mode,
+                    target_date=metadata["forecast_date"],
+                    result="skipped_receipt_appeared_during_generation",
+                    prompt_metadata=metadata,
+                    attempts=attempts,
+                    telegram_attempts=telegram_attempts,
+                    write_history_path=write_history_path,
+                    reference_history_paths=reference_history_paths,
+                    history_count_before=before_history_count,
+                    generation_summary=_generation_summary(
+                        "skipped_receipt_appeared_during_generation",
+                        selected_backend,
+                    ),
+                )
+                return {
+                    "result": "skipped_receipt_appeared_during_generation",
+                    "message_ids": [],
+                    "backend": selected_backend,
+                    **_generation_summary(
+                        "skipped_receipt_appeared_during_generation",
+                        selected_backend,
+                    ),
+                }
             image_bot = Bot(token=TOKEN)
             image_caption = _cy_image_caption(
                 mode,

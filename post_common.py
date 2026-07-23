@@ -17,7 +17,7 @@ post_common.py — VayboMeter (Кипр/универсальный).
 from __future__ import annotations
 import os, re, json, html, asyncio, logging, math, datetime as dt, random, imghdr
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional, Union
+from typing import Any, Dict, List, Tuple, Optional, Sequence, Union
 
 import pendulum
 from telegram import Bot, constants
@@ -1818,6 +1818,20 @@ def _city_detail_line(
     return float(tmax), " • ".join(parts)
 
 
+def _morning_sea_city_lines(
+    sea_pairs: Sequence[tuple[str, tuple[float, float]]],
+    tz_obj: pendulum.Timezone,
+) -> List[str]:
+    """Build morning coastal rows through the canonical city formatter with SST."""
+
+    rows: List[str] = []
+    for city, (la, lo) in sea_pairs:
+        _tmax, line = _city_detail_line(city, la, lo, tz_obj, include_sst=True)
+        if line:
+            rows.append(line)
+    return rows
+
+
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
     wm = get_weather(la, lo) or {}
     wind_ms, wind_dir, _, _ = pick_tomorrow_header_metrics(wm, tz_obj)
@@ -2138,6 +2152,10 @@ def build_message(
         uv_line = _uv_warning_line_for_morning(wm_region, tz_obj)
         if uv_line:
             P.append(uv_line)
+
+        sea_rows_morning = _morning_sea_city_lines(sea_pairs, tz_obj)
+        if sea_rows_morning:
+            P.extend(sea_rows_morning)
 
         la_sun, lo_sun = _choose_sun_coords(sea_pairs, other_pairs)
         sun_line = sun_line_for_mode(mode, tz_obj, la_sun, lo_sun)

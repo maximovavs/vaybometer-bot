@@ -38,6 +38,7 @@ from PIL import Image, ImageDraw  # type: ignore  # noqa: E402
 import cyprus_visual_dedup  # noqa: E402
 import cyprus_image_recovery  # noqa: E402
 from cyprus_image_recovery import (  # noqa: E402
+    LOCAL_INFORMATIVE_COVER_BRANDING,
     LOCAL_INFORMATIVE_COVER_VERSION,
     load_provider_health,
     mark_provider_duplicate,
@@ -121,6 +122,44 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _write_valid_image_receipt(
+    target_date: str,
+    post_type: str,
+    *,
+    message_id: int = 7001,
+) -> Path:
+    path = safe_module._cy_image_receipt_path(target_date, post_type)
+    safe_module._cy_write_json_atomic(
+        path,
+        {
+            "target_date": target_date,
+            "post_type": post_type,
+            "chat_type": "production",
+            "telegram_message_id": message_id,
+            "sha256": "a" * 64,
+            "selected_scene": "fixture_scene",
+            "sent_at_utc": "2026-07-15T18:00:00Z",
+        },
+    )
+    return path
+
+
+def _write_valid_text_receipt(target_date: str, post_type: str) -> Path:
+    path = safe_module._cy_text_receipt_path(target_date, post_type)
+    safe_module._cy_write_json_atomic(
+        path,
+        {
+            "target_date": target_date,
+            "post_type": post_type,
+            "chat_type": "production",
+            "telegram_message_ids": [6001],
+            "text_chunk_count": 1,
+            "sent_at_utc": "2026-07-15T17:59:00Z",
+        },
+    )
+    return path
+
+
 def local_informative_cover_is_valid_deterministic_and_factual() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
@@ -154,6 +193,8 @@ def local_informative_cover_is_valid_deterministic_and_factual() -> None:
         assert _sha256(first_path) != _sha256(evening_path)
         required_metadata = {
             "renderer_version",
+            "branding",
+            "branding_bbox",
             "visual_forecast_period",
             "primary_weather",
             "hazards",
@@ -173,6 +214,13 @@ def local_informative_cover_is_valid_deterministic_and_factual() -> None:
         assert required_metadata <= set(evening["metadata"])
         assert first["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
         assert evening["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
+        assert first["metadata"]["branding"] == LOCAL_INFORMATIVE_COVER_BRANDING
+        assert first["metadata"]["rendered_text"].splitlines()[0] == LOCAL_INFORMATIVE_COVER_BRANDING
+        brand_left, brand_top, brand_right, brand_bottom = json.loads(
+            first["metadata"]["branding_bbox"]
+        )
+        assert 92 <= brand_left < brand_right <= 988
+        assert 80 <= brand_top < brand_bottom <= 300
         assert evening["metadata"]["headline"] == "КИПР ЗАВТРА"
         assert evening["metadata"]["primary_fact"] == "🔥 ДО 38° В НИКОСИИ"
         assert evening["metadata"]["secondary_fact"] == "💨 ПОРЫВЫ ДО 15 М/С У МОРЯ"
@@ -201,6 +249,8 @@ def local_informative_cover_is_valid_deterministic_and_factual() -> None:
             assert image.info["target_date"] == "2026-07-15"
             assert image.info["post_type"] == "morning"
             assert image.info["headline"] == "КИПР СЕГОДНЯ"
+            assert image.info["branding"] == LOCAL_INFORMATIVE_COVER_BRANDING
+            assert image.info["branding_bbox"] == first["metadata"]["branding_bbox"]
             assert image.info["rendered_text"]
             image.verify()
         with Image.open(evening_path) as image:
@@ -708,6 +758,204 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
         asyncio.run(run_case(Path(tmp_name)))
 
 
+def image_receipt_recheck_closes_primary_and_recovery_send_race() -> None:
+    async def run_case(
+        case_dir: Path,
+        *,
+        receipt_during_generation: bool = False,
+        existing_receipt: str = "",
+        send_to_test: bool = False,
+        image_only_recovery: bool = False,
+    ) -> tuple[dict[str, object], list[dict[str, object]], dict[str, object]]:
+        history_prod = case_dir / "history-prod.json"
+        history_test = case_dir / "history-test.json"
+        history_prod.parent.mkdir(parents=True, exist_ok=True)
+        history_prod.write_text("[]", encoding="utf-8")
+        history_test.write_text("[]", encoding="utf-8")
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = history_prod
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = history_test
+
+        os.environ.update(
+            {
+                "CHANNEL_ID": "777",
+                "CHANNEL_ID_TEST": "778",
+                "CY_SAFE_IMAGE_DIR": str(case_dir / "images"),
+                "CY_IMG_MIN_BYTES": "12000",
+                "CY_IMAGE_DELIVERY_DIR": str(case_dir / "image-receipts"),
+                "CY_TEXT_DELIVERY_DIR": str(case_dir / "text-receipts"),
+                "CY_IMAGE_DIAGNOSTICS_DIR": str(case_dir / "diagnostics"),
+                "CY_IMAGE_PROVIDER_HEALTH_DIR": str(case_dir / "provider-health"),
+            }
+        )
+
+        if existing_receipt == "valid":
+            _write_valid_image_receipt("2026-07-16", "evening")
+        elif existing_receipt == "invalid":
+            safe_module._cy_write_json_atomic(
+                safe_module._cy_image_receipt_path("2026-07-16", "evening"),
+                {
+                    "target_date": "2026-07-15",
+                    "post_type": "evening",
+                    "chat_type": "production",
+                    "telegram_message_id": 0,
+                    "sent_at_utc": "",
+                },
+            )
+        if image_only_recovery:
+            _write_valid_text_receipt("2026-07-16", "evening")
+
+        photo_calls: list[dict[str, object]] = []
+
+        def successful_outcome(_prompt: str, requested_path: str, **_kwargs):
+            if receipt_during_generation:
+                _write_valid_image_receipt("2026-07-16", "evening", message_id=7002)
+            path = Path(requested_path)
+            _write_dhash_fixture(path, flipped_rows=2)
+            backend_attempts = [
+                {
+                    "backend": "pollinations",
+                    "result": "success",
+                    "http_status": 200,
+                    "content_type": "image/jpeg",
+                    "payload_byte_count": path.stat().st_size,
+                }
+            ]
+            generated = types.SimpleNamespace(
+                path=str(path),
+                backend="pollinations",
+                byte_count=path.stat().st_size,
+                backend_attempts=backend_attempts,
+            )
+            return types.SimpleNamespace(
+                result=generated,
+                backend_attempts=backend_attempts,
+                error_type="",
+                error_message="",
+                exhausted=False,
+                actual_backend_call_count=1,
+            )
+
+        class FakeBot:
+            def __init__(self, token: str) -> None:
+                assert token == "fixture-token"
+
+            async def send_photo(self, **kwargs):
+                photo_calls.append(
+                    {
+                        "chat_id": kwargs["chat_id"],
+                        "caption": kwargs["caption"],
+                        "photo_bytes": kwargs["photo"].read(),
+                    }
+                )
+                return types.SimpleNamespace(message_id=9101)
+
+        safe_module.Bot = FakeBot
+        imagegen.generate_astro_image_outcome_with_exclusions = successful_outcome
+        imagegen.configured_image_backends = lambda **_kwargs: {
+            "configured_backends": ["pollinations"],
+            "available_backends": ["pollinations"],
+            "unconfigured_backends": ["stable_horde", "custom"],
+        }
+
+        result = await safe_module._build_safe_test_image(
+            EVENING_MESSAGE,
+            "evening",
+            generate_image=True,
+            send_image_to_test=send_to_test,
+            send_image_to_chat=not send_to_test,
+            image_chat_id=None if send_to_test else 777,
+            image_only_recovery=image_only_recovery,
+        )
+        diagnostics = json.loads(
+            (
+                case_dir
+                / "diagnostics"
+                / "2026-07-16-evening"
+                / "image_result.json"
+            ).read_text(encoding="utf-8")
+        )
+        return result, photo_calls, diagnostics
+
+    env_names = (
+        "CHANNEL_ID",
+        "CHANNEL_ID_TEST",
+        "CY_SAFE_IMAGE_DIR",
+        "CY_IMG_MIN_BYTES",
+        "CY_IMAGE_DELIVERY_DIR",
+        "CY_TEXT_DELIVERY_DIR",
+        "CY_IMAGE_DIAGNOSTICS_DIR",
+        "CY_IMAGE_PROVIDER_HEALTH_DIR",
+    )
+    old_env = {name: os.environ.get(name) for name in env_names}
+    old_token = safe_module.TOKEN
+    old_bot = safe_module.Bot
+    old_outcome = imagegen.generate_astro_image_outcome_with_exclusions
+    old_availability = imagegen.configured_image_backends
+    old_prod_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
+    old_test_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
+    safe_module.TOKEN = "fixture-token"
+    try:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            root = Path(tmp_name)
+
+            primary_race, primary_photos, primary_diag = asyncio.run(
+                run_case(root / "primary-race", receipt_during_generation=True)
+            )
+            assert primary_race["result"] == "skipped_receipt_appeared_during_generation"
+            assert primary_photos == []
+            assert primary_diag["image_result"] == "skipped_receipt_appeared_during_generation"
+            assert primary_diag["selected_backend"] == "pollinations"
+
+            ordinary, ordinary_photos, ordinary_diag = asyncio.run(
+                run_case(root / "ordinary")
+            )
+            assert ordinary["result"] == "sent"
+            assert len(ordinary_photos) == 1
+            assert ordinary_diag["image_result"] == "sent"
+            assert safe_module.is_valid_cy_image_receipt("2026-07-16", "evening")
+
+            test_send, test_photos, test_diag = asyncio.run(
+                run_case(root / "test-send", existing_receipt="valid", send_to_test=True)
+            )
+            assert test_send["result"] == "sent"
+            assert len(test_photos) == 1 and test_photos[0]["chat_id"] == 778
+            assert test_diag["image_result"] == "sent"
+
+            stale, stale_photos, stale_diag = asyncio.run(
+                run_case(root / "stale-receipt", existing_receipt="invalid")
+            )
+            assert stale["result"] == "sent"
+            assert len(stale_photos) == 1
+            assert stale_diag["image_result"] == "sent"
+            assert safe_module.is_valid_cy_image_receipt("2026-07-16", "evening")
+
+            recovery_race, recovery_photos, recovery_diag = asyncio.run(
+                run_case(
+                    root / "recovery-race",
+                    receipt_during_generation=True,
+                    image_only_recovery=True,
+                )
+            )
+            assert recovery_race["result"] == "skipped_receipt_appeared_during_generation"
+            assert recovery_photos == []
+            assert recovery_diag["image_result"] == "skipped_receipt_appeared_during_generation"
+            assert safe_module.cy_morning_image_phase_for_result(
+                recovery_race["result"]
+            ) == "image_skipped"
+    finally:
+        safe_module.TOKEN = old_token
+        safe_module.Bot = old_bot
+        imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
+        imagegen.configured_image_backends = old_availability
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = old_prod_history
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = old_test_history
+        for name, value in old_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def informative_cover_failure_falls_through_to_text_without_stale_image() -> None:
     async def run_case(tmp: Path) -> None:
         env_names = (
@@ -840,6 +1088,7 @@ def main() -> None:
         local_cover_graphics_and_cache_follow_confirmed_facts,
         provider_health_is_date_and_namespace_scoped,
         primary_evening_incident_sends_local_visual_before_text,
+        image_receipt_recheck_closes_primary_and_recovery_send_race,
         informative_cover_failure_falls_through_to_text_without_stale_image,
     )
     for check in checks:

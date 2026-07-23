@@ -31,9 +31,10 @@ imghdr_stub = types.ModuleType("imghdr")
 imghdr_stub.what = lambda *args, **kwargs: None
 sys.modules.setdefault("imghdr", imghdr_stub)
 
-from format_v2 import build_format_v2, build_morning_format_v2  # noqa: E402
+from format_v2 import build_evening_format_v2, build_format_v2, build_morning_format_v2  # noqa: E402
 import cyprus_visual_dedup  # noqa: E402
 import image_prompt_cy_scene as cy_scene_prompt  # noqa: E402
+import post_common as post_common_module  # noqa: E402
 import safe_test_post as safe_module  # noqa: E402
 import weather as weather_module  # noqa: E402
 from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata  # noqa: E402
@@ -303,6 +304,60 @@ def cy_morning_adds_concise_sea_block_when_available() -> None:
     assert "🏭 Воздух: AQI 58 (умеренный) • PM₂.₅ 14 / PM₁₀ 31 • 🌿 пыльца: низкая" in text
     assert "📟" not in text
     assert "🌿 пыльца" in text
+
+
+def cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening() -> None:
+    calls: list[tuple[str, float, float, bool]] = []
+    old_city_detail_line = post_common_module._city_detail_line
+
+    def fake_city_detail_line(city, la, lo, _tz_obj, include_sst):
+        calls.append((city, la, lo, include_sst))
+        temperatures = {"Лимассол": 26.0, "Ларнака": 28.0}
+        sst = temperatures[city]
+        return 34.0, f"<b>{city}</b>: 34/25 °C • ясно • 🌊 {sst:.0f}"
+
+    pairs = [
+        ("Лимассол", (34.68, 33.04)),
+        ("Ларнака", (34.92, 33.63)),
+    ]
+    try:
+        post_common_module._city_detail_line = fake_city_detail_line
+        rows = post_common_module._morning_sea_city_lines(
+            pairs,
+            types.SimpleNamespace(name="Asia/Nicosia"),
+        )
+        assert [line.split(":", 1)[0] for line in rows] == ["<b>Лимассол</b>", "<b>Ларнака</b>"]
+        assert calls == [
+            ("Лимассол", 34.68, 33.04, True),
+            ("Ларнака", 34.92, 33.63, True),
+        ]
+
+        raw_morning = MORNING_NO_SEA.replace(
+            "✅ Сегодня:",
+            "\n".join(rows) + "\n✅ Сегодня:",
+        )
+        morning = build_morning_format_v2("Кипр", raw_morning)
+        assert "🌊 Море: средняя вода 27°C;" in morning
+
+        raw_evening = """<b>Кипр: погода на завтра (28.06.2026)</b>
+🏖 <b>Морские города</b>
+{rows}
+———
+✅ Завтра: море утром.
+#Кипр #погода
+""".format(rows="\n".join(rows))
+        evening = build_evening_format_v2("Кипр", raw_evening)
+        assert evening.index("<b>Лимассол</b>") < evening.index("<b>Ларнака</b>")
+
+        post_common_module._city_detail_line = lambda *_args, **_kwargs: (None, None)
+        assert post_common_module._morning_sea_city_lines(
+            pairs,
+            types.SimpleNamespace(name="Asia/Nicosia"),
+        ) == []
+        fallback = build_morning_format_v2("Кипр", MORNING_NO_SEA)
+        assert "данные о температуре воды обновляются" in fallback
+    finally:
+        post_common_module._city_detail_line = old_city_detail_line
 
 
 def cy_morning_averages_coastal_sea_rows() -> None:
@@ -1961,6 +2016,7 @@ def cy_morning_safe_production_polish_keeps_fog_actions() -> None:
 def main() -> None:
     checks = (
         cy_morning_adds_concise_sea_block_when_available,
+        cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening,
         cy_morning_averages_coastal_sea_rows,
         cy_morning_adds_sea_fallback_when_unavailable,
         cy_morning_rejects_non_marine_numbers_for_sea,
