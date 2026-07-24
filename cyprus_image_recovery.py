@@ -21,6 +21,7 @@ from visual_context_cy import parse_visual_context_cy
 
 LOCAL_WEATHER_CARD_VERSION = "cy_local_atmospheric_visual_v2"
 LOCAL_INFORMATIVE_COVER_VERSION = "cy_local_informative_cover_v3"
+LOCAL_INFORMATIVE_COVER_BRANDING = "VAYBOMETER · CYPRUS WEATHER BRIEF"
 PROVIDER_HEALTH_SCHEMA_VERSION = 1
 _PROVIDER_NAMES = ("pollinations", "stable_horde", "custom")
 _INVALID_ERROR_CATEGORIES = {
@@ -869,11 +870,12 @@ def render_local_informative_cover(
         raise ValueError(f"invalid Cyprus informative-cover post type: {post_type!r}")
     ctx, facts = _informative_cover_facts(final_text, post_type=mode)
     palette, top, bottom, accent = _cover_palette(ctx)
-    rendered_lines = [facts["headline"]]
+    rendered_lines = [LOCAL_INFORMATIVE_COVER_BRANDING, facts["headline"]]
     rendered_lines.extend(value for key, value in facts.items() if key != "headline" and value)
-    rendered_text = "\n".join(rendered_lines[:4])
+    rendered_text = "\n".join(rendered_lines[:5])
     cache_payload = {
         "renderer_version": LOCAL_INFORMATIVE_COVER_VERSION,
+        "branding": LOCAL_INFORMATIVE_COVER_BRANDING,
         "target_date": safe_date,
         "post_type": mode,
         "visual_forecast_period": ctx.visual_forecast_period,
@@ -902,7 +904,20 @@ def render_local_informative_cover(
     title_font = _cover_font(74, bold=True)
     small_font = _cover_font(28, bold=False)
     draw.text((100, 105), facts["headline"], font=title_font, fill=(*accent, 255))
-    draw.text((102, 205), "VAYBOMETER · WEATHER BRIEF", font=small_font, fill=(*accent, 175))
+    branding_origin = (102, 205)
+    branding_bbox = list(
+        draw.textbbox(
+            branding_origin,
+            LOCAL_INFORMATIVE_COVER_BRANDING,
+            font=small_font,
+        )
+    )
+    draw.text(
+        branding_origin,
+        LOCAL_INFORMATIVE_COVER_BRANDING,
+        font=small_font,
+        fill=(*accent, 175),
+    )
     fact_values = [facts["primary_fact"], facts["secondary_fact"], facts["tertiary_fact"]]
     fact_layout = _draw_cover_fact_cards(
         draw,
@@ -917,6 +932,8 @@ def render_local_informative_cover(
         "backend": "local_informative_cover",
         "generator_version": LOCAL_INFORMATIVE_COVER_VERSION,
         "renderer_version": LOCAL_INFORMATIVE_COVER_VERSION,
+        "branding": LOCAL_INFORMATIVE_COVER_BRANDING,
+        "branding_bbox": json.dumps(branding_bbox, separators=(",", ":")),
         "target_date": safe_date,
         "post_type": mode,
         "visual_forecast_period": ctx.visual_forecast_period,
@@ -976,6 +993,7 @@ def render_local_weather_card(
 __all__ = [
     "LOCAL_WEATHER_CARD_VERSION",
     "LOCAL_INFORMATIVE_COVER_VERSION",
+    "LOCAL_INFORMATIVE_COVER_BRANDING",
     "load_provider_health",
     "mark_provider_duplicate",
     "provider_health_exclusions",
