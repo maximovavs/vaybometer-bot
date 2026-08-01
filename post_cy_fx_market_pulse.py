@@ -68,15 +68,14 @@ def build_plain_ruble_summary(rates: dict[str, Any]) -> str:
 def replace_ruble_summary(fx_text: str, rates: dict[str, Any]) -> str:
     """Replace trading-style RUB commentary with a short everyday explanation."""
     summary = build_plain_ruble_summary(rates)
-    if not summary:
-        return fx_text
+    replacement = summary or "🧭 К рублю: динамика за день пока недоступна."
     lines = str(fx_text or "").splitlines()
     for index, line in enumerate(lines):
         if line.strip().startswith("🧭"):
-            lines[index] = summary
+            lines[index] = replacement
             break
     else:
-        lines.append(summary)
+        lines.append(replacement)
     return "\n".join(lines)
 
 

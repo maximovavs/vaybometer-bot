@@ -20,6 +20,7 @@ import requests
 from telegram import Bot, constants
 
 from post_cy import TZ_STR, _build_fx_message_eur, _fx_cache_paths, resolve_chat_id
+from post_cy_fx_market_pulse import replace_ruble_summary
 
 
 def _to_float(x: Any) -> float | None:
@@ -164,7 +165,8 @@ async def main() -> None:
     tz = pendulum.timezone(TZ_STR)
     date_local = pendulum.parse(args.date).in_tz(tz) if args.date else pendulum.now(tz)
     _fx_cache_path, inter_cache_path = _fx_cache_paths(to_test=True)
-    fx_text, _rates, _inter = _build_fx_message_eur(date_local, tz, inter_cache_path)
+    fx_text, rates, _inter = _build_fx_message_eur(date_local, tz, inter_cache_path)
+    fx_text = replace_ruble_summary(fx_text, rates)
     final_text = inject_market_pulse(fx_text, build_market_pulse_block())
 
     print("\n===== CYPRUS FX MARKET PULSE TEST BEGIN =====\n")
