@@ -13,7 +13,6 @@ import importlib
 import json
 import logging
 import os
-import re
 from typing import Any
 
 import pendulum
@@ -46,7 +45,6 @@ _EUR_QUOTE_FORMS = {
     "ILS": ("шекель", "подорожал", "подешевел", "почти не изменился"),
 }
 _EUR_QUOTE_ORDER = ("USD", "GBP", "TRY", "ILS")
-_EUR_SEGMENT_RE = re.compile(r"^(USD|GBP|TRY|ILS)\s+[^↑↓]+?(?:\s*([↑↓]))?$")
 
 
 def _to_float(x: Any) -> float | None:
@@ -94,10 +92,12 @@ def build_plain_eur_summary(fx_text: str) -> str:
     any_arrow = False
     for raw in segments:
         segment = raw.strip()
-        match = _EUR_SEGMENT_RE.match(segment)
-        if not match:
+        if not segment:
             continue
-        code, arrow = match.group(1), match.group(2)
+        code = segment.split(None, 1)[0]
+        if code not in _EUR_QUOTE_FORMS:
+            continue
+        arrow = "↑" if "↑" in segment else "↓" if "↓" in segment else None
         parsed[code] = arrow
         any_arrow = any_arrow or bool(arrow)
 
