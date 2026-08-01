@@ -30,6 +30,7 @@ sys.modules.setdefault("post_common", post_common)
 
 import post_cy  # noqa: E402
 import post_cy_fx_market_pulse as pulse  # noqa: E402
+import fx_market_pulse_test as safe_pulse  # noqa: E402
 
 
 class _Date:
@@ -37,7 +38,7 @@ class _Date:
         return "2026-06-27"
 
 
-def _build_fx_text_with_ruble_deltas(eur_delta: float, usd_delta: float) -> tuple[str, dict]:
+def _build_fx_text_with_ruble_deltas(eur_delta: float | None, usd_delta: float | None) -> tuple[str, dict]:
     post_cy._fetch_intermarket_eur_with_prev = lambda _today, _path: (
         {"USD": 1.14, "GBP": 0.86, "TRY": 53.14, "ILS": 3.41},
         {"USD": 1.14, "GBP": 0.86, "TRY": 52.96, "ILS": 3.39},
@@ -93,6 +94,21 @@ def cy_plain_summary_handles_zero_and_missing() -> None:
     assert pulse.build_plain_ruble_summary(rates) == "🧭 К рублю: евро почти не изменился."
 
 
+def cy_missing_deltas_never_restore_old_jargon() -> None:
+    raw, rates = _build_fx_text_with_ruble_deltas(None, None)
+    text = pulse.replace_ruble_summary(raw, rates)
+    assert "🧭 К рублю: динамика за день пока недоступна." in text
+    assert "Рублёвые пары смешанно" not in text
+    assert "для поездок по региону смотрим TRY/ILS" not in text
+
+
+def cy_safe_runner_uses_same_summary_formatter() -> None:
+    assert safe_pulse.replace_ruble_summary is pulse.replace_ruble_summary
+    raw, rates = _build_fx_text_with_ruble_deltas(1.63, -1.43)
+    text = safe_pulse.replace_ruble_summary(raw, rates)
+    assert "🧭 К рублю: евро подорожал, доллар подешевел." in text
+
+
 def cy_market_pulse_is_compact() -> None:
     pulse._fetch_crypto = lambda: ["24ч: BTC $60.3K ↑1.2% · ETH $1.6K ↑2.0%"]
     pulse._fetch_gold = lambda: ["Gold/oz $4.1K"]
@@ -122,6 +138,8 @@ def main() -> None:
         cy_plain_summary_handles_both_up,
         cy_plain_summary_handles_both_down,
         cy_plain_summary_handles_zero_and_missing,
+        cy_missing_deltas_never_restore_old_jargon,
+        cy_safe_runner_uses_same_summary_formatter,
         cy_market_pulse_is_compact,
         cy_fx_market_hashtag_survives_empty_or_existing_pulse,
     )
