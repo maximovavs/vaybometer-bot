@@ -37,7 +37,7 @@ class _Date:
         return "2026-06-27"
 
 
-def _build_fx_text_with_ruble_deltas(eur_delta: float, usd_delta: float) -> str:
+def _build_fx_text_with_ruble_deltas(eur_delta: float, usd_delta: float) -> tuple[str, dict]:
     post_cy._fetch_intermarket_eur_with_prev = lambda _today, _path: (
         {"USD": 1.14, "GBP": 0.86, "TRY": 53.14, "ILS": 3.41},
         {"USD": 1.14, "GBP": 0.86, "TRY": 52.96, "ILS": 3.39},
@@ -52,34 +52,45 @@ def _build_fx_text_with_ruble_deltas(eur_delta: float, usd_delta: float) -> str:
         "EUR": {"value": 87.40, "delta": eur_delta},
         "USD": {"value": 77.06, "delta": usd_delta},
     }
-    text, _rates, _inter = post_cy._build_fx_message_eur(_Date(), None, Path("unused.json"))
-    return text
+    text, rates, _inter = post_cy._build_fx_message_eur(_Date(), None, Path("unused.json"))
+    return text, rates
 
 
-def cy_fx_message_hides_ecb_when_intermarket_exists(tmp_path: Path | None = None) -> None:
-    text = _build_fx_text_with_ruble_deltas(1.63, 1.43)
+def cy_fx_numeric_lines_stay_unchanged() -> None:
+    text, _rates = _build_fx_text_with_ruble_deltas(1.63, -1.43)
     assert "💱 <b>Курсы валют | 1 EUR</b>" in text
     assert "ECB official:" not in text
     assert "EUR: USD 1.14 · GBP 0.86 · TRY 53.14 ↑0.18 · ILS 3.41 ↑0.02" in text
-    assert "К ₽: EUR 87.40 ↑1.63 · USD 77.06 ↑1.43" in text
-    assert "🧭 € и $ к ₽ выше; для поездок по региону смотрим TRY/ILS." in text
+    assert "К ₽: EUR 87.40 ↑1.63 · USD 77.06 ↓1.43" in text
     assert "#Кипр #курсы_валют #рынки" in text
-    assert "EUR/USD к рублю выше" not in text
 
 
-def cy_fx_summary_positive_is_higher() -> None:
-    text = _build_fx_text_with_ruble_deltas(1.63, 1.43)
-    assert "🧭 € и $ к ₽ выше; для поездок по региону смотрим TRY/ILS." in text
+def cy_plain_summary_explains_mixed_moves_without_repeating_numbers() -> None:
+    raw, rates = _build_fx_text_with_ruble_deltas(1.63, -1.43)
+    text = pulse.replace_ruble_summary(raw, rates)
+    assert "🧭 К рублю: евро подорожал, доллар подешевел." in text
+    assert "Рублёвые пары смешанно" not in text
+    assert "для поездок по региону смотрим TRY/ILS" not in text
+    summary = pulse.build_plain_ruble_summary(rates)
+    assert "1.63" not in summary and "1.43" not in summary
 
 
-def cy_fx_summary_negative_is_lower() -> None:
-    text = _build_fx_text_with_ruble_deltas(-1.63, -1.43)
-    assert "🧭 € и $ к ₽ ниже; для поездок по региону смотрим TRY/ILS." in text
+def cy_plain_summary_handles_both_up() -> None:
+    _raw, rates = _build_fx_text_with_ruble_deltas(1.63, 1.43)
+    assert pulse.build_plain_ruble_summary(rates) == "🧭 К рублю: евро подорожал, доллар подорожал."
 
 
-def cy_fx_summary_mixed_is_mixed() -> None:
-    text = _build_fx_text_with_ruble_deltas(1.63, -1.43)
-    assert "🧭 Рублёвые пары смешанно; для поездок по региону смотрим TRY/ILS." in text
+def cy_plain_summary_handles_both_down() -> None:
+    _raw, rates = _build_fx_text_with_ruble_deltas(-1.63, -1.43)
+    assert pulse.build_plain_ruble_summary(rates) == "🧭 К рублю: евро подешевел, доллар подешевел."
+
+
+def cy_plain_summary_handles_zero_and_missing() -> None:
+    rates = {
+        "EUR": {"value": 87.40, "delta": 0.0},
+        "USD": {"value": 77.06, "delta": None},
+    }
+    assert pulse.build_plain_ruble_summary(rates) == "🧭 К рублю: евро почти не изменился."
 
 
 def cy_market_pulse_is_compact() -> None:
@@ -106,10 +117,11 @@ def cy_fx_market_hashtag_survives_empty_or_existing_pulse() -> None:
 
 def main() -> None:
     checks = (
-        cy_fx_message_hides_ecb_when_intermarket_exists,
-        cy_fx_summary_positive_is_higher,
-        cy_fx_summary_negative_is_lower,
-        cy_fx_summary_mixed_is_mixed,
+        cy_fx_numeric_lines_stay_unchanged,
+        cy_plain_summary_explains_mixed_moves_without_repeating_numbers,
+        cy_plain_summary_handles_both_up,
+        cy_plain_summary_handles_both_down,
+        cy_plain_summary_handles_zero_and_missing,
         cy_market_pulse_is_compact,
         cy_fx_market_hashtag_survives_empty_or_existing_pulse,
     )
