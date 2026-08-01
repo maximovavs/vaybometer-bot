@@ -66,7 +66,52 @@ def cy_fx_numeric_lines_stay_unchanged() -> None:
     assert "#Кипр #курсы_валют #рынки" in text
 
 
-def cy_plain_summary_explains_mixed_moves_without_repeating_numbers() -> None:
+def cy_plain_eur_summary_explains_displayed_moves() -> None:
+    raw, rates = _build_fx_text_with_ruble_deltas(1.63, -1.43)
+    text = pulse.replace_ruble_summary(raw, rates)
+    expected = (
+        "🧭 К евро: доллар почти не изменился, фунт почти не изменился, "
+        "турецкая лира подешевела, шекель подешевел."
+    )
+    assert expected in text
+    assert text.count("🧭 К евро:") == 1
+
+
+def cy_plain_eur_summary_inverts_quote_arrow_semantics() -> None:
+    raw = (
+        "💱 <b>Курсы валют | 1 EUR</b>\n"
+        "EUR: USD 1.15 ↑0.01 · GBP 0.85 ↓0.01 · TRY 54.75 ↑0.05 · ILS 3.52 ↓0.02\n"
+        "К ₽: EUR 91.19 ↑0.31 · USD 79.46 ↓0.39\n"
+        "🧭 Рублёвые пары смешанно; для поездок по региону смотрим TRY/ILS.\n\n"
+        "#Кипр #курсы_валют #рынки"
+    )
+    rates = {
+        "EUR": {"value": 91.19, "delta": 0.31},
+        "USD": {"value": 79.46, "delta": -0.39},
+    }
+    text = pulse.replace_ruble_summary(raw, rates)
+    assert (
+        "🧭 К евро: доллар подешевел, фунт подорожал, "
+        "турецкая лира подешевела, шекель подорожал."
+    ) in text
+    eur_summary = pulse.build_plain_eur_summary(raw)
+    assert "0.01" not in eur_summary and "0.05" not in eur_summary and "0.02" not in eur_summary
+
+
+def cy_plain_eur_summary_handles_missing_daily_dynamics() -> None:
+    raw = "💱 Курсы\nEUR: USD 1.15 · GBP 0.86 · TRY 54.75 · ILS 3.52"
+    assert pulse.build_plain_eur_summary(raw) == "🧭 К евро: динамика за день пока недоступна."
+
+
+def cy_two_human_summaries_are_in_reading_order() -> None:
+    raw, rates = _build_fx_text_with_ruble_deltas(1.63, -1.43)
+    text = pulse.replace_ruble_summary(raw, rates)
+    assert text.index("EUR:") < text.index("🧭 К евро:")
+    assert text.index("🧭 К евро:") < text.index("К ₽:")
+    assert text.index("К ₽:") < text.index("🧭 К рублю:")
+
+
+def cy_plain_summary_explains_mixed_ruble_moves_without_repeating_numbers() -> None:
     raw, rates = _build_fx_text_with_ruble_deltas(1.63, -1.43)
     text = pulse.replace_ruble_summary(raw, rates)
     assert "🧭 К рублю: евро подорожал, доллар подешевел." in text
@@ -106,13 +151,14 @@ def cy_safe_runner_uses_same_summary_formatter() -> None:
     assert safe_pulse.replace_ruble_summary is pulse.replace_ruble_summary
     raw, rates = _build_fx_text_with_ruble_deltas(1.63, -1.43)
     text = safe_pulse.replace_ruble_summary(raw, rates)
+    assert "🧭 К евро:" in text
     assert "🧭 К рублю: евро подорожал, доллар подешевел." in text
 
 
-def cy_no_cbr_values_do_not_append_ruble_summary_after_hashtags() -> None:
+def cy_no_cbr_values_keep_eur_summary_but_skip_ruble_summary() -> None:
     raw = (
         "💱 <b>Курсы валют | 1 EUR</b>\n"
-        "EUR: USD 1.14 · GBP 0.86 · TRY 53.14 · ILS 3.41\n\n"
+        "EUR: USD 1.14 · GBP 0.86 · TRY 53.14 ↑0.18 · ILS 3.41 ↑0.02\n\n"
         "#Кипр #курсы_валют #рынки"
     )
     rates = {
@@ -120,7 +166,7 @@ def cy_no_cbr_values_do_not_append_ruble_summary_after_hashtags() -> None:
         "USD": {"value": None, "delta": None},
     }
     text = pulse.replace_ruble_summary(raw, rates)
-    assert text == raw
+    assert "🧭 К евро:" in text
     assert "🧭 К рублю:" not in text
     assert text.rstrip().endswith("#Кипр #курсы_валют #рынки")
 
@@ -150,13 +196,17 @@ def cy_fx_market_hashtag_survives_empty_or_existing_pulse() -> None:
 def main() -> None:
     checks = (
         cy_fx_numeric_lines_stay_unchanged,
-        cy_plain_summary_explains_mixed_moves_without_repeating_numbers,
+        cy_plain_eur_summary_explains_displayed_moves,
+        cy_plain_eur_summary_inverts_quote_arrow_semantics,
+        cy_plain_eur_summary_handles_missing_daily_dynamics,
+        cy_two_human_summaries_are_in_reading_order,
+        cy_plain_summary_explains_mixed_ruble_moves_without_repeating_numbers,
         cy_plain_summary_handles_both_up,
         cy_plain_summary_handles_both_down,
         cy_plain_summary_handles_zero_and_missing,
         cy_missing_deltas_never_restore_old_jargon,
         cy_safe_runner_uses_same_summary_formatter,
-        cy_no_cbr_values_do_not_append_ruble_summary_after_hashtags,
+        cy_no_cbr_values_keep_eur_summary_but_skip_ruble_summary,
         cy_market_pulse_is_compact,
         cy_fx_market_hashtag_survives_empty_or_existing_pulse,
     )
