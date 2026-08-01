@@ -38,6 +38,14 @@ _CURRENCY_NAMES_RU = {
 }
 _CURRENCY_ORDER = ("EUR", "USD")
 
+_EUR_QUOTE_FORMS = {
+    "USD": ("доллар", "подорожал", "подешевел", "почти не изменился"),
+    "GBP": ("фунт", "подорожал", "подешевел", "почти не изменился"),
+    "TRY": ("турецкая лира", "подорожала", "подешевела", "почти не изменилась"),
+    "ILS": ("шекель", "подорожал", "подешевел", "почти не изменился"),
+}
+_EUR_QUOTE_ORDER = ("USD", "GBP", "TRY", "ILS")
+
 
 def _to_float(x: Any) -> float | None:
     try:
@@ -65,22 +73,97 @@ def build_plain_ruble_summary(rates: dict[str, Any]) -> str:
     return "🧭 К рублю: " + ", ".join(parts) + "."
 
 
+def build_plain_eur_summary(fx_text: str) -> str:
+    """Explain quote-currency moves vs EUR from the already displayed EUR line.
+
+    The displayed pair is units of quote currency per 1 EUR. Therefore an upward
+    arrow means EUR buys more quote currency and that quote currency weakened
+    against EUR; a downward arrow means it strengthened against EUR.
+    """
+    lines = str(fx_text or "").splitlines()
+    source_line = next((line.strip() for line in lines if line.strip().startswith("EUR:")), "")
+    if not source_line:
+        source_line = next((line.strip() for line in lines if line.strip().startswith("ECB official:")), "")
+    if not source_line or ":" not in source_line:
+        return ""
+
+    segments = source_line.split(":", 1)[1].split("·")
+    parsed: dict[str, str | None] = {}
+    any_arrow = False
+    for raw in segments:
+        segment = raw.strip()
+        if not segment:
+            continue
+        code = segment.split(None, 1)[0]
+        if code not in _EUR_QUOTE_FORMS:
+            continue
+        arrow = "↑" if "↑" in segment else "↓" if "↓" in segment else None
+        parsed[code] = arrow
+        any_arrow = any_arrow or bool(arrow)
+
+    if not parsed:
+        return ""
+    if not any_arrow:
+        return "🧭 К евро: динамика за день пока недоступна."
+
+    parts: list[str] = []
+    for code in _EUR_QUOTE_ORDER:
+        if code not in parsed:
+            continue
+        name, stronger, weaker, flat = _EUR_QUOTE_FORMS[code]
+        arrow = parsed[code]
+        if arrow == "↑":
+            parts.append(f"{name} {weaker}")
+        elif arrow == "↓":
+            parts.append(f"{name} {stronger}")
+        else:
+            parts.append(f"{name} {flat}")
+    return "🧭 К евро: " + ", ".join(parts) + "." if parts else ""
+
+
 def _has_current_ruble_value(rates: dict[str, Any]) -> bool:
     return any(_to_float((rates.get(code) or {}).get("value")) is not None for code in _CURRENCY_ORDER)
 
 
+def _is_ruble_summary_line(line: str) -> bool:
+    text = line.strip()
+    return (
+        text.startswith("🧭 К рублю:")
+        or text.startswith("🧭 € и $ к ₽")
+        or text.startswith("🧭 Рублёвые пары")
+    )
+
+
 def replace_ruble_summary(fx_text: str, rates: dict[str, Any]) -> str:
-    """Replace trading-style RUB commentary with a short everyday explanation."""
+    """Add the EUR explanation and replace RUB jargon with plain Russian."""
+    lines = str(fx_text or "").splitlines()
+
+    eur_summary = build_plain_eur_summary(fx_text)
+    if eur_summary:
+        existing_eur = next((i for i, line in enumerate(lines) if line.strip().startswith("🧭 К евро:")), None)
+        if existing_eur is not None:
+            lines[existing_eur] = eur_summary
+        else:
+            source_index = next(
+                (i for i, line in enumerate(lines) if line.strip().startswith("EUR:")),
+                next((i for i, line in enumerate(lines) if line.strip().startswith("ECB official:")), None),
+            )
+            if source_index is not None:
+                lines.insert(source_index + 1, eur_summary)
+
     summary = build_plain_ruble_summary(rates)
     replacement = summary or "🧭 К рублю: динамика за день пока недоступна."
-    lines = str(fx_text or "").splitlines()
     for index, line in enumerate(lines):
-        if line.strip().startswith("🧭"):
+        if _is_ruble_summary_line(line):
             lines[index] = replacement
             return "\n".join(lines)
+
     if not _has_current_ruble_value(rates):
-        return fx_text
-    lines.append(replacement)
+        return "\n".join(lines)
+
+    cbr_index = next((i for i, line in enumerate(lines) if line.strip().startswith("К ₽:")), None)
+    if cbr_index is not None:
+        lines.insert(cbr_index + 1, replacement)
     return "\n".join(lines)
 
 
