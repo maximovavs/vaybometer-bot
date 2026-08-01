@@ -65,6 +65,10 @@ def build_plain_ruble_summary(rates: dict[str, Any]) -> str:
     return "🧭 К рублю: " + ", ".join(parts) + "."
 
 
+def _has_current_ruble_value(rates: dict[str, Any]) -> bool:
+    return any(_to_float((rates.get(code) or {}).get("value")) is not None for code in _CURRENCY_ORDER)
+
+
 def replace_ruble_summary(fx_text: str, rates: dict[str, Any]) -> str:
     """Replace trading-style RUB commentary with a short everyday explanation."""
     summary = build_plain_ruble_summary(rates)
@@ -73,9 +77,10 @@ def replace_ruble_summary(fx_text: str, rates: dict[str, Any]) -> str:
     for index, line in enumerate(lines):
         if line.strip().startswith("🧭"):
             lines[index] = replacement
-            break
-    else:
-        lines.append(replacement)
+            return "\n".join(lines)
+    if not _has_current_ruble_value(rates):
+        return fx_text
+    lines.append(replacement)
     return "\n".join(lines)
 
 
