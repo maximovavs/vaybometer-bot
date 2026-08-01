@@ -32,12 +32,52 @@ from post_cy import (
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+_CURRENCY_NAMES_RU = {
+    "EUR": "евро",
+    "USD": "доллар",
+}
+_CURRENCY_ORDER = ("EUR", "USD")
+
 
 def _to_float(x: Any) -> float | None:
     try:
         return float(x)
     except Exception:
         return None
+
+
+def build_plain_ruble_summary(rates: dict[str, Any]) -> str:
+    """Explain EUR/USD moves against RUB without repeating the numbers above."""
+    parts: list[str] = []
+    for code in _CURRENCY_ORDER:
+        delta = _to_float((rates.get(code) or {}).get("delta"))
+        if delta is None:
+            continue
+        name = _CURRENCY_NAMES_RU[code]
+        if abs(delta) < 0.005:
+            parts.append(f"{name} почти не изменился")
+        elif delta > 0:
+            parts.append(f"{name} подорожал")
+        else:
+            parts.append(f"{name} подешевел")
+    if not parts:
+        return ""
+    return "🧭 К рублю: " + ", ".join(parts) + "."
+
+
+def replace_ruble_summary(fx_text: str, rates: dict[str, Any]) -> str:
+    """Replace trading-style RUB commentary with a short everyday explanation."""
+    summary = build_plain_ruble_summary(rates)
+    if not summary:
+        return fx_text
+    lines = str(fx_text or "").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().startswith("🧭"):
+            lines[index] = summary
+            break
+    else:
+        lines.append(summary)
+    return "\n".join(lines)
 
 
 def _fmt_usd_compact(value: float | None) -> str:
@@ -242,6 +282,7 @@ async def main() -> None:
     fx_cache_path, inter_cache_path = _fx_cache_paths(args.to_test)
 
     fx_text, rates, inter_today = _build_fx_message_eur(date_local, tz, inter_cache_path)
+    fx_text = replace_ruble_summary(fx_text, rates)
     text = inject_market_pulse(fx_text, build_market_pulse_block())
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
