@@ -109,6 +109,22 @@ def cy_safe_runner_uses_same_summary_formatter() -> None:
     assert "🧭 К рублю: евро подорожал, доллар подешевел." in text
 
 
+def cy_no_cbr_values_do_not_append_ruble_summary_after_hashtags() -> None:
+    raw = (
+        "💱 <b>Курсы валют | 1 EUR</b>\n"
+        "EUR: USD 1.14 · GBP 0.86 · TRY 53.14 · ILS 3.41\n\n"
+        "#Кипр #курсы_валют #рынки"
+    )
+    rates = {
+        "EUR": {"value": None, "delta": None},
+        "USD": {"value": None, "delta": None},
+    }
+    text = pulse.replace_ruble_summary(raw, rates)
+    assert text == raw
+    assert "🧭 К рублю:" not in text
+    assert text.rstrip().endswith("#Кипр #курсы_валют #рынки")
+
+
 def cy_market_pulse_is_compact() -> None:
     pulse._fetch_crypto = lambda: ["24ч: BTC $60.3K ↑1.2% · ETH $1.6K ↑2.0%"]
     pulse._fetch_gold = lambda: ["Gold/oz $4.1K"]
@@ -140,6 +156,7 @@ def main() -> None:
         cy_plain_summary_handles_zero_and_missing,
         cy_missing_deltas_never_restore_old_jargon,
         cy_safe_runner_uses_same_summary_formatter,
+        cy_no_cbr_values_do_not_append_ruble_summary_after_hashtags,
         cy_market_pulse_is_compact,
         cy_fx_market_hashtag_survives_empty_or_existing_pulse,
     )
