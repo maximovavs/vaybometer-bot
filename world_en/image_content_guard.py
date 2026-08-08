@@ -180,7 +180,7 @@ def inspect_provider_image(path: str | Path) -> ImageContentVerdict:
         top >= 0.11
         and body <= 0.08
         and ratio >= 3.0
-        and dense_top_rows >= 6
+        and dense_top_rows >= 5
     )
 
     if known_incident:
