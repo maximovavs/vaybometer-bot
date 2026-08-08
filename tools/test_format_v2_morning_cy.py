@@ -403,8 +403,8 @@ def cy_morning_preserves_full_moon_line_without_illumination_duplicate() -> None
 
 def cy_morning_poor_air_adds_health_recommendation() -> None:
     text = build_morning_format_v2("Кипр", MORNING_POOR_AIR)
-    assert "😷 Воздух неидеален: активность на улице короче" in text
-    assert "окна лучше держать закрытыми" in text
+    assert "😷 Воздух неидеален: чувствительным людям лучше сократить интенсивную активность на улице" in text
+    assert "окна лучше держать закрытыми" not in text
 
 
 def cy_morning_recent_safecast_elevated_is_omitted() -> None:
