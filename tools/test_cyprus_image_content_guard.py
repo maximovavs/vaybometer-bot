@@ -9,12 +9,14 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from PIL import Image, ImageDraw  # type: ignore  # noqa: E402
+import image_prompt_cy_scene as scene_prompt  # noqa: E402
 import world_en.imagegen as imagegen  # noqa: E402
 from world_en import image_content_guard as guard  # noqa: E402
 
@@ -119,6 +121,21 @@ def screen_like_provider_image_is_rejected_and_removed() -> None:
         _restore_env("IMAGEGEN_MIN_VALID_BYTES", previous_min)
 
 
+def five_dense_top_rows_are_rejected() -> None:
+    original_edge_metrics = guard._edge_metrics
+    try:
+        guard._edge_metrics = lambda _image: (0.13, 0.04, 3.25, 5)
+        with tempfile.TemporaryDirectory() as tmp_name:
+            out_path = Path(tmp_name) / "five-dense-rows.png"
+            out_path.write_bytes(_landscape_bytes())
+            verdict = guard.inspect_provider_image(out_path)
+            assert verdict.valid is False
+            assert verdict.reason == "screen_or_ui_chrome"
+            assert verdict.dense_top_rows == 5
+    finally:
+        guard._edge_metrics = original_edge_metrics
+
+
 def ordinary_landscape_provider_image_is_accepted() -> None:
     previous_guard = _set_env("CY_IMAGE_CONTENT_GUARD", "1")
     previous_min = _set_env("IMAGEGEN_MIN_VALID_BYTES", "128")
@@ -217,6 +234,36 @@ def rejected_pollinations_image_falls_back_to_horde() -> None:
         _restore_env("IMAGEGEN_MIN_VALID_BYTES", previous_min)
 
 
+def prompt_rejects_map_and_screen_outputs_and_bumps_cache_version() -> None:
+    assert scene_prompt.CYPRUS_VISUAL_PROMPT_VERSION == "cyprus_visual_v10"
+    ctx = SimpleNamespace(
+        actual_precipitation=False,
+        explicit_storm=False,
+        visibility_condition="clear",
+        visual_forecast_period="representative_daytime",
+    )
+    scene = SimpleNamespace(diagnostics={})
+    items = scene_prompt._negative_items(
+        "evening",
+        {},
+        {"selected_scene": "long_sandy_beach"},
+        scene,
+        ctx,
+    )
+    negative = " ; ".join(items).lower()
+    for phrase in (
+        "no map",
+        "no satellite imagery",
+        "no cartographic view",
+        "no aerial map",
+        "no screenshot",
+        "no browser or app interface",
+        "no ui chrome",
+        "no screen capture",
+    ):
+        assert phrase in negative
+
+
 def incident_fingerprints_are_pinned() -> None:
     assert guard._INCIDENT_DHASH == "0f1f560b0f150b03"
     assert guard._INCIDENT_PHASH == "d0692ba536263f36"
@@ -228,9 +275,11 @@ def main() -> None:
     checks = (
         guard_is_installed_on_imagegen_validator,
         screen_like_provider_image_is_rejected_and_removed,
+        five_dense_top_rows_are_rejected,
         ordinary_landscape_provider_image_is_accepted,
         explicit_kill_switch_preserves_technical_validation,
         rejected_pollinations_image_falls_back_to_horde,
+        prompt_rejects_map_and_screen_outputs_and_bumps_cache_version,
         incident_fingerprints_are_pinned,
     )
     for check in checks:

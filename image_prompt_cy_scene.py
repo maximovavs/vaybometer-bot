@@ -15,7 +15,7 @@ from visual_context_cy import VisualContextCY, parse_visual_context_cy
 from visual_rules_cy import SceneCuesCY, apply_visual_rules_cy
 
 
-CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v9"
+CYPRUS_VISUAL_PROMPT_VERSION = "cyprus_visual_v10"
 
 _PROMPT_TARGET_MIN_CHARS = 450
 _PROMPT_TARGET_MAX_CHARS = 1600
@@ -963,6 +963,7 @@ def _negative_items(
         "no text or logo",
         "no watermark or signature",
         "no illustration or fantasy",
+        "no map, no satellite imagery, no cartographic view, no aerial map, no screenshot, no browser or app interface, no UI chrome, no screen capture",
     ]
     if not ctx.actual_precipitation:
         items.extend(["no rain", "no wet roads or wet rocks"])
