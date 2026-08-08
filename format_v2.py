@@ -9,6 +9,8 @@ import os
 import re
 from pathlib import Path
 
+from visibility_context import has_structured_visibility_alert
+
 
 CY_LAT, CY_LON = 34.707, 33.022
 
@@ -331,7 +333,7 @@ def _has_poor_air_signal(text: str) -> bool:
 
 
 def _has_visibility_haze(text: str) -> bool:
-    return bool(re.search(r"дымк|туман|fog|haze", _plain(text), flags=re.I))
+    return has_structured_visibility_alert(text)
 
 
 def _format_reason_list(reasons: list[str]) -> str:

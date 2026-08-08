@@ -387,22 +387,24 @@ def build_cyprus_visibility_line(
     post_type: str = "morning",
 ) -> Optional[str]:
     timing = "утром" if post_type.startswith("morn") else "завтра утром"
+    place = _visibility_location_phrase(context.location_label)
+    evidence_time = _visibility_time_phrase(context)
+    scope = f"{timing}{place}{evidence_time}"
     value = context.effective_visibility_m
     distance = f", местами около {int(round(value))} м" if value is not None else ""
     if context.condition == "mixed_visibility":
-        return f"🌫 Видимость: {timing} снижена{distance}; возможна смесь влажной дымки и загрязнения воздуха."
+        return f"🌫 Видимость: {scope} снижена{distance}; возможна смесь влажной дымки и загрязнения воздуха."
     if context.condition == "dust_haze":
-        return f"🌫 Видимость: {timing} возможна сухая пылевая дымка{distance}; ориентируйтесь на фактическую дальность обзора."
+        return f"🌫 Видимость: {scope} возможна сухая пылевая дымка{distance}; ориентируйтесь на фактическую дальность обзора."
     if context.condition == "dense_fog":
         fog_timing = "сильный утренний туман" if post_type.startswith("morn") else "завтра утром сильный туман"
-        place = _visibility_location_phrase(context.location_label)
-        return f"🌫 Видимость: {fog_timing}{place} — местами около {int(round(value))} м." if value is not None else f"🌫 Видимость: {fog_timing}{place}."
+        return f"🌫 Видимость: {fog_timing}{place}{evidence_time} — местами около {int(round(value))} м." if value is not None else f"🌫 Видимость: {fog_timing}{place}{evidence_time}."
     if context.condition == "fog":
-        return f"🌫 Видимость: {timing} туман{distance}; дальние объекты и побережье местами плохо различимы."
+        return f"🌫 Видимость: {scope} туман{distance}; дальние объекты и побережье местами плохо различимы."
     if context.condition == "mist":
-        return f"🌫 Видимость: {timing} влажная дымка{distance}; на дорогах и у моря видимость снижена."
+        return f"🌫 Видимость: {scope} влажная дымка{distance}; на дорогах и у моря видимость снижена."
     if context.condition == "reduced_visibility":
-        return f"🌫 Видимость: {timing} местами снижена{distance}; на дорогах и у моря нужна дополнительная дистанция."
+        return f"🌫 Видимость: {scope} местами снижена{distance}; на дорогах и у моря нужна дополнительная дистанция."
     return None
 
 
@@ -419,8 +421,39 @@ def _visibility_location_phrase(location_label: Any) -> str:
     return " " + forms.get(label.casefold(), f"в районе города {label}")
 
 
+def _visibility_time_phrase(context: CyprusVisibilityContext) -> str:
+    local_dt = _local_datetime(context.observation_time, "Asia/Nicosia")
+    if local_dt is None:
+        return ""
+    time_label = local_dt.strftime("%H:%M")
+    if context.evidence_source.startswith("current"):
+        return f" (данные на {time_label})"
+    if context.evidence_source.startswith("hourly_morning"):
+        return f" (прогноз на {time_label})"
+    return ""
+
+
+def _structured_visibility_lines(text: Any) -> list[str]:
+    lines: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = re.sub(r"</?b>", "", raw_line, flags=re.I).strip()
+        if re.match(r"^🌫\s*Видимость\s*:", line, flags=re.I):
+            lines.append(line)
+    return lines
+
+
+def has_structured_visibility_alert(text: Any) -> bool:
+    """Return true only for the explicit line backed by visibility context."""
+    return any(
+        re.search(r"дымк|туман|снижен|fog|haze", line, flags=re.I)
+        for line in _structured_visibility_lines(text)
+    )
+
+
 def visibility_condition_from_text(text: str) -> str:
-    low = str(text or "").lower()
+    low = "\n".join(_structured_visibility_lines(text)).lower()
+    if not low:
+        return "clear"
     if "смесь влажной дымки и загрязнения" in low:
         return "mixed_visibility"
     if "сухая пылевая дымка" in low or "пылевая дымка" in low:
@@ -499,6 +532,7 @@ __all__ = [
     "classify_visibility_values",
     "dew_point_spread_c",
     "get_cyprus_visibility_context",
+    "has_structured_visibility_alert",
     "normalize_number",
     "normalize_visibility_m",
     "visibility_air_penalty",

@@ -27,7 +27,12 @@ except Exception:  # pragma: no cover - local lightweight telegram module fallba
 from editorial_voice import build_evening_human_line, build_morning_human_line
 from post_common import build_message
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
-from visibility_context import visibility_air_penalty, visibility_condition_from_text, visibility_penalty
+from visibility_context import (
+    has_structured_visibility_alert,
+    visibility_air_penalty,
+    visibility_condition_from_text,
+    visibility_penalty,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -903,7 +908,7 @@ def _cyprus_reason_conclusion(score: float, reasons: str, v2_text: str) -> str:
     low = (reasons + " " + _plain(v2_text)).lower()
     heat = any(x in low for x in ("жара", "тепло", "перегрев"))
     wind = any(x in low for x in ("порыв", "ветер"))
-    mist = any(x in low for x in ("туман", "дымк"))
+    mist = has_structured_visibility_alert(v2_text)
     gusts = _numbers(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", v2_text)
     max_gust = max(gusts) if gusts else None
     warning = _has_actual_cyprus_storm_signal(v2_text, max_gust)
@@ -956,7 +961,7 @@ def _cyprus_main_nuance(v2_text: str) -> str:
     low = (reasons + " " + _plain(v2_text)).lower()
     heat = any(x in low for x in ("жара", "тепло"))
     wind = any(x in low for x in ("порыв", "ветер"))
-    mist = any(x in low for x in ("туман", "дымк"))
+    mist = has_structured_visibility_alert(v2_text)
     rain = _has_cyprus_precip_risk(v2_text)
     troodos = "тродос" in low or "горы" in low
     visibility_condition = _cyprus_visibility_condition(v2_text)

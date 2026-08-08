@@ -74,6 +74,7 @@ from visibility_context import (  # noqa: E402
     get_cyprus_visibility_context,
     normalize_visibility_m,
     visibility_air_penalty,
+    visibility_condition_from_text,
 )
 from weather import save_cyprus_visibility_diagnostics  # noqa: E402
 
@@ -1898,6 +1899,83 @@ def cy_visibility_wmo_fog_and_weather_request_fallback_are_safe() -> None:
     assert required <= set(diagnostic)
 
 
+def cy_visibility_evidence_names_city_and_selected_time() -> None:
+    forecast_context = get_cyprus_visibility_context(
+        _visibility_payload(900),
+        target_date="2026-07-16",
+        location_label="Ларнака",
+    )
+    forecast_line = build_cyprus_visibility_line(forecast_context)
+    assert forecast_context.observation_time == "2026-07-16T06:00"
+    assert forecast_line
+    assert "утром в Ларнаке (прогноз на 06:00)" in forecast_line
+
+    current_context = get_cyprus_visibility_context(
+        _visibility_payload(900, current_visibility=400),
+        target_date="2026-07-16",
+        location_label="Лимассол",
+    )
+    current_line = build_cyprus_visibility_line(current_context)
+    assert current_context.observation_time == "2026-07-16T03:20"
+    assert current_line
+    assert "сильный утренний туман в Лимассоле (данные на 03:20)" in current_line
+
+
+def cy_daily_wmo_fog_stays_local_without_structured_visibility_alert() -> None:
+    assert post_common_module.code_desc(1) == "🌤 преимущественно ясно"
+    assert post_common_module.code_desc(2) == "⛅ переменная облачность"
+    assert post_common_module.code_desc(3) == "☁️ пасмурно"
+
+    local_daily_fog = """<b>Кипр: погода на завтра (16.07.2026)</b>
+✨ VayboMeter завтра: 8.0/10 — хорошо.
+🏖 <b>Морские города</b>
+Ларнака: 31/24 °C • 🌫 туман • 💨 4 м/с
+Лимассол: 31/24 °C • ☀️ ясно • 💨 4 м/с
+———
+🏞 <b>Континентальные города</b>
+Никосия: 34/23 °C • ☀️ ясно
+———
+#Кипр #погода
+"""
+    formatted = build_evening_format_v2("Кипр", local_daily_fog)
+    assert "Ларнака: 31/24 °C • 🌫 туман" in formatted
+    assert "🧭 Главное завтра: утром местами дымка/туман" not in formatted
+    assert "⚠️ Нюанс: воздух по текущим данным чистый, но локальная дымка" not in formatted
+
+    old_flag = os.environ.get("FORMAT_V2_MAIN_NUANCE")
+    try:
+        os.environ["FORMAT_V2_MAIN_NUANCE"] = "1"
+        polished = _insert_main_nuance(formatted)
+    finally:
+        if old_flag is None:
+            os.environ.pop("FORMAT_V2_MAIN_NUANCE", None)
+        else:
+            os.environ["FORMAT_V2_MAIN_NUANCE"] = old_flag
+    assert "дымка/туман" not in polished
+
+    reduced_line = "🌫 Видимость: завтра утром в Лимассоле (прогноз на 07:00) местами снижена, местами около 4000 м; на дорогах и у моря нужна дополнительная дистанция."
+    reduced_with_local_fog = local_daily_fog.replace(
+        "#Кипр #погода",
+        reduced_line + "\n#Кипр #погода",
+    )
+    assert visibility_condition_from_text(reduced_with_local_fog) == "reduced_visibility"
+
+    context = get_cyprus_visibility_context(
+        _visibility_payload(900),
+        post_type="evening",
+        target_date="2026-07-16",
+        location_label="Ларнака",
+    )
+    structured_line = build_cyprus_visibility_line(context, post_type="evening")
+    assert structured_line
+    with_evidence = build_evening_format_v2(
+        "Кипр",
+        local_daily_fog.replace("#Кипр #погода", structured_line + "\n#Кипр #погода"),
+    )
+    assert "🧭 Главное завтра: утром местами дымка/туман" in with_evidence
+    assert structured_line in with_evidence
+
+
 def cy_morning_fog_survives_format_and_changes_score_nuance_plan() -> None:
     fog_line = build_cyprus_visibility_line(
         get_cyprus_visibility_context(_visibility_payload(320), target_date="2026-07-16")
@@ -2061,6 +2139,8 @@ def main() -> None:
         cy_visibility_thresholds_and_dust_classification_are_stable,
         cy_visibility_number_normalization_and_uneven_hourly_arrays_are_safe,
         cy_visibility_wmo_fog_and_weather_request_fallback_are_safe,
+        cy_visibility_evidence_names_city_and_selected_time,
+        cy_daily_wmo_fog_stays_local_without_structured_visibility_alert,
         cy_morning_fog_survives_format_and_changes_score_nuance_plan,
         cy_evening_does_not_use_current_aqi_for_tomorrow_visibility,
         cy_evening_preserves_only_tomorrow_morning_visibility,
