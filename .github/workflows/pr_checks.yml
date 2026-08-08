@@ -1,0 +1,86 @@
+name: Cyprus offline PR checks
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  offline-regressions:
+    name: Offline regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install offline test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "requests>=2.32" \
+            "pendulum>=3.0" \
+            "Pillow>=10,<12" \
+            "python-telegram-bot>=20,<21"
+
+      - name: Compile Cyprus modules and offline tests
+        run: |
+          python -m compileall -q \
+            air.py \
+            cyprus_image_recovery.py \
+            cyprus_visual_dedup.py \
+            format_v2.py \
+            image_prompt_cy_scene.py \
+            safe_test_post.py \
+            send_weekly_forecast.py \
+            visibility_context.py \
+            visual_context_cy.py \
+            visual_rules_cy.py \
+            world_en/image_content_guard.py \
+            world_en/imagegen.py \
+            tools/test_air_cy.py \
+            tools/test_cyprus_image_content_guard.py \
+            tools/test_cyprus_image_fallback.py \
+            tools/test_cyprus_visual_dedup.py \
+            tools/test_cyprus_visual_workflow.py \
+            tools/test_format_v2_cy.py \
+            tools/test_format_v2_morning_cy.py \
+            tools/test_imagegen_validation.py \
+            tools/test_visual_cy.py \
+            tools/test_weekly_forecast.py \
+            tools/test_weekly_workflow_schedule.py
+
+      - name: Run offline regressions with external HTTP disabled
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          http_proxy: http://127.0.0.1:9
+          https_proxy: http://127.0.0.1:9
+          all_proxy: http://127.0.0.1:9
+          NO_PROXY: localhost,127.0.0.1
+          no_proxy: localhost,127.0.0.1
+          POLLINATIONS_BASE_URL: http://127.0.0.1:9
+          HORDE_BASE_URL: http://127.0.0.1:9
+          CUSTOM_IMAGE_BASE_URL: ""
+        run: |
+          set -euo pipefail
+          python tools/test_visual_cy.py
+          python tools/test_imagegen_validation.py
+          python tools/test_cyprus_image_content_guard.py
+          python tools/test_cyprus_visual_dedup.py
+          python tools/test_cyprus_image_fallback.py
+          python tools/test_cyprus_visual_workflow.py
+          python tools/test_format_v2_cy.py
+          python tools/test_format_v2_morning_cy.py
+          python tools/test_air_cy.py
+          python tools/test_weekly_forecast.py
+          python tools/test_weekly_workflow_schedule.py
