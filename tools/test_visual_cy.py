@@ -1028,10 +1028,20 @@ def cy_disable_bay_visuals_excludes_bays_and_adds_negative_constraints() -> None
             assert not any(token in composition for token in ("aerial", "raised", "wide panorama", "beach curve"))
             low = prompt.lower()
             for clause in (
+                "no map",
+                "satellite imagery",
+                "cartographic view",
+                "aerial map",
+                "screenshot",
+                "browser or app interface",
+                "ui chrome",
+                "screen capture",
                 "no scenic curved bay",
                 "no natural cove",
                 "no enclosed tourist lagoon",
                 "no elevated postcard coastline",
+                "no mirror-flat water",
+                "still vegetation",
             ):
                 assert clause in low
             _assert_compact_prompt_contract(prompt, meta)

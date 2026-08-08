@@ -969,16 +969,18 @@ def _negative_items(
         items.extend(["no rain", "no wet roads or wet rocks"])
     if not ctx.explicit_storm:
         items.extend(["no storm", "no lightning or rough storm sea"])
+    if scene.diagnostics.get("wind_rule"):
+        items.append("no mirror-flat water or still vegetation")
     if ctx.visibility_condition == "clear":
         items.append("no fog")
-    if ctx.visual_forecast_period == "representative_daytime":
-        items.extend(["no sunset", "no night", "no moon-led scene", "no gloomy twilight", "no cold winter palette"])
     if _bay_visuals_disabled():
         items.append(
             "no scenic curved bay, no natural cove, no enclosed tourist lagoon, no elevated postcard coastline"
         )
     elif metadata["selected_scene"] == "small_harbour":
         items.append("no scenic curved tourist bay")
+    if ctx.visual_forecast_period == "representative_daytime":
+        items.extend(["no sunset", "no night", "no moon-led scene", "no gloomy twilight", "no cold winter palette"])
     visibility_window = str(scene.diagnostics.get("visibility_forecast_window") or "none")
     visibility_condition = str(scene.diagnostics.get("visibility_condition") or "clear")
     if visibility_window in {"current_morning", "tomorrow_morning"}:
@@ -1020,8 +1022,6 @@ def _negative_items(
         items.append("natural moon scale, no oversized moon and no fantasy planet")
         if moon_context.get("kind") == "near_full":
             items.append("no perfect full moon")
-    if scene.diagnostics.get("wind_rule"):
-        items.append("no mirror-flat water or still vegetation")
     return _dedupe_semantic_items(items)[:15]
 
 
@@ -1117,8 +1117,8 @@ def _fit_prompt_budget(positive: list[str], negative: list[str]) -> tuple[str, l
         prompt = _compose_prompt(positive, negative)
     if len(prompt) > _PROMPT_TARGET_MAX_CHARS:
         if len(positive) > 6:
-            positive[6] = "Coherent scene-specific composition"
-        positive[-1] = "Natural colors and realistic detail"
+            positive[6] = "Coherent composition"
+        positive[-1] = "Natural colors and detail"
         prompt = _compose_prompt(positive, negative)
     if len(prompt) > _PROMPT_HARD_MAX_CHARS:
         raise ValueError("Cyprus visual prompt exceeds the hard length limit")
