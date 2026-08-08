@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Tuple, Optional, Sequence, Union
 import pendulum
 from telegram import Bot, constants
 
-from utils        import compass, get_fact, kmh_to_ms, smoke_index
+from utils        import compass, get_fact, kmh_to_ms
 from weather      import (
     build_cyprus_visibility_line,
     day_night_stats,
@@ -1506,7 +1506,36 @@ def _air_metric_values(air_now: Dict[str, Any]) -> tuple[Optional[float], Option
     return aqi_f, pm25_f, pm10_f
 
 
+def _air_observation_city(air_now: Dict[str, Any]) -> str:
+    station = str(air_now.get("station") or "").strip().lower()
+    for needle, city in (
+        ("limassol", "Лимассоле"),
+        ("nicosia", "Никосии"),
+        ("larnaca", "Ларнаке"),
+        ("paphos", "Пафосе"),
+        ("paralimni", "Паралимни"),
+        ("ayia marina", "Айя-Марине"),
+        ("zygi", "Зиги"),
+    ):
+        if needle in station:
+            return city
+    return ""
+
+
+def _air_observation_time(air_now: Dict[str, Any]) -> str:
+    observed_at = str(air_now.get("observed_at") or "").strip()
+    if not observed_at:
+        return ""
+    try:
+        return pendulum.parse(observed_at).in_timezone("Asia/Nicosia").format("HH:mm")
+    except Exception:
+        match = re.search(r"\b(\d{1,2}:\d{2})\b", observed_at)
+        return match.group(1) if match else ""
+
+
 def _is_air_bad(air_now: Dict[str, Any]) -> tuple[bool, str]:
+    if air_now.get("observation_status") not in (None, "fresh"):
+        return False, ""
     aqi_f, pm25_f, pm10_f = _air_metric_values(air_now)
     bad = (
         (isinstance(aqi_f, (int, float)) and aqi_f >= 100)
@@ -1515,19 +1544,37 @@ def _is_air_bad(air_now: Dict[str, Any]) -> tuple[bool, str]:
     )
     if not bad:
         return False, "🟢 воздух в норме"
-    return True, "😷 Воздух неидеален: активность на улице короче, окна лучше держать закрытыми в часы пыли/дымки."
+    city = _air_observation_city(air_now)
+    scope = f"В {city} воздух" if city else "По текущему наблюдению воздух"
+    return True, f"😷 {scope} неидеален: чувствительным людям лучше сократить интенсивную активность на улице."
 
 
 def _air_quality_line_from_data(air: Dict[str, Any], *, include_pollen: bool = False) -> Optional[str]:
+    status = str(air.get("observation_status") or "").strip().lower()
+    if status == "stale":
+        return "🏭 Воздух: свежих наблюдений нет; предыдущий официальный замер устарел."
+    if status == "time_missing":
+        return "🏭 Воздух: текущая оценка недоступна — источник не указал время наблюдения."
+    if status == "missing" or not air:
+        return "🏭 Воздух: свежих наблюдений нет."
+
     aqi_f, pm25_f, pm10_f = _air_metric_values(air)
     lbl = _aqi_bucket_label(aqi_f)
 
     parts: list[str] = []
 
-    aqi_part = f"AQI {int(round(aqi_f))}" if isinstance(aqi_f, (int, float)) else "AQI н/д"
-    if lbl:
-        aqi_part += f" ({lbl})"
-    parts.append(aqi_part)
+    official_level = air.get("pollution_level") if air.get("src") == "cy_official" else None
+    if isinstance(official_level, (int, float)) and 1 <= int(official_level) <= 4:
+        category = str(air.get("pollution_category") or "н/д")
+        parts.append(f"официальный уровень {int(official_level)}/4 ({category})")
+
+    if isinstance(aqi_f, (int, float)):
+        aqi_part = f"AQI {int(round(aqi_f))}"
+        aqi_src = str(air.get("aqi_src_icon") or "").strip()
+        details = [value for value in (lbl, aqi_src if air.get("aqi_src") != air.get("src") else "") if value]
+        if details:
+            aqi_part += " (" + "; ".join(details) + ")"
+        parts.append(aqi_part)
 
     pm_part: list[str] = []
     if isinstance(pm25_f, (int, float)):
@@ -1537,10 +1584,6 @@ def _air_quality_line_from_data(air: Dict[str, Any], *, include_pollen: bool = F
     if pm_part:
         parts.append(" / ".join(pm_part))
 
-    em_sm, lbl_sm = smoke_index(pm25_f, pm10_f)
-    if isinstance(lbl_sm, str) and lbl_sm.lower() not in ("низкое", "низкий", "нет", "н/д"):
-        parts.append(f"😮‍💨 задымление: {lbl_sm}")
-
     if include_pollen:
         p = get_pollen() or {}
         risk = p.get("risk")
@@ -1549,6 +1592,16 @@ def _air_quality_line_from_data(air: Dict[str, Any], *, include_pollen: bool = F
 
     if not parts:
         return None
+
+    city = _air_observation_city(air)
+    if city:
+        parts.append(f"наблюдение в {city}")
+    source = str(air.get("src_icon") or "").strip()
+    if source and source != "⚪ н/д":
+        parts.append(source)
+    observed_time = _air_observation_time(air)
+    if observed_time:
+        parts.append(f"данные на {observed_time}")
 
     return "🏭 Воздух: " + " • ".join(parts)
 
@@ -1584,10 +1637,6 @@ def _city_air_metric_hint(data: Dict[str, Any], compact_label: str) -> str:
     if marker not in {"🟡", "🟠", "🔴"}:
         return ""
 
-    pm25 = _fmt_city_air_value(data.get("pm25"))
-    if pm25:
-        return f"PM₂.₅ {pm25}"
-
     pollutant = str(data.get("dominant_pollutant") or "").strip().lower()
     pollutant_map = {
         "pm10": ("PM₁₀", "pm10"),
@@ -1599,12 +1648,18 @@ def _city_air_metric_hint(data: Dict[str, Any], compact_label: str) -> str:
     pollutant = pollutant.replace(".", "")
     for src, dst in {"₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4", "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9"}.items():
         pollutant = pollutant.replace(src, dst)
+    parts: list[str] = []
+    level = data.get("pollution_level") if data.get("src") == "cy_official" else None
+    if isinstance(level, (int, float)) and 1 <= int(level) <= 4:
+        parts.append(f"ур. {int(level)}/4")
     if pollutant in pollutant_map:
         label, key = pollutant_map[pollutant]
         value = _fmt_city_air_value(data.get(key))
         if value:
-            return f"{label} {value}"
-    return ""
+            parts.append(f"{label} {value}")
+    elif _fmt_city_air_value(data.get("pm25")):
+        parts.append(f"PM₂.₅ {_fmt_city_air_value(data.get('pm25'))}")
+    return "; ".join(parts)
 
 
 def _air_by_city_line(city_pairs: list[tuple[str, tuple[float, float]]]) -> Optional[str]:
@@ -1637,6 +1692,8 @@ def _air_by_city_line(city_pairs: list[tuple[str, tuple[float, float]]]) -> Opti
     for city, _coords in selected:
         data = city_air.get(city)
         if not data:
+            continue
+        if data.get("observation_status") not in (None, "fresh"):
             continue
         label = data.get("clean_label")
         if not isinstance(label, str) or not label.strip():
@@ -2211,10 +2268,13 @@ def build_message(
             P.append("🧲 Космопогода: Kp н/д • 🌬️ " + sw_chunk)
 
         bad_air, _ = _is_air_bad(air_now)
-        air_icon = "🟢" if not bad_air else "🟡"
+        air_status = air_now.get("observation_status")
+        air_icon = "⚪" if air_status not in (None, "fresh") else ("🟢" if not bad_air else "🟡")
+        air_scope = _air_observation_city(air_now)
+        air_summary = f"воздух в {air_scope} {air_icon}" if air_scope else f"воздух по текущему замеру {air_icon}"
         storm = "без шторма" if not storm_region.get("warning") else "штормово"
         kp_status = _kp_status_label(kp_val)
-        P.append(f"🔎 Итого: воздух {air_icon} • {storm} • Kp {kp_status}")
+        P.append(f"🔎 Итого: {air_summary} • {storm} • Kp {kp_status}")
 
         tips = ["вода и завтрак"]
         if not bad_air:
@@ -2273,9 +2333,6 @@ def build_message(
         by_city = _air_by_city_line(sea_pairs + other_pairs)
         if by_city:
             P.append(by_city)
-        bad_air, tip = _is_air_bad(air_now)
-        if bad_air and tip:
-            P.append(tip)
         P.append("———")
 
     visibility_context = get_cyprus_visibility_context(

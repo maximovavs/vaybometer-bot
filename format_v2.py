@@ -320,7 +320,13 @@ def _air_quality_values(text: str) -> dict[str, float]:
 
 def _has_poor_air_signal(text: str) -> bool:
     values = _air_quality_values(text)
-    if values.get("aqi", 0) >= 100 or values.get("pm25", 0) >= 20 or values.get("pm10", 0) >= 50:
+    official_level = re.search(r"официальн\w*\s+уров\w*\s*(\d)\s*/\s*4", _plain(text), flags=re.I)
+    if (
+        values.get("aqi", 0) >= 100
+        or values.get("pm25", 0) >= 20
+        or values.get("pm10", 0) >= 50
+        or (official_level and int(official_level.group(1)) >= 3)
+    ):
         return True
     low = re.sub(r"\bпыльца\w*", "", _plain(text).lower(), flags=re.I)
     return bool(
@@ -334,6 +340,38 @@ def _has_poor_air_signal(text: str) -> bool:
 
 def _has_visibility_haze(text: str) -> bool:
     return has_structured_visibility_alert(text)
+
+
+def _is_forecast_air_line(line: str) -> bool:
+    low = _plain(line).strip().lower()
+    if not low.startswith(("🏭", "🏙")):
+        return False
+    return bool(
+        re.search(r"\bвоздух\s+завтра(?:\s+утром)?\b", low)
+        or re.search(r"\bпрогноз\w*\s+(?:воздуха|aqi)\b", low)
+        or re.search(r"\baqi\s+завтра(?:\s+утром)?\b", low)
+    )
+
+
+def _forecast_air_lines(lines: list[str]) -> list[str]:
+    return [line for line in lines if _is_forecast_air_line(line)]
+
+
+def _has_structured_dust_evidence(text: str, *, forecast_only: bool = False) -> bool:
+    for raw_line in str(text or "").splitlines():
+        line = _plain(raw_line).strip()
+        low = line.lower()
+        if line.startswith("🌫 Видимость:"):
+            if re.search(r"пылев\w*\s+дымк|сух\w*\s+пыл", low, flags=re.I):
+                return True
+            continue
+        if not line.startswith(("🏭", "🏙")):
+            continue
+        if forecast_only and not _is_forecast_air_line(line):
+            continue
+        if re.search(r"пылев\w*\s+дымк|пыль\s+в\s+воздухе|задымлен|\bсмог\b", low, flags=re.I):
+            return True
+    return False
 
 
 def _format_reason_list(reasons: list[str]) -> str:
@@ -402,13 +440,16 @@ def _evening_flags(lines: list[str]) -> dict[str, bool]:
     max_wind = _max_wind_ms(text)
     max_gust = _max_gust_ms(text)
     max_temp = _max_temperature_c(text)
-    poor_air = _has_poor_air_signal(text)
+    forecast_air_text = "\n".join(_forecast_air_lines(lines))
+    forecast_poor_air = _has_poor_air_signal(forecast_air_text)
+    forecast_dust = _has_structured_dust_evidence(text, forecast_only=True)
     visibility_haze = _has_visibility_haze(text)
     return {
         "storm": _has_actual_storm_signal(text, max_gust),
         "rain": _has_any(text, ("дожд", "ливн", "гроза", "осад")),
-        "dust": poor_air,
-        "visibility_haze": visibility_haze and not poor_air,
+        "dust": forecast_dust,
+        "poor_air": forecast_poor_air,
+        "visibility_haze": visibility_haze and not forecast_dust,
         "heat": _has_any(text, ("жара", "жарко", "перегрев")) or (isinstance(max_temp, (int, float)) and max_temp >= 33),
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 7),
         "local": _has_any(text, ("локаль", "местами", "неравномер", "по часам", "микросценар")),
@@ -483,6 +524,8 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
         return "🧭 Главное завтра: день неоднородный по острову."
     if flags["dust"]:
         return "🧭 Главное завтра: пыль/дымка влияют на воздух и видимость; утром лучше сверить AQI/PM."
+    if flags.get("poor_air"):
+        return "🧭 Главное завтра: прогноз воздуха требует более щадящей активности на улице."
     if flags.get("visibility_haze"):
         return "🧭 Главное завтра: утром местами дымка/туман; на дороге и у побережья лучше проверить видимость."
     if flags["heat"] and flags["wind"]:
@@ -508,6 +551,8 @@ def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_inland: bool) -> 
         return "⚠️ Главный нюанс: осадки возможны локально; по районам погода может отличаться сильнее среднего прогноза."
     if flags["dust"]:
         return "⚠️ Нюанс: при пыли/дыме чувствительным людям лучше сократить активность на улице."
+    if flags.get("poor_air"):
+        return "⚠️ Нюанс: чувствительным людям лучше сократить интенсивную активность на улице."
     if flags.get("visibility_haze"):
         return "⚠️ Нюанс: воздух по текущим данным чистый, но локальная дымка может ухудшать видимость."
     if flags["heat"] and has_inland:
@@ -544,6 +589,8 @@ def _evening_plan(flags: dict[str, bool]) -> str:
         return "✅ План завтра: прогулки у моря — в защищённых местах, ветер перепроверить утром."
     if flags["dust"]:
         return "✅ План завтра: утром оценить видимость/воздух, прогулку сделать короче при дымке."
+    if flags.get("poor_air"):
+        return "✅ План завтра: утром сверить прогноз воздуха и при повышенных значениях выбрать спокойную нагрузку."
     if flags.get("visibility_haze"):
         return "✅ План завтра: утром проверить видимость, особенно для дороги и побережья."
     return "✅ План завтра: обычные дела и прогулки, с короткой проверкой ветра и солнца утром."
@@ -553,6 +600,8 @@ def _clean_air_line(line: str) -> str:
     s = _plain(line).strip()
     if "воздух по городам" in s.lower():
         return _clean_city_air_line(s)
+    if re.search(r"официальн\w*\s+уров|AirQuality CY|📡 IQAir|🛰 OM|свежих наблюдений нет|время наблюдения", s, flags=re.I):
+        return s
     aqi_match = re.search(r"\bAQI\s*(\d+|н/д)", s, flags=re.I)
     pm25_match = re.search(r"(?:PM₂\.₅|PM2\.?5)\s*(\d+)", s, flags=re.I)
     pm10_match = re.search(r"(?:PM₁₀|PM10)\s*(\d+)", s, flags=re.I)
@@ -610,6 +659,8 @@ def _clean_air_line(line: str) -> str:
 
 def _clean_city_air_line(line: str) -> str:
     body = re.sub(r"^🏭\s*Воздух по городам\s*:\s*", "", _plain(line).strip(), flags=re.I)
+    if re.search(r"\b(?:ур\.|уровень)\s*\d\s*/\s*4", body, flags=re.I):
+        return "🏭 Воздух по городам: " + body
     city_re = r"Никосия|Лимассол|Ларнака|Пафос|Айя-Напа|Тродос"
     pollutant_re = r"PM₂\.₅|PM2\.?5|PM₁₀|PM10|NO₂|NO2|O₃|O3|SO₂|SO2|CO"
     value_re = r"\d+(?:[\.,]\d+)?"
@@ -647,8 +698,14 @@ def _air_health_recommendation(line: str) -> str:
                 values[key] = float(match.group(1).replace(",", "."))
             except Exception:
                 pass
-    if values.get("aqi", 0) >= 100 or values.get("pm25", 0) >= 20 or values.get("pm10", 0) >= 50:
-        return "😷 Воздух неидеален: активность на улице короче, окна лучше держать закрытыми в часы пыли/дымки."
+    official_level = re.search(r"официальн\w*\s+уров\w*\s*(\d)\s*/\s*4", s, flags=re.I)
+    if (
+        values.get("aqi", 0) >= 100
+        or values.get("pm25", 0) >= 20
+        or values.get("pm10", 0) >= 50
+        or (official_level and int(official_level.group(1)) >= 3)
+    ):
+        return "poor_air"
     return ""
 
 
@@ -665,7 +722,13 @@ def _air_lines(lines: list[str]) -> list[str]:
             continue
         if "частный датчик" in low or "safecast" in low or "радиа" in low:
             continue
-        if "aqi" not in low and "воздух по городам" not in low:
+        if (
+            "aqi" not in low
+            and "воздух по городам" not in low
+            and "официальный уровень" not in low
+            and "наблюдений нет" not in low
+            and "оценка недоступна" not in low
+        ):
             continue
         cleaned = _clean_air_line(s)
         for part in cleaned.splitlines():
@@ -679,8 +742,23 @@ def _air_is_poor(lines: list[str]) -> bool:
     return any(_air_health_recommendation(line) for line in lines)
 
 
-def _poor_air_advice_line() -> str:
-    return "😷 Воздух неидеален: активность на улице короче, окна лучше держать закрытыми в часы пыли/дымки."
+def _poor_air_advice_line(air_lines: list[str], evidence_text: str, *, forecast: bool = False) -> str:
+    scope = ""
+    for line in air_lines:
+        match = re.search(r"наблюдение\s+в\s+([А-ЯЁа-яё-]+)", _plain(line), flags=re.I)
+        if match:
+            scope = f"В {match.group(1)} "
+            break
+    if not scope and any("воздух по городам" in _plain(line).lower() for line in air_lines):
+        scope = "В отдельных городах "
+    if forecast:
+        scope = "По прогнозу "
+
+    subject = f"{scope}воздух" if scope else "Воздух"
+    advice = f"😷 {subject} неидеален: чувствительным людям лучше сократить интенсивную активность на улице."
+    if _has_structured_dust_evidence(evidence_text, forecast_only=forecast):
+        advice += " В часы подтверждённой пылевой дымки окна лучше держать закрытыми."
+    return advice
 
 
 def _critical_safecast_cy_line(lines: list[str]) -> str:
@@ -1060,7 +1138,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     else:
         out.append("✅ План: " + plan + ".")
     if poor_air:
-        out.append(_poor_air_advice_line())
+        out.append(_poor_air_advice_line(air, safe_legacy_text))
 
     out.append(tags)
     return "\n".join(out).strip()
@@ -1073,14 +1151,17 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     sea = _section_after(lines, "Морские города")
     inland = _section_after(lines, "Континентальные города")
     air = _air_lines(lines)
-    poor_air = _air_is_poor(air)
     radiation = _critical_safecast_cy_line(lines) or _safecast_private_sensor_line()
     astro = _clean_evening_astro(lines)
     score = _first_line_starts(lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
     flags = _evening_flags(lines)
     if storm:
         flags["storm"] = True
-    score = _polish_evening_score(score, flags)
+    poor_air = bool(flags.get("poor_air"))
+    # Preserve the existing score-polish inputs; PR C changes only air messaging scope.
+    score_flags = dict(flags)
+    score_flags["dust"] = _has_poor_air_signal("\n".join(lines))
+    score = _polish_evening_score(score, score_flags)
     nuance = _evening_nuance(flags, bool(sea), bool(inland))
     confidence = _evening_confidence_line(flags)
     visibility = _morning_pick(lines, ("🌫 Видимость:",))
@@ -1131,7 +1212,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     out.append(_evening_plan(flags))
     if poor_air:
-        out.append(_poor_air_advice_line())
+        out.append(_poor_air_advice_line(_forecast_air_lines(lines), safe_legacy_text, forecast=True))
     out.append("#Кипр #погода #здоровье #Никосия #Тродос")
     return "\n".join(out).strip()
 

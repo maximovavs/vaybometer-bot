@@ -1015,15 +1015,32 @@ def _without_editorial_voice(v2_text: str) -> list[str]:
     ]
 
 
-def _cyprus_voice_conditions(v2_text: str) -> dict[str, object]:
+def _cyprus_voice_conditions(v2_text: str, mode: str = "morning") -> dict[str, object]:
     c = _cyprus_conditions(v2_text)
     plain = _plain(v2_text)
     text = plain.lower()
-    text_without_pollen = re.sub(r"\bпыльца\w*", "", text, flags=re.I)
-    pm25 = _num(r"(?:PM₂\.₅|PM2\.?5)\s*(\d+(?:[\.,]\d+)?)", plain)
-    pm10 = _num(r"(?:PM₁₀|PM10)\s*(\d+(?:[\.,]\d+)?)", plain)
+    evidence_text = text
     aqi = c.get("aqi")
-    explicit_poor_air = "воздух неидеален" in text
+    if not str(mode or "").startswith("morn"):
+        evidence_lines: list[str] = []
+        for raw_line in str(v2_text or "").splitlines():
+            line = _plain(raw_line).strip()
+            low = line.lower()
+            if line.startswith(("🏭", "🏙")) and (
+                re.search(r"\bвоздух\s+завтра(?:\s+утром)?\b", low)
+                or re.search(r"\bпрогноз\w*\s+(?:воздуха|aqi)\b", low)
+                or re.search(r"\baqi\s+завтра(?:\s+утром)?\b", low)
+            ):
+                evidence_lines.append(line)
+            elif line.startswith("🌫 Видимость:") and re.search(r"пылев\w*\s+дымк|сух\w*\s+пыл", low):
+                evidence_lines.append(line)
+        evidence_text = _plain("\n".join(evidence_lines)).lower()
+        aqi = _cyprus_evening_forecast_aqi(v2_text)
+
+    text_without_pollen = re.sub(r"\bпыльца\w*", "", evidence_text, flags=re.I)
+    pm25 = _num(r"(?:PM₂\.₅|PM2\.?5)\s*(\d+(?:[\.,]\d+)?)", evidence_text)
+    pm10 = _num(r"(?:PM₁₀|PM10)\s*(\d+(?:[\.,]\d+)?)", evidence_text)
+    explicit_poor_air = "воздух неидеален" in evidence_text
     explicit_dust = bool(
         re.search(
             r"пыль\s+в\s+воздухе|пылев\w+\s+дымк\w*|задымлен\w*|\bдым\s*/\s*смог\b|(?<![а-яё])дым(?!к|[а-яё])|(?<![а-яё])смог(?![а-яё])",
@@ -1064,7 +1081,7 @@ def _insert_editorial_after(lines: list[str], line_to_add: str, prefixes: tuple[
 def _apply_editorial_voice(v2_text: str, mode: str) -> str:
     lines = _without_editorial_voice(v2_text)
     date_s = _date_from_text(v2_text)
-    conditions = _cyprus_voice_conditions(v2_text)
+    conditions = _cyprus_voice_conditions(v2_text, mode)
     if mode.startswith("morn"):
         line = build_morning_human_line("Кипр", date_s or "today", conditions)
         return _insert_editorial_after(lines, line, ("⚠️ Главный нюанс:", "✨ VayboMeter:"))

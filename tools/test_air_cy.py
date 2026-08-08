@@ -60,6 +60,9 @@ def test_official_parse() -> None:
 
 def test_official_priority_and_city_mapping() -> None:
     rows = air._parse_cy_airquality_official_html(SAMPLE_OFFICIAL_HTML)
+    for row in rows:
+        row["fresh_min"] = 5
+        row["observation_status"] = "fresh"
     old_cache = air._CY_AIRQUALITY_CACHE
     air._CY_AIRQUALITY_CACHE = (time.time(), rows)
     try:
@@ -68,11 +71,13 @@ def test_official_priority_and_city_mapping() -> None:
         assert_true("official_priority", official["station"].startswith("Paralimni"))
         merged = air.merge_air_sources(
             official,
-            {"aqi": 10, "pm10": 10, "src": "iqair"},
-            {"aqi": 20, "pm10": 20, "src": "openmeteo"},
+            {"aqi": 10, "pm10": 10, "src": "iqair", "observed_at": "2026-08-08T08:00:00Z", "fresh_min": 5},
+            {"aqi": 20, "pm10": 20, "src": "openmeteo", "observed_at": "2026-08-08T08:00:00Z", "fresh_min": 5},
         )
         assert_true("official_priority", merged["src"] == "cy_official")
         assert_true("official_priority", merged["src_icon"] == "🇨🇾 AirQuality CY")
+        assert_true("official_priority", merged["aqi"] == 10.0)
+        assert_true("official_priority", merged["aqi_src"] == "iqair")
     finally:
         air._CY_AIRQUALITY_CACHE = old_cache
     print("PASS official_priority_and_city_mapping")
@@ -84,7 +89,14 @@ def test_fallback_when_official_fails() -> None:
     old_openmeteo = air._src_openmeteo
     air._src_cy_airquality_official = lambda lat, lon, city=None: None
     air._src_iqair = lambda lat, lon: None
-    air._src_openmeteo = lambda lat, lon: {"aqi": 33.0, "pm25": 6.0, "pm10": 18.0, "src": "openmeteo"}
+    air._src_openmeteo = lambda lat, lon: {
+        "aqi": 33.0,
+        "pm25": 6.0,
+        "pm10": 18.0,
+        "src": "openmeteo",
+        "observed_at": "2026-08-08T08:00:00Z",
+        "fresh_min": 5,
+    }
     try:
         result = air.get_air(34.707, 33.022)
         assert_true("fallback", result["src"] == "openmeteo")
@@ -94,6 +106,147 @@ def test_fallback_when_official_fails() -> None:
         air._src_iqair = old_iqair
         air._src_openmeteo = old_openmeteo
     print("PASS fallback_when_official_fails")
+
+
+def test_official_levels_are_not_fabricated_aqi() -> None:
+    html = "\n".join(
+        f"<section><h4>{station}</h4><p>PM₁₀: {pm10} μg/m³</p><p>Updated on: 08/08/2026 10:00</p></section>"
+        for station, pm10 in (
+            ("Limassol - Traffic Station", 40),
+            ("Nicosia - Traffic Station", 48),
+            ("Larnaca - Traffic Station", 68),
+            ("Paphos - Traffic Station", 120),
+        )
+    )
+    rows = air._parse_cy_airquality_official_html(html)
+    assert_true("official_levels", [row["pollution_level"] for row in rows] == [1, 2, 3, 4])
+    assert_true("official_levels", [row["pollution_category"] for row in rows] == ["низкий", "умеренный", "высокий", "очень высокий"])
+    assert_true("official_levels", all(row["aqi"] is None for row in rows))
+    assert_true("official_levels", not any(row.get("aqi") in (25, 75, 125, 175) for row in rows))
+    print("PASS official_levels_are_not_fabricated_aqi")
+
+
+def test_stale_and_missing_observations_are_deterministic() -> None:
+    stale_official = {
+        "src": "cy_official",
+        "station": "Limassol - Traffic Station",
+        "pm10": 90.0,
+        "pollution_level": 3,
+        "pollution_category": "высокий",
+        "observed_at": "2026-08-08T04:00:00+03:00",
+        "fresh_min": air.CY_AIR_OBSERVATION_MAX_AGE_MIN + 1,
+    }
+    fresh_fallback = {
+        "src": "openmeteo",
+        "aqi": 42.0,
+        "pm25": 8.0,
+        "pm10": 18.0,
+        "observed_at": "2026-08-08T08:00:00Z",
+        "fresh_min": 5,
+    }
+    fallback = air.merge_air_sources(stale_official, fresh_fallback)
+    assert_true("stale_fallback", fallback["src"] == "openmeteo")
+    assert_true("stale_fallback", fallback["aqi"] == 42.0)
+    assert_true("stale_fallback", fallback["pm10"] == 18.0, "stale official PM must not leak into fresh fallback")
+
+    stale_only = air.merge_air_sources(stale_official)
+    assert_true("stale_only", stale_only["observation_status"] == "stale")
+    assert_true("stale_only", stale_only["aqi"] == "н/д" and stale_only["pm10"] is None)
+
+    missing_time = dict(stale_official, fresh_min=None, observed_at=None)
+    missing_only = air.merge_air_sources(missing_time)
+    assert_true("missing_time", missing_only["observation_status"] == "time_missing")
+    assert_true("missing_time", missing_only["aqi"] == "н/д" and missing_only["pm10"] is None)
+    print("PASS stale_and_missing_observations_are_deterministic")
+
+
+def test_official_line_keeps_category_metrics_source_city_and_time() -> None:
+    sys.modules.setdefault("imghdr", types.SimpleNamespace(what=lambda *_args, **_kwargs: None))
+    import post_common
+
+    official = {
+        "src": "cy_official",
+        "station": "Limassol - Traffic Station",
+        "pm25": 12.0,
+        "pm10": 68.0,
+        "dominant_pollutant": "PM₁₀",
+        "pollution_level": 3,
+        "pollution_category": "высокий",
+        "clean_label": "🟠 PM₁₀",
+        "observed_at": "2026-08-08T08:00:00+03:00",
+        "fresh_min": 5,
+    }
+    numeric = {
+        "src": "openmeteo",
+        "aqi": 42.0,
+        "pm25": 8.0,
+        "pm10": 18.0,
+        "observed_at": "2026-08-08T05:00:00Z",
+        "fresh_min": 5,
+    }
+    line = post_common._air_quality_line_from_data(air.merge_air_sources(official, numeric)) or ""
+    assert_true("official_line", "официальный уровень 3/4 (высокий)" in line)
+    assert_true("official_line", "PM₂.₅ 12 / PM₁₀ 68" in line)
+    assert_true("official_line", "AQI 42" in line and "🛰 OM" in line)
+    assert_true("official_line", "наблюдение в Лимассоле" in line)
+    assert_true("official_line", "🇨🇾 AirQuality CY" in line and "данные на 08:00" in line)
+    assert_true("official_line", "AQI 125" not in line)
+    print("PASS official_line_keeps_category_metrics_source_city_and_time")
+
+
+def test_current_air_does_not_become_tomorrow_guidance() -> None:
+    from format_v2 import build_evening_format_v2, build_morning_format_v2
+
+    evening = """<b>Кипр: погода на завтра (09.08.2026)</b>
+✨ VayboMeter завтра: 7.0/10 — обычный день.
+🏖 <b>Морские города</b>
+Лимассол: 31/24 °C • ясно
+———
+💨 Ветер: 3 м/с • 1012 гПа
+🏭 Воздух сейчас: официальный уровень 3/4 (высокий) • PM₂.₅ 12 / PM₁₀ 68 • наблюдение в Лимассоле • 🇨🇾 AirQuality CY • данные на 08:00
+#Кипр #погода
+"""
+    evening_out = build_evening_format_v2("Кипр", evening)
+    assert_true("current_vs_forecast", "официальный уровень 3/4" in evening_out)
+    assert_true("current_vs_forecast", "пыль/дымка влияют" not in evening_out)
+    assert_true("current_vs_forecast", "прогноз воздуха требует" not in evening_out)
+    assert_true("current_vs_forecast", "😷" not in evening_out and "окна лучше держать" not in evening_out)
+
+    morning = evening.replace("погода на завтра", "погода на сегодня").replace("✨ VayboMeter завтра: 7.0/10 — обычный день.\n", "")
+    morning_out = build_morning_format_v2("Кипр", morning)
+    assert_true("current_city_scope", "В Лимассоле воздух неидеален" in morning_out)
+    assert_true("current_city_scope", "окна лучше держать" not in morning_out)
+    print("PASS current_air_does_not_become_tomorrow_guidance")
+
+
+def test_forecast_air_and_dust_evidence_are_separate() -> None:
+    from format_v2 import build_evening_format_v2
+
+    forecast = """<b>Кипр: погода на завтра (09.08.2026)</b>
+✨ VayboMeter завтра: 7.0/10 — обычный день.
+🏖 <b>Морские города</b>
+Лимассол: 31/24 °C • ясно
+———
+💨 Ветер: 3 м/с • 1012 гПа
+🏭 Прогноз воздуха: AQI 130 • PM₂.₅ 32 • PM₁₀ 68
+#Кипр #погода
+"""
+    without_dust = build_evening_format_v2("Кипр", forecast)
+    assert_true("forecast_air", "прогноз воздуха требует" in without_dust)
+    assert_true("forecast_air", "😷 По прогнозу воздух неидеален" in without_dust)
+    assert_true("forecast_air", "пыль/дымка влияют" not in without_dust)
+    assert_true("forecast_air", "окна лучше держать" not in without_dust)
+
+    with_dust = build_evening_format_v2(
+        "Кипр",
+        forecast.replace(
+            "🏭 Прогноз воздуха:",
+            "🌫 Видимость: завтра утром в Лимассоле (прогноз на 07:00) возможна сухая пылевая дымка; ориентируйтесь на фактическую дальность обзора.\n🏭 Прогноз воздуха:",
+        ),
+    )
+    assert_true("forecast_dust", "пыль/дымка влияют" in with_dust)
+    assert_true("forecast_dust", "В часы подтверждённой пылевой дымки окна лучше держать закрытыми" in with_dust)
+    print("PASS forecast_air_and_dust_evidence_are_separate")
 
 
 def test_city_summary_formatting() -> None:
@@ -120,7 +273,7 @@ def test_city_summary_formatting() -> None:
         assert_true("city_summary", isinstance(line, str))
         assert_true("city_summary", "Воздух по городам:" in line)
         assert_true("city_summary", "Лимассол 🟢" in line)
-        assert_true("city_summary", "Никосия 🟡 (PM₂.₅ 18)" in line)
+        assert_true("city_summary", "Никосия 🟡 (PM₁₀ 42)" in line)
         assert_true("city_summary", "Troodos" not in line)
     finally:
         post_common.get_air_for_cities = old_get
@@ -156,10 +309,15 @@ def test_format_v2_keeps_city_air_line() -> None:
 
 def main() -> None:
     test_official_parse()
+    test_official_levels_are_not_fabricated_aqi()
     test_official_priority_and_city_mapping()
     test_fallback_when_official_fails()
+    test_stale_and_missing_observations_are_deterministic()
+    test_official_line_keeps_category_metrics_source_city_and_time()
     test_city_summary_formatting()
     test_format_v2_keeps_city_air_line()
+    test_current_air_does_not_become_tomorrow_guidance()
+    test_forecast_air_and_dust_evidence_are_separate()
     print("OK: Cyprus air-quality offline checks passed")
 
 

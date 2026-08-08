@@ -52,7 +52,7 @@ AIR_KEY = os.getenv("AIRVISUAL_KEY")
 # Единый сетевой таймаут (сек) — можно переопределить переменной окружения HTTP_TIMEOUT
 REQUEST_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "10"))
 
-CACHE_DIR = Path.home() / ".cache" / "vaybometer"
+CACHE_DIR = Path(os.getenv("VAYBOMETER_CACHE_DIR", str(Path.home() / ".cache" / "vaybometer")))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Kp cache (2 часа TTL, жёсткий максимум — 4 часа)
@@ -83,6 +83,7 @@ CY_AIRQUALITY_URLS = (
     "https://www.airquality.dli.mlsi.gov.cy/",
 )
 CY_AIRQUALITY_TTL_SEC = 10 * 60
+CY_AIR_OBSERVATION_MAX_AGE_MIN = 180
 _CY_AIRQUALITY_CACHE: tuple[float, list[Dict[str, Any]]] | None = None
 
 _CY_STATION_COORDS = {
@@ -123,6 +124,13 @@ _CY_LIMITS = {
     "o3": (100.0, 140.0, 180.0),
     "so2": (100.0, 250.0, 350.0),
     "co": (4000.0, 7000.0, 15000.0),
+}
+
+_CY_POLLUTION_LEVEL_LABELS = {
+    1: "низкий",
+    2: "умеренный",
+    3: "высокий",
+    4: "очень высокий",
 }
 
 # ───────────────────────── Безопасная HTTP-обёртка ─────────────────────────
@@ -214,14 +222,19 @@ def _cy_dominant_pollutant(data: Dict[str, Any]) -> tuple[Optional[str], int]:
     return (_POLLUTANT_LABELS.get(best_key, best_key) if best_key else None), best_level
 
 
-def _cy_official_aqi_from_level(level: int) -> Union[float, str]:
-    return {1: 25.0, 2: 75.0, 3: 125.0, 4: 175.0}.get(level, "н/д")
+def _cy_pollution_level_label(level: Any) -> str:
+    try:
+        return _CY_POLLUTION_LEVEL_LABELS.get(int(level), "н/д")
+    except (TypeError, ValueError):
+        return "н/д"
 
 
 def air_cleanliness_label(air_data: Dict[str, Any]) -> str:
     pollutant = air_data.get("dominant_pollutant")
     level = int(air_data.get("pollution_level") or 0)
-    if level <= 1:
+    if level <= 0:
+        return "⚪ н/д"
+    if level == 1:
         return "🟢 чисто"
     if level == 2:
         return f"🟡 {pollutant}" if pollutant in ("PM₂.₅", "PM₁₀") else "🟡 нормально"
@@ -240,6 +253,31 @@ def _parse_cy_observed_at(value: str) -> tuple[Optional[str], Optional[int]]:
         return dt_obj.to_iso8601_string(), fresh_min
     except Exception:
         return raw, None
+
+
+def _parse_observed_at(value: Any, *, timezone: str = "UTC") -> tuple[Optional[str], Optional[int]]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None, None
+    try:
+        dt_obj = pendulum.parse(raw, tz=timezone)
+        if dt_obj.tzinfo is None:
+            dt_obj = dt_obj.replace(tzinfo=pendulum.timezone(timezone))
+        fresh_min = max(0, int((pendulum.now("UTC") - dt_obj.in_timezone("UTC")).total_minutes()))
+        return dt_obj.to_iso8601_string(), fresh_min
+    except Exception:
+        return raw, None
+
+
+def _air_observation_status(data: Optional[Dict[str, Any]]) -> str:
+    if not data:
+        return "missing"
+    fresh_min = data.get("fresh_min")
+    if not isinstance(fresh_min, (int, float)) or not math.isfinite(float(fresh_min)):
+        return "time_missing"
+    if float(fresh_min) > CY_AIR_OBSERVATION_MAX_AGE_MIN:
+        return "stale"
+    return "fresh"
 
 
 def _normalize_cy_pollutant(raw: str) -> Optional[str]:
@@ -325,12 +363,15 @@ def _parse_cy_airquality_official_html(html_text: str) -> list[Dict[str, Any]]:
         dominant, level = _cy_dominant_pollutant(data)
         data["dominant_pollutant"] = dominant
         data["pollution_level"] = level
-        data["aqi"] = _cy_official_aqi_from_level(level)
-        data["lvl"] = _aqi_level(data["aqi"])
+        data["pollution_category"] = _cy_pollution_level_label(level)
+        # Cyprus publishes a four-level pollution category here, not a numeric AQI.
+        data["aqi"] = None
+        data["lvl"] = data["pollution_category"]
         data["clean_label"] = air_cleanliness_label(data)
         observed_at, fresh_min = _parse_cy_observed_at(observed_raw)
         data["observed_at"] = observed_at
         data["fresh_min"] = fresh_min
+        data["observation_status"] = _air_observation_status(data)
         key = station_name.lower()
         if key not in seen:
             stations.append(data)
@@ -409,12 +450,17 @@ def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         # В публичном API обычно нет микрограммов PM, оставляем None если нет
         pm25_val = pol.get("p2")   # если ключа нет — будет None (ок)
         pm10_val = pol.get("p1")
-        return {
+        observed_at, fresh_min = _parse_observed_at(pol.get("ts"), timezone="UTC")
+        result = {
             "aqi":  float(aqi_val)  if isinstance(aqi_val,  (int, float)) else None,
             "pm25": float(pm25_val) if isinstance(pm25_val, (int, float)) else None,
             "pm10": float(pm10_val) if isinstance(pm10_val, (int, float)) else None,
             "src": "iqair",
+            "observed_at": observed_at,
+            "fresh_min": fresh_min,
         }
+        result["observation_status"] = _air_observation_status(result)
+        return result
     except Exception as e:
         logging.warning("IQAir parse error: %s", e)
         return None
@@ -430,13 +476,34 @@ def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     try:
         h = resp["hourly"]
         times = h.get("time", []) or []
-        aqi_val  = _pick_nearest_hour(times, h.get("us_aqi", []) or [])
-        pm25_val = _pick_nearest_hour(times, h.get("pm2_5", []) or [])
-        pm10_val = _pick_nearest_hour(times, h.get("pm10", [])  or [])
+        now_iso = time.strftime("%Y-%m-%dT%H:00", time.gmtime())
+        idxs = [i for i, value in enumerate(times) if isinstance(value, str) and value <= now_iso]
+        idx = max(idxs) if idxs else (0 if times else None)
+        if idx is None:
+            return None
+
+        def _value_at(values: Any) -> Optional[float]:
+            if not isinstance(values, list) or idx >= len(values):
+                return None
+            return _float_or_none(values[idx])
+
+        aqi_val = _value_at(h.get("us_aqi", []) or [])
+        pm25_val = _value_at(h.get("pm2_5", []) or [])
+        pm10_val = _value_at(h.get("pm10", []) or [])
         aqi_norm: Union[float, str] = float(aqi_val)  if isinstance(aqi_val,  (int, float)) and math.isfinite(aqi_val)  and aqi_val  >= 0 else "н/д"
         pm25_norm = float(pm25_val) if isinstance(pm25_val, (int, float)) and math.isfinite(pm25_val) and pm25_val >= 0 else None
         pm10_norm = float(pm10_val) if isinstance(pm10_val, (int, float)) and math.isfinite(pm10_val) and pm10_val >= 0 else None
-        return {"aqi": aqi_norm, "pm25": pm25_norm, "pm10": pm10_norm, "src": "openmeteo"}
+        observed_at, fresh_min = _parse_observed_at(times[idx], timezone="UTC")
+        result = {
+            "aqi": aqi_norm,
+            "pm25": pm25_norm,
+            "pm10": pm10_norm,
+            "src": "openmeteo",
+            "observed_at": observed_at,
+            "fresh_min": fresh_min,
+        }
+        result["observation_status"] = _air_observation_status(result)
+        return result
     except Exception as e:
         logging.warning("Open-Meteo AQ parse error: %s", e)
         return None
@@ -448,42 +515,81 @@ def merge_air_sources(*sources: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     Соединяет данные двух источников AQI (приоритет src1 → src2).
     Возвращает {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}.
     """
-    aqi_val: Union[float, str, None] = "н/д"
-    src_tag: str = "n/d"
+    available = [dict(s) for s in sources if s]
+    for source in available:
+        source["observation_status"] = _air_observation_status(source)
+    fresh = [source for source in available if source["observation_status"] == "fresh"]
 
-    # AQI источник
-    for s in sources:
-        if not s:
-            continue
-        v = s.get("aqi")
-        if isinstance(v, (int, float)) and math.isfinite(v) and v >= 0:
-            aqi_val = float(v)
-            src_tag = s.get("src") or src_tag
-            break
+    official = next((source for source in fresh if source.get("src") == "cy_official"), None)
+    numeric_aqi_source = next(
+        (
+            source
+            for source in fresh
+            if isinstance(source.get("aqi"), (int, float))
+            and math.isfinite(float(source["aqi"]))
+            and float(source["aqi"]) >= 0
+        ),
+        None,
+    )
+    primary = official or numeric_aqi_source or next(
+        (
+            source
+            for source in fresh
+            if any(isinstance(source.get(key), (int, float)) for key in ("pm25", "pm10", "no2", "o3", "so2", "co"))
+        ),
+        None,
+    )
+
+    if primary is None:
+        status = "stale" if any(source["observation_status"] == "stale" for source in available) else (
+            "time_missing" if any(source["observation_status"] == "time_missing" for source in available) else "missing"
+        )
+        first = available[0] if available else {}
+        src_tag = str(first.get("src") or "n/d")
+        return {
+            "lvl": "н/д",
+            "aqi": "н/д",
+            "pm25": None,
+            "pm10": None,
+            "no2": None,
+            "o3": None,
+            "so2": None,
+            "co": None,
+            "src": "n/d",
+            "src_emoji": SRC_EMOJI["n/d"],
+            "src_icon": SRC_ICON["n/d"],
+            "observation_status": status,
+            "stale_src": src_tag if status == "stale" else None,
+            "stale_observed_at": first.get("observed_at") if status == "stale" else None,
+        }
+
+    src_tag = str(primary.get("src") or "n/d")
+    aqi_val: Union[float, str] = "н/д"
+    if numeric_aqi_source is not None:
+        aqi_val = float(numeric_aqi_source["aqi"])
 
     values: Dict[str, Any] = {}
     for key in ("pm25", "pm10", "no2", "o3", "so2", "co"):
-        for s in sources:
-            if not s:
-                continue
-            value = s.get(key)
-            if isinstance(value, (int, float)) and math.isfinite(value):
-                values[key] = float(value)
-                break
+        value = primary.get(key)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            values[key] = float(value)
 
     meta: Dict[str, Any] = {}
-    for s in sources:
-        if not s:
-            continue
-        if s.get("src") == src_tag:
-            for key in ("station", "observed_at", "fresh_min", "dominant_pollutant", "pollution_level", "clean_label"):
-                if s.get(key) is not None:
-                    meta[key] = s.get(key)
-            break
+    for key in (
+        "station",
+        "observed_at",
+        "fresh_min",
+        "dominant_pollutant",
+        "pollution_level",
+        "pollution_category",
+        "clean_label",
+    ):
+        if primary.get(key) is not None:
+            meta[key] = primary.get(key)
 
-    lvl = _aqi_level(aqi_val)
+    lvl = _aqi_level(aqi_val) if numeric_aqi_source is not None else str(primary.get("pollution_category") or "н/д")
     src_emoji = SRC_EMOJI.get(src_tag, SRC_EMOJI["n/d"])
-    src_icon  = SRC_ICON.get(src_tag,  SRC_ICON["n/d"])
+    src_icon = SRC_ICON.get(src_tag, SRC_ICON["n/d"])
 
     out = {
         "lvl": lvl,
@@ -497,6 +603,11 @@ def merge_air_sources(*sources: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "src": src_tag,
         "src_emoji": src_emoji,
         "src_icon": src_icon,
+        "observation_status": "fresh",
+        "aqi_src": numeric_aqi_source.get("src") if numeric_aqi_source else None,
+        "aqi_src_icon": SRC_ICON.get(str(numeric_aqi_source.get("src")), SRC_ICON["n/d"]) if numeric_aqi_source else None,
+        "aqi_observed_at": numeric_aqi_source.get("observed_at") if numeric_aqi_source else None,
+        "aqi_fresh_min": numeric_aqi_source.get("fresh_min") if numeric_aqi_source else None,
     }
     out.update(meta)
     if "clean_label" not in out:

@@ -554,11 +554,13 @@ def cy_evening_safe_pipeline_preserves_new_moon_and_voc() -> None:
     assert "⚫️ VoC 12:00–13:20 — без новых стартов." in text
 
 
-def cy_evening_air_replaces_generic_sensor_focus() -> None:
+def cy_evening_current_air_replaces_sensor_without_tomorrow_advice() -> None:
     text = _safe_test_evening_pipeline(AIR_SENSOR_EVENING)
     assert "🏭 Воздух: AQI 125 (высокий) • PM₂.₅ 20 / PM₁₀ 69" in text
     assert "🏭 Воздух по городам: Никосия 🟠 (PM₁₀) · Лимассол 🟡 · Ларнака 🟡 · Пафос 🟢" in text
-    assert "😷 Воздух неидеален:" in text
+    assert "🧭 Главное завтра: пыль/дымка влияют" not in text
+    assert "😷 Воздух неидеален:" not in text
+    assert "окна лучше держать закрытыми" not in text
     assert "Частный датчик" not in text
     assert "Safecast CY: 0.18" not in text
     assert "🧪" not in text
@@ -578,11 +580,12 @@ def cy_evening_low_aqi_haze_is_visibility_not_poor_air() -> None:
     assert text.splitlines()[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
 
 
-def cy_evening_dust_haze_keeps_poor_air_warning() -> None:
+def cy_evening_unstructured_dust_text_does_not_create_air_warning() -> None:
     text = build_evening_format_v2("Кипр", DUST_HAZE_EVENING)
-    assert "🧭 Главное завтра: пыль/дымка влияют на воздух и видимость; утром лучше сверить AQI/PM." in text
-    assert "⚠️ Нюанс: при пыли/дыме чувствительным людям лучше сократить активность на улице." in text
-    assert "😷 Воздух неидеален:" in text
+    assert "🧭 Главное завтра: пыль/дымка влияют" not in text
+    assert "⚠️ Нюанс: при пыли/дыме" not in text
+    assert "😷 Воздух неидеален:" not in text
+    assert "окна лучше держать закрытыми" not in text
 
 
 def cy_evening_surf_without_wave_is_not_excellent() -> None:
@@ -860,9 +863,9 @@ def main() -> None:
         cy_morning_sea_summary_uses_coastal_rows_not_sunset,
         cy_evening_safe_pipeline_preserves_moon_illumination_and_plus,
         cy_evening_safe_pipeline_preserves_new_moon_and_voc,
-        cy_evening_air_replaces_generic_sensor_focus,
+        cy_evening_current_air_replaces_sensor_without_tomorrow_advice,
         cy_evening_low_aqi_haze_is_visibility_not_poor_air,
-        cy_evening_dust_haze_keeps_poor_air_warning,
+        cy_evening_unstructured_dust_text_does_not_create_air_warning,
         cy_evening_surf_without_wave_is_not_excellent,
         cy_evening_surf_with_valid_wave_is_cautiously_positive,
         cy_evening_city_air_line_is_compact_and_parenthesized,
