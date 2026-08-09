@@ -129,6 +129,10 @@ KITE_WAVE_WARN = float(os.getenv("KITE_WAVE_WARN", "2.5"))
 SUP_WIND_GOOD_MAX = float(os.getenv("SUP_WIND_GOOD_MAX", "4"))
 OFFSHORE_SUP_WIND_MIN = float(os.getenv("OFFSHORE_SUP_WIND_MIN", "5"))
 SUP_WAVE_GOOD_MAX = float(os.getenv("SUP_WAVE_GOOD_MAX", "0.6"))
+SUP_GUST_CAUTION_MIN = 12.0
+SUP_GUST_STOP_MIN = 15.0
+SUP_TARGET_HOUR = 12
+SUP_SAMPLE_MAX_OFFSET_MINUTES = 90
 SURF_WAVE_GOOD_MIN = float(os.getenv("SURF_WAVE_GOOD_MIN", "0.9"))
 SURF_WAVE_GOOD_MAX = float(os.getenv("SURF_WAVE_GOOD_MAX", "2.5"))
 SURF_WIND_MAX = float(os.getenv("SURF_WIND_MAX", "10"))
@@ -1761,6 +1765,189 @@ def _shore_class(city: str, wind_from_deg: Optional[float]) -> Tuple[Optional[st
     return "cross", src_label
 
 
+def _target_source_index(
+    raw_times: Sequence[Any],
+    target_date: Any,
+    prefer_hour: int,
+    tz_obj: pendulum.Timezone,
+    max_offset_minutes: int = SUP_SAMPLE_MAX_OFFSET_MINUTES,
+) -> Tuple[Optional[int], Optional[pendulum.DateTime]]:
+    """Pick one original hourly index without compressing malformed timestamps."""
+
+    target = pendulum.datetime(
+        target_date.year,
+        target_date.month,
+        target_date.day,
+        prefer_hour,
+        0,
+        tz=tz_obj,
+    )
+    best_idx: Optional[int] = None
+    best_time: Optional[pendulum.DateTime] = None
+    best_diff: Optional[float] = None
+    for idx, raw_time in enumerate(raw_times or []):
+        try:
+            parsed = pendulum.parse(str(raw_time), tz=tz_obj).in_tz(tz_obj)
+        except Exception:
+            continue
+        if parsed.date() != target_date:
+            continue
+        diff = abs((parsed - target).total_seconds())
+        if best_diff is None or diff < best_diff:
+            best_idx, best_time, best_diff = idx, parsed, diff
+
+    if best_diff is None or best_diff > max_offset_minutes * 60:
+        return None, None
+    return best_idx, best_time
+
+
+def _number_at(values: Any, idx: Optional[int]) -> Optional[float]:
+    if idx is None or not isinstance(values, list) or idx >= len(values):
+        return None
+    try:
+        value = float(values[idx])
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _sup_weather_sample(
+    wm: Dict[str, Any],
+    tz_obj: pendulum.Timezone,
+    target_date: Any,
+    prefer_hour: int = SUP_TARGET_HOUR,
+) -> Dict[str, Any]:
+    """Read wind, gust and direction from exactly one tomorrow hourly row."""
+
+    hourly = wm.get("hourly") or {}
+    raw_times = _pick(hourly, "time", "time_local", "timestamp", default=[])
+    idx, sample_at = _target_source_index(raw_times, target_date, prefer_hour, tz_obj)
+    speed_kmh = _number_at(
+        _pick(hourly, "windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed", default=[]),
+        idx,
+    )
+    gust_kmh = _number_at(
+        _pick(hourly, "windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[]),
+        idx,
+    )
+    wind_dir = _number_at(
+        _pick(
+            hourly,
+            "winddirection_10m",
+            "winddirection",
+            "wind_dir_10m",
+            "wind_dir",
+            default=[],
+        ),
+        idx,
+    )
+    return {
+        "sample_at": sample_at,
+        "wind_ms": kmh_to_ms(speed_kmh),
+        "gust_ms": kmh_to_ms(gust_kmh),
+        "wind_dir": wind_dir,
+    }
+
+
+def _sup_samples_are_aligned(
+    weather_at: Optional[pendulum.DateTime],
+    wave_at: Optional[pendulum.DateTime],
+    target_date: Any,
+    tz_obj: pendulum.Timezone,
+) -> bool:
+    if weather_at is None or wave_at is None:
+        return False
+    try:
+        weather_local = weather_at.in_tz(tz_obj)
+        wave_local = wave_at.in_tz(tz_obj)
+    except Exception:
+        return False
+    if weather_local.date() != target_date or wave_local.date() != target_date:
+        return False
+    return abs((weather_local - wave_local).total_seconds()) <= SUP_SAMPLE_MAX_OFFSET_MINUTES * 60
+
+
+def sup_safety_level(
+    *,
+    wind_ms: Optional[float],
+    gust_ms: Optional[float],
+    wave_h: Optional[float],
+    shore: Optional[str],
+    samples_aligned: bool,
+) -> Optional[str]:
+    """Return excellent/caution/delay; None means no confident SUP advice."""
+
+    wind = float(wind_ms) if isinstance(wind_ms, (int, float)) and math.isfinite(float(wind_ms)) else None
+    gust = float(gust_ms) if isinstance(gust_ms, (int, float)) and math.isfinite(float(gust_ms)) else None
+    wave = float(wave_h) if isinstance(wave_h, (int, float)) and math.isfinite(float(wave_h)) else None
+    shore_kind = shore if shore in {"onshore", "offshore", "cross"} else None
+
+    if gust is not None and gust >= SUP_GUST_STOP_MIN:
+        return "delay"
+    if shore_kind == "offshore" and (
+        (wind is not None and wind >= OFFSHORE_SUP_WIND_MIN)
+        or (gust is not None and gust >= SUP_GUST_CAUTION_MIN)
+    ):
+        return "delay"
+    if gust is not None and gust >= SUP_GUST_CAUTION_MIN:
+        return "caution"
+    if shore_kind == "offshore":
+        return "caution"
+
+    complete = all(value is not None for value in (wind, gust, wave, shore_kind))
+    if not samples_aligned or not complete:
+        return None
+    if shore_kind in {"onshore", "cross"} and wind <= SUP_WIND_GOOD_MAX and wave <= SUP_WAVE_GOOD_MAX:
+        return "excellent"
+    return None
+
+
+def _activity_number(value: float) -> str:
+    return str(int(round(value))) if abs(value - round(value)) < 0.05 else f"{value:.1f}"
+
+
+def _sup_guidance_line(
+    level: Optional[str],
+    *,
+    city: str,
+    wind_ms: Optional[float],
+    gust_ms: Optional[float],
+    wave_h: Optional[float],
+    card: Optional[str],
+    shore: Optional[str],
+    shore_src: Optional[str],
+    sst: Optional[float],
+) -> Optional[str]:
+    if level is None:
+        return None
+
+    facts: List[str] = []
+    if isinstance(wind_ms, (int, float)):
+        facts.append(f"ветер {_activity_number(float(wind_ms))} м/с")
+    if isinstance(gust_ms, (int, float)):
+        facts.append(f"порывы до {_activity_number(float(gust_ms))} м/с")
+    if isinstance(wave_h, (int, float)):
+        facts.append(f"волна {_activity_number(float(wave_h))} м")
+
+    spot_part = (
+        f" @{shore_src}"
+        if shore_src
+        and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}")
+        else ""
+    )
+    env_mark = " (ENV)" if shore_src and shore_src.startswith("ENV:") else ""
+    dir_part = f" ({card}/{shore})" if card and shore else ""
+    evidence = (" • " + " • ".join(facts)) if facts else ""
+
+    if level == "excellent":
+        suit = _wetsuit_hint(sst)
+        suit_part = f" • {suit}" if suit else ""
+        return f"🧜‍♂️ Отлично: SUP{spot_part}{env_mark}{evidence}{dir_part}{suit_part}"
+    if level == "caution":
+        return f"🧜‍♂️ SUP: только опытным и короткая сессия{evidence}{dir_part}."
+    return f"🧜‍♂️ SUP лучше отложить{evidence}{dir_part}."
+
+
 def _fetch_wave_for_tomorrow(
     lat: float,
     lon: float,
@@ -1768,9 +1955,10 @@ def _fetch_wave_for_tomorrow(
     prefer_hour: int = 12,
     timeout_s: int = 18,
     retries: int = 2,
-) -> Tuple[Optional[float], Optional[float]]:
+    target_date: Any = None,
+) -> Tuple[Optional[float], Optional[float], Optional[pendulum.DateTime]]:
     if not requests:
-        return None, None
+        return None, None, None
 
     url = "https://marine-api.open-meteo.com/v1/marine"
     params = {
@@ -1788,31 +1976,31 @@ def _fetch_wave_for_tomorrow(
             j = r.json()
 
             hourly = j.get("hourly") or {}
-            times = [pendulum.parse(t) for t in (hourly.get("time") or []) if t]
-            idx = _nearest_index_for_day(
-                times,
-                pendulum.now(tz_obj).add(days=1).date(),
+            wanted_date = target_date or pendulum.today(tz_obj).add(days=1).date()
+            idx, sample_at = _target_source_index(
+                hourly.get("time") or [],
+                wanted_date,
                 prefer_hour,
                 tz_obj,
             )
             if idx is None:
-                return None, None
+                return None, None, None
 
             h = hourly.get("wave_height") or []
             p = hourly.get("wave_period") or []
             w_h = float(h[idx]) if idx < len(h) and h[idx] is not None else None
             w_t = float(p[idx]) if idx < len(p) and p[idx] is not None else None
-            return w_h, w_t
+            return w_h, w_t, sample_at
 
         except Exception as e:
             last_exc = e
             # не спамим логами: пишем только на последней попытке
             if attempt >= max(1, retries):
                 logging.warning("marine fetch failed: %s", e)
-                return None, None
+                return None, None, None
 
     logging.warning("marine fetch failed: %s", last_exc)
-    return None, None
+    return None, None, None
 
 
 def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
@@ -1892,7 +2080,14 @@ def _morning_sea_city_lines(
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
     wm = get_weather(la, lo) or {}
     wind_ms, wind_dir, _, _ = pick_tomorrow_header_metrics(wm, tz_obj)
-    wave_h, _ = _fetch_wave_for_tomorrow(la, lo, tz_obj)
+    target_date = pendulum.today(tz_obj).add(days=1).date()
+    wave_h, _, wave_at = _fetch_wave_for_tomorrow(
+        la,
+        lo,
+        tz_obj,
+        prefer_hour=SUP_TARGET_HOUR,
+        target_date=target_date,
+    )
 
     def _gust_at_noon(wm0: Dict[str, Any], tz0: pendulum.Timezone) -> Optional[float]:
         hourly = wm0.get("hourly") or {}
@@ -1917,6 +2112,28 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     card = _cardinal(float(wind_dir)) if isinstance(wind_dir, (int, float)) else None
     shore, shore_src = _shore_class(city, float(wind_dir) if isinstance(wind_dir, (int, float)) else None)
 
+    sup_sample = _sup_weather_sample(wm, tz_obj, target_date)
+    sup_wind = sup_sample.get("wind_ms")
+    sup_gust = sup_sample.get("gust_ms")
+    sup_dir = sup_sample.get("wind_dir")
+    sup_card = _cardinal(float(sup_dir)) if isinstance(sup_dir, (int, float)) else None
+    sup_shore, sup_shore_src = _shore_class(
+        city,
+        float(sup_dir) if isinstance(sup_dir, (int, float)) else None,
+    )
+    sup_level = sup_safety_level(
+        wind_ms=sup_wind,
+        gust_ms=sup_gust,
+        wave_h=wave_h,
+        shore=sup_shore,
+        samples_aligned=_sup_samples_are_aligned(
+            sup_sample.get("sample_at"),
+            wave_at,
+            target_date,
+            tz_obj,
+        ),
+    )
+
     kite_good = False
     if wind_val is not None:
         if KITE_WIND_GOOD_MIN <= wind_val <= KITE_WIND_GOOD_MAX:
@@ -1928,13 +2145,6 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         if wave_h is not None and wave_h >= KITE_WAVE_WARN:
             kite_good = False
 
-    sup_good = False
-    if wind_val is not None:
-        if wave_h is not None and (wind_val <= SUP_WIND_GOOD_MAX) and (wave_h <= SUP_WAVE_GOOD_MAX):
-            sup_good = True
-        if shore == "offshore" and wind_val >= OFFSHORE_SUP_WIND_MIN:
-            sup_good = False
-
     surf_good = False
     if wave_h is not None:
         if SURF_WAVE_GOOD_MIN <= wave_h <= SURF_WAVE_GOOD_MAX and (
@@ -1945,12 +2155,8 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     goods: List[str] = []
     if kite_good:
         goods.append("Кайт/Винг/Винд")
-    if sup_good:
-        goods.append("SUP")
     if surf_good:
         goods.append("Сёрф")
-    if not goods:
-        return None
 
     dir_part = f" ({card}/{shore})" if card or shore else ""
     spot_part = (
@@ -1962,7 +2168,24 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     env_mark = " (ENV)" if shore_src and shore_src.startswith("ENV:") else ""
     suit_txt = _wetsuit_hint(sst)
     suit_part = f" • {suit_txt}" if suit_txt else ""
-    return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part
+    highlights: List[str] = []
+    if goods:
+        highlights.append("🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part)
+
+    sup_line = _sup_guidance_line(
+        sup_level,
+        city=city,
+        wind_ms=sup_wind,
+        gust_ms=sup_gust,
+        wave_h=wave_h,
+        card=sup_card,
+        shore=sup_shore,
+        shore_src=sup_shore_src,
+        sst=sst,
+    )
+    if sup_line:
+        highlights.append(sup_line)
+    return "\n   ".join(highlights) if highlights else None
 
 
 # ───────────── хэштеги ─────────────

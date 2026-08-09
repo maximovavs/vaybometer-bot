@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - local lightweight telegram module fallba
     NetworkError = RetryAfter = ServerError = TimedOut = None  # type: ignore[assignment]
 
 from editorial_voice import build_evening_human_line, build_morning_human_line
-from post_common import build_message
+from post_common import build_message, sup_safety_level
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
 from visibility_context import (
     has_structured_visibility_alert,
@@ -786,21 +786,59 @@ def _dedupe_score_reasons(reasons: list[str]) -> list[str]:
     return out
 
 
+def _sup_shore_from_line(line: str) -> str | None:
+    low = str(line or "").lower()
+    if "offshore" in low or "от берега" in low:
+        return "offshore"
+    if "onshore" in low or "к берегу" in low:
+        return "onshore"
+    if "cross" in low or "вдоль берега" in low:
+        return "cross"
+    return None
+
+
+def _sup_guard_line(line: str) -> str:
+    wind = _num(r"(?:^|[•;])\s*ветер\s*(\d+(?:[\.,]\d+)?)\s*м/с", line)
+    gust = _num(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)\s*м/с", line)
+    wave = _num(r"волна\s*(\d+(?:[\.,]\d+)?)\s*м", line)
+    shore = _sup_shore_from_line(line)
+    level = sup_safety_level(
+        wind_ms=wind,
+        gust_ms=gust,
+        wave_h=wave,
+        shore=shore,
+        samples_aligned=all(value is not None for value in (wind, gust, wave, shore)),
+    )
+    if level == "excellent":
+        return line
+
+    note_m = re.search(r"\(([^()]+)\)", line)
+    note = f" ({note_m.group(1)})" if note_m else ""
+    if level == "delay":
+        if isinstance(gust, (int, float)) and gust >= 15:
+            reason = f"порывы до {_fmt_ms(gust)} м/с"
+        elif shore == "offshore":
+            reason = "ветер от берега"
+        else:
+            reason = "условия небезопасны"
+        return f"🧜‍♂️ SUP лучше отложить: {reason}{note}."
+    if level == "caution":
+        if isinstance(gust, (int, float)) and gust >= 12:
+            reason = f"порывы до {_fmt_ms(gust)} м/с"
+        elif shore == "offshore":
+            reason = "ветер от берега"
+        else:
+            reason = "условия требуют осторожности"
+        return f"🧜‍♂️ SUP: только опытным и короткая сессия • {reason}{note}."
+    return "🧜‍♂️ SUP: данных для уверенной оценки недостаточно; проверить ветер, порывы, направление и волну перед выходом."
+
+
 def _downgrade_sup_lines(text: str) -> str:
     lines = str(text or "").splitlines()
     out: list[str] = []
-    last_gust: float | None = None
     for line in lines:
-        gust = _num(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", line)
-        if gust is not None:
-            last_gust = gust
-        if "SUP" in line and "Отлично" in line and isinstance(last_gust, (int, float)) and last_gust >= 12:
-            note_m = re.search(r"\(([^()]+)\)", line)
-            note = f" • {note_m.group(1)}" if note_m else ""
-            if last_gust >= 15:
-                out.append(f"🧜‍♂️ SUP лучше отложить: порывы до {_fmt_ms(last_gust)} м/с{note}.")
-            else:
-                out.append(f"🧜‍♂️ SUP: только опытным и короткая сессия • порывы до {_fmt_ms(last_gust)} м/с{note}.")
+        if "SUP" in line and "Отлично" in line:
+            out.append(_sup_guard_line(line))
             continue
         out.append(line)
     return "\n".join(out)
