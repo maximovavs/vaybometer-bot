@@ -912,15 +912,11 @@ def _compass(deg) -> str | None:
         return dirs[int((x + 22.5) // 45) % 8]
 
 
-def _parse_target_date(date_s: str) -> dt.date:
+def _parse_target_date(date_s: str) -> dt.date | None:
     try:
         return dt.datetime.strptime(date_s, "%d.%m.%Y").date()
     except Exception:
-        try:
-            from zoneinfo import ZoneInfo
-            return dt.datetime.now(ZoneInfo("Asia/Nicosia")).date()
-        except Exception:
-            return dt.date.today()
+        return None
 
 
 def _parse_hourly_time(value) -> dt.datetime | None:
@@ -953,16 +949,18 @@ def _value_at(arr, idx: int | None) -> float | None:
 
 
 def _source_wind_pressure_line(date_s: str) -> str:
-    """Fetch current source weather and build a compact wind/gust/pressure line when data exists."""
+    """Build wind, gust and pressure only from hourly data for the title date."""
+    target_date = _parse_target_date(date_s)
+    if target_date is None:
+        return ""
+
     try:
         from weather import get_weather  # type: ignore
         wm = get_weather(CY_LAT, CY_LON) or {}
     except Exception:
         return ""
 
-    target_date = _parse_target_date(date_s)
     hourly = wm.get("hourly") or {}
-    current = wm.get("current") or wm.get("current_weather") or {}
     times = hourly.get("time") or hourly.get("time_local") or hourly.get("timestamp") or []
 
     idx_day = _nearest_index(times, target_date, 12)
@@ -989,15 +987,6 @@ def _source_wind_pressure_line(date_s: str) -> str:
             day_gusts.append(g)
     if day_gusts:
         gust_ms = _kmh_to_ms(max(day_gusts))
-
-    if wind_ms is None:
-        wind_ms = _kmh_to_ms(_pick(current, "windspeed", "wind_speed", "wind_speed_10m"))
-    if wind_dir is None:
-        wind_dir = _to_float(_pick(current, "winddirection", "wind_dir", "wind_direction_10m"))
-    if gust_ms is None:
-        gust_ms = _kmh_to_ms(_pick(current, "wind_gusts_10m", "wind_gusts", "windgusts"))
-    if pressure is None:
-        pressure = _to_float(_pick(current, "surface_pressure", "pressure_msl", "pressure"))
 
     parts: list[str] = []
     if isinstance(wind_ms, (int, float)):

@@ -32,6 +32,7 @@ imghdr_stub = types.ModuleType("imghdr")
 imghdr_stub.what = lambda *args, **kwargs: None
 sys.modules.setdefault("imghdr", imghdr_stub)
 
+import format_v2 as format_v2_module  # noqa: E402
 from format_v2 import build_evening_format_v2, build_format_v2, build_morning_format_v2  # noqa: E402
 import cyprus_visual_dedup  # noqa: E402
 import image_prompt_cy_scene as cy_scene_prompt  # noqa: E402
@@ -193,6 +194,15 @@ MORNING_FULL_MOON = """<b>Кипр: погода на сегодня (27.06.2026
 💚 В плюсе: завершение, восстановление.
 ⚫️ VoC: 08:20–10:10.
 ✅ Сегодня: вода, SPF.
+#Кипр #погода #здоровье
+"""
+
+
+MORNING_SOURCE_ONLY = """<b>Кипр: погода на сегодня (09.08.2026)</b>
+👋 Доброе утро! Теплее всего — Никосия (29°), прохладнее — Лимассол (28°).
+☀️ <b>УФ-индекс 9 (Very High)</b>: тень 11–16.
+🏭 AQI 42 (низкий) • PM₂.₅ 9 / PM₁₀ 18
+✅ Сегодня: вода, SPF, тень.
 #Кипр #погода #здоровье
 """
 
@@ -709,6 +719,182 @@ def cy_city_forecast_never_uses_current_for_missing_target_hourly_date() -> None
         assert "180.0" not in line and "777" not in line and "10.0 м/с" not in line
 
     _with_forecast_clock(run)
+
+
+def _format_v2_source_line(payload: dict, date_s: str = "09.08.2026") -> str:
+    return _replace_attrs(
+        weather_module,
+        {"get_weather": lambda *_args, **_kwargs: payload},
+        lambda: format_v2_module._source_wind_pressure_line(date_s),
+    )
+
+
+def cy_format_v2_source_uses_only_exact_target_date_hourly_values() -> None:
+    payload = {
+        "hourly": {
+            "time": [
+                "2026-08-09T06:00",
+                "not-an-hour",
+                "2026-08-09T12:00",
+                "2026-08-10T12:00",
+            ],
+            "windspeed_10m": [7.2, 360.0, 10.8, 36.0],
+            "winddirection_10m": [170.0, 270.0, 180.0, 10.0],
+            "surface_pressure": [1011.0, 800.0, 1012.0, 989.0],
+            "windgusts_10m": [14.4, 360.0, 18.0, 72.0],
+        },
+        "current": {
+            "windspeed": 180.0,
+            "windgusts": 54.0,
+            "winddirection": 270.0,
+            "pressure": 777.0,
+        },
+    }
+    line = _format_v2_source_line(payload)
+    assert "💨 Ветер: 3.0 м/с (Ю)" in line
+    assert "порывы до 5 м/с" in line
+    assert "1012 гПа ↑" in line
+    assert "10.0 м/с" not in line and "20 м/с" not in line
+    assert "50.0 м/с" not in line and "15 м/с" not in line and "777 гПа" not in line
+    formatted = _replace_attrs(
+        weather_module,
+        {"get_weather": lambda *_args, **_kwargs: payload},
+        lambda: build_morning_format_v2("Кипр", MORNING_SOURCE_ONLY),
+    )
+    assert line in formatted
+
+
+def cy_format_v2_source_missing_target_date_never_uses_tomorrow_or_current() -> None:
+    payload = {
+        "hourly": {
+            "time": ["2026-08-10T06:00", "2026-08-10T12:00"],
+            "windspeed_10m": [18.0, 36.0],
+            "winddirection_10m": [0.0, 10.0],
+            "surface_pressure": [990.0, 989.0],
+            "windgusts_10m": [50.4, 72.0],
+        },
+        "current": {
+            "windspeed": 180.0,
+            "windgusts": 54.0,
+            "winddirection": 270.0,
+            "pressure": 777.0,
+        },
+    }
+    assert _format_v2_source_line(payload) == ""
+    assert _replace_attrs(
+        weather_module,
+        {
+            "get_weather": lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("malformed title date reached weather source")
+            )
+        },
+        lambda: format_v2_module._source_wind_pressure_line("not-a-date"),
+    ) == ""
+
+
+def cy_format_v2_source_current_only_omits_wind_and_pressure() -> None:
+    payload = {
+        "current": {
+            "windspeed": 180.0,
+            "windgusts": 54.0,
+            "winddirection": 270.0,
+            "pressure": 777.0,
+        }
+    }
+    assert _format_v2_source_line(payload) == ""
+
+
+def cy_format_v2_source_incomplete_arrays_emit_only_aligned_fields() -> None:
+    payload = {
+        "hourly": {
+            "time": ["2026-08-09T06:00", "2026-08-09T12:00"],
+            "windspeed_10m": [180.0],
+            "winddirection_10m": [],
+            "surface_pressure": [1011.0, 1012.0],
+            "windgusts_10m": [14.4],
+        },
+        "current": {
+            "windspeed": 180.0,
+            "windgusts": 54.0,
+            "winddirection": 270.0,
+            "pressure": 777.0,
+        },
+    }
+    line = _format_v2_source_line(payload)
+    assert line == "💨 Порывы до 4 м/с • 🔹 1012 гПа ↑"
+    assert "50.0 м/с" not in line and "15 м/с" not in line and "777 гПа" not in line
+
+
+def cy_format_v2_source_malformed_timestamps_do_not_shift_arrays() -> None:
+    payload = {
+        "hourly": {
+            "time": ["not-an-hour", "2026-08-09T12:00"],
+            "windspeed_10m": [180.0, 10.8],
+            "winddirection_10m": [270.0],
+            "surface_pressure": [777.0, 1012.0],
+            "windgusts_10m": [54.0, 18.0],
+        },
+        "current": {
+            "windspeed": 180.0,
+            "windgusts": 54.0,
+            "winddirection": 270.0,
+            "pressure": 777.0,
+        },
+    }
+    line = _format_v2_source_line(payload)
+    assert line == "💨 Ветер: 3.0 м/с • порывы до 5 м/с • 🔹 1012 гПа →"
+    assert "(З)" not in line and "50.0 м/с" not in line and "15 м/с" not in line and "777 гПа" not in line
+
+
+def cy_morning_format_v2_current_sentinels_do_not_change_downstream() -> None:
+    tomorrow_hourly = {
+        "time": ["2026-08-10T06:00", "2026-08-10T12:00"],
+        "windspeed_10m": [18.0, 36.0],
+        "winddirection_10m": [0.0, 10.0],
+        "surface_pressure": [990.0, 989.0],
+        "windgusts_10m": [50.4, 72.0],
+    }
+    with_current = {
+        "hourly": tomorrow_hourly,
+        "current": {
+            "windspeed": 180.0,
+            "windgusts": 54.0,
+            "winddirection": 270.0,
+            "pressure": 777.0,
+        },
+    }
+    without_current = {"hourly": tomorrow_hourly, "current": {}}
+
+    def build(payload: dict) -> str:
+        return _replace_attrs(
+            weather_module,
+            {"get_weather": lambda *_args, **_kwargs: payload},
+            lambda: build_morning_format_v2("Кипр", MORNING_SOURCE_ONLY),
+        )
+
+    sentinel_text = build(with_current)
+    baseline_text = build(without_current)
+    assert sentinel_text == baseline_text
+    assert "50.0 м/с" not in sentinel_text
+    assert "15 м/с" not in sentinel_text
+    assert "777 гПа" not in sentinel_text
+    assert _cyprus_score_line(sentinel_text) == _cyprus_score_line(baseline_text)
+    assert _cyprus_feels_line(sentinel_text) == _cyprus_feels_line(baseline_text)
+    assert _cyprus_smart_plan_line(sentinel_text) == _cyprus_smart_plan_line(baseline_text)
+    assert _cyprus_score_line(sentinel_text)
+    assert _cyprus_feels_line(sentinel_text)
+    assert _cyprus_smart_plan_line(sentinel_text)
+
+
+def cy_evening_format_v2_preserves_tomorrow_city_values() -> None:
+    _raw_morning, raw_evening, _context_calls = _build_aligned_forecast_messages()
+    formatted = build_evening_format_v2("Кипр", raw_evening)
+    assert "<b>🌅 Кипр завтра (10.08.2026)</b>" in formatted
+    assert "<b>Лимассол</b>: 40/30 °C" in formatted
+    assert "<b>Никосия</b>: 42/31 °C" in formatted
+    assert "💨 10.0 м/с (С) • порывы 20" in formatted
+    assert "989 гПа ↓" in formatted
+    assert "50.0 м/с" not in formatted and "15 м/с" not in formatted and "777 гПа" not in formatted
 
 
 def cy_morning_averages_coastal_sea_rows() -> None:
@@ -2450,6 +2636,13 @@ def main() -> None:
         cy_city_forecast_omits_row_when_target_daily_date_is_missing,
         cy_city_forecast_does_not_shift_incomplete_or_malformed_arrays,
         cy_city_forecast_never_uses_current_for_missing_target_hourly_date,
+        cy_format_v2_source_uses_only_exact_target_date_hourly_values,
+        cy_format_v2_source_missing_target_date_never_uses_tomorrow_or_current,
+        cy_format_v2_source_current_only_omits_wind_and_pressure,
+        cy_format_v2_source_incomplete_arrays_emit_only_aligned_fields,
+        cy_format_v2_source_malformed_timestamps_do_not_shift_arrays,
+        cy_morning_format_v2_current_sentinels_do_not_change_downstream,
+        cy_evening_format_v2_preserves_tomorrow_city_values,
         cy_morning_averages_coastal_sea_rows,
         cy_morning_adds_sea_fallback_when_unavailable,
         cy_morning_rejects_non_marine_numbers_for_sea,
