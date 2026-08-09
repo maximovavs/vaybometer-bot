@@ -1826,7 +1826,7 @@ def _city_header_metrics_for_date(
         "wind_dir",
         default=[],
     )
-    pressure_values = _pick(hourly, "surface_pressure", "pressure", default=[])
+    pressure_values = _pick(hourly, "pressure_msl", "surface_pressure", "pressure", default=[])
     gust_values = _pick(
         hourly,
         "windgusts_10m",

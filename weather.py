@@ -93,7 +93,7 @@ HOURLY_FULL = [
     "wind_speed_10m",
     "wind_direction_10m",
     "wind_gusts_10m",
-    "surface_pressure",
+    "pressure_msl",
     "uv_index",
     "uv_index_clear_sky",
     "thunderstorm_probability",
@@ -131,7 +131,7 @@ HOURLY_MIN = [
     "wind_speed_10m",
     "wind_direction_10m",
     "wind_gusts_10m",
-    "surface_pressure",
+    "pressure_msl",
     "rain",
     "uv_index",
 ]
@@ -166,7 +166,7 @@ CURRENT_FULL = [
     "wind_speed_10m",
     "wind_direction_10m",
     "wind_gusts_10m",
-    "surface_pressure",
+    "pressure_msl",
 ]
 
 CURRENT_MIN = [
@@ -179,7 +179,7 @@ CURRENT_MIN = [
     "wind_speed_10m",
     "wind_direction_10m",
     "wind_gusts_10m",
-    "surface_pressure",
+    "pressure_msl",
 ]
 
 

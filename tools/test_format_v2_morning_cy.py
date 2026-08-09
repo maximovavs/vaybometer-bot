@@ -38,6 +38,7 @@ import cyprus_visual_dedup  # noqa: E402
 import image_prompt_cy_scene as cy_scene_prompt  # noqa: E402
 import post_common as post_common_module  # noqa: E402
 import safe_test_post as safe_module  # noqa: E402
+import utils as utils_module  # noqa: E402
 import weather as weather_module  # noqa: E402
 from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata  # noqa: E402
 from post_safety import sanitize_post_text  # noqa: E402
@@ -727,6 +728,85 @@ def _format_v2_source_line(payload: dict, date_s: str = "09.08.2026") -> str:
         {"get_weather": lambda *_args, **_kwargs: payload},
         lambda: format_v2_module._source_wind_pressure_line(date_s),
     )
+
+
+def cy_weather_attempts_request_only_sea_level_pressure() -> None:
+    assert len(weather_module.ATTEMPTS) == 5
+    for attempt in weather_module.ATTEMPTS:
+        assert "pressure_msl" in attempt.hourly
+        assert "surface_pressure" not in attempt.hourly
+        if attempt.current_mode == "current":
+            assert attempt.current_fields
+            assert "pressure_msl" in attempt.current_fields
+            assert "surface_pressure" not in attempt.current_fields
+
+
+def cy_post_common_prefers_sea_level_pressure_with_surface_fallback() -> None:
+    target = date(2026, 8, 9)
+    tz_obj = types.SimpleNamespace(name="Asia/Nicosia")
+
+    def metrics(payload: dict):
+        return _with_forecast_clock(
+            lambda: post_common_module._city_header_metrics_for_date(payload, tz_obj, target)
+        )
+
+    preferred = metrics(
+        {
+            "hourly": {
+                "time": ["2026-08-09T06:00", "2026-08-09T12:00"],
+                "pressure_msl": [1000.0, 1002.0],
+                "surface_pressure": [900.0, 899.0],
+            }
+        }
+    )
+    assert preferred[2:4] == (1002, "↑")
+
+    legacy = metrics(
+        {
+            "hourly": {
+                "time": ["2026-08-09T06:00", "2026-08-09T12:00"],
+                "surface_pressure": [1010.0, 1008.0],
+            }
+        }
+    )
+    assert legacy[2:4] == (1008, "↓")
+
+
+def cy_format_v2_prefers_sea_level_pressure_with_surface_fallback() -> None:
+    preferred = _format_v2_source_line(
+        {
+            "hourly": {
+                "time": ["2026-08-09T06:00", "2026-08-09T12:00"],
+                "pressure_msl": [1000.0, 1002.0],
+                "surface_pressure": [900.0, 899.0],
+            }
+        }
+    )
+    assert preferred == "🔹 1002 гПа ↑"
+
+    legacy = _format_v2_source_line(
+        {
+            "hourly": {
+                "time": ["2026-08-09T06:00", "2026-08-09T12:00"],
+                "surface_pressure": [1010.0, 1008.0],
+            }
+        }
+    )
+    assert legacy == "🔹 1008 гПа ↓"
+
+
+def cy_utils_pressure_trend_supports_sea_level_and_surface_pressure() -> None:
+    assert utils_module.pressure_trend(
+        {
+            "hourly": {
+                "pressure_msl": [1000.0, 1003.0],
+                "surface_pressure": [1000.0, 997.0],
+            }
+        }
+    ) == "↑"
+    assert utils_module.pressure_trend(
+        {"hourly": {"surface_pressure": [1000.0, 997.0]}}
+    ) == "↓"
 
 
 def cy_format_v2_source_uses_only_exact_target_date_hourly_values() -> None:
@@ -2629,6 +2709,10 @@ def cy_morning_safe_production_polish_keeps_fog_actions() -> None:
 
 def main() -> None:
     checks = (
+        cy_weather_attempts_request_only_sea_level_pressure,
+        cy_post_common_prefers_sea_level_pressure_with_surface_fallback,
+        cy_format_v2_prefers_sea_level_pressure_with_surface_fallback,
+        cy_utils_pressure_trend_supports_sea_level_and_surface_pressure,
         cy_morning_adds_concise_sea_block_when_available,
         cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening,
         cy_morning_uses_today_for_raw_format_score_feels_and_plan,
