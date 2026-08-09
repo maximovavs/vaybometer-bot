@@ -14,6 +14,14 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
+from cyprus_visual_policy import (
+    CYPRUS_MACRO_COOLDOWN_REASON,
+    cyprus_macro_family_from_entry,
+    cyprus_scene_macro_family,
+    macro_family_is_saturated,
+    recent_real_visual_entries,
+)
+
 
 CYPRUS_VISUAL_HISTORY_PATH = Path(
     os.getenv("CYPRUS_VISUAL_HISTORY_PATH", ".cache/cyprus_visual_history_prod.json")
@@ -523,6 +531,30 @@ def evaluate_cyprus_visual_candidate(
                     matched_entry=entry,
                 )
 
+    # Final macro diversity gate. It runs last so the existing exact/perceptual/
+    # archetype/scene/composition priorities are untouched, and it is a hard gate:
+    # the caller's LRU bypass covers only recent_scene_family and recent_composition.
+    macro_candidate = cyprus_scene_macro_family(scene_value)
+    if macro_family_is_saturated(history, macro_candidate):
+        saturating_entry = next(
+            (
+                entry
+                for entry in reversed(recent_real_visual_entries(history))
+                if cyprus_macro_family_from_entry(entry) == macro_candidate
+            ),
+            None,
+        )
+        return CyprusVisualDuplicateResult(
+            accepted=False,
+            reason=CYPRUS_MACRO_COOLDOWN_REASON,
+            sha256=digest,
+            perceptual_hash=perceptual,
+            phash=phash,
+            min_distance=min_distance,
+            min_phash_distance=min_phash_distance,
+            matched_entry=saturating_entry,
+        )
+
     return CyprusVisualDuplicateResult(
         accepted=True,
         reason="accepted",
@@ -565,6 +597,8 @@ def record_cyprus_visual_publication(
         "selected_scene": selected_scene,
         "composition": composition or "",
         "visual_archetype": visual_archetype or "",
+        # Additive field; legacy entries without it derive their macro from the scene.
+        "scene_macro_family": cyprus_scene_macro_family(selected_scene),
         "prompt_version": prompt_version,
         "cache_key": cache_key,
         "style_name": style_name,

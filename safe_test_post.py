@@ -1990,6 +1990,10 @@ async def _build_safe_test_image(
             render_local_informative_cover,
             write_provider_health,
         )
+        from cyprus_visual_policy import (
+            CYPRUS_MACRO_LOCAL_COVER,
+            blocked_macro_families,
+        )
         import image_prompt_cy_scene as visual_decision_module
         from image_prompt_cy_scene import build_visual_context_cy
         from weather import load_cyprus_visibility_diagnostics
@@ -2048,6 +2052,14 @@ async def _build_safe_test_image(
         if "elevated_cliff_panorama" in recent_archetypes[-6:]:
             blocked_archetype_values.append("elevated_cliff_panorama")
         blocked_archetypes = tuple(dict.fromkeys(blocked_archetype_values))
+        # Macro blockers come from the restored history. Local informative covers are
+        # excluded inside the policy, so provider outages cannot flush the macro window.
+        blocked_macro_family_values = blocked_macro_families(restored_history)
+        if blocked_macro_family_values:
+            print(
+                "CY_SAFE_IMAGE_BLOCKED_MACRO_FAMILIES: "
+                + ",".join(blocked_macro_family_values)
+            )
         print(f"CY_SAFE_IMAGE_HISTORY_NAMESPACE: {history_namespace}")
         print(f"CY_SAFE_IMAGE_WRITE_HISTORY_PATH: {write_history_path}")
         print("CY_SAFE_IMAGE_REFERENCE_HISTORY_PATHS: " + ", ".join(map(str, reference_history_paths)))
@@ -2135,6 +2147,7 @@ async def _build_safe_test_image(
                 blocked_scenes=recent_scene_values,
                 blocked_compositions=recent_composition_values,
                 blocked_archetypes=blocked_archetypes,
+                blocked_macro_families=blocked_macro_family_values,
                 visibility_metadata=visibility_metadata,
                 visual_context=canonical_visual_context,
             )
@@ -2571,6 +2584,9 @@ async def _build_safe_test_image(
                         "selected_scene": "local_informative_cover",
                         "composition": "informative_cover",
                         "visual_archetype": "factual_weather_cover",
+                        # The local cover is a renderer, not a place: it carries the
+                        # technical macro and never inherits the network macro.
+                        "scene_macro_family": CYPRUS_MACRO_LOCAL_COVER,
                         "scene_selection_mode": "local_fallback",
                         "composition_selection_mode": "local_fallback",
                     }
@@ -2628,6 +2644,7 @@ async def _build_safe_test_image(
                     # The renderer's cache key is already final at this point, so the local
                     # decision_id below is diagnostics-only and cannot affect it.
                     local_metadata["style_name"] = _CY_LOCAL_RENDERER_NAME
+                    local_metadata["scene_macro_family"] = CYPRUS_MACRO_LOCAL_COVER
                     local_metadata["decision_id"] = _cy_local_decision_id(local_metadata)
                     local_sha256 = sha256_file(local_path)
                     existing_local_exact = next(
@@ -2920,6 +2937,8 @@ async def _build_safe_test_image(
                     "selected_scene": metadata["selected_scene"],
                     "composition": metadata.get("composition", ""),
                     "visual_archetype": metadata.get("visual_archetype", ""),
+                    # Additive only; no other receipt field changes meaning.
+                    "scene_macro_family": metadata.get("scene_macro_family", ""),
                     "style_name": style_name,
                     "cache_key": metadata["cache_key"],
                     "backend": selected_backend,

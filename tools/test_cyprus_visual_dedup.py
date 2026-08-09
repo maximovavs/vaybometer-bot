@@ -509,6 +509,276 @@ def cy_bay_archetype_cooldown_uses_last_ten_references() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def _seed_macro_history(
+    history: Path,
+    root: Path,
+    scenes: list[str],
+    *,
+    start_day: int = 1,
+) -> None:
+    """Write one history entry per scene, each with a distinct image and composition."""
+    for index, scene in enumerate(scenes):
+        image = root / f"seed_{index}.ppm"
+        _write_ppm(image, mode="coast_a" if index % 2 == 0 else "coast_b", tint=index * 7 + 3)
+        record_cyprus_visual_publication(
+            date_value=f"2026-06-{start_day + index:02d}",
+            post_type="morning",
+            image_path=image,
+            selected_scene=scene,
+            prompt_version="cyprus_visual_v_test",
+            cache_key=f"cache={scene}-{index}",
+            style_name=f"style_{index}",
+            composition=f"composition variant {index}",
+            visual_archetype=f"archetype_{index}",
+            history_path=history,
+        )
+
+
+def cy_macro_third_sandy_candidate_is_rejected_with_scene_macro_cooldown() -> None:
+    """Two sandy publications in the last five real entries block a third."""
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        _seed_macro_history(
+            history,
+            root,
+            [
+                "long_sandy_beach",
+                "coastal_promenade",
+                "open_beach_horizon",
+                "marina_walkway",
+                "troodos_landscape",
+            ],
+        )
+        candidate = root / "candidate.ppm"
+        _write_ppm(candidate, mode="coast_b", tint=131)
+        result = evaluate_cyprus_visual_candidate(
+            candidate,
+            date_value="2026-06-20",
+            post_type="evening",
+            selected_scene="long_sandy_beach",
+            prompt_version="cyprus_visual_v_test",
+            composition="a brand new composition",
+            visual_archetype="beach_eye_level",
+            history_path=history,
+        )
+        assert result.accepted is False
+        assert result.reason == "scene_macro_cooldown"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_macro_non_sandy_candidate_passes_the_same_history() -> None:
+    """The macro gate is family-scoped: a different macro still passes."""
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        _seed_macro_history(
+            history,
+            root,
+            [
+                "long_sandy_beach",
+                "coastal_promenade",
+                "open_beach_horizon",
+                "marina_walkway",
+                "troodos_landscape",
+            ],
+        )
+        candidate = root / "candidate.ppm"
+        _write_ppm(candidate, mode="coast_b", tint=137)
+        result = evaluate_cyprus_visual_candidate(
+            candidate,
+            date_value="2026-06-20",
+            post_type="evening",
+            selected_scene="open_sea_cliffs",
+            prompt_version="cyprus_visual_v_test",
+            composition="another brand new composition",
+            visual_archetype="open_sea_shore",
+            history_path=history,
+        )
+        assert result.accepted is True, result.reason
+        assert result.reason == "accepted"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_macro_local_covers_do_not_occupy_the_macro_window() -> None:
+    """Local covers must not push sandy entries out of the recent real window."""
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        _seed_macro_history(
+            history,
+            root,
+            [
+                "long_sandy_beach",
+                "open_beach_horizon",
+                "local_informative_cover",
+                "local_informative_cover",
+                "local_informative_cover",
+                "local_informative_cover",
+            ],
+        )
+        candidate = root / "candidate.ppm"
+        _write_ppm(candidate, mode="coast_a", tint=151)
+        result = evaluate_cyprus_visual_candidate(
+            candidate,
+            date_value="2026-06-20",
+            post_type="evening",
+            selected_scene="long_sandy_beach",
+            prompt_version="cyprus_visual_v_test",
+            composition="yet another composition",
+            visual_archetype="beach_eye_level",
+            history_path=history,
+        )
+        # The four local covers are skipped, so both sandy entries still count.
+        assert result.accepted is False
+        assert result.reason == "scene_macro_cooldown"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_macro_legacy_history_without_macro_field_still_works() -> None:
+    """Entries written before G.1 derive their macro from selected_scene."""
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        legacy = []
+        # Ordered so the sandy entries have already left the 3-entry scene window and
+        # the newest entry has a different archetype: only the macro gate can fire.
+        legacy_scenes = (
+            "long_sandy_beach",
+            "open_beach_horizon",
+            "coastal_promenade",
+            "marina_walkway",
+            "troodos_landscape",
+        )
+        for index, scene in enumerate(legacy_scenes):
+            image = root / f"legacy_{index}.ppm"
+            _write_ppm(image, mode="coast_a", tint=index * 11 + 5)
+            legacy.append(
+                {
+                    "date": f"2026-06-{10 + index:02d}",
+                    "post_type": "morning",
+                    "sha256": f"legacy-sha-{index}",
+                    "perceptual_hash": "",
+                    "phash": "",
+                    "selected_scene": scene,
+                    "composition": f"legacy composition {index}",
+                    "visual_archetype": "",
+                    "prompt_version": "cyprus_visual_v_test",
+                    "cache_key": f"legacy-cache-{index}",
+                    "style_name": f"legacy_style_{index}",
+                    # deliberately no scene_macro_family
+                }
+            )
+        save_cyprus_visual_history(legacy, history)
+        assert all("scene_macro_family" not in entry for entry in load_cyprus_visual_history(history))
+
+        candidate = root / "candidate.ppm"
+        _write_ppm(candidate, mode="coast_b", tint=163)
+        result = evaluate_cyprus_visual_candidate(
+            candidate,
+            date_value="2026-06-20",
+            post_type="evening",
+            selected_scene="long_sandy_beach",
+            prompt_version="cyprus_visual_v_test",
+            composition="fresh composition",
+            visual_archetype="beach_eye_level",
+            history_path=history,
+        )
+        assert result.accepted is False
+        assert result.reason == "scene_macro_cooldown"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_macro_new_history_entry_records_macro_family() -> None:
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        image = root / "published.ppm"
+        _write_ppm(image, mode="coast_a", tint=59)
+        entry = record_cyprus_visual_publication(
+            date_value="2026-06-21",
+            post_type="evening",
+            image_path=image,
+            selected_scene="small_harbour",
+            prompt_version="cyprus_visual_v_test",
+            cache_key="cache=harbour",
+            style_name="style_harbour",
+            composition="harbour composition",
+            visual_archetype="harbour_pier",
+            history_path=history,
+        )
+        assert entry["scene_macro_family"] == "harbour_marina"
+        stored = load_cyprus_visual_history(history)[-1]
+        assert stored["scene_macro_family"] == "harbour_marina"
+        # Existing fields keep their meaning.
+        assert stored["selected_scene"] == "small_harbour"
+        assert stored["visual_archetype"] == "harbour_pier"
+
+        local_image = root / "local.ppm"
+        _write_ppm(local_image, mode="coast_b", tint=61)
+        local_entry = record_cyprus_visual_publication(
+            date_value="2026-06-22",
+            post_type="evening",
+            image_path=local_image,
+            selected_scene="local_informative_cover",
+            prompt_version="cy_local_informative_cover_v3",
+            cache_key="cache=local",
+            style_name="local_informative_cover",
+            composition="informative_cover",
+            visual_archetype="factual_weather_cover",
+            history_path=history,
+        )
+        assert local_entry["scene_macro_family"] == "local_cover"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def cy_macro_gate_runs_after_existing_rejection_priorities() -> None:
+    """Existing exact/scene/composition reasons still win over the macro gate."""
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        _seed_macro_history(
+            history,
+            root,
+            ["long_sandy_beach", "coastal_promenade", "open_beach_horizon"],
+        )
+        # Exact duplicate of a sandy entry: must report exact_duplicate, not macro.
+        exact = root / "seed_0.ppm"
+        exact_result = evaluate_cyprus_visual_candidate(
+            exact,
+            date_value="2026-06-20",
+            post_type="evening",
+            selected_scene="long_sandy_beach",
+            prompt_version="cyprus_visual_v_test",
+            composition="a distinct composition",
+            visual_archetype="beach_eye_level",
+            history_path=history,
+        )
+        assert exact_result.reason == "exact_duplicate"
+
+        # Repeating the most recent scene family must still report recent_scene_family.
+        scene_repeat = root / "scene_repeat.ppm"
+        _write_ppm(scene_repeat, mode="coast_b", tint=173)
+        scene_result = evaluate_cyprus_visual_candidate(
+            scene_repeat,
+            date_value="2026-06-20",
+            post_type="evening",
+            selected_scene="open_beach_horizon",
+            prompt_version="cyprus_visual_v_test",
+            composition="a different composition again",
+            visual_archetype="beach_eye_level",
+            history_path=history,
+        )
+        assert scene_result.reason == "recent_scene_family"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 TESTS = [
     cy_dedup_exact_sha_is_rejected,
     cy_dedup_near_duplicate_recolor_crop_is_rejected,
@@ -523,6 +793,12 @@ TESTS = [
     cy_dedup_recent_composition_is_rejected,
     cy_test_reference_reads_prod_but_writes_test_only,
     cy_bay_archetype_cooldown_uses_last_ten_references,
+    cy_macro_third_sandy_candidate_is_rejected_with_scene_macro_cooldown,
+    cy_macro_non_sandy_candidate_passes_the_same_history,
+    cy_macro_local_covers_do_not_occupy_the_macro_window,
+    cy_macro_legacy_history_without_macro_field_still_works,
+    cy_macro_new_history_entry_records_macro_family,
+    cy_macro_gate_runs_after_existing_rejection_priorities,
 ]
 
 

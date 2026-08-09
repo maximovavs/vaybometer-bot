@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from typing import Any, Mapping
 from urllib.parse import quote_plus
 
+from cyprus_visual_policy import cyprus_scene_macro_family
 from visual_context_cy import VisualContextCY, parse_visual_context_cy
 from visual_rules_cy import SceneCuesCY, apply_visual_rules_cy
 
@@ -638,9 +639,11 @@ def _coastal_visual_variants(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
+    blocked_macro_families: tuple[str, ...] = (),
 ) -> dict[str, str]:
     date_key = _extract_date_key(message)
     blocked_archetype_set = {value for value in blocked_archetypes if value}
+    blocked_macro_set = {value for value in blocked_macro_families if value}
     selected: tuple[str, str, str, str, str] | None = None
     attempts = max(1, len(_available_scene_families(_CYPRUS_SCENE_FAMILIES)) * 2)
     for offset in range(attempts):
@@ -675,7 +678,12 @@ def _coastal_visual_variants(
             scene_selection_mode,
             composition_selection_mode,
         )
-        if visual_archetype not in blocked_archetype_set:
+        # An over-used macro family keeps the existing candidate search going; the
+        # weather-aware selection above stays authoritative for what is offered.
+        if (
+            visual_archetype not in blocked_archetype_set
+            and cyprus_scene_macro_family(scene_family) not in blocked_macro_set
+        ):
             break
     assert selected is not None
     (
@@ -1142,6 +1150,7 @@ def _visual_cache_metadata(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
+    blocked_macro_families: tuple[str, ...] = (),
 ) -> dict[str, object]:
     forecast_date = _extract_date_key(message)
     if ctx.scene_focus == "inland":
@@ -1165,6 +1174,7 @@ def _visual_cache_metadata(
             blocked_scenes=blocked_scenes,
             blocked_compositions=blocked_compositions,
             blocked_archetypes=blocked_archetypes,
+            blocked_macro_families=blocked_macro_families,
         )
         selected_scene = variants["scene_family"]
         composition = variants["composition"]
@@ -1249,6 +1259,10 @@ def _visual_cache_metadata(
     )
     metadata["cache_key"] = "|".join(f"{key}={metadata[key]}" for key in ordered)
     metadata["cache_digest"] = hashlib.sha256(metadata["cache_key"].encode("utf-8")).hexdigest()[:12]
+    # Macro identity is an additive diagnostics/history field only. It is assigned
+    # after the ordered cache key above, and it is deliberately absent from `ordered`,
+    # so the existing cache identity stays byte-for-byte unchanged.
+    metadata["scene_macro_family"] = cyprus_scene_macro_family(selected_scene)
     return metadata
 
 
@@ -1260,6 +1274,7 @@ def build_cyprus_visual_cache_key(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
+    blocked_macro_families: tuple[str, ...] = (),
     visibility_metadata: Mapping[str, Any] | None = None,
 ) -> str:
     mode = post_type.strip().lower()
@@ -1278,6 +1293,7 @@ def build_cyprus_visual_cache_key(
         blocked_scenes=blocked_scenes,
         blocked_compositions=blocked_compositions,
         blocked_archetypes=blocked_archetypes,
+        blocked_macro_families=blocked_macro_families,
     )["cache_key"]
 
 
@@ -1344,6 +1360,7 @@ def build_cyprus_visual_decision(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
+    blocked_macro_families: tuple[str, ...] = (),
     visibility_metadata: Mapping[str, Any] | None = None,
     visual_context: VisualContextCY | None = None,
 ) -> CyprusVisualDecision:
@@ -1380,6 +1397,7 @@ def build_cyprus_visual_decision(
         blocked_scenes=blocked_scenes,
         blocked_compositions=blocked_compositions,
         blocked_archetypes=blocked_archetypes,
+        blocked_macro_families=blocked_macro_families,
     )
     positive = [
         "Photorealistic natural Cyprus landscape photography",
@@ -1430,6 +1448,7 @@ def build_cyprus_visual_decision(
         "blocked_scenes": list(blocked_scenes),
         "blocked_compositions": list(blocked_compositions),
         "blocked_archetypes": list(blocked_archetypes),
+        "blocked_macro_families": list(blocked_macro_families),
     }
     metadata["decision_id"] = hashlib.sha256(
         "|".join(
@@ -1458,6 +1477,7 @@ def build_cyprus_scene_prompt_with_metadata(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
+    blocked_macro_families: tuple[str, ...] = (),
     visibility_metadata: Mapping[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, object]]:
     """Return a sanitized Cyprus prompt, stable style name, and visual cache metadata."""
@@ -1468,6 +1488,7 @@ def build_cyprus_scene_prompt_with_metadata(
         blocked_scenes=blocked_scenes,
         blocked_compositions=blocked_compositions,
         blocked_archetypes=blocked_archetypes,
+        blocked_macro_families=blocked_macro_families,
         visibility_metadata=visibility_metadata,
     )
     return decision.prompt, decision.style_name, decision.metadata
@@ -1481,6 +1502,7 @@ def build_cyprus_scene_prompt(
     blocked_scenes: tuple[str, ...] = (),
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
+    blocked_macro_families: tuple[str, ...] = (),
     visibility_metadata: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Return a sanitized positive Cyprus landscape prompt and stable style name."""
@@ -1491,6 +1513,7 @@ def build_cyprus_scene_prompt(
         blocked_scenes=blocked_scenes,
         blocked_compositions=blocked_compositions,
         blocked_archetypes=blocked_archetypes,
+        blocked_macro_families=blocked_macro_families,
         visibility_metadata=visibility_metadata,
     )
     return prompt, style_name

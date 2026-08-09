@@ -16,8 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from visual_context_cy import parse_visual_context_cy
 from visual_rules_cy import apply_visual_rules_cy
 import image_prompt_cy_scene
+from cyprus_visual_policy import cyprus_scene_macro_family
 from image_prompt_cy_scene import (
     CYPRUS_VISUAL_PROMPT_VERSION,
+    _CYPRUS_SCENE_FAMILIES,
     _CY_COASTAL_COMPOSITIONS,
     _CY_SCENE_COMPOSITIONS,
     _dedupe_semantic_items,
@@ -1551,6 +1553,183 @@ def cy_canonical_diagnostics_fields_do_not_change_cache_key() -> None:
                 assert decision.style_name.endswith(expected_style_digest)
 
 
+MACRO_SANDY_SCENES = ("long_sandy_beach", "open_beach_horizon")
+
+
+def cy_macro_taxonomy_covers_every_scene_family() -> None:
+    """Every existing Cyprus scene family maps to its expected macro."""
+    expected = {
+        "rocky_cove_overlook": "rocky_natural_coast",
+        "open_sea_cliffs": "rocky_natural_coast",
+        "protected_bay": "rocky_natural_coast",
+        "windy_exposed_coast": "rocky_natural_coast",
+        "quiet_blue_lagoon": "rocky_natural_coast",
+        "long_sandy_beach": "open_sandy_coast",
+        "open_beach_horizon": "open_sandy_coast",
+        "coastal_promenade": "urban_seafront",
+        "coastal_urban_rooftop": "urban_seafront",
+        "beach_cafe_terrace": "urban_seafront",
+        "marina_walkway": "harbour_marina",
+        "small_harbour": "harbour_marina",
+        "harbour_pier_waterlevel": "harbour_marina",
+        "breakwater_coast": "harbour_marina",
+        "mountain_coast_view": "mountain_inland",
+        "troodos_landscape": "mountain_inland",
+        "dry_inland_landscape": "mountain_inland",
+        "inland_urban_rooftop": "urban_inland",
+        "inland_village": "village_cultural",
+        "salt_lake_landscape": "salt_lake_flatland",
+    }
+    for scene, macro in expected.items():
+        assert cyprus_scene_macro_family(scene) == macro, scene
+
+    # No coastal scene family may be left unclassified.
+    for scene in _CYPRUS_SCENE_FAMILIES:
+        assert scene in expected, scene
+        assert cyprus_scene_macro_family(scene) != "unknown", scene
+
+
+def cy_macro_local_cover_and_unknown_are_deterministic() -> None:
+    assert cyprus_scene_macro_family("local_informative_cover") == "local_cover"
+    assert cyprus_scene_macro_family("local_cover") == "local_cover"
+    assert cyprus_scene_macro_family("") == "unknown"
+    assert cyprus_scene_macro_family(None) == "unknown"
+    assert cyprus_scene_macro_family("no_such_scene_family") == "unknown"
+
+
+def cy_empty_macro_policy_keeps_prompt_style_and_cache_identical() -> None:
+    """An empty macro policy must not disturb the existing selection at all."""
+    for mode in ("morning", "evening"):
+        for attempt in (0, 1, 2, 3):
+            base_prompt, base_style, base_meta = build_cyprus_scene_prompt_with_metadata(
+                CANONICAL_DECISION_SOURCE,
+                post_type=mode,
+                variation_attempt=attempt,
+            )
+            macro_prompt, macro_style, macro_meta = build_cyprus_scene_prompt_with_metadata(
+                CANONICAL_DECISION_SOURCE,
+                post_type=mode,
+                variation_attempt=attempt,
+                blocked_macro_families=(),
+            )
+            assert macro_prompt == base_prompt
+            assert macro_style == base_style
+            assert macro_meta["cache_key"] == base_meta["cache_key"]
+            assert macro_meta["selected_scene"] == base_meta["selected_scene"]
+            assert macro_meta["composition"] == base_meta["composition"]
+
+
+def cy_blocked_sandy_macro_excludes_both_sandy_scenes() -> None:
+    """Blocking open_sandy_coast must exclude both sandy scenes, not just one."""
+    blocked_any = False
+    for mode in ("morning", "evening"):
+        for attempt in range(8):
+            baseline = image_prompt_cy_scene.build_cyprus_visual_decision(
+                CANONICAL_DECISION_SOURCE,
+                post_type=mode,
+                variation_attempt=attempt,
+            )
+            decision = image_prompt_cy_scene.build_cyprus_visual_decision(
+                CANONICAL_DECISION_SOURCE,
+                post_type=mode,
+                variation_attempt=attempt,
+                blocked_macro_families=("open_sandy_coast",),
+            )
+            assert decision.metadata["selected_scene"] not in MACRO_SANDY_SCENES
+            assert decision.metadata["scene_macro_family"] != "open_sandy_coast"
+            if baseline.metadata["selected_scene"] in MACRO_SANDY_SCENES:
+                blocked_any = True
+                # The blocked case must actually have moved to a different scene.
+                assert decision.metadata["selected_scene"] != baseline.metadata["selected_scene"]
+    assert blocked_any, "fixture never selected a sandy scene, regression is vacuous"
+
+
+def cy_macro_blocking_preserves_weather_constraints() -> None:
+    """Macro blocking must not smuggle in a scene the weather rules exclude."""
+    sources = (
+        ("evening", DRY_SEVERE_WIND_SOURCE),
+        ("evening", WET_SEVERE_WIND_SOURCE),
+        ("evening", LOCAL_MOUNTAIN_THUNDER_SOURCE),
+    )
+    for mode, source in sources:
+        final_text = build_evening_format_v2("Кипр", source)
+        for attempt in range(4):
+            unblocked = image_prompt_cy_scene.build_cyprus_visual_decision(
+                final_text, post_type=mode, variation_attempt=attempt
+            )
+            blocked = image_prompt_cy_scene.build_cyprus_visual_decision(
+                final_text,
+                post_type=mode,
+                variation_attempt=attempt,
+                blocked_macro_families=("open_sandy_coast",),
+            )
+            # Weather-derived routing inputs stay identical; only the scene may move.
+            for key in (
+                "weather_scenario",
+                "primary_weather",
+                "hazards",
+                "visual_forecast_period",
+                "scene_focus",
+                "visibility_condition",
+                "wind_gust_category",
+            ):
+                assert blocked.metadata[key] == unblocked.metadata[key], key
+            assert blocked.metadata["selected_scene"] in set(_CYPRUS_SCENE_FAMILIES) | {
+                "inland_urban_rooftop",
+                "troodos_landscape",
+                "inland_village",
+                "dry_inland_landscape",
+            }
+
+
+def cy_metadata_macro_matches_selected_scene() -> None:
+    for mode in ("morning", "evening"):
+        for attempt in range(6):
+            decision = image_prompt_cy_scene.build_cyprus_visual_decision(
+                CANONICAL_DECISION_SOURCE,
+                post_type=mode,
+                variation_attempt=attempt,
+            )
+            assert decision.metadata["scene_macro_family"] == cyprus_scene_macro_family(
+                decision.metadata["selected_scene"]
+            )
+            assert decision.metadata["scene_macro_family"] != "unknown"
+
+
+def cy_cooldown_inputs_include_blocked_macro_families() -> None:
+    decision = image_prompt_cy_scene.build_cyprus_visual_decision(
+        CANONICAL_DECISION_SOURCE,
+        post_type="evening",
+        variation_attempt=1,
+        blocked_scenes=("protected_bay",),
+        blocked_macro_families=("open_sandy_coast", "harbour_marina"),
+    )
+    cooldown = decision.metadata["cooldown_inputs"]
+    assert cooldown["blocked_macro_families"] == ["open_sandy_coast", "harbour_marina"]
+    assert cooldown["blocked_scenes"] == ["protected_bay"]
+
+
+def cy_macro_fields_are_absent_from_the_ordered_cache_key() -> None:
+    """Macro identity is diagnostics/history only and must stay out of cache identity."""
+    for mode in ("morning", "evening"):
+        for blocked in ((), ("open_sandy_coast",)):
+            decision = image_prompt_cy_scene.build_cyprus_visual_decision(
+                CANONICAL_DECISION_SOURCE,
+                post_type=mode,
+                variation_attempt=0,
+                blocked_macro_families=blocked,
+            )
+            cache_key = decision.metadata["cache_key"]
+            assert "scene_macro_family=" not in cache_key
+            assert "blocked_macro_families=" not in cache_key
+            assert decision.metadata["scene_macro_family"] not in cache_key.split("|")
+            # The style digest is still cache_key + prompt only.
+            expected_digest = hashlib.sha256(
+                f"{cache_key}|{decision.prompt}".encode("utf-8")
+            ).hexdigest()[:8]
+            assert decision.style_name.endswith(expected_digest)
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -1616,6 +1795,14 @@ TESTS = [
     cy_canonical_decision_matches_legacy_wrapper_output,
     cy_canonical_decision_exposes_routing_and_cooldown_inputs,
     cy_canonical_diagnostics_fields_do_not_change_cache_key,
+    cy_macro_taxonomy_covers_every_scene_family,
+    cy_macro_local_cover_and_unknown_are_deterministic,
+    cy_empty_macro_policy_keeps_prompt_style_and_cache_identical,
+    cy_blocked_sandy_macro_excludes_both_sandy_scenes,
+    cy_macro_blocking_preserves_weather_constraints,
+    cy_metadata_macro_matches_selected_scene,
+    cy_cooldown_inputs_include_blocked_macro_families,
+    cy_macro_fields_are_absent_from_the_ordered_cache_key,
 ]
 
 
