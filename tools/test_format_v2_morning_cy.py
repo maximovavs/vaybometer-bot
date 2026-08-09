@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import os
 import re
@@ -61,6 +62,7 @@ from safe_test_post import (  # noqa: E402
     finalize_hashtags_at_end,
     _cyprus_main_nuance,
     _cyprus_evening_score_line,
+    _cyprus_feels_line,
     _cyprus_score_line,
     _cyprus_smart_plan_line,
     _inject_morning_score,
@@ -308,11 +310,12 @@ def cy_morning_adds_concise_sea_block_when_available() -> None:
 
 
 def cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening() -> None:
-    calls: list[tuple[str, float, float, bool]] = []
+    target_date = date(2026, 6, 27)
+    calls: list[tuple[str, float, float, bool, date | None]] = []
     old_city_detail_line = post_common_module._city_detail_line
 
-    def fake_city_detail_line(city, la, lo, _tz_obj, include_sst):
-        calls.append((city, la, lo, include_sst))
+    def fake_city_detail_line(city, la, lo, _tz_obj, include_sst, target_date=None):
+        calls.append((city, la, lo, include_sst, target_date))
         temperatures = {"Лимассол": 26.0, "Ларнака": 28.0}
         sst = temperatures[city]
         return 34.0, f"<b>{city}</b>: 34/25 °C • ясно • 🌊 {sst:.0f}"
@@ -326,11 +329,12 @@ def cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening() -> None
         rows = post_common_module._morning_sea_city_lines(
             pairs,
             types.SimpleNamespace(name="Asia/Nicosia"),
+            target_date=target_date,
         )
         assert [line.split(":", 1)[0] for line in rows] == ["<b>Лимассол</b>", "<b>Ларнака</b>"]
         assert calls == [
-            ("Лимассол", 34.68, 33.04, True),
-            ("Ларнака", 34.92, 33.63, True),
+            ("Лимассол", 34.68, 33.04, True, target_date),
+            ("Ларнака", 34.92, 33.63, True, target_date),
         ]
 
         raw_morning = MORNING_NO_SEA.replace(
@@ -354,11 +358,357 @@ def cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening() -> None
         assert post_common_module._morning_sea_city_lines(
             pairs,
             types.SimpleNamespace(name="Asia/Nicosia"),
+            target_date=target_date,
         ) == []
         fallback = build_morning_format_v2("Кипр", MORNING_NO_SEA)
         assert "данные о температуре воды обновляются" in fallback
     finally:
         post_common_module._city_detail_line = old_city_detail_line
+
+
+class _ForecastFixtureDateTime(dt.datetime):
+    def in_tz(self, _tz):
+        return self
+
+    def format(self, pattern: str) -> str:
+        translated = pattern.replace("DD", "%d").replace("MM", "%m").replace("YYYY", "%Y")
+        translated = translated.replace("HH", "%H").replace("mm", "%M")
+        return self.strftime(translated)
+
+    def add(self, *, days: int = 0, hours: int = 0, minutes: int = 0):
+        value = self + dt.timedelta(days=days, hours=hours, minutes=minutes)
+        return _ForecastFixtureDateTime(
+            value.year,
+            value.month,
+            value.day,
+            value.hour,
+            value.minute,
+            value.second,
+            value.microsecond,
+        )
+
+
+def _replace_attrs(target, replacements: dict[str, object], callback):
+    missing = object()
+    previous = {name: getattr(target, name, missing) for name in replacements}
+    try:
+        for name, value in replacements.items():
+            setattr(target, name, value)
+        return callback()
+    finally:
+        for name, value in previous.items():
+            if value is missing:
+                delattr(target, name)
+            else:
+                setattr(target, name, value)
+
+
+def _with_forecast_clock(callback):
+    fixed_today = _ForecastFixtureDateTime(2026, 8, 9)
+
+    def parse(value, tz=None):
+        del tz
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.replace(tzinfo=None)
+        return _ForecastFixtureDateTime(
+            parsed.year,
+            parsed.month,
+            parsed.day,
+            parsed.hour,
+            parsed.minute,
+            parsed.second,
+            parsed.microsecond,
+        )
+
+    def make_datetime(year, month, day, hour=0, minute=0, second=0, tz=None):
+        del tz
+        return _ForecastFixtureDateTime(year, month, day, hour, minute, second)
+
+    return _replace_attrs(
+        post_common_module.pendulum,
+        {
+            "parse": parse,
+            "datetime": make_datetime,
+            "today": lambda _tz=None: fixed_today,
+        },
+        callback,
+    )
+
+
+def _forecast_payload(
+    *,
+    today_high: float,
+    today_low: float,
+    tomorrow_high: float,
+    tomorrow_low: float,
+) -> dict:
+    return {
+        "daily": {
+            "time": ["2026-08-10", "not-a-date", "2026-08-09"],
+            "temperature_2m_max": [tomorrow_high, 99.0, today_high],
+            "temperature_2m_min": [tomorrow_low, 88.0, today_low],
+            "weathercode": [95, 71, 0],
+            "uv_index_max": [4.0, 99.0, 9.0],
+        },
+        "hourly": {
+            "time": [
+                "2026-08-10T06:00",
+                "not-an-hour",
+                "2026-08-09T06:00",
+                "2026-08-09T12:00",
+                "2026-08-10T12:00",
+            ],
+            "windspeed_10m": [18.0, 360.0, 7.2, 10.8, 36.0],
+            "winddirection_10m": [0.0, 270.0, 170.0, 180.0, 10.0],
+            "surface_pressure": [990.0, 800.0, 1011.0, 1012.0, 989.0],
+            "windgusts_10m": [50.4, 360.0, 14.4, 18.0, 72.0],
+        },
+        "current": {
+            "windspeed": 180.0,
+            "winddirection": 270.0,
+            "pressure": 777.0,
+        },
+    }
+
+
+def _build_aligned_forecast_messages() -> tuple[str, str, list[tuple[str, date]]]:
+    region_weather = _forecast_payload(
+        today_high=29.0,
+        today_low=22.0,
+        tomorrow_high=42.0,
+        tomorrow_low=31.0,
+    )
+    city_weather = {
+        (1.0, 2.0): _forecast_payload(
+            today_high=28.0,
+            today_low=23.0,
+            tomorrow_high=40.0,
+            tomorrow_low=30.0,
+        ),
+        (3.0, 4.0): _forecast_payload(
+            today_high=29.0,
+            today_low=24.0,
+            tomorrow_high=42.0,
+            tomorrow_low=31.0,
+        ),
+    }
+    context_calls: list[tuple[str, date]] = []
+
+    def fake_get_weather(lat, lon, *args, **kwargs):
+        del args, kwargs
+        if (lat, lon) == (post_common_module.CY_LAT, post_common_module.CY_LON):
+            return region_weather
+        return city_weather[(float(lat), float(lon))]
+
+    def fake_visibility_context(_weather, *, post_type, target_date, **_kwargs):
+        context_calls.append((post_type, target_date))
+        return types.SimpleNamespace()
+
+    def fake_storm_today(*_args, **_kwargs):
+        context_calls.append(("storm_morning", date(2026, 8, 9)))
+        return {"warning": False}
+
+    def fake_storm_tomorrow(*_args, **_kwargs):
+        context_calls.append(("storm_evening", date(2026, 8, 10)))
+        return {"warning": False}
+
+    replacements = {
+        "get_weather": fake_get_weather,
+        "get_fact": lambda *_args, **_kwargs: "",
+        "storm_flags_for_today": fake_storm_today,
+        "storm_flags_for_tomorrow": fake_storm_tomorrow,
+        "get_air": lambda *_args, **_kwargs: {},
+        "get_cyprus_visibility_context": fake_visibility_context,
+        "build_cyprus_visibility_line": lambda *_args, **_kwargs: None,
+        "save_cyprus_visibility_diagnostics": lambda *_args, **_kwargs: None,
+        "sun_line_for_mode": lambda *_args, **_kwargs: None,
+        "_morning_combo_air_radiation_pollen": lambda *_args, **_kwargs: None,
+        "_air_by_city_line": lambda *_args, **_kwargs: None,
+        "_cyprus_quake_line_for_morning": lambda *_args, **_kwargs: None,
+        "get_solar_wind": lambda *_args, **_kwargs: {},
+        "get_sst_cached": lambda *_args, **_kwargs: 27.0,
+        "_water_highlights": lambda *_args, **_kwargs: None,
+        "build_astro_section": lambda *_args, **_kwargs: "",
+        "USE_WORLD_KP": False,
+    }
+
+    def build() -> tuple[str, str, list[tuple[str, date]]]:
+        tz_obj = types.SimpleNamespace(name="Asia/Nicosia")
+        morning = post_common_module.build_message(
+            region_name="Кипр",
+            sea_label="Морские города",
+            sea_cities=[("Limassol", (1.0, 2.0))],
+            other_label="Континентальные города",
+            other_cities=[("Nicosia", (3.0, 4.0))],
+            tz=tz_obj,
+            mode="morning",
+        )
+        evening = post_common_module.build_message(
+            region_name="Кипр",
+            sea_label="Морские города",
+            sea_cities=[("Limassol", (1.0, 2.0))],
+            other_label="Континентальные города",
+            other_cities=[("Nicosia", (3.0, 4.0))],
+            tz=tz_obj,
+            mode="evening",
+        )
+        return morning, evening, context_calls
+
+    return _with_forecast_clock(
+        lambda: _replace_attrs(post_common_module, replacements, build)
+    )
+
+
+def cy_morning_uses_today_for_raw_format_score_feels_and_plan() -> None:
+    raw_morning, _raw_evening, context_calls = _build_aligned_forecast_messages()
+    assert "погода на сегодня (09.08.2026)" in raw_morning
+    assert "Теплее всего — Никосия (29°)" in raw_morning
+    assert "прохладнее — Лимассол (28°)" in raw_morning
+    assert "<b>Лимассол</b>: 28/23 °C" in raw_morning
+    assert "☀️ ясно" in raw_morning
+    assert "💨 3.0 м/с (Ю) • порывы 5" in raw_morning
+    assert "1012 гПа ↑" in raw_morning
+    assert "🌊 27" in raw_morning
+    assert "УФ-индекс 9 (Very High)" in raw_morning
+    assert "40/30" not in raw_morning
+    assert "42/31" not in raw_morning
+    assert "порывы 20" not in raw_morning
+    assert ("morning", date(2026, 8, 9)) in context_calls
+    assert ("storm_morning", date(2026, 8, 9)) in context_calls
+
+    formatted = build_morning_format_v2("Кипр", raw_morning)
+    assert "🌡 Теплее всего — Никосия (29°), прохладнее — Лимассол (28°)" in formatted
+    assert "40/30" not in formatted and "42/31" not in formatted
+
+    score = _cyprus_score_line(formatted)
+    feels = _cyprus_feels_line(formatted)
+    plan = _cyprus_smart_plan_line(formatted)
+    assert "сильная жара" not in score and "жара" not in score
+    assert "очень тепло в Никосии" in feels and "жарко" not in feels
+    assert plan == "✅ План: SPF 50, вода с собой; полдень провести в тени; прогулка утром или ближе к закату."
+
+
+def cy_evening_keeps_tomorrow_city_forecast() -> None:
+    _raw_morning, raw_evening, context_calls = _build_aligned_forecast_messages()
+    assert "погода на завтра (10.08.2026)" in raw_evening
+    assert "<b>Лимассол</b>: 40/30 °C" in raw_evening
+    assert "<b>Никосия</b>: 42/31 °C" in raw_evening
+    assert "⛈ гроза" in raw_evening
+    assert "💨 10.0 м/с (С) • порывы 20" in raw_evening
+    assert "989 гПа ↓" in raw_evening
+    assert ("evening", date(2026, 8, 10)) in context_calls
+
+
+def cy_city_forecast_omits_row_when_target_daily_date_is_missing() -> None:
+    payload = {
+        "daily": {
+            "time": ["2026-08-10"],
+            "temperature_2m_max": [40.0],
+            "temperature_2m_min": [30.0],
+            "weathercode": [95],
+        },
+        "hourly": {
+            "time": ["2026-08-10T12:00"],
+            "windspeed_10m": [36.0],
+            "surface_pressure": [989.0],
+            "windgusts_10m": [72.0],
+        },
+        "current": {"temperature": 35.0, "windspeed": 180.0, "pressure": 777.0},
+    }
+
+    def run() -> None:
+        result = _replace_attrs(
+            post_common_module,
+            {"get_weather": lambda *_args, **_kwargs: payload},
+            lambda: post_common_module._city_detail_line(
+                "Limassol",
+                1.0,
+                2.0,
+                types.SimpleNamespace(name="Asia/Nicosia"),
+                include_sst=False,
+                target_date=date(2026, 8, 9),
+            ),
+        )
+        assert result == (None, None)
+
+    _with_forecast_clock(run)
+
+
+def cy_city_forecast_does_not_shift_incomplete_or_malformed_arrays() -> None:
+    payload = {
+        "daily": {
+            "time": ["bad-daily-time", "2026-08-09"],
+            "temperature_2m_max": [99.0, 29.0],
+            "temperature_2m_min": [18.0],
+            "weathercode": [95, 0],
+        },
+        "hourly": {
+            "time": ["bad-hourly-time", "2026-08-09T12:00"],
+            "windspeed_10m": [360.0, 10.8],
+            "winddirection_10m": [270.0],
+            "surface_pressure": [800.0, 1012.0],
+            "windgusts_10m": [360.0, 18.0],
+        },
+    }
+
+    def run() -> None:
+        _tmax, line = _replace_attrs(
+            post_common_module,
+            {"get_weather": lambda *_args, **_kwargs: payload},
+            lambda: post_common_module._city_detail_line(
+                "Limassol",
+                1.0,
+                2.0,
+                types.SimpleNamespace(name="Asia/Nicosia"),
+                include_sst=False,
+                target_date=date(2026, 8, 9),
+            ),
+        )
+        assert line is not None
+        assert "29 °C" in line and "29/18" not in line
+        assert "☀️ ясно" in line and "⛈ гроза" not in line
+        assert "💨 3.0 м/с" in line and "270" not in line
+        assert "порывы 5" in line and "порывы 100" not in line
+        assert "1012 гПа" in line and "800 гПа" not in line
+
+    _with_forecast_clock(run)
+
+
+def cy_city_forecast_never_uses_current_for_missing_target_hourly_date() -> None:
+    payload = {
+        "daily": {
+            "time": ["2026-08-09"],
+            "temperature_2m_max": [29.0],
+            "temperature_2m_min": [23.0],
+            "weathercode": [0],
+        },
+        "hourly": {
+            "time": ["2026-08-10T12:00"],
+            "windspeed_10m": [36.0],
+            "surface_pressure": [989.0],
+            "windgusts_10m": [72.0],
+        },
+        "current": {"windspeed": 180.0, "winddirection": 270.0, "pressure": 777.0},
+    }
+
+    def run() -> None:
+        _tmax, line = _replace_attrs(
+            post_common_module,
+            {"get_weather": lambda *_args, **_kwargs: payload},
+            lambda: post_common_module._city_detail_line(
+                "Limassol",
+                1.0,
+                2.0,
+                types.SimpleNamespace(name="Asia/Nicosia"),
+                include_sst=False,
+                target_date=date(2026, 8, 9),
+            ),
+        )
+        assert line == "<b>Лимассол</b>: 29/23 °C • ☀️ ясно"
+        assert "180.0" not in line and "777" not in line and "10.0 м/с" not in line
+
+    _with_forecast_clock(run)
 
 
 def cy_morning_averages_coastal_sea_rows() -> None:
@@ -2095,6 +2445,11 @@ def main() -> None:
     checks = (
         cy_morning_adds_concise_sea_block_when_available,
         cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening,
+        cy_morning_uses_today_for_raw_format_score_feels_and_plan,
+        cy_evening_keeps_tomorrow_city_forecast,
+        cy_city_forecast_omits_row_when_target_daily_date_is_missing,
+        cy_city_forecast_does_not_shift_incomplete_or_malformed_arrays,
+        cy_city_forecast_never_uses_current_for_missing_target_hourly_date,
         cy_morning_averages_coastal_sea_rows,
         cy_morning_adds_sea_fallback_when_unavailable,
         cy_morning_rejects_non_marine_numbers_for_sea,

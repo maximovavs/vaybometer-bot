@@ -266,7 +266,16 @@ def _daily_idx_for_date(
     try:
         daily = wm.get("daily") or {}
         times = daily.get("time") or daily.get("date") or []
+        try:
+            target_key = date_obj.to_date_string()
+        except Exception:
+            target_key = str(date_obj)[:10]
         for i, t in enumerate(times):
+            raw = str(t or "").strip()
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+                if raw == target_key:
+                    return i
+                continue
             dt_i = _parse_iso_to_tz(t, tz)
             if dt_i and dt_i.date() == date_obj:
                 return i
@@ -1811,6 +1820,136 @@ def _number_at(values: Any, idx: Optional[int]) -> Optional[float]:
     return value if math.isfinite(value) else None
 
 
+def _value_at(values: Any, idx: Optional[int]) -> Any:
+    if idx is None or not isinstance(values, list) or idx >= len(values):
+        return None
+    return values[idx]
+
+
+def _source_indices_for_date(
+    raw_times: Sequence[Any],
+    target_date: Any,
+    tz_obj: pendulum.Timezone,
+) -> List[int]:
+    """Return original source indices for one local date without compressing bad timestamps."""
+
+    indices: List[int] = []
+    for idx, raw_time in enumerate(raw_times or []):
+        try:
+            parsed = pendulum.parse(str(raw_time), tz=tz_obj).in_tz(tz_obj)
+        except Exception:
+            continue
+        if parsed.date() == target_date:
+            indices.append(idx)
+    return indices
+
+
+def _city_daily_metrics_for_date(
+    wm: Dict[str, Any],
+    tz_obj: pendulum.Timezone,
+    target_date: Any,
+) -> Tuple[Optional[float], Optional[float], Any]:
+    daily = wm.get("daily") or {}
+    idx = _daily_idx_for_date(wm, tz_obj, target_date)
+    if idx is None:
+        return None, None, None
+    tmax = _number_at(
+        _pick(daily, "temperature_2m_max", "temperature_max", "temp_max", default=[]),
+        idx,
+    )
+    tmin = _number_at(
+        _pick(daily, "temperature_2m_min", "temperature_min", "temp_min", default=[]),
+        idx,
+    )
+    weather_code = _value_at(_pick(daily, "weathercode", "weather_code", default=[]), idx)
+    return tmax, tmin, weather_code
+
+
+def _city_header_metrics_for_date(
+    wm: Dict[str, Any],
+    tz_obj: pendulum.Timezone,
+    target_date: Any,
+) -> Tuple[Optional[float], Optional[int], Optional[int], str, Optional[float]]:
+    """Read city wind, pressure and gusts only from the requested local forecast date."""
+
+    hourly = wm.get("hourly") or {}
+    raw_times = _pick(hourly, "time", "time_local", "timestamp", default=[])
+    indices = _source_indices_for_date(raw_times, target_date, tz_obj)
+    if not indices:
+        return None, None, None, "→", None
+
+    idx_noon, _ = _target_source_index(
+        raw_times,
+        target_date,
+        12,
+        tz_obj,
+        max_offset_minutes=24 * 60,
+    )
+    idx_morn, _ = _target_source_index(
+        raw_times,
+        target_date,
+        6,
+        tz_obj,
+        max_offset_minutes=24 * 60,
+    )
+    speed_values = _pick(
+        hourly,
+        "windspeed_10m",
+        "windspeed",
+        "wind_speed_10m",
+        "wind_speed",
+        default=[],
+    )
+    direction_values = _pick(
+        hourly,
+        "winddirection_10m",
+        "winddirection",
+        "wind_dir_10m",
+        "wind_dir",
+        default=[],
+    )
+    pressure_values = _pick(hourly, "surface_pressure", "pressure", default=[])
+    gust_values = _pick(
+        hourly,
+        "windgusts_10m",
+        "wind_gusts_10m",
+        "wind_gusts",
+        default=[],
+    )
+
+    speed_kmh = _number_at(speed_values, idx_noon)
+    direction = _number_at(direction_values, idx_noon)
+    pressure_noon = _number_at(pressure_values, idx_noon)
+    pressure_morn = _number_at(pressure_values, idx_morn)
+
+    if speed_kmh is None:
+        same_day_speeds = [value for i in indices if (value := _number_at(speed_values, i)) is not None]
+        if same_day_speeds:
+            speed_kmh = sum(same_day_speeds) / len(same_day_speeds)
+    if direction is None:
+        same_day_dirs = [value for i in indices if (value := _number_at(direction_values, i)) is not None]
+        direction = _circular_mean_deg(same_day_dirs)
+    if pressure_noon is None:
+        same_day_pressures = [value for i in indices if (value := _number_at(pressure_values, i)) is not None]
+        if same_day_pressures:
+            pressure_noon = sum(same_day_pressures) / len(same_day_pressures)
+
+    gusts_kmh = [value for i in indices if (value := _number_at(gust_values, i)) is not None]
+    max_gust_kmh = max(gusts_kmh) if gusts_kmh else None
+    trend = "→"
+    if pressure_noon is not None and pressure_morn is not None:
+        diff = pressure_noon - pressure_morn
+        trend = "↑" if diff >= 0.3 else "↓" if diff <= -0.3 else "→"
+
+    return (
+        kmh_to_ms(speed_kmh) if speed_kmh is not None else None,
+        int(round(direction)) if direction is not None else None,
+        int(round(pressure_noon)) if pressure_noon is not None else None,
+        trend,
+        kmh_to_ms(max_gust_kmh) if max_gust_kmh is not None else None,
+    )
+
+
 def _sup_weather_sample(
     wm: Dict[str, Any],
     tz_obj: pendulum.Timezone,
@@ -2023,30 +2162,33 @@ def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
 
 
 def _city_detail_line(
-    city: str, la: float, lo: float, tz_obj: pendulum.Timezone, include_sst: bool
+    city: str,
+    la: float,
+    lo: float,
+    tz_obj: pendulum.Timezone,
+    include_sst: bool,
+    target_date: Any = None,
 ) -> tuple[Optional[float], Optional[str]]:
-    tz_name = tz_obj.name
-    tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
-    if tmax is None:
-        st_fb = day_night_stats(la, lo, tz=tz_name) or {}
-        tmax = st_fb.get("t_day_max")
-        tmin = st_fb.get("t_night_min")
+    wanted_date = target_date or pendulum.today(tz_obj).add(days=1).date()
+    wm = get_weather(la, lo) or {}
+    tmax, tmin, weather_code = _city_daily_metrics_for_date(wm, tz_obj, wanted_date)
     if tmax is None:
         return None, None
-    tmin = tmin if tmin is not None else tmax
 
-    wm = get_weather(la, lo) or {}
-    wcx = (wm.get("daily", {}) or {}).get("weathercode", [])
-    wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else None
-    descx = code_desc(wcx) or "—"
-
-    wind_ms, wind_dir, press_val, press_trend = pick_tomorrow_header_metrics(wm, tz_obj)
-    storm = storm_flags_for_tomorrow(wm, tz_obj)
-    gust = storm.get("max_gust_ms")
+    descx = code_desc(weather_code)
+    wind_ms, wind_dir, press_val, press_trend, gust = _city_header_metrics_for_date(
+        wm,
+        tz_obj,
+        wanted_date,
+    )
 
     name_html = f"<b>{_escape_html(_ru_city(city))}</b>"
-    temp_part = f"{round(float(tmax)):.0f}/{round(float(tmin)):.0f} °C"
-    parts = [f"{name_html}: {temp_part}", f"{descx}"]
+    temp_part = f"{round(float(tmax)):.0f} °C"
+    if isinstance(tmin, (int, float)):
+        temp_part = f"{round(float(tmax)):.0f}/{round(float(tmin)):.0f} °C"
+    parts = [f"{name_html}: {temp_part}"]
+    if descx:
+        parts.append(descx)
     if isinstance(wind_ms, (int, float)):
         wind_part = f"💨 {float(wind_ms):.1f} м/с"
         if isinstance(wind_dir, int):
@@ -2066,12 +2208,21 @@ def _city_detail_line(
 def _morning_sea_city_lines(
     sea_pairs: Sequence[tuple[str, tuple[float, float]]],
     tz_obj: pendulum.Timezone,
+    target_date: Any = None,
 ) -> List[str]:
     """Build morning coastal rows through the canonical city formatter with SST."""
 
+    wanted_date = target_date or pendulum.today(tz_obj).date()
     rows: List[str] = []
     for city, (la, lo) in sea_pairs:
-        _tmax, line = _city_detail_line(city, la, lo, tz_obj, include_sst=True)
+        _tmax, line = _city_detail_line(
+            city,
+            la,
+            lo,
+            tz_obj,
+            include_sst=True,
+            target_date=wanted_date,
+        )
         if line:
             rows.append(line)
     return rows
@@ -2386,7 +2537,14 @@ def build_message(
             all_pairs = list(spairs) + list(opairs)
             out: List[Tuple[str, float]] = []
             for city, (la, lo) in all_pairs:
-                tmax, _line = _city_detail_line(city, la, lo, tz_obj, include_sst=False)
+                tmax, _line = _city_detail_line(
+                    city,
+                    la,
+                    lo,
+                    tz_obj,
+                    include_sst=False,
+                    target_date=today.date(),
+                )
                 if isinstance(tmax, (int, float)):
                     out.append((_ru_city(city), float(tmax)))
             return out
@@ -2433,7 +2591,7 @@ def build_message(
         if uv_line:
             P.append(uv_line)
 
-        sea_rows_morning = _morning_sea_city_lines(sea_pairs, tz_obj)
+        sea_rows_morning = _morning_sea_city_lines(sea_pairs, tz_obj, target_date=today.date())
         if sea_rows_morning:
             P.extend(sea_rows_morning)
 
