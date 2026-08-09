@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -1673,6 +1674,80 @@ def _cy_is_production_text_send(chat_id: int | None) -> bool:
     return bool(production_chat and chat_id is not None and str(chat_id) == production_chat)
 
 
+_CY_LOCAL_RENDERER_NAME = "local_informative_cover"
+
+# Fixed vocabulary; diagnostics must not invent new stage names.
+_CY_ERROR_STAGES = (
+    "none",
+    "decision",
+    "provider_generation",
+    "provider_validation",
+    "dedup",
+    "fallback_render",
+    "telegram_send",
+    "history",
+    "receipt",
+    "orchestration",
+)
+
+# Unambiguous lifecycle states for the network → local fallback transition.
+_CY_FALLBACK_NOT_USED = "network_fallback_not_used"
+_CY_FALLBACK_ELIGIBLE = "network_exhausted_local_eligible"
+_CY_FALLBACK_LOCAL_SELECTED = "local_selected"
+_CY_FALLBACK_LOCAL_FAILED = "local_failed"
+
+
+def _cy_local_decision_id(local_metadata: dict) -> str:
+    """Deterministic diagnostics-only id for a local informative-cover decision.
+
+    Derived from the local identity that is already final, so it never enters the
+    local cache payload and cannot change the renderer's existing cache key.
+    """
+    parts = (
+        str(local_metadata.get("cache_key", "")),
+        _CY_LOCAL_RENDERER_NAME,
+        str(local_metadata.get("selected_scene", "")),
+        str(local_metadata.get("composition", "")),
+        str(local_metadata.get("visual_archetype", "")),
+        str(local_metadata.get("target_date", "")),
+        str(local_metadata.get("post_type", "")),
+    )
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _cy_fallback_state(
+    result: str,
+    *,
+    local_generated: bool,
+    local_failed: bool = False,
+    is_local: bool = False,
+) -> str:
+    """Derive the fallback lifecycle state from the outcome actually reached."""
+    if is_local or local_generated:
+        return _CY_FALLBACK_LOCAL_SELECTED
+    if local_failed:
+        return _CY_FALLBACK_LOCAL_FAILED
+    if str(result) in {"failed", "failed_non_fatal", "failed_after_duplicates"}:
+        return _CY_FALLBACK_ELIGIBLE
+    return _CY_FALLBACK_NOT_USED
+
+
+def _cy_normalize_error_stage(
+    error_stage: str,
+    result: str,
+    error: BaseException | None,
+) -> str:
+    """Clamp the reported stage to the fixed vocabulary."""
+    stage = str(error_stage or "").strip()
+    if stage in _CY_ERROR_STAGES:
+        return stage
+    if error is None and str(result) in {"sent", "generated"}:
+        return "none"
+    if error is None:
+        return "none"
+    return "orchestration"
+
+
 def _cy_write_image_diagnostics(
     *,
     mode: str,
@@ -1687,6 +1762,8 @@ def _cy_write_image_diagnostics(
     history_count_before: int | None = None,
     history_count_after: int | None = None,
     generation_summary: dict | None = None,
+    fallback_state: str = "",
+    error_stage: str = "",
 ) -> Path:
     safe_date = re.sub(r"[^0-9-]+", "_", target_date or "undated")
     out_dir = Path(os.getenv("CY_IMAGE_DIAGNOSTICS_DIR", str(_CY_IMAGE_DIAGNOSTICS_DIR))) / f"{safe_date}-{mode}"
@@ -1704,6 +1781,25 @@ def _cy_write_image_diagnostics(
         "history_count_after": history_count_after,
     }
     payload.update(generation_summary or {})
+    # Canonical decision identity and the actual lifecycle outcome, surfaced as
+    # unambiguous top-level fields rather than a separate diagnostics architecture.
+    meta = prompt_metadata or {}
+    summary = generation_summary or {}
+    backend = str(summary.get("selected_backend") or "")
+    is_local = backend == _CY_LOCAL_RENDERER_NAME
+    payload["decision_id"] = meta.get("decision_id", "")
+    payload["routing_inputs"] = meta.get("routing_inputs", {})
+    payload["cooldown_inputs"] = meta.get("cooldown_inputs", {})
+    # A local cover is never reported as if a network provider had produced it.
+    payload["actual_provider"] = "" if is_local else backend
+    payload["actual_renderer"] = _CY_LOCAL_RENDERER_NAME if is_local else ""
+    payload["fallback_state"] = fallback_state or _cy_fallback_state(
+        result,
+        local_generated=bool(summary.get("local_fallback_generated")),
+        local_failed=bool(summary.get("local_render_failed")),
+        is_local=is_local,
+    )
+    payload["error_stage"] = _cy_normalize_error_stage(error_stage, result, error)
     if error is not None:
         payload["error"] = {
             "type": type(error).__name__,
@@ -1862,6 +1958,10 @@ async def _build_safe_test_image(
             )
 
     last_metadata: dict | None = None
+    last_decision: object | None = None
+    # Tracks which lifecycle stage is currently executing, so an escaping exception is
+    # attributed to the stage that actually raised it instead of a blanket fallback.
+    lifecycle_stage = "orchestration"
     attempts: list[dict] = []
     telegram_attempts: list[dict] = []
     target_date_for_diag = "undated"
@@ -1890,7 +1990,8 @@ async def _build_safe_test_image(
             render_local_informative_cover,
             write_provider_health,
         )
-        from image_prompt_cy_scene import build_cyprus_scene_prompt_with_metadata
+        import image_prompt_cy_scene as visual_decision_module
+        from image_prompt_cy_scene import build_visual_context_cy
         from weather import load_cyprus_visibility_diagnostics
         import world_en.imagegen as imagegen_module
 
@@ -1900,6 +2001,17 @@ async def _build_safe_test_image(
                 visibility_target_date,
                 mode,
             )
+
+        # Parse the finalized post exactly once. Every candidate decision, the local
+        # fallback renderer and all diagnostics reuse this context, so the whole
+        # lifecycle reports one consistent provenance.
+        lifecycle_stage = "decision"
+        canonical_visual_context = build_visual_context_cy(
+            final_text,
+            post_type=mode,
+            visibility_metadata=visibility_metadata,
+        )
+        lifecycle_stage = "orchestration"
 
         history_namespace = "test" if send_image_to_test else "prod" if send_image_to_chat else "test"
         write_history_path = cyprus_visual_history_path(history_namespace)
@@ -1970,6 +2082,8 @@ async def _build_safe_test_image(
         available_backends: list[str] = []
         unconfigured_backends: list[str] = []
         local_fallback_generated = False
+        local_render_failed = False
+        last_failure_stage = ""
         horde_credential_state: dict[str, object] = {}
 
         def _remaining_provider_calls() -> dict[str, int]:
@@ -2003,6 +2117,7 @@ async def _build_safe_test_image(
                 "provider_call_counts": provider_call_counts,
                 "provider_health_path": provider_health_file,
                 "local_fallback_generated": local_fallback_generated,
+                "local_render_failed": local_render_failed,
                 "selected_backend": selected_backend,
                 "final_reason": final_reason,
             }
@@ -2012,7 +2127,8 @@ async def _build_safe_test_image(
             and backend_generation_calls < backend_call_limit
             and variation_attempt < 40
         ):
-            prompt, style_name, metadata = build_cyprus_scene_prompt_with_metadata(
+            lifecycle_stage = "decision"
+            decision = visual_decision_module.build_cyprus_visual_decision(
                 final_text,
                 post_type=mode,
                 variation_attempt=variation_attempt,
@@ -2020,8 +2136,14 @@ async def _build_safe_test_image(
                 blocked_compositions=recent_composition_values,
                 blocked_archetypes=blocked_archetypes,
                 visibility_metadata=visibility_metadata,
+                visual_context=canonical_visual_context,
             )
+            lifecycle_stage = "orchestration"
+            prompt = decision.prompt
+            style_name = decision.style_name
+            metadata = decision.metadata
             last_metadata = dict(metadata)
+            last_decision = decision
             target_date_for_diag = str(metadata["forecast_date"])
             cache_key = metadata["cache_key"]
             if provider_health is None:
@@ -2124,6 +2246,7 @@ async def _build_safe_test_image(
             outcome_exhausted = False
             structured_outcome_returned = False
             stop_generation = False
+            lifecycle_stage = "provider_generation"
             try:
                 if cache_state == "hit":
                     generated = str(requested_path)
@@ -2206,6 +2329,7 @@ async def _build_safe_test_image(
                     backend = _cy_image_backend_name(generated)
                     image_path = _cy_image_result_path(generated)
 
+                lifecycle_stage = "provider_validation"
                 if image_path is None or not image_path.is_file():
                     raise RuntimeError(f"generated image does not exist: {image_path}")
 
@@ -2216,6 +2340,9 @@ async def _build_safe_test_image(
                         f"must be greater than {minimum}"
                     )
             except Exception as exc:
+                # Remember whether the provider itself or its output validation failed.
+                last_failure_stage = lifecycle_stage
+                lifecycle_stage = "orchestration"
                 generation_failures += 1
                 if (
                     cache_state != "hit"
@@ -2272,6 +2399,7 @@ async def _build_safe_test_image(
                 continue
 
             valid_candidate_count += 1
+            lifecycle_stage = "dedup"
             duplicate_result = evaluate_cyprus_visual_candidate(
                 image_path,
                 date_value=metadata["forecast_date"],
@@ -2282,6 +2410,7 @@ async def _build_safe_test_image(
                 visual_archetype=metadata.get("visual_archetype"),
                 reference_history_paths=reference_history_paths,
             )
+            lifecycle_stage = "orchestration"
             print(
                 "CY_SAFE_IMAGE_DEDUP: "
                 f"{duplicate_result.reason}; sha256={duplicate_result.sha256[:12]}; "
@@ -2378,9 +2507,7 @@ async def _build_safe_test_image(
             )
 
             candidate = (
-                prompt,
-                style_name,
-                metadata,
+                decision,
                 image_path,
                 image_size,
                 duplicate_result,
@@ -2451,6 +2578,7 @@ async def _build_safe_test_image(
                 local_path = _cy_safe_image_output_path(
                     f"local_informative_cover_{target_date_for_diag}_{mode}"
                 ).with_suffix(".png")
+                lifecycle_stage = "fallback_render"
                 try:
                     local_result = render_local_informative_cover(
                         final_text,
@@ -2458,6 +2586,8 @@ async def _build_safe_test_image(
                         post_type=mode,
                         output_path=local_path,
                         minimum_bytes=minimum,
+                        visual_context=canonical_visual_context,
+                        visibility_metadata=visibility_metadata,
                     )
                 except Exception as exc:
                     attempts.append(
@@ -2483,12 +2613,22 @@ async def _build_safe_test_image(
                         }
                     )
                     last_metadata = local_metadata
+                    local_render_failed = True
+                    last_failure_stage = "fallback_render"
+                    lifecycle_stage = "orchestration"
                     logging.error("Cyprus local informative cover failed non-fatally: %s", exc)
                 else:
+                    lifecycle_stage = "orchestration"
                     local_path = Path(str(local_result["path"]))
                     local_size = int(local_result["bytes"])
                     renderer_metadata = dict(local_result.get("metadata") or {})
                     local_metadata.update(renderer_metadata)
+                    # The local cover carries its own identity: the network style name and
+                    # network decision_id inherited from last_metadata must not survive.
+                    # The renderer's cache key is already final at this point, so the local
+                    # decision_id below is diagnostics-only and cannot affect it.
+                    local_metadata["style_name"] = _CY_LOCAL_RENDERER_NAME
+                    local_metadata["decision_id"] = _cy_local_decision_id(local_metadata)
                     local_sha256 = sha256_file(local_path)
                     existing_local_exact = next(
                         (
@@ -2551,9 +2691,13 @@ async def _build_safe_test_image(
                             **_generation_summary(final_reason, "local_informative_cover"),
                         }
                     selected_candidate = (
-                        "",
-                        "local_informative_cover",
-                        local_metadata,
+                        visual_decision_module.CyprusVisualDecision(
+                            context=canonical_visual_context,
+                            prompt="",
+                            style_name="local_informative_cover",
+                            metadata=local_metadata,
+                            visibility_metadata=visibility_metadata,
+                        ),
                         local_path,
                         local_size,
                         None,
@@ -2585,6 +2729,7 @@ async def _build_safe_test_image(
                     reference_history_paths=reference_history_paths,
                     history_count_before=before_history_count,
                     generation_summary=_generation_summary(final_reason),
+                    error_stage="dedup",
                 )
                 logging.error("CY SAFE IMAGE failed after duplicates and backend errors: %s", error)
                 return {
@@ -2610,6 +2755,12 @@ async def _build_safe_test_image(
                     reference_history_paths=reference_history_paths,
                     history_count_before=before_history_count,
                     generation_summary=_generation_summary(final_reason),
+                    # A failed local cover is a fallback_render failure, not a provider one.
+                    error_stage=(
+                        "fallback_render"
+                        if local_render_failed
+                        else (last_failure_stage or "provider_generation")
+                    ),
                 )
                 logging.error("CY SAFE IMAGE failed after candidate errors: %s", error)
                 return {
@@ -2641,7 +2792,13 @@ async def _build_safe_test_image(
                 **_generation_summary(final_reason),
             }
 
-        prompt, style_name, metadata, image_path, image_size, duplicate_result, selected_backend = selected_candidate
+        # The canonical decision selected above is reused verbatim: no late rebuild and
+        # no reselection, so provider input, dedup, history, receipt and diagnostics all
+        # report the same identity.
+        selected_decision, image_path, image_size, duplicate_result, selected_backend = selected_candidate
+        prompt = selected_decision.prompt
+        style_name = selected_decision.style_name
+        metadata = selected_decision.metadata
 
         print(f"CY_SAFE_IMAGE_PATH: {image_path.resolve()}")
         print(f"CY_SAFE_IMAGE_BYTES: {image_size}")
@@ -2718,6 +2875,7 @@ async def _build_safe_test_image(
                 metadata["forecast_date"],
                 test_label=image_caption_is_test,
             )
+            lifecycle_stage = "telegram_send"
             sent_message, telegram_attempts = await _cy_send_photo_with_retry(
                 image_bot,
                 chat_id=image_chat,
@@ -2727,6 +2885,7 @@ async def _build_safe_test_image(
             message_id = getattr(sent_message, "message_id", None)
             if isinstance(message_id, int):
                 sent_message_ids.append(message_id)
+            lifecycle_stage = "history"
             history_entry = record_cyprus_visual_publication(
                 date_value=metadata["forecast_date"],
                 post_type=mode,
@@ -2740,6 +2899,7 @@ async def _build_safe_test_image(
                 history_path=write_history_path,
             )
             after_history_count = len(load_cyprus_visual_history(write_history_path))
+            lifecycle_stage = "orchestration"
             print(f"CY_SAFE_IMAGE_HISTORY_COUNT_AFTER: {after_history_count}")
             logging.info(
                 "Cyprus visual history count after publication: namespace=%s path=%s count=%s",
@@ -2767,8 +2927,10 @@ async def _build_safe_test_image(
                     "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", ""),
                     "sent_at_utc": _cy_utc_now(),
                 }
+                lifecycle_stage = "receipt"
                 receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
                 _cy_write_json_atomic(receipt_path, receipt)
+                lifecycle_stage = "orchestration"
                 print(f"CY_SAFE_IMAGE_RECEIPT_WRITTEN: {receipt_path}")
             elif production_image_send:
                 print("CY_SAFE_IMAGE_RECEIPT_NOT_WRITTEN: missing valid Telegram message_id")
@@ -2835,6 +2997,8 @@ async def _build_safe_test_image(
             reference_history_paths=reference_history_paths_for_diag,
             history_count_before=before_history_count,
             history_count_after=after_history_count,
+            # Attribute the failure to the stage that was actually executing.
+            error_stage=lifecycle_stage,
         )
         logging.exception(
             "CY SAFE IMAGE failed; existing text safe-test flow will continue: %s",

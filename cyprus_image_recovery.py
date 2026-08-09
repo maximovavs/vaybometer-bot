@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import random
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, PngImagePlugin
 
@@ -767,8 +767,19 @@ def _cover_aqi(final_text: str) -> tuple[str, str] | None:
     return str(value), label
 
 
-def _informative_cover_facts(final_text: str, *, post_type: str) -> tuple[object, dict[str, str]]:
-    ctx = parse_visual_context_cy(final_text, post_type=post_type)
+def _informative_cover_facts(
+    final_text: str,
+    *,
+    post_type: str,
+    visual_context: Any | None = None,
+) -> tuple[object, dict[str, str]]:
+    # A precomputed context comes from the canonical visual decision; reusing it keeps
+    # the fallback cover on the same provenance instead of parsing the post a second time.
+    ctx = (
+        visual_context
+        if visual_context is not None
+        else parse_visual_context_cy(final_text, post_type=post_type)
+    )
     headline = "КИПР СЕГОДНЯ" if post_type == "morning" else "КИПР ЗАВТРА"
     facts: list[str] = []
     hottest = ctx.hottest_city or ""
@@ -861,14 +872,25 @@ def render_local_informative_cover(
     post_type: str,
     output_path: str | Path,
     minimum_bytes: int,
+    visual_context: Any | None = None,
+    visibility_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Render a deterministic factual Cyprus cover after network providers fail."""
+    """Render a deterministic factual Cyprus cover after network providers fail.
+
+    ``visual_context`` and ``visibility_metadata`` carry the canonical decision's
+    provenance. When supplied, the post is not parsed again; legacy callers that omit
+    them keep the previous parse-on-demand behaviour.
+    """
 
     safe_date = _safe_target_date(target_date)
     mode = str(post_type or "").strip().lower()
     if mode not in {"morning", "evening"}:
         raise ValueError(f"invalid Cyprus informative-cover post type: {post_type!r}")
-    ctx, facts = _informative_cover_facts(final_text, post_type=mode)
+    ctx, facts = _informative_cover_facts(
+        final_text,
+        post_type=mode,
+        visual_context=visual_context,
+    )
     palette, top, bottom, accent = _cover_palette(ctx)
     rendered_lines = [LOCAL_INFORMATIVE_COVER_BRANDING, facts["headline"]]
     rendered_lines.extend(value for key, value in facts.items() if key != "headline" and value)
@@ -954,6 +976,25 @@ def render_local_informative_cover(
         "palette": palette,
         "cache_key": cache_key,
     }
+    # Diagnostics-only provenance, appended AFTER the local cache key is final so the
+    # same factual inputs keep producing the same local cache key as before.
+    metadata["visibility_condition"] = str(getattr(ctx, "visibility_condition", ""))
+    metadata["visibility_forecast_window"] = str(
+        getattr(ctx, "visibility_forecast_window", "")
+    )
+    metadata["dust_vs_fog_classification"] = str(
+        getattr(ctx, "dust_vs_fog_classification", "")
+    )
+    metadata["visual_context_reused"] = str(visual_context is not None).lower()
+    metadata["visibility_metadata_provided"] = str(visibility_metadata is not None).lower()
+    if visibility_metadata is not None:
+        metadata["visibility_metadata"] = json.dumps(
+            dict(visibility_metadata),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
     png_info = PngImagePlugin.PngInfo()
     for key, value in metadata.items():
         png_info.add_text(key, str(value))

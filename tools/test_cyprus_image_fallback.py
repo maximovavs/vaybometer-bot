@@ -707,6 +707,65 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
             assert local_attempt["local_metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
             assert local_attempt["local_metadata"]["rendered_text"]
 
+            # F.2: the local cover must not be reported as a network provider, and the
+            # lifecycle state must say plainly that the local fallback was selected.
+            assert diagnostics["actual_renderer"] == "local_informative_cover"
+            assert diagnostics["actual_provider"] == ""
+            assert diagnostics["fallback_state"] == "local_selected"
+            assert diagnostics["error_stage"] == "none"
+
+            # F.2: receipt, history and diagnostics must share one canonical identity.
+            history_entries = json.loads(history_path.read_text("utf-8"))
+            local_history = [
+                entry
+                for entry in history_entries
+                if str(entry.get("selected_scene")) == "local_informative_cover"
+            ]
+            assert len(local_history) == 1
+            for field in ("selected_scene", "composition", "visual_archetype"):
+                assert local_history[0][field] == receipt[field], field
+            assert local_history[0]["cache_key"] == receipt["cache_key"]
+            assert diagnostics["prompt_metadata"]["cache_key"] == receipt["cache_key"]
+
+            # F.2 follow-up: the local cover owns its identity. The network style name
+            # and network decision_id must not survive into the local decision.
+            local_metadata = diagnostics["prompt_metadata"]
+            assert local_metadata["style_name"] == "local_informative_cover"
+            assert receipt["style_name"] == local_metadata["style_name"]
+            if "style_name" in local_history[0]:
+                assert local_history[0]["style_name"] == receipt["style_name"]
+
+            local_decision_id = local_metadata["decision_id"]
+            assert local_decision_id
+            assert diagnostics["decision_id"] == local_decision_id
+
+            # No network decision_id may leak into the local diagnostics. Rebuild the
+            # network decisions this run actually produced and prove none of them match.
+            import image_prompt_cy_scene as scene_module
+
+            network_decision_ids = {
+                scene_module.build_cyprus_visual_decision(
+                    EVENING_MESSAGE,
+                    post_type="evening",
+                    variation_attempt=attempt,
+                ).decision_id
+                for attempt in range(4)
+            }
+            assert local_decision_id not in network_decision_ids
+            assert local_metadata["cache_key"].startswith(LOCAL_INFORMATIVE_COVER_VERSION)
+
+            # The local renderer's own cache key must stay byte-for-byte unchanged.
+            with tempfile.TemporaryDirectory() as probe_dir:
+                probe = cyprus_image_recovery.render_local_informative_cover(
+                    EVENING_MESSAGE,
+                    target_date="2026-07-16",
+                    post_type="evening",
+                    output_path=Path(probe_dir) / "probe.png",
+                    minimum_bytes=12000,
+                )
+            assert probe["metadata"]["cache_key"] == local_metadata["cache_key"]
+            assert probe["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
+
             amain_source = inspect.getsource(safe_module.main)
             image_index = amain_source.index("image_result = await _build_safe_test_image(")
             recovery_return_index = amain_source.index("if args.image_only_recovery:", image_index)
@@ -1081,6 +1140,431 @@ def informative_cover_failure_falls_through_to_text_without_stale_image() -> Non
         asyncio.run(run_case(Path(tmp_name)))
 
 
+def local_cover_reuses_precomputed_context_without_reparse() -> None:
+    """The canonical context must reach the renderer, which must not parse again."""
+    from visual_context_cy import parse_visual_context_cy as real_parse
+
+    precomputed = real_parse(EVENING_MESSAGE, post_type="evening")
+    visibility_metadata = {
+        "visibility_condition": "clear",
+        "source": "fixture-provenance",
+    }
+
+    def _explode(*_args, **_kwargs):
+        raise AssertionError("local cover parsed the visual context a second time")
+
+    old_parse = cyprus_image_recovery.parse_visual_context_cy
+    cyprus_image_recovery.parse_visual_context_cy = _explode
+    try:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            tmp = Path(tmp_name)
+            reused = render_local_informative_cover(
+                EVENING_MESSAGE,
+                target_date="2026-07-16",
+                post_type="evening",
+                output_path=tmp / "reused.png",
+                minimum_bytes=12000,
+                visual_context=precomputed,
+                visibility_metadata=visibility_metadata,
+            )
+    finally:
+        cyprus_image_recovery.parse_visual_context_cy = old_parse
+
+    metadata = reused["metadata"]
+    assert metadata["visual_context_reused"] == "true"
+    assert metadata["visibility_metadata_provided"] == "true"
+    assert json.loads(metadata["visibility_metadata"]) == visibility_metadata
+    assert metadata["visibility_condition"] == str(precomputed.visibility_condition)
+
+    # The same factual inputs must keep the previous local cache key: provenance is
+    # diagnostics-only and is appended after the cache key is computed.
+    with tempfile.TemporaryDirectory() as tmp_name:
+        legacy = render_local_informative_cover(
+            EVENING_MESSAGE,
+            target_date="2026-07-16",
+            post_type="evening",
+            output_path=Path(tmp_name) / "legacy.png",
+            minimum_bytes=12000,
+        )
+    assert legacy["metadata"]["cache_key"] == metadata["cache_key"]
+    assert legacy["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
+    assert legacy["metadata"]["visual_context_reused"] == "false"
+
+
+def canonical_decision_is_not_rebuilt_after_provider_success() -> None:
+    """One decision per candidate: provider, dedup, history and receipt share it."""
+    import image_prompt_cy_scene
+
+    async def run_case(tmp: Path) -> None:
+        old_env = {name: os.environ.get(name) for name in (
+            "CHANNEL_ID",
+            "CY_SAFE_IMAGE_DIR",
+            "CY_IMG_MIN_BYTES",
+            "CY_IMAGE_DELIVERY_DIR",
+            "CY_TEXT_DELIVERY_DIR",
+            "CY_IMAGE_DIAGNOSTICS_DIR",
+            "CY_IMAGE_PROVIDER_HEALTH_DIR",
+        )}
+        old_token = safe_module.TOKEN
+        old_bot = safe_module.Bot
+        old_outcome = imagegen.generate_astro_image_outcome_with_exclusions
+        old_availability = imagegen.configured_image_backends
+        old_builder = image_prompt_cy_scene.build_cyprus_visual_decision
+        old_prod_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
+        old_test_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
+
+        history_path = tmp / "cyprus_visual_history_prod.json"
+        history_path.write_text("[]", "utf-8")
+        test_history_path = tmp / "cyprus_visual_history_test.json"
+        test_history_path.write_text("[]", "utf-8")
+
+        builder_calls: list[dict] = []
+        provider_prompts: list[str] = []
+        dedup_identity: list[dict] = []
+
+        def counting_builder(*args, **kwargs):
+            decision = old_builder(*args, **kwargs)
+            builder_calls.append(
+                {
+                    "variation_attempt": kwargs.get("variation_attempt"),
+                    "decision_id": decision.decision_id,
+                    "prompt": decision.prompt,
+                    "style_name": decision.style_name,
+                }
+            )
+            return decision
+
+        def fake_outcome(prompt: str, requested_path: str, **_kwargs):
+            provider_prompts.append(prompt)
+            path = Path(requested_path).with_suffix(".ppm")
+            _write_dhash_fixture(path, flipped_rows=7)
+            attempts = [
+                {
+                    "backend": "pollinations",
+                    "result": "success",
+                    "http_status": 200,
+                    "payload_byte_count": path.stat().st_size,
+                }
+            ]
+            result = types.SimpleNamespace(
+                path=str(path),
+                backend="pollinations",
+                byte_count=path.stat().st_size,
+                backend_attempts=attempts,
+            )
+            return types.SimpleNamespace(
+                result=result,
+                backend_attempts=attempts,
+                error_type="",
+                error_message="",
+                exhausted=False,
+                actual_backend_call_count=1,
+            )
+
+        real_evaluate = safe_module.evaluate_cyprus_visual_candidate if hasattr(
+            safe_module, "evaluate_cyprus_visual_candidate"
+        ) else cyprus_visual_dedup.evaluate_cyprus_visual_candidate
+        old_evaluate = cyprus_visual_dedup.evaluate_cyprus_visual_candidate
+
+        def recording_evaluate(image_path, **kwargs):
+            dedup_identity.append(
+                {
+                    "selected_scene": kwargs.get("selected_scene"),
+                    "composition": kwargs.get("composition"),
+                    "visual_archetype": kwargs.get("visual_archetype"),
+                    "prompt_version": kwargs.get("prompt_version"),
+                }
+            )
+            return old_evaluate(image_path, **kwargs)
+
+        class FakeBot:
+            def __init__(self, token: str) -> None:
+                assert token == "fixture-token"
+
+            async def send_photo(self, **kwargs):
+                kwargs["photo"].read()
+                return types.SimpleNamespace(message_id=90210)
+
+        try:
+            os.environ.update(
+                {
+                    "CHANNEL_ID": "777",
+                    "CY_SAFE_IMAGE_DIR": str(tmp / "images"),
+                    "CY_IMG_MIN_BYTES": "10",
+                    "CY_IMAGE_DELIVERY_DIR": str(tmp / "cy_image_delivery"),
+                    "CY_TEXT_DELIVERY_DIR": str(tmp / "cy_text_delivery"),
+                    "CY_IMAGE_DIAGNOSTICS_DIR": str(tmp / "cy_image_diagnostics"),
+                    "CY_IMAGE_PROVIDER_HEALTH_DIR": str(tmp / "cy_image_provider_health"),
+                }
+            )
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = history_path
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = test_history_path
+            safe_module.TOKEN = "fixture-token"
+            safe_module.Bot = FakeBot
+            imagegen.generate_astro_image_outcome_with_exclusions = fake_outcome
+            imagegen.configured_image_backends = lambda **_kwargs: {
+                "configured_backends": ["pollinations"],
+                "available_backends": ["pollinations"],
+                "unconfigured_backends": [],
+            }
+            image_prompt_cy_scene.build_cyprus_visual_decision = counting_builder
+            cyprus_visual_dedup.evaluate_cyprus_visual_candidate = recording_evaluate
+
+            result = await safe_module._build_safe_test_image(
+                EVENING_MESSAGE,
+                "evening",
+                generate_image=True,
+                send_image_to_test=False,
+                send_image_to_chat=True,
+                image_chat_id=777,
+                image_only_recovery=False,
+            )
+            # Resolve receipt path while the fixture environment is still active.
+            receipt_path = safe_module._cy_image_receipt_path("2026-07-16", "evening")
+        finally:
+            image_prompt_cy_scene.build_cyprus_visual_decision = old_builder
+            cyprus_visual_dedup.evaluate_cyprus_visual_candidate = old_evaluate
+            imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
+            imagegen.configured_image_backends = old_availability
+            safe_module.TOKEN = old_token
+            safe_module.Bot = old_bot
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = old_prod_history
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = old_test_history
+            for name, value in old_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+        assert result["result"] == "sent"
+        # Exactly one decision was built for the single accepted candidate.
+        assert len(builder_calls) == 1, builder_calls
+        decision_id = builder_calls[0]["decision_id"]
+        assert decision_id
+
+        metadata = result["metadata"]
+        assert metadata["decision_id"] == decision_id
+
+        # The provider received exactly the decision's prompt, unmodified.
+        assert len(provider_prompts) == 1
+        assert provider_prompts[0] == builder_calls[0]["prompt"]
+        assert result["style_name"] == builder_calls[0]["style_name"]
+
+        # Dedup ran on the identity carried by that same decision.
+        assert dedup_identity
+        assert dedup_identity[0]["selected_scene"] == metadata["selected_scene"]
+        assert dedup_identity[0]["composition"] == metadata["composition"]
+        assert dedup_identity[0]["visual_archetype"] == metadata["visual_archetype"]
+
+        # History, receipt and diagnostics all report that identity.
+        receipt = json.loads(receipt_path.read_text("utf-8"))
+        history_entries = json.loads(history_path.read_text("utf-8"))
+        assert len(history_entries) == 1
+        diagnostics = json.loads(
+            (tmp / "cy_image_diagnostics" / "2026-07-16-evening" / "image_result.json").read_text("utf-8")
+        )
+        for field in ("selected_scene", "composition", "visual_archetype", "cache_key"):
+            assert receipt[field] == metadata[field], field
+            assert history_entries[0][field] == metadata[field], field
+        assert receipt["style_name"] == metadata["style_name"]
+        assert diagnostics["decision_id"] == decision_id
+        assert diagnostics["prompt_metadata"]["cache_key"] == metadata["cache_key"]
+
+        # A real network image must not be attributed to the local renderer.
+        assert diagnostics["actual_provider"] == "pollinations"
+        assert diagnostics["actual_renderer"] == ""
+        assert diagnostics["fallback_state"] == "network_fallback_not_used"
+        assert diagnostics["error_stage"] == "none"
+        assert diagnostics["routing_inputs"]["primary_weather"] == metadata["primary_weather"]
+        assert "blocked_scenes" in diagnostics["cooldown_inputs"]
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        asyncio.run(run_case(Path(tmp_name)))
+
+
+def _run_stage_failure_case(
+    tmp: Path,
+    *,
+    break_telegram: bool = False,
+    break_history: bool = False,
+    break_receipt: bool = False,
+    break_local_renderer: bool = False,
+) -> dict:
+    """Drive _build_safe_test_image with one lifecycle stage failing; return diagnostics.
+
+    Everything is stubbed: no Telegram, no provider and no network access.
+    """
+    import image_prompt_cy_scene  # noqa: F401  (kept local, mirrors production import)
+
+    old_env = {name: os.environ.get(name) for name in (
+        "CHANNEL_ID",
+        "CY_SAFE_IMAGE_DIR",
+        "CY_IMG_MIN_BYTES",
+        "CY_IMAGE_DELIVERY_DIR",
+        "CY_TEXT_DELIVERY_DIR",
+        "CY_IMAGE_DIAGNOSTICS_DIR",
+        "CY_IMAGE_PROVIDER_HEALTH_DIR",
+    )}
+    old_token = safe_module.TOKEN
+    old_bot = safe_module.Bot
+    old_outcome = imagegen.generate_astro_image_outcome_with_exclusions
+    old_availability = imagegen.configured_image_backends
+    old_record = cyprus_visual_dedup.record_cyprus_visual_publication
+    old_renderer = cyprus_image_recovery.render_local_informative_cover
+    old_atomic = safe_module._cy_write_json_atomic
+    old_prod_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
+    old_test_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
+
+    history_path = tmp / "cyprus_visual_history_prod.json"
+    history_path.write_text("[]", "utf-8")
+    test_history_path = tmp / "cyprus_visual_history_test.json"
+    test_history_path.write_text("[]", "utf-8")
+
+    def fake_outcome(_prompt: str, requested_path: str, **_kwargs):
+        if break_local_renderer:
+            # Force the network path to fail so the local fallback is reached.
+            return types.SimpleNamespace(
+                result=None,
+                backend_attempts=[{"backend": "pollinations", "result": "failed"}],
+                error_type="BackendFailed",
+                error_message="fixture provider failure",
+                exhausted=True,
+                actual_backend_call_count=1,
+            )
+        path = Path(requested_path).with_suffix(".ppm")
+        _write_dhash_fixture(path, flipped_rows=11)
+        attempts = [{"backend": "pollinations", "result": "success", "http_status": 200}]
+        return types.SimpleNamespace(
+            result=types.SimpleNamespace(
+                path=str(path),
+                backend="pollinations",
+                byte_count=path.stat().st_size,
+                backend_attempts=attempts,
+            ),
+            backend_attempts=attempts,
+            error_type="",
+            error_message="",
+            exhausted=False,
+            actual_backend_call_count=1,
+        )
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+
+        async def send_photo(self, **kwargs):
+            kwargs["photo"].read()
+            if break_telegram:
+                raise RuntimeError("fixture telegram send failure")
+            return types.SimpleNamespace(message_id=4242)
+
+    def failing_record(**_kwargs):
+        raise RuntimeError("fixture history write failure")
+
+    def failing_renderer(*_args, **_kwargs):
+        raise RuntimeError("fixture local renderer failure")
+
+    def guarded_atomic(path, payload):
+        if break_receipt and "cy_image_delivery" in str(path):
+            raise RuntimeError("fixture receipt write failure")
+        return old_atomic(path, payload)
+
+    try:
+        os.environ.update(
+            {
+                "CHANNEL_ID": "777",
+                "CY_SAFE_IMAGE_DIR": str(tmp / "images"),
+                "CY_IMG_MIN_BYTES": "10",
+                "CY_IMAGE_DELIVERY_DIR": str(tmp / "cy_image_delivery"),
+                "CY_TEXT_DELIVERY_DIR": str(tmp / "cy_text_delivery"),
+                "CY_IMAGE_DIAGNOSTICS_DIR": str(tmp / "cy_image_diagnostics"),
+                "CY_IMAGE_PROVIDER_HEALTH_DIR": str(tmp / "cy_image_provider_health"),
+            }
+        )
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = history_path
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = test_history_path
+        safe_module.TOKEN = "fixture-token"
+        safe_module.Bot = FakeBot
+        imagegen.generate_astro_image_outcome_with_exclusions = fake_outcome
+        imagegen.configured_image_backends = lambda **_kwargs: {
+            "configured_backends": ["pollinations"],
+            "available_backends": ["pollinations"],
+            "unconfigured_backends": [],
+        }
+        if break_history:
+            cyprus_visual_dedup.record_cyprus_visual_publication = failing_record
+            safe_module.record_cyprus_visual_publication = failing_record
+        if break_local_renderer:
+            cyprus_image_recovery.render_local_informative_cover = failing_renderer
+        if break_receipt:
+            safe_module._cy_write_json_atomic = guarded_atomic
+
+        result = asyncio.run(
+            safe_module._build_safe_test_image(
+                EVENING_MESSAGE,
+                "evening",
+                generate_image=True,
+                send_image_to_test=False,
+                send_image_to_chat=True,
+                image_chat_id=777,
+                image_only_recovery=False,
+            )
+        )
+        diagnostics = json.loads(
+            (tmp / "cy_image_diagnostics" / "2026-07-16-evening" / "image_result.json").read_text("utf-8")
+        )
+    finally:
+        cyprus_visual_dedup.record_cyprus_visual_publication = old_record
+        safe_module.record_cyprus_visual_publication = old_record
+        cyprus_image_recovery.render_local_informative_cover = old_renderer
+        safe_module._cy_write_json_atomic = old_atomic
+        imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
+        imagegen.configured_image_backends = old_availability
+        safe_module.TOKEN = old_token
+        safe_module.Bot = old_bot
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = old_prod_history
+        cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = old_test_history
+        for name, value in old_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    return {"result": result, "diagnostics": diagnostics}
+
+
+def error_stage_reports_the_failing_lifecycle_stage() -> None:
+    """Real Telegram/history/receipt/renderer failures must not all read 'orchestration'."""
+    vocabulary = set(safe_module._CY_ERROR_STAGES)
+
+    cases = (
+        ("telegram_send", {"break_telegram": True}),
+        ("history", {"break_history": True}),
+        ("receipt", {"break_receipt": True}),
+        ("fallback_render", {"break_local_renderer": True}),
+    )
+    for expected_stage, kwargs in cases:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            outcome = _run_stage_failure_case(Path(tmp_name), **kwargs)
+        diagnostics = outcome["diagnostics"]
+        stage = diagnostics["error_stage"]
+        assert stage in vocabulary, (expected_stage, stage)
+        assert stage == expected_stage, (
+            f"expected error_stage={expected_stage!r}, got {stage!r} "
+            f"(image_result={diagnostics['image_result']!r})"
+        )
+        assert stage != "orchestration", expected_stage
+
+
+def error_stage_is_none_on_successful_send() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        outcome = _run_stage_failure_case(Path(tmp_name))
+    assert outcome["result"]["result"] == "sent"
+    assert outcome["diagnostics"]["error_stage"] == "none"
+    assert outcome["diagnostics"]["actual_provider"] == "pollinations"
+    assert outcome["diagnostics"]["actual_renderer"] == ""
+
+
 def main() -> None:
     checks = (
         local_informative_cover_is_valid_deterministic_and_factual,
@@ -1090,6 +1574,10 @@ def main() -> None:
         primary_evening_incident_sends_local_visual_before_text,
         image_receipt_recheck_closes_primary_and_recovery_send_race,
         informative_cover_failure_falls_through_to_text_without_stale_image,
+        local_cover_reuses_precomputed_context_without_reparse,
+        canonical_decision_is_not_rebuilt_after_provider_success,
+        error_stage_reports_the_failing_lifecycle_stage,
+        error_stage_is_none_on_successful_send,
     )
     for check in checks:
         check()
