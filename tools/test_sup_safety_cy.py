@@ -486,6 +486,26 @@ def safe_surf_and_sup_recommendations_preserve_existing_behavior() -> None:
     assert "Сёрф" not in sup
 
 
+def missing_or_malformed_tomorrow_wind_is_fail_closed_for_surf() -> None:
+    for noon_wind in (None, "not-a-number"):
+        payload = _tomorrow_weather(
+            times=[
+                "2026-08-10T06:00",
+                "2026-08-10T12:00",
+                "2026-08-10T18:00",
+            ],
+            wind_kmh=[54.0, noon_wind, 54.0],
+            gust_kmh=[57.6, 25.2, 57.6],
+            wind_dir=[180.0, 180.0, 180.0],
+            current={"windspeed": 3.6, "winddirection": 180.0},
+        )
+        sample = _with_forecast_clock(
+            lambda: _sup_weather_sample(payload, TZ, TARGET_DATE)
+        )
+        assert sample["wind_ms"] is None
+        assert "Отлично: Сёрф" not in _water_line(payload, wave_h=1.2)
+
+
 CHECKS = [
     calm_onshore_is_excellent,
     calm_cross_shore_is_excellent,
@@ -508,6 +528,7 @@ CHECKS = [
     malformed_timestamp_keeps_weather_arrays_at_original_indices,
     current_sentinels_do_not_change_final_evening_format_v2,
     safe_surf_and_sup_recommendations_preserve_existing_behavior,
+    missing_or_malformed_tomorrow_wind_is_fail_closed_for_surf,
 ]
 
 

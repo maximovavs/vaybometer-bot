@@ -2205,7 +2205,7 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     surf_good = False
     if wave_h is not None:
         if SURF_WAVE_GOOD_MIN <= wave_h <= SURF_WAVE_GOOD_MAX and (
-            wind_val is None or wind_val <= SURF_WIND_MAX
+            wind_val is not None and wind_val <= SURF_WIND_MAX
         ):
             surf_good = True
 
