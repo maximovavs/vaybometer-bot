@@ -1263,94 +1263,12 @@ def _circular_mean_deg(deg_list: List[float]) -> Optional[float]:
 def pick_tomorrow_header_metrics(
     wm: Dict[str, Any], tz: pendulum.Timezone
 ) -> Tuple[Optional[float], Optional[int], Optional[int], str]:
-    hourly = wm.get("hourly") or {}
-    times = _hourly_times(wm)
-
-    # FIX: используем today() вместо now(), чтобы WORK_DATE (pendulum.today monkeypatch) влиял корректно
     tomorrow = pendulum.today(tz).add(days=1).date()
-
-    spd_arr = _pick(
-        hourly,
-        "windspeed_10m",
-        "windspeed",
-        "wind_speed_10m",
-        "wind_speed",
-        default=[],
+    wind_ms, wind_dir, press_val, trend, _gust_ms = _city_header_metrics_for_date(
+        wm,
+        tz,
+        tomorrow,
     )
-    dir_arr = _pick(
-        hourly,
-        "winddirection_10m",
-        "winddirection",
-        "wind_dir_10m",
-        "wind_dir",
-        default=[],
-    )
-    prs_arr = hourly.get("surface_pressure", []) or hourly.get("pressure", [])
-    if times:
-        idx_noon = _nearest_index_for_day(times, tomorrow, 12, tz)
-        idx_morn = _nearest_index_for_day(times, tomorrow, 6, tz)
-    else:
-        idx_noon = idx_morn = None
-    wind_ms = wind_dir = press_val = None
-    trend = "→"
-    if idx_noon is not None:
-        try:
-            spd = float(spd_arr[idx_noon]) if idx_noon < len(spd_arr) else None
-        except Exception:
-            spd = None
-        try:
-            wdir = float(dir_arr[idx_noon]) if idx_noon < len(dir_arr) else None
-        except Exception:
-            wdir = None
-        try:
-            p_noon = float(prs_arr[idx_noon]) if idx_noon < len(prs_arr) else None
-        except Exception:
-            p_noon = None
-        try:
-            p_morn = (
-                float(prs_arr[idx_morn])
-                if idx_morn is not None and idx_morn < len(prs_arr)
-                else None
-            )
-        except Exception:
-            p_morn = None
-        wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else None
-        wind_dir = int(round(wdir)) if isinstance(wdir, (int, float)) else None
-        press_val = int(round(p_noon)) if isinstance(p_noon, (int, float)) else None
-        if isinstance(p_noon, (int, float)) and isinstance(p_morn, (int, float)):
-            diff = p_noon - p_morn
-            trend = "↑" if diff >= 0.3 else "↓" if diff <= -0.3 else "→"
-    if wind_ms is None and times:
-        idxs = [i for i, t in enumerate(times) if t.in_tz(tz).date() == tomorrow]
-        if idxs:
-            try:
-                speeds = [float(spd_arr[i]) for i in idxs if i < len(spd_arr)]
-            except Exception:
-                speeds = []
-            try:
-                dirs = [float(dir_arr[i]) for i in idxs if i < len(dir_arr)]
-            except Exception:
-                dirs = []
-            try:
-                prs = [float(prs_arr[i]) for i in idxs if i < len(prs_arr)]
-            except Exception:
-                prs = []
-            if speeds:
-                wind_ms = kmh_to_ms(sum(speeds) / len(speeds))
-            mean_dir = _circular_mean_deg(dirs)
-            wind_dir = int(round(mean_dir)) if mean_dir is not None else wind_dir
-            if prs:
-                press_val = int(round(sum(prs) / len(prs)))
-    if wind_ms is None or wind_dir is None or press_val is None:
-        cur = wm.get("current") or {}
-        if wind_ms is None:
-            spd = cur.get("windspeed") or cur.get("wind_speed")
-            wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else wind_ms
-        if wind_dir is None:
-            wdir = cur.get("winddirection") or cur.get("wind_dir")
-            wind_dir = int(round(float(wdir))) if isinstance(wdir, (int, float)) else wind_dir
-        if press_val is None and isinstance(cur.get("pressure"), (int, float)):
-            press_val = int(round(float(cur["pressure"])))
     return wind_ms, wind_dir, press_val, trend
 
 
@@ -2230,7 +2148,6 @@ def _morning_sea_city_lines(
 
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
     wm = get_weather(la, lo) or {}
-    wind_ms, wind_dir, _, _ = pick_tomorrow_header_metrics(wm, tz_obj)
     target_date = pendulum.today(tz_obj).add(days=1).date()
     wave_h, _, wave_at = _fetch_wave_for_tomorrow(
         la,
@@ -2239,31 +2156,17 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         prefer_hour=SUP_TARGET_HOUR,
         target_date=target_date,
     )
-
-    def _gust_at_noon(wm0: Dict[str, Any], tz0: pendulum.Timezone) -> Optional[float]:
-        hourly = wm0.get("hourly") or {}
-        times = _hourly_times(wm0)
-
-        # FIX: today() вместо now() — консистентность с WORK_DATE
-        tom = pendulum.today(tz0).add(days=1).date()
-
-        idx = _nearest_index_for_day(times, tom, 12, tz0)
-        arr = _pick(hourly, "windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[])
-        if idx is not None and idx < len(arr):
-            try:
-                return kmh_to_ms(float(arr[idx]))
-            except Exception:
-                return None
-        return None
-
-    gust = _gust_at_noon(wm, tz_obj)
+    activity_sample = _sup_weather_sample(wm, tz_obj, target_date)
+    wind_ms = activity_sample.get("wind_ms")
+    gust = activity_sample.get("gust_ms")
+    wind_dir = activity_sample.get("wind_dir")
     sst = get_sst_cached(la, lo)
     wind_val = float(wind_ms) if isinstance(wind_ms, (int, float)) else None
     gust_val = float(gust) if isinstance(gust, (int, float)) else None
     card = _cardinal(float(wind_dir)) if isinstance(wind_dir, (int, float)) else None
     shore, shore_src = _shore_class(city, float(wind_dir) if isinstance(wind_dir, (int, float)) else None)
 
-    sup_sample = _sup_weather_sample(wm, tz_obj, target_date)
+    sup_sample = activity_sample
     sup_wind = sup_sample.get("wind_ms")
     sup_gust = sup_sample.get("gust_ms")
     sup_dir = sup_sample.get("wind_dir")
@@ -2286,7 +2189,10 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     )
 
     kite_good = False
-    if wind_val is not None:
+    kite_evidence_complete = all(
+        value is not None for value in (wind_val, gust_val, wind_dir, shore)
+    )
+    if kite_evidence_complete:
         if KITE_WIND_GOOD_MIN <= wind_val <= KITE_WIND_GOOD_MAX:
             kite_good = True
         if shore == "offshore":
