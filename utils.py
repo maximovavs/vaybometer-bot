@@ -431,9 +431,15 @@ def kp_emoji(kp: Optional[float]) -> str:
 def pressure_trend(w: Dict[str, Any]) -> str:
     """
     ↑ если ближайший час > +2 гПа, ↓ если < −2, иначе →.
-    w — объект с hourly.surface_pressure (список чисел).
+    w — объект с hourly.pressure_msl или legacy hourly.surface_pressure/pressure.
     """
-    hp = w.get("hourly", {}).get("surface_pressure", [])
+    hourly = w.get("hourly", {})
+    hp = (
+        hourly.get("pressure_msl")
+        or hourly.get("surface_pressure")
+        or hourly.get("pressure")
+        or []
+    )
     if len(hp) < 2:
         return "→"
     diff = hp[1] - hp[0]

@@ -969,7 +969,7 @@ def _source_wind_pressure_line(date_s: str) -> str:
     spd_arr = _pick(hourly, "windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed") or []
     gust_arr = _pick(hourly, "windgusts_10m", "wind_gusts_10m", "wind_gusts", "windgusts") or []
     dir_arr = _pick(hourly, "winddirection_10m", "winddirection", "wind_dir_10m", "wind_dir", "wind_direction_10m") or []
-    prs_arr = _pick(hourly, "surface_pressure", "pressure_msl", "pressure") or []
+    prs_arr = _pick(hourly, "pressure_msl", "surface_pressure", "pressure") or []
 
     wind_ms = _kmh_to_ms(_value_at(spd_arr, idx_day))
     wind_dir = _value_at(dir_arr, idx_day)
