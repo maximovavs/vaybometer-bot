@@ -192,6 +192,71 @@ def test_morning_daily_output_omits_human_line_and_keeps_facts() -> None:
     _assert_clean(text)
 
 
+LUNAR_MORNING = """<b>🌅 Кипр сегодня (27.06.2026)</b>
+🌡 Днём до 34°, ночью около 25°.
+🏭 Воздух: AQI 58 (умеренный) • PM₂.₅ 14 / PM₁₀ 31
+☀️ <b>Солнце, Луна и ритм дня</b>
+🌇 Закат сегодня: 20:05
+🌕 Полнолуние в ♑ — 100% освещённости.
+🌘 Убывающая фаза начнётся позже.
+🌙 Ритм дня спокойный.
+⚫️ VoC: 08:20–10:10.
+✅ План: вода, SPF, тень 11–16.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
+def test_editorial_voice_is_applied_once_and_is_idempotent() -> None:
+    """Re-applying the helper must never duplicate the 💬 line."""
+    once = _apply_editorial_voice(LUNAR_MORNING, "morning")
+    twice = _apply_editorial_voice(once, "morning")
+    thrice = _apply_editorial_voice(twice, "morning")
+    assert once.count("💬 По ощущениям дня:") == 1
+    assert twice.count("💬 По ощущениям дня:") == 1
+    assert thrice.count("💬 По ощущениям дня:") == 1
+    assert twice == thrice
+
+
+def test_editorial_voice_never_strips_real_lunar_lines() -> None:
+    """Lunar lines use 🌙/🌘/🌕 and must survive editorial voice handling."""
+    text = _apply_editorial_voice(LUNAR_MORNING, "morning")
+    for lunar_line in (
+        "🌕 Полнолуние в ♑ — 100% освещённости.",
+        "🌘 Убывающая фаза начнётся позже.",
+        "🌙 Ритм дня спокойный.",
+        "⚫️ VoC: 08:20–10:10.",
+    ):
+        assert lunar_line in text, lunar_line
+    # Re-applying must not erode them either.
+    again = _apply_editorial_voice(text, "morning")
+    for lunar_line in ("🌕 Полнолуние в ♑ — 100% освещённости.", "🌘 Убывающая фаза начнётся позже."):
+        assert lunar_line in again, lunar_line
+
+
+def test_editorial_voice_does_not_change_factual_values() -> None:
+    """Injecting voice must leave weather/air/lunar facts byte-identical."""
+    before = [line for line in LUNAR_MORNING.splitlines() if line.strip()]
+    after = _apply_editorial_voice(LUNAR_MORNING, "morning")
+    after_lines = [line for line in after.splitlines() if line.strip()]
+    voice_lines = [line for line in after_lines if line.startswith("💬 По ощущениям дня:")]
+    assert len(voice_lines) == 1
+    # Every original line survives unchanged, in the same relative order.
+    assert [line for line in after_lines if not line.startswith("💬")] == before
+    _assert_clean(after)
+
+
+def test_editorial_voice_keeps_hashtags_last_and_html_valid() -> None:
+    for source, mode, prefix in (
+        (LUNAR_MORNING, "morning", "💬 По ощущениям дня:"),
+        (EVENING, "evening", "💬 Настрой на завтра:"),
+    ):
+        text = _apply_editorial_voice(source, mode)
+        assert text.count(prefix) == 1
+        lines = [line for line in text.splitlines() if line.strip()]
+        assert lines[-1].startswith("#"), mode
+        _Parser().feed(text)
+
+
 def test_safe_pollen_low_does_not_select_poor_air() -> None:
     text = _apply_editorial_voice(SAFE_POLLEN_MORNING, "morning")
     line = _voice_line(text, "💬 По ощущениям дня:")
@@ -282,6 +347,10 @@ def main() -> None:
         test_evening_daily_output_omits_human_line_and_keeps_facts,
         test_evening_local_weather_variants_do_not_repeat_factual_nuance,
         test_weekly_output_contains_meaning_block_and_keeps_facts,
+        test_editorial_voice_is_applied_once_and_is_idempotent,
+        test_editorial_voice_never_strips_real_lunar_lines,
+        test_editorial_voice_does_not_change_factual_values,
+        test_editorial_voice_keeps_hashtags_last_and_html_valid,
     )
     for check in checks:
         check()

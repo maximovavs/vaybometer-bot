@@ -13,6 +13,7 @@ import sys
 import tempfile
 import types
 from datetime import date
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2707,6 +2708,292 @@ def cy_morning_safe_production_polish_keeps_fog_actions() -> None:
     assert "✅ План: утром снизить скорость и увеличить дистанцию; после прояснения — вода, SPF и тень." in final
 
 
+def cy_morning_final_publication_path_applies_editorial_voice_once() -> None:
+    """The final FORMAT_V2 path must publish exactly one morning editorial line."""
+    import safe_test_post as safe_module
+
+    old_values = {
+        key: os.environ.get(key)
+        for key in ("MORNING_VAYBOMETER_SCORE", "FORMAT_V2_MAIN_NUANCE", "MORNING_SMART_PLAN")
+    }
+    try:
+        os.environ.update({key: "1" for key in old_values})
+        sanitized_legacy = sanitize_post_text(MORNING_WITH_SEA).text
+        # Same order as the production orchestration.
+        v2 = build_morning_format_v2("Кипр", sanitized_legacy)
+        v2 = safe_module._inject_morning_score(v2, "morning")
+        v2 = safe_module._apply_format_v2_test_polish(v2)
+        v2 = _insert_main_nuance(v2)
+        v2 = _apply_astro_cleanup(v2)
+        v2 = _apply_cyprus_sensor_cleanup(v2)
+        v2 = safe_module._inject_morning_smart_plan(v2, "morning")
+        v2 = safe_module._apply_editorial_voice(v2, "morning")
+        final_text = sanitize_post_text(v2).text
+        final_text = finalize_hashtags_at_end(
+            final_text,
+            canonical_hashtags="#Кипр #погода #здоровье #Никосия #Тродос",
+        )
+    finally:
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    assert final_text.count("💬 По ощущениям дня:") == 1
+    assert "💬 Настрой на завтра:" not in final_text
+    # Facts survive the injection.
+    assert "🌊 Море: вода 28°C" in final_text
+    assert "AQI 58" in final_text
+    # Hashtags stay last and the HTML stays parseable.
+    lines = [line for line in final_text.splitlines() if line.strip()]
+    assert lines[-1].startswith("#")
+    HTMLParser().feed(final_text)
+
+
+def cy_final_orchestration_applies_editorial_voice_after_factual_passes() -> None:
+    """Guard the orchestration order itself: voice is applied, not stripped."""
+    import inspect
+
+    import safe_test_post as safe_module
+
+    source = inspect.getsource(safe_module.main)
+    assert "_apply_editorial_voice(v2_raw, mode)" in source, (
+        "final FORMAT_V2 orchestration no longer applies the editorial voice"
+    )
+    assert '"\\n".join(_without_editorial_voice(v2_raw))' not in source, (
+        "final FORMAT_V2 orchestration still strips the editorial voice"
+    )
+
+    voice_index = source.index("_apply_editorial_voice(v2_raw, mode)")
+    # Applied after every factual transformation...
+    for factual in (
+        "_apply_astro_cleanup(v2_raw)",
+        "_apply_cyprus_morning_raw_context(",
+        "_apply_cyprus_sensor_cleanup(v2_raw)",
+        "_apply_score_conclusion(v2_raw)",
+        "_inject_morning_smart_plan(v2_raw, mode)",
+    ):
+        assert source.index(factual) < voice_index, factual
+    # ...and before compaction, sanitizing and publication.
+    assert voice_index < source.index("_apply_compact(v2_raw)")
+    assert voice_index < source.index("sanitize_post_text(v2_raw)")
+
+
+def cy_astro_llm_cannot_override_canonical_lunar_facts() -> None:
+    """Contradictory or stale LLM prose must never replace canonical lunar facts."""
+    import post_common
+
+    canonical = dict(
+        phase_name="Полнолуние",
+        percent=100,
+        sign_raw="Козерог",
+        sign_sym="♑",
+        voc_text="08:20–10:10",
+    )
+    contradictory = (
+        "🌑 Новолуние — время новых намерений.",
+        "✨ 42% освещённости — Луна тусклая.",
+        "🌙 Луна в ♒ — идеи и общение.",
+        "⚫️ VoC: 14:00–15:30 — без стартов.",
+    )
+    for line in contradictory:
+        assert post_common.astro_llm_line_contradicts_canonical(line, **canonical), line
+
+    # Interpretation that states no lunar facts of its own is kept.
+    for line in (
+        "✅ Хороший день для спокойных дел.",
+        "💚 В плюсе: восстановление и завершение.",
+        "🌕 Полнолуние в ♑ — 100% освещённости.",
+        "⚫️ VoC: 08:20–10:10.",
+    ):
+        assert not post_common.astro_llm_line_contradicts_canonical(line, **canonical), line
+
+
+def cy_astro_llm_cache_is_keyed_by_canonical_fingerprint() -> None:
+    """A cache written for different lunar facts must not be reused for the same date."""
+    import post_common
+
+    date_str = "10.08.2026"
+    base = ("Полнолуние", 100, "Козерог", "08:20–10:10")
+    changed = ("Убывающая Луна", 92, "Козерог", "08:20–10:10")
+
+    fp_base = post_common.astro_canonical_fingerprint(date_str, *base)
+    fp_same = post_common.astro_canonical_fingerprint(date_str, *base)
+    fp_changed = post_common.astro_canonical_fingerprint(date_str, *changed)
+    assert fp_base == fp_same
+    assert fp_base != fp_changed
+    assert post_common._astro_cache_file(date_str, fp_base) != post_common._astro_cache_file(
+        date_str, fp_changed
+    )
+
+    old_cache_dir = post_common.CACHE_DIR
+    old_llm = os.environ.get("DISABLE_LLM_DAILY")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            post_common.CACHE_DIR = Path(tmp)
+            # Seed a cache entry for the original canonical facts.
+            stale_path = post_common._astro_cache_file(date_str, fp_base)
+            stale_path.write_text("🌕 Stale interpretation for the old facts.", encoding="utf-8")
+            assert post_common._astro_llm_bullets(date_str, *base) == [
+                "🌕 Stale interpretation for the old facts."
+            ]
+
+            # After the lunar facts change, the stale prose must not be served.
+            os.environ["DISABLE_LLM_DAILY"] = "1"
+            post_common.USE_DAILY_LLM = False
+            assert post_common._astro_llm_bullets(date_str, *changed) == []
+        finally:
+            post_common.CACHE_DIR = old_cache_dir
+            post_common.USE_DAILY_LLM = True
+            if old_llm is None:
+                os.environ.pop("DISABLE_LLM_DAILY", None)
+            else:
+                os.environ["DISABLE_LLM_DAILY"] = old_llm
+
+
+def _pendulum_date(year: int, month: int, day: int):
+    """Minimal date object with the attributes build_astro_section uses."""
+    import datetime as _dt
+
+    class _D(_dt.date):
+        def add(self, days: int = 0):
+            shifted = _dt.date(self.year, self.month, self.day) + _dt.timedelta(days=days)
+            return _D(shifted.year, shifted.month, shifted.day)
+
+        def format(self, fmt: str) -> str:
+            if fmt == "YYYY-MM-DD":
+                return f"{self.year}-{self.month:02d}-{self.day:02d}"
+            return f"{self.day:02d}.{self.month:02d}.{self.year}"
+
+    return _D(year, month, day)
+
+
+def cy_astro_section_drops_contradictory_llm_lines() -> None:
+    """End-to-end: contradictory LLM prose must not reach the rendered astro block."""
+    import post_common
+
+    calendar = {
+        "2026-08-10": {
+            "phase_name": "Полнолуние",
+            "percent": 100,
+            "sign": "Козерог",
+            "void_of_course": {"start": "10.08 08:20", "end": "10.08 10:10"},
+        }
+    }
+    # Three contradictory factual claims plus three fact-free interpretations, so the
+    # surviving interpretation still forms a full block after filtering.
+    contradictory = [
+        "🌑 Новолуние — время новых намерений.",
+        "✨ 42% освещённости — Луна почти тёмная.",
+        "🌙 Луна в ♒ — идеи и лёгкое общение.",
+        "✅ Спокойный день для рутины.",
+        "🌟 Хорошее время завершать начатое.",
+        "🧭 План дня держи простым.",
+    ]
+
+    old_calendar = post_common.load_calendar
+    old_bullets = post_common._astro_llm_bullets
+    had_timezone = hasattr(post_common.pendulum, "timezone")
+    old_timezone = getattr(post_common.pendulum, "timezone", None)
+    try:
+        post_common.load_calendar = lambda *args, **kwargs: calendar
+        post_common._astro_llm_bullets = lambda *args, **kwargs: list(contradictory)
+        if not had_timezone:
+            # The suite stubs pendulum; build_astro_section only needs a tz handle here.
+            post_common.pendulum.timezone = lambda name: name
+        section = post_common.build_astro_section(
+            date_local=_pendulum_date(2026, 8, 10),
+            tz_local="Asia/Nicosia",
+        )
+    finally:
+        post_common.load_calendar = old_calendar
+        post_common._astro_llm_bullets = old_bullets
+        if not had_timezone:
+            delattr(post_common.pendulum, "timezone")
+        else:
+            post_common.pendulum.timezone = old_timezone
+
+    # Canonical facts survive.
+    assert "Полнолуние" in section
+    assert "100%" in section
+    assert "♑" in section
+    # Every contradictory factual claim is gone.
+    assert "Новолуние" not in section
+    assert "42%" not in section
+    assert "♒" not in section
+    # Interpretation carrying no lunar facts of its own is still allowed through.
+    assert "Спокойный день для рутины" in section
+
+
+def cy_astro_canonical_facts_are_never_crowded_out_by_llm() -> None:
+    """A verbose LLM must not push canonical phase/illumination out of the block."""
+    import post_common
+
+    calendar = {
+        "2026-08-10": {
+            "phase_name": "Полнолуние",
+            "percent": 100,
+            "sign": "Козерог",
+            "void_of_course": {"start": "10.08 08:20", "end": "10.08 10:10"},
+        }
+    }
+    # Five fact-free interpretation lines: none contradict, all are eligible, and they
+    # would fill the whole block if canonical facts were not added first.
+    verbose = [
+        "✅ Спокойный день для рутины.",
+        "🌟 Хорошее время завершать начатое.",
+        "🧭 План дня держи простым.",
+        "🫧 Больше пауз и воды.",
+        "📋 Дела лучше делать по одному.",
+    ]
+
+    old_calendar = post_common.load_calendar
+    old_bullets = post_common._astro_llm_bullets
+    had_timezone = hasattr(post_common.pendulum, "timezone")
+    old_timezone = getattr(post_common.pendulum, "timezone", None)
+    try:
+        post_common.load_calendar = lambda *args, **kwargs: calendar
+        post_common._astro_llm_bullets = lambda *args, **kwargs: list(verbose)
+        if not had_timezone:
+            post_common.pendulum.timezone = lambda name: name
+        section = post_common.build_astro_section(
+            date_local=_pendulum_date(2026, 8, 10),
+            tz_local="Asia/Nicosia",
+        )
+    finally:
+        post_common.load_calendar = old_calendar
+        post_common._astro_llm_bullets = old_bullets
+        if not had_timezone:
+            delattr(post_common.pendulum, "timezone")
+        else:
+            post_common.pendulum.timezone = old_timezone
+
+    # Canonical phase, illumination and sign all survive a verbose LLM.
+    assert "Полнолуние" in section
+    assert "100%" in section
+    assert "♑" in section
+
+
+def cy_astro_block_is_correct_without_llm() -> None:
+    """With the LLM disabled the deterministic astro block still carries the facts."""
+    import post_common
+
+    old_llm_flag = post_common.USE_DAILY_LLM
+    old_bullets = post_common._astro_llm_bullets
+    try:
+        post_common.USE_DAILY_LLM = False
+        post_common._astro_llm_bullets = lambda *args, **kwargs: []
+        text = build_morning_format_v2("Кипр", MORNING_FULL_MOON)
+    finally:
+        post_common.USE_DAILY_LLM = old_llm_flag
+        post_common._astro_llm_bullets = old_bullets
+
+    assert "🌕 Полнолуние в ♑ — 100% освещённости." in text
+    assert "⚫️ VoC: 08:20–10:10." in text
+    HTMLParser().feed(text)
+
+
 def main() -> None:
     checks = (
         cy_weather_attempts_request_only_sea_level_pressure,
@@ -2777,6 +3064,13 @@ def main() -> None:
         cy_evening_does_not_use_current_aqi_for_tomorrow_visibility,
         cy_evening_preserves_only_tomorrow_morning_visibility,
         cy_morning_safe_production_polish_keeps_fog_actions,
+        cy_morning_final_publication_path_applies_editorial_voice_once,
+        cy_final_orchestration_applies_editorial_voice_after_factual_passes,
+        cy_astro_llm_cannot_override_canonical_lunar_facts,
+        cy_astro_llm_cache_is_keyed_by_canonical_fingerprint,
+        cy_astro_section_drops_contradictory_llm_lines,
+        cy_astro_canonical_facts_are_never_crowded_out_by_llm,
+        cy_astro_block_is_correct_without_llm,
     )
     for check in checks:
         check()

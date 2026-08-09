@@ -15,7 +15,7 @@ post_common.py — VayboMeter (Кипр/универсальный).
 """
 
 from __future__ import annotations
-import os, re, json, html, asyncio, logging, math, datetime as dt, random, imghdr
+import os, re, json, html, asyncio, logging, math, datetime as dt, random, imghdr, hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Sequence, Union
 
@@ -736,8 +736,118 @@ def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
     return (t1, t2)
 
 
+_ASTRO_PHASE_TOKENS = {
+    "новолун": "new",
+    "полнолун": "full",
+    "убыва": "waning",
+    "растущ": "waxing",
+    "перв": "quarter",
+    "последн": "quarter",
+}
+
+_ASTRO_SIGN_SYMBOLS = "♈♉♊♋♌♍♎♏♐♑♒♓"
+
+
+def _astro_phase_token(text: str) -> str:
+    low = str(text or "").lower()
+    for needle, token in _ASTRO_PHASE_TOKENS.items():
+        if needle in low:
+            return token
+    return ""
+
+
+def astro_llm_line_contradicts_canonical(
+    line: str,
+    *,
+    phase_name: str,
+    percent: int,
+    sign_raw: str,
+    sign_sym: str,
+    voc_text: str = "",
+) -> bool:
+    """True when an LLM line states a lunar fact that differs from canonical data.
+
+    Only clearly contradictory factual claims are rejected; interpretation that adds
+    no lunar facts of its own is always kept.
+    """
+    text = str(line or "")
+    if not text.strip():
+        return False
+    low = text.lower()
+
+    canonical_phase = _astro_phase_token(phase_name)
+    line_phase = _astro_phase_token(low)
+    if canonical_phase and line_phase and line_phase != canonical_phase:
+        return True
+
+    canonical_percent = int(percent or 0)
+    for raw_value in re.findall(r"(\d{1,3})\s*%", low):
+        try:
+            claimed = int(raw_value)
+        except Exception:
+            continue
+        if canonical_percent and claimed != canonical_percent:
+            return True
+
+    canonical_sign_sym = str(sign_sym or "").strip()
+    line_symbols = {ch for ch in text if ch in _ASTRO_SIGN_SYMBOLS}
+    if canonical_sign_sym and line_symbols and line_symbols != {canonical_sign_sym}:
+        return True
+
+    canonical_sign_name = str(sign_raw or "").strip().lower()
+    if canonical_sign_name:
+        for name in _sign_names_lower():
+            if name == canonical_sign_name:
+                continue
+            if re.search(rf"(?<![а-яё]){re.escape(name[:4])}[а-яё]*", low) and name[:4] != canonical_sign_name[:4]:
+                return True
+
+    # A VoC window stated with different times contradicts the canonical interval.
+    if voc_text:
+        canonical_times = set(re.findall(r"\d{1,2}:\d{2}", str(voc_text)))
+        if canonical_times and re.search(r"\bvoc\b|без\s+курса|void", low):
+            line_times = set(re.findall(r"\d{1,2}:\d{2}", low))
+            if line_times and not (line_times & canonical_times):
+                return True
+    return False
+
+
+def _sign_names_lower() -> tuple[str, ...]:
+    return tuple(name.lower() for name in ZODIAC)
+
+
+def astro_canonical_fingerprint(
+    date_str: str,
+    phase: str,
+    percent: int,
+    sign: str,
+    voc_text: str,
+) -> str:
+    """Short deterministic digest of the canonical lunar facts for a date.
+
+    The LLM only ever interprets these facts, so its cached prose is keyed by them.
+    If the canonical facts for the same date change, the fingerprint changes and the
+    stale interpretation is no longer served.
+    """
+    payload = "|".join(
+        (
+            str(date_str or ""),
+            str(phase or ""),
+            str(int(percent or 0)),
+            str(sign or ""),
+            str(voc_text or ""),
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _astro_cache_file(date_str: str, fingerprint: str) -> Path:
+    return CACHE_DIR / f"astro_{date_str}_{fingerprint}.txt"
+
+
 def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> List[str]:
-    cache_file = CACHE_DIR / f"astro_{date_str}.txt"
+    fingerprint = astro_canonical_fingerprint(date_str, phase, percent, sign, voc_text)
+    cache_file = _astro_cache_file(date_str, fingerprint)
     if cache_file.exists():
         lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
         if lines:
@@ -1159,9 +1269,23 @@ def build_astro_section(
 
     # ВАЖНО: _astro_llm_bullets уже возвращает санитизированные строки → НЕ санитизируем повторно
     llm_bullets = [x.strip() for x in llm_bullets if (x or "").strip()]
+    # The LLM is an interpretation layer only: any line that contradicts the canonical
+    # phase, illumination, sign or VoC is dropped before merging.
+    llm_bullets = [
+        line
+        for line in llm_bullets
+        if not astro_llm_line_contradicts_canonical(
+            line,
+            phase_name=phase_name,
+            percent=percent_i,
+            sign_raw=sign_raw,
+            sign_sym=sign_sym,
+            voc_text=voc_text,
+        )
+    ]
     ok_llm = len(llm_bullets) >= 3  # “считаем успехом” только полноценный блок
 
-    # ── сборка с приоритетом: LLM → (template + advice + long_desc)
+    # ── сборка: canonical facts first, LLM interpretation after
     merged: list[str] = []
 
     def _add_unique(items: list[str]) -> None:
@@ -1172,15 +1296,13 @@ def build_astro_section(
             if x not in merged:
                 merged.append(x)
 
+    # Canonical deterministic facts are added first so the final trim below can never
+    # drop them in favour of LLM prose.
+    _add_unique(template_bullets)
     if ok_llm:
         _add_unique(llm_bullets)
-        _add_unique(template_bullets)
-        _add_unique(extra_texts)
-        _add_unique(advice_bullets)
-    else:
-        _add_unique(template_bullets)
-        _add_unique(extra_texts)
-        _add_unique(advice_bullets)
+    _add_unique(extra_texts)
+    _add_unique(advice_bullets)
 
     final_bullets = merged[:5] if merged else template_bullets[:4]
 
