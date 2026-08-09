@@ -735,6 +735,21 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
             if "style_name" in local_history[0]:
                 assert local_history[0]["style_name"] == receipt["style_name"]
 
+            # G.1: the local cover carries the technical macro and never inherits the
+            # network macro, across metadata, diagnostics, history and receipt.
+            assert local_metadata["scene_macro_family"] == "local_cover"
+            assert receipt["scene_macro_family"] == "local_cover"
+            assert local_history[0]["scene_macro_family"] == "local_cover"
+            network_macros = {
+                str(entry.get("scene_macro_family") or "")
+                for entry in history_entries
+                if str(entry.get("selected_scene")) != "local_informative_cover"
+            }
+            assert "local_cover" not in network_macros
+            assert local_metadata["scene_macro_family"] not in {
+                macro for macro in network_macros if macro
+            }
+
             local_decision_id = local_metadata["decision_id"]
             assert local_decision_id
             assert diagnostics["decision_id"] == local_decision_id
@@ -765,6 +780,9 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
                 )
             assert probe["metadata"]["cache_key"] == local_metadata["cache_key"]
             assert probe["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
+            # G.1 must not touch the local renderer version or its cache identity.
+            assert LOCAL_INFORMATIVE_COVER_VERSION == "cy_local_informative_cover_v3"
+            assert "scene_macro_family" not in probe["metadata"]
 
             amain_source = inspect.getsource(safe_module.main)
             image_index = amain_source.index("image_result = await _build_safe_test_image(")
@@ -1377,6 +1395,16 @@ def canonical_decision_is_not_rebuilt_after_provider_success() -> None:
         assert diagnostics["error_stage"] == "none"
         assert diagnostics["routing_inputs"]["primary_weather"] == metadata["primary_weather"]
         assert "blocked_scenes" in diagnostics["cooldown_inputs"]
+        assert "blocked_macro_families" in diagnostics["cooldown_inputs"]
+
+        # G.1: a network image carries a real macro family, shared by receipt/history.
+        from cyprus_visual_policy import cyprus_scene_macro_family
+
+        network_macro = metadata["scene_macro_family"]
+        assert network_macro == cyprus_scene_macro_family(metadata["selected_scene"])
+        assert network_macro not in {"local_cover", "unknown"}
+        assert receipt["scene_macro_family"] == network_macro
+        assert history_entries[0]["scene_macro_family"] == network_macro
 
     with tempfile.TemporaryDirectory() as tmp_name:
         asyncio.run(run_case(Path(tmp_name)))
