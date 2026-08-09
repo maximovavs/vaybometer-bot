@@ -14,16 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from editorial_voice import build_weekly_meaning
+from settings_cy import INLAND_CITIES, MARINE_CITIES
 
 REGION_NAME = "Кипр"
 TZ_STR = os.getenv("TZ", "Asia/Nicosia")
-PRIMARY_COORDS = (34.707, 33.022)
-SEA_POINTS = [
-    ("Лимассол", (34.707, 33.022)),
-    ("Пафос", (34.776, 32.424)),
-    ("Айя-Напа", (34.988, 34.012)),
-    ("Ларнака", (34.916, 33.624)),
-]
+ISLAND_POINTS = [*MARINE_CITIES.items(), *INLAND_CITIES.items()]
+SEA_POINTS = list(MARINE_CITIES.items())
 HASHTAGS = "#Кипр #вайбнедели #погода #море #астропогода"
 
 MONTHS_RU = {
@@ -97,17 +93,24 @@ def _load_json(path: Path) -> Any:
 def _fetch_weather() -> dict[str, Any]:
     try:
         from weather import get_weather  # type: ignore
-
-        return get_weather(*PRIMARY_COORDS) or {}
     except Exception:
         return {}
+    out: dict[str, Any] = {}
+    for city, coords in ISLAND_POINTS:
+        try:
+            payload = get_weather(*coords) or {}
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict) and payload:
+            out[city] = payload
+    return out
 
 
 def _fetch_air() -> dict[str, Any]:
     try:
-        from air import get_air  # type: ignore
+        from air import get_air_for_cities  # type: ignore
 
-        return get_air(*PRIMARY_COORDS) or {}
+        return get_air_for_cities(ISLAND_POINTS) or {}
     except Exception:
         return {}
 
@@ -205,6 +208,39 @@ def _weather_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "rain": any((x or 0) >= 40 for x in rain_prob if x is not None)
         or any(int(x) in RAIN_CODES for x in codes if x is not None),
     }
+
+
+def _weather_payloads(weather_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(weather_payload, dict):
+        return []
+    if isinstance(weather_payload.get("daily"), dict):
+        return [weather_payload]
+    return [value for value in weather_payload.values() if isinstance(value, dict)]
+
+
+def _weather_metrics_for_payload(weather_payload: dict[str, Any], start: date) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for payload in _weather_payloads(weather_payload):
+        rows.extend(_daily_rows(payload, start))
+    return _weather_metrics(rows)
+
+
+def _aggregate_air_data(air_data: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(air_data, dict):
+        return {}
+    if any(key in air_data for key in ("aqi", "pm25", "pm10")):
+        return air_data
+    aggregated: dict[str, Any] = {}
+    for key in ("aqi", "pm25", "pm10"):
+        values = [
+            _num(city_data.get(key))
+            for city_data in air_data.values()
+            if isinstance(city_data, dict)
+        ]
+        available = [value for value in values if value is not None]
+        if available:
+            aggregated[key] = max(available)
+    return aggregated
 
 
 def _main_background(metrics: dict[str, Any]) -> str:
@@ -427,9 +463,8 @@ def build_weekly_forecast(
     lunar_data = lunar_data if lunar_data is not None else _load_lunar_calendar()
     astro_events = _load_astro_events(start, astro_events_paths)
 
-    rows = _daily_rows(weather_payload or {}, start)
-    metrics = _weather_metrics(rows)
-    air, poor_air = _air_line(air_data or {})
+    metrics = _weather_metrics_for_payload(weather_payload or {}, start)
+    air, poor_air = _air_line(_aggregate_air_data(air_data or {}))
     space, elevated_kp = _space_line(kp_tuple)
     lunar = _lunar_lines(start, lunar_data, astro_events)
     plan = _plan_lines(metrics, poor_air, elevated_kp, lunar)

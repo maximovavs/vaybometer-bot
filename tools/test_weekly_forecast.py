@@ -9,12 +9,19 @@ import tempfile
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from send_weekly_forecast import build_weekly_forecast  # noqa: E402
+from send_weekly_forecast import (  # noqa: E402
+    _aggregate_air_data,
+    _fetch_air,
+    _fetch_weather,
+    _weather_metrics_for_payload,
+    build_weekly_forecast,
+)
 
 
 WEATHER = {
@@ -57,10 +64,31 @@ LUNAR = {
 }
 
 FORBIDDEN = ("аварии", "чрезвычайные ситуации", "операции лучше отложить", "воздушном пространстве")
+EXPECTED_ISLAND_POINTS = [
+    ("Limassol", (34.707, 33.022)),
+    ("Pafos", (34.776, 32.424)),
+    ("Ayia Napa", (34.988, 34.012)),
+    ("Larnaca", (34.916, 33.624)),
+    ("Nicosia", (35.170, 33.360)),
+    ("Troodos", (34.916, 32.823)),
+]
 
 
 class _Parser(HTMLParser):
     pass
+
+
+def _with_module(name: str, module: ModuleType, callback):
+    missing = object()
+    previous = sys.modules.get(name, missing)
+    try:
+        sys.modules[name] = module
+        return callback()
+    finally:
+        if previous is missing:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
 
 
 def _base_text(extra_paths: list[Path] | None = None) -> str:
@@ -148,11 +176,87 @@ def test_weekly_forecast_keeps_stronger_kite_warning_for_high_gusts() -> None:
     assert text.splitlines()[-1] == "#Кипр #вайбнедели #погода #море #астропогода"
 
 
+def test_weekly_weather_fetches_exact_island_points() -> None:
+    calls: list[tuple[float, float]] = []
+
+    def fake_get_weather(lat: float, lon: float) -> dict:
+        calls.append((lat, lon))
+        return WEATHER
+
+    weather_module = ModuleType("weather")
+    weather_module.get_weather = fake_get_weather
+    payload = _with_module("weather", weather_module, _fetch_weather)
+    assert calls == [coords for _city, coords in EXPECTED_ISLAND_POINTS]
+    assert list(payload) == [city for city, _coords in EXPECTED_ISLAND_POINTS]
+
+
+def test_weekly_weather_preserves_island_extremes() -> None:
+    def city_weather(*, tmax=30, tmin=22, wind=5, gust=8, uv=5, rain=0, code=0) -> dict:
+        return {
+            "daily": {
+                "time": [f"2026-07-{day:02d}" for day in range(1, 8)],
+                "temperature_2m_max": [tmax] * 7,
+                "temperature_2m_min": [tmin] * 7,
+                "wind_speed_10m_max": [wind] * 7,
+                "wind_gusts_10m_max": [gust] * 7,
+                "precipitation_probability_max": [rain] * 7,
+                "weathercode": [code] * 7,
+                "uv_index_max": [uv] * 7,
+            }
+        }
+
+    payload = {
+        "Limassol": city_weather(tmax=41),
+        "Pafos": city_weather(tmin=16),
+        "Ayia Napa": city_weather(wind=17),
+        "Larnaca": city_weather(gust=24),
+        "Nicosia": city_weather(uv=12),
+        "Troodos": city_weather(code=61),
+    }
+    metrics = _weather_metrics_for_payload(payload, date(2026, 7, 1))
+    assert metrics["tmax_max"] == 41
+    assert metrics["tmin_min"] == 16
+    assert metrics["wind_max"] == 17
+    assert metrics["gust_max"] == 24
+    assert metrics["uv_max"] == 12
+    assert metrics["rain"] is True
+
+
+def test_weekly_air_fetches_exact_island_points() -> None:
+    calls: list[list[tuple[str, tuple[float, float]]]] = []
+
+    def fake_get_air_for_cities(points):
+        calls.append(list(points))
+        return {"Limassol": AIR}
+
+    air_module = ModuleType("air")
+    air_module.get_air_for_cities = fake_get_air_for_cities
+    payload = _with_module("air", air_module, _fetch_air)
+    assert calls == [EXPECTED_ISLAND_POINTS]
+    assert payload == {"Limassol": AIR}
+
+
+def test_weekly_air_preserves_worst_island_values() -> None:
+    aggregated = _aggregate_air_data(
+        {
+            "Limassol": {"aqi": 145, "pm25": 5, "pm10": 8},
+            "Pafos": {"aqi": 20, "pm25": 37, "pm10": 9},
+            "Nicosia": {"aqi": 30, "pm25": 7, "pm10": 91},
+            "Troodos": {"aqi": "н/д", "pm25": None, "pm10": None},
+        }
+    )
+    assert aggregated == {"aqi": 145.0, "pm25": 37.0, "pm10": 91.0}
+
+
 def main() -> None:
     checks = (
         test_weekly_forecast_structure_without_optional_config,
         test_weekly_forecast_includes_curated_astro_events,
         test_weekly_forecast_keeps_stronger_kite_warning_for_high_gusts,
+        test_weekly_weather_fetches_exact_island_points,
+        test_weekly_weather_preserves_island_extremes,
+        test_weekly_air_fetches_exact_island_points,
+        test_weekly_air_preserves_worst_island_values,
     )
     for check in checks:
         check()
