@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import date, timedelta
+import hashlib
 import os
 import re
 import sys
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from visual_context_cy import parse_visual_context_cy
 from visual_rules_cy import apply_visual_rules_cy
+import image_prompt_cy_scene
 from image_prompt_cy_scene import (
     CYPRUS_VISUAL_PROMPT_VERSION,
     _CY_COASTAL_COMPOSITIONS,
@@ -1408,6 +1410,147 @@ def cy_evening_tomorrow_morning_mixed_visibility_stays_mixed() -> None:
     assert metadata["visibility_condition"] == "mixed_visibility"
 
 
+CANONICAL_DECISION_SOURCE = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+🏖 <b>Морские города</b>
+🥵 <b>Ларнака</b>: 34/25 °C • ☀️ ясно • 💨 5.0 м/с (Ю) • 1009 гПа → • 🌊 28
+😎 <b>Лимассол</b>: 33/25 °C • ☀️ ясно • 💨 4.0 м/с (Ю) • 1009 гПа → • 🌊 27
+🏙 <b>Центр и горы</b>
+<b>Никосия</b>: 37/23 °C • ☀️ ясно
+🏭 Воздух: AQI 58 (умеренный)
+"""
+
+
+def cy_canonical_decision_reuses_precomputed_context_without_reparse() -> None:
+    """A supplied context must be used as-is: the parser must not run again."""
+    precomputed = image_prompt_cy_scene.build_visual_context_cy(
+        CANONICAL_DECISION_SOURCE,
+        post_type="evening",
+    )
+
+    def _explode(*_args, **_kwargs):
+        raise AssertionError("visual context was parsed a second time")
+
+    original_parse = image_prompt_cy_scene.parse_visual_context_cy
+    original_build = image_prompt_cy_scene.build_visual_context_cy
+    image_prompt_cy_scene.parse_visual_context_cy = _explode
+    image_prompt_cy_scene.build_visual_context_cy = _explode
+    try:
+        decision = image_prompt_cy_scene.build_cyprus_visual_decision(
+            CANONICAL_DECISION_SOURCE,
+            post_type="evening",
+            visual_context=precomputed,
+        )
+    finally:
+        image_prompt_cy_scene.parse_visual_context_cy = original_parse
+        image_prompt_cy_scene.build_visual_context_cy = original_build
+
+    assert decision.context is precomputed
+
+
+def cy_canonical_decision_matches_legacy_wrapper_output() -> None:
+    """The legacy wrapper and the canonical builder must agree byte-for-byte."""
+    for mode in ("morning", "evening"):
+        for attempt in (0, 1, 3):
+            prompt, style, metadata = build_cyprus_scene_prompt_with_metadata(
+                CANONICAL_DECISION_SOURCE,
+                post_type=mode,
+                variation_attempt=attempt,
+            )
+            decision = image_prompt_cy_scene.build_cyprus_visual_decision(
+                CANONICAL_DECISION_SOURCE,
+                post_type=mode,
+                variation_attempt=attempt,
+            )
+            assert decision.prompt == prompt
+            assert decision.style_name == style
+            assert decision.metadata["cache_key"] == metadata["cache_key"]
+            # A precomputed context must not shift prompt/style/cache identity either.
+            reused = image_prompt_cy_scene.build_cyprus_visual_decision(
+                CANONICAL_DECISION_SOURCE,
+                post_type=mode,
+                variation_attempt=attempt,
+                visual_context=image_prompt_cy_scene.build_visual_context_cy(
+                    CANONICAL_DECISION_SOURCE,
+                    post_type=mode,
+                ),
+            )
+            assert reused.prompt == prompt
+            assert reused.style_name == style
+            assert reused.metadata["cache_key"] == metadata["cache_key"]
+
+
+def cy_canonical_decision_exposes_routing_and_cooldown_inputs() -> None:
+    blocked_scenes = ("protected_bay", "long_sandy_beach")
+    blocked_compositions = ("Low sheltered-water composition led by rocks and shallow water",)
+    blocked_archetypes = ("bay_panorama",)
+    decision = image_prompt_cy_scene.build_cyprus_visual_decision(
+        CANONICAL_DECISION_SOURCE,
+        post_type="evening",
+        variation_attempt=2,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
+        blocked_archetypes=blocked_archetypes,
+    )
+
+    routing = decision.metadata["routing_inputs"]
+    for key in (
+        "primary_weather",
+        "hazards",
+        "scene_focus",
+        "visual_forecast_period",
+        "visibility_condition",
+        "weather_scenario",
+        "variation_attempt",
+    ):
+        assert key in routing, key
+        assert routing[key] == decision.metadata[key]
+
+    cooldown = decision.metadata["cooldown_inputs"]
+    assert cooldown["blocked_scenes"] == list(blocked_scenes)
+    assert cooldown["blocked_compositions"] == list(blocked_compositions)
+    assert cooldown["blocked_archetypes"] == list(blocked_archetypes)
+
+    assert decision.decision_id
+    identity = decision.identity()
+    assert identity["cache_key"] == decision.metadata["cache_key"]
+    assert identity["style_name"] == decision.style_name
+
+
+def cy_canonical_diagnostics_fields_do_not_change_cache_key() -> None:
+    """Diagnostics-only fields are appended after identity, so they cannot shift it."""
+    for mode in ("morning", "evening"):
+        for attempt in (0, 2):
+            for blocked in ((), ("protected_bay",)):
+                decision = image_prompt_cy_scene.build_cyprus_visual_decision(
+                    CANONICAL_DECISION_SOURCE,
+                    post_type=mode,
+                    variation_attempt=attempt,
+                    blocked_scenes=blocked,
+                )
+                legacy_key = build_cyprus_visual_cache_key(
+                    CANONICAL_DECISION_SOURCE,
+                    post_type=mode,
+                    variation_attempt=attempt,
+                    blocked_scenes=blocked,
+                )
+                assert decision.metadata["cache_key"] == legacy_key
+
+                # The ordered cache key must not mention any diagnostics-only field.
+                for diagnostics_field in (
+                    "decision_id",
+                    "routing_inputs",
+                    "cooldown_inputs",
+                    "style_name",
+                ):
+                    assert f"{diagnostics_field}=" not in legacy_key
+
+                # The style digest is derived from cache_key + prompt only.
+                expected_style_digest = hashlib.sha256(
+                    f"{legacy_key}|{decision.prompt}".encode("utf-8")
+                ).hexdigest()[:8]
+                assert decision.style_name.endswith(expected_style_digest)
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -1469,6 +1612,10 @@ TESTS = [
     cy_evening_tomorrow_morning_reduced_visibility_has_no_fog_claim,
     cy_evening_tomorrow_morning_dust_haze_is_dry,
     cy_evening_tomorrow_morning_mixed_visibility_stays_mixed,
+    cy_canonical_decision_reuses_precomputed_context_without_reparse,
+    cy_canonical_decision_matches_legacy_wrapper_output,
+    cy_canonical_decision_exposes_routing_and_cooldown_inputs,
+    cy_canonical_diagnostics_fields_do_not_change_cache_key,
 ]
 
 

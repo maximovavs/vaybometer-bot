@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Mapping
 from urllib.parse import quote_plus
@@ -1280,7 +1281,62 @@ def build_cyprus_visual_cache_key(
     )["cache_key"]
 
 
-def build_cyprus_scene_prompt_with_metadata(
+@dataclass(frozen=True)
+class CyprusVisualDecision:
+    """One canonical Cyprus visual decision, reused across the whole candidate lifecycle.
+
+    The decision is built exactly once per visual candidate and then flows unchanged
+    through routing, prompt, provider, validation, dedup, diagnostics, history and
+    receipt, so every stage reports the same identity without re-parsing or reselecting.
+    """
+
+    context: VisualContextCY
+    prompt: str
+    style_name: str
+    metadata: dict[str, object]
+    visibility_metadata: Mapping[str, Any] | None = field(default=None)
+
+    @property
+    def decision_id(self) -> str:
+        return str(self.metadata.get("decision_id", ""))
+
+    @property
+    def cache_key(self) -> str:
+        return str(self.metadata.get("cache_key", ""))
+
+    @property
+    def selected_scene(self) -> str:
+        return str(self.metadata.get("selected_scene", ""))
+
+    @property
+    def composition(self) -> str:
+        return str(self.metadata.get("composition", ""))
+
+    @property
+    def visual_archetype(self) -> str:
+        return str(self.metadata.get("visual_archetype", ""))
+
+    @property
+    def forecast_date(self) -> str:
+        return str(self.metadata.get("forecast_date", ""))
+
+    @property
+    def post_type(self) -> str:
+        return str(self.metadata.get("post_type", ""))
+
+    def identity(self) -> dict[str, str]:
+        """Identity fields that must match across provider, dedup, history and receipt."""
+        return {
+            "decision_id": self.decision_id,
+            "selected_scene": self.selected_scene,
+            "composition": self.composition,
+            "visual_archetype": self.visual_archetype,
+            "style_name": self.style_name,
+            "cache_key": self.cache_key,
+        }
+
+
+def build_cyprus_visual_decision(
     final_format_v2_message: str,
     *,
     post_type: str = "evening",
@@ -1289,16 +1345,26 @@ def build_cyprus_scene_prompt_with_metadata(
     blocked_compositions: tuple[str, ...] = (),
     blocked_archetypes: tuple[str, ...] = (),
     visibility_metadata: Mapping[str, Any] | None = None,
-) -> tuple[str, str, dict[str, object]]:
-    """Return a sanitized Cyprus prompt, stable style name, and visual cache metadata."""
+    visual_context: VisualContextCY | None = None,
+) -> CyprusVisualDecision:
+    """Build the canonical decision for one Cyprus visual candidate.
+
+    When ``visual_context`` is supplied it is used as-is: the parser is not run a
+    second time, so context provenance stays identical across the lifecycle. Callers
+    that do not have a precomputed context keep the previous parse-on-demand behaviour.
+    """
     mode = post_type.strip().lower()
     if mode not in {"morning", "evening"}:
         raise ValueError("post_type must be 'morning' or 'evening'")
 
-    ctx = build_visual_context_cy(
-        final_format_v2_message,
-        post_type=mode,
-        visibility_metadata=visibility_metadata,
+    ctx = (
+        visual_context
+        if visual_context is not None
+        else build_visual_context_cy(
+            final_format_v2_message,
+            post_type=mode,
+            visibility_metadata=visibility_metadata,
+        )
     )
     scene = apply_visual_rules_cy(ctx)
     moon_context = (
@@ -1347,7 +1413,64 @@ def build_cyprus_scene_prompt_with_metadata(
     metadata["positive_clause_count"] = len(final_positive)
     metadata["negative_item_count"] = len(final_negative)
     metadata["pollinations_encoded_url_length"] = encoded_url_length
-    return prompt, style_name, metadata
+
+    # Diagnostics-only provenance. Everything below is appended AFTER the ordered
+    # cache key, the prompt and the style digest are already final, so it can never
+    # change visual selection, the cache identity or the style name.
+    metadata["routing_inputs"] = {
+        "primary_weather": metadata["primary_weather"],
+        "hazards": metadata["hazards"],
+        "scene_focus": metadata["scene_focus"],
+        "visual_forecast_period": metadata["visual_forecast_period"],
+        "visibility_condition": metadata["visibility_condition"],
+        "weather_scenario": metadata["weather_scenario"],
+        "variation_attempt": metadata["variation_attempt"],
+    }
+    metadata["cooldown_inputs"] = {
+        "blocked_scenes": list(blocked_scenes),
+        "blocked_compositions": list(blocked_compositions),
+        "blocked_archetypes": list(blocked_archetypes),
+    }
+    metadata["decision_id"] = hashlib.sha256(
+        "|".join(
+            (
+                str(metadata["cache_key"]),
+                str(metadata["style_name"]),
+                prompt,
+            )
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+
+    return CyprusVisualDecision(
+        context=ctx,
+        prompt=prompt,
+        style_name=style_name,
+        metadata=metadata,
+        visibility_metadata=visibility_metadata,
+    )
+
+
+def build_cyprus_scene_prompt_with_metadata(
+    final_format_v2_message: str,
+    *,
+    post_type: str = "evening",
+    variation_attempt: int = 0,
+    blocked_scenes: tuple[str, ...] = (),
+    blocked_compositions: tuple[str, ...] = (),
+    blocked_archetypes: tuple[str, ...] = (),
+    visibility_metadata: Mapping[str, Any] | None = None,
+) -> tuple[str, str, dict[str, object]]:
+    """Return a sanitized Cyprus prompt, stable style name, and visual cache metadata."""
+    decision = build_cyprus_visual_decision(
+        final_format_v2_message,
+        post_type=post_type,
+        variation_attempt=variation_attempt,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
+        blocked_archetypes=blocked_archetypes,
+        visibility_metadata=visibility_metadata,
+    )
+    return decision.prompt, decision.style_name, decision.metadata
 
 
 def build_cyprus_scene_prompt(
@@ -1379,5 +1502,7 @@ __all__ = [
     "build_cyprus_visual_cache_key",
     "build_cyprus_scene_prompt",
     "build_cyprus_scene_prompt_with_metadata",
+    "build_cyprus_visual_decision",
+    "CyprusVisualDecision",
     "CYPRUS_VISUAL_PROMPT_VERSION",
 ]

@@ -1002,6 +1002,95 @@ def test_pillow_is_bounded_dependency() -> None:
     print("PASS pillow_is_bounded_dependency")
 
 
+def _load_legacy_image_guard():
+    """Import only the guard helper from post_cy without importing its heavy deps."""
+    source = (ROOT / "post_cy.py").read_text("utf-8")
+    start = source.index("class legacy_cy_images_disabled:")
+    end = source.index("def _env_true(", start)
+    namespace: dict = {"os": os, "Optional": object}
+    exec(compile(source[start:end], "post_cy_guard", "exec"), namespace)  # noqa: S102
+    return namespace["legacy_cy_images_disabled"]
+
+
+def test_legacy_post_cy_disables_post_common_image_pipeline() -> None:
+    """The legacy text path must not let post_common publish a production image."""
+    guard = _load_legacy_image_guard()
+    previous = os.environ.get("CY_IMG_ENABLED")
+    try:
+        # Case 1: an explicit value is restored verbatim.
+        os.environ["CY_IMG_ENABLED"] = "1"
+        with guard():
+            _assert(
+                "legacy guard disables images",
+                os.environ["CY_IMG_ENABLED"] == "0",
+                os.environ["CY_IMG_ENABLED"],
+            )
+        _assert(
+            "legacy guard restores value",
+            os.environ["CY_IMG_ENABLED"] == "1",
+            os.environ["CY_IMG_ENABLED"],
+        )
+
+        # Case 2: an unset variable stays unset afterwards.
+        os.environ.pop("CY_IMG_ENABLED", None)
+        with guard():
+            _assert(
+                "legacy guard disables images when unset",
+                os.environ["CY_IMG_ENABLED"] == "0",
+                os.environ.get("CY_IMG_ENABLED", "<missing>"),
+            )
+        _assert(
+            "legacy guard leaves variable unset",
+            "CY_IMG_ENABLED" not in os.environ,
+            os.environ.get("CY_IMG_ENABLED", "<missing>"),
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("CY_IMG_ENABLED", None)
+        else:
+            os.environ["CY_IMG_ENABLED"] = previous
+
+
+def test_legacy_post_cy_restores_env_after_exception() -> None:
+    """A failure inside the legacy call must still restore the environment."""
+    guard = _load_legacy_image_guard()
+    previous = os.environ.get("CY_IMG_ENABLED")
+    try:
+        os.environ["CY_IMG_ENABLED"] = "1"
+        raised = False
+        try:
+            with guard():
+                _assert(
+                    "legacy guard disables images before failure",
+                    os.environ["CY_IMG_ENABLED"] == "0",
+                    os.environ["CY_IMG_ENABLED"],
+                )
+                raise RuntimeError("legacy main_common failed")
+        except RuntimeError:
+            raised = True
+        _assert("legacy guard propagates the failure", raised)
+        _assert(
+            "legacy guard restores value after failure",
+            os.environ["CY_IMG_ENABLED"] == "1",
+            os.environ["CY_IMG_ENABLED"],
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("CY_IMG_ENABLED", None)
+        else:
+            os.environ["CY_IMG_ENABLED"] = previous
+
+    # The guard must actually wrap the legacy main_common call site.
+    source = (ROOT / "post_cy.py").read_text("utf-8")
+    guard_index = source.index("with legacy_cy_images_disabled():")
+    call_index = source.index("await main_common(", guard_index)
+    _assert(
+        "legacy guard wraps main_common",
+        guard_index < call_index < guard_index + 200,
+        f"guard={guard_index} call={call_index}",
+    )
+
+
 TESTS = [
     test_daily_visual_history_cache,
     test_safe_test_visual_history_cache,
@@ -1027,6 +1116,8 @@ TESTS = [
     test_main_morning_0315_restore_skips_duplicate_publication,
     test_simulated_manual_morning_evening_history_chain,
     test_pillow_is_bounded_dependency,
+    test_legacy_post_cy_disables_post_common_image_pipeline,
+    test_legacy_post_cy_restores_env_after_exception,
 ]
 
 

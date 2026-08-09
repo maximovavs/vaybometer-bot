@@ -84,6 +84,32 @@ CODES = ("USD", "GBP", "TRY", "ILS")
 NBSP = "\u00A0"
 
 
+class legacy_cy_images_disabled:
+    """Disable the legacy ``post_common`` image pipeline for the duration of a call.
+
+    The legacy non-FORMAT_V2 path publishes Cyprus text through ``main_common()``,
+    whose ``CY_IMG_ENABLED`` default is ``1``. Canonical Cyprus visuals are produced
+    only by the FORMAT_V2 path, so the legacy pipeline must not emit a production
+    image. The previous value is always restored, including on exceptions.
+    """
+
+    _ENV_NAME = "CY_IMG_ENABLED"
+
+    def __init__(self) -> None:
+        self._old_value: Optional[str] = None
+
+    def __enter__(self) -> "legacy_cy_images_disabled":
+        self._old_value = os.environ.get(self._ENV_NAME)
+        os.environ[self._ENV_NAME] = "0"
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._old_value is None:
+            os.environ.pop(self._ENV_NAME, None)
+        else:
+            os.environ[self._ENV_NAME] = self._old_value
+
+
 def _env_true(name: str) -> bool:
     return str(os.getenv(name, "")).strip().lower() in ("1", "true", "yes", "on")
 
@@ -616,7 +642,8 @@ async def main_cy() -> None:
         except Exception:
             pass
 
-        await main_common(**kwargs)  # type: ignore[misc]
+        with legacy_cy_images_disabled():
+            await main_common(**kwargs)  # type: ignore[misc]
 
 
 if __name__ == "__main__":
