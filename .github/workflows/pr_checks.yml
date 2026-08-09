@@ -54,6 +54,7 @@ jobs:
             tools/test_format_v2_cy.py \
             tools/test_format_v2_morning_cy.py \
             tools/test_imagegen_validation.py \
+            tools/test_sup_safety_cy.py \
             tools/test_visual_cy.py \
             tools/test_weekly_forecast.py \
             tools/test_weekly_workflow_schedule.py
@@ -81,6 +82,7 @@ jobs:
           python tools/test_cyprus_visual_workflow.py
           python tools/test_format_v2_cy.py
           python tools/test_format_v2_morning_cy.py
+          python tools/test_sup_safety_cy.py
           python tools/test_air_cy.py
           python tools/test_weekly_forecast.py
           python tools/test_weekly_workflow_schedule.py
