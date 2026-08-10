@@ -2707,6 +2707,223 @@ def cy_morning_safe_production_polish_keeps_fog_actions() -> None:
     assert "✅ План: утром снизить скорость и увеличить дистанцию; после прояснения — вода, SPF и тень." in final
 
 
+H2_HEAT_UV_MORNING = """<b>Кипр: погода на сегодня (10.08.2026)</b>
+👋 Доброе утро! Теплее всего — Никосия (37°), прохладнее — Тродос (26°).
+☀️ <b>УФ-индекс 9 (Very High)</b>: тень 11–16.
+🏭 AQI 45 (низкий) • PM₂.₅ 9 / PM₁₀ 18
+💨 Ветер: 6.0 м/с • порывы до 16 м/с • 🔹 1009 гПа →
+Ларнака: 34/25 °C • ☀️ ясно • 🌊 28
+🌇 Закат сегодня: 20:05
+✅ Сегодня: вода, SPF, тень.
+#Кипр #погода #здоровье
+"""
+
+# Concrete actions that belong to the plan line only.
+H2_PLAN_ACTION_MARKERS = ("SPF", "11–16", "до 11:00", "18:30", "вода с собой", "в тени", "в помещени")
+
+
+def _h2_render_morning(source: str) -> str:
+    """Run the production morning orchestration order over a legacy fixture."""
+    import safe_test_post as safe_module
+
+    old_values = {
+        key: os.environ.get(key)
+        for key in (
+            "MORNING_FEELS_LIKE",
+            "MORNING_VAYBOMETER_SCORE",
+            "FORMAT_V2_MAIN_NUANCE",
+            "MORNING_SMART_PLAN",
+            "FORMAT_V2_SCORE_CONCLUSION",
+        )
+    }
+    try:
+        os.environ.update({key: "1" for key in old_values})
+        v2 = build_morning_format_v2("Кипр", sanitize_post_text(source).text)
+        v2 = safe_module._inject_morning_feels(v2, "morning")
+        v2 = safe_module._inject_morning_score(v2, "morning")
+        v2 = _insert_main_nuance(v2)
+        v2 = _apply_astro_cleanup(v2)
+        v2 = _apply_cyprus_sensor_cleanup(v2)
+        v2 = safe_module._apply_score_conclusion(v2)
+        v2 = safe_module._inject_morning_smart_plan(v2, "morning")
+        v2 = safe_module._apply_editorial_voice(v2, "morning")
+        return sanitize_post_text(v2).text
+    finally:
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _h2_line(text: str, prefix: str) -> str:
+    for line in text.splitlines():
+        if line.strip().startswith(prefix):
+            return line.strip()
+    return ""
+
+
+def cy_h2_morning_heat_uv_roles_are_separated() -> None:
+    """Each guidance line plays its own role for one dominant hazard."""
+    text = _h2_render_morning(H2_HEAT_UV_MORNING)
+
+    score = _h2_line(text, "✨ VayboMeter")
+    feels = _h2_line(text, "🌡 Ощущается:")
+    voice = _h2_line(text, "💬 По ощущениям дня:")
+    plan = _h2_line(text, "✅ План:")
+
+    # The score keeps its factual reasons.
+    assert score and "жара" in score.lower()
+    # Feels describes sensation/contrast, never the protective actions.
+    assert feels
+    for marker in H2_PLAN_ACTION_MARKERS:
+        assert marker.lower() not in feels.lower(), f"feels repeats plan action: {marker}"
+    # The plan remains the single place for concrete actions.
+    assert plan and "SPF" in plan and "11–16" in plan
+    # The voice does not restate those actions.
+    assert voice
+    for marker in H2_PLAN_ACTION_MARKERS:
+        assert marker.lower() not in voice.lower(), f"voice repeats plan action: {marker}"
+
+
+def cy_h2_feels_line_never_carries_plan_actions_at_any_uv() -> None:
+    """Every UV branch of the feels line must describe sensation, not actions."""
+    import safe_test_post as safe_module
+
+    for uv_value in (5, 6, 7, 8, 9, 11):
+        source = H2_HEAT_UV_MORNING.replace(
+            "☀️ <b>УФ-индекс 9 (Very High)</b>: тень 11–16.",
+            f"☀️ <b>УФ-индекс {uv_value} (High)</b>: тень 11–16.",
+        )
+        v2 = build_morning_format_v2("Кипр", sanitize_post_text(source).text)
+        feels = safe_module._cyprus_feels_line(v2)
+        if not feels:
+            continue
+        low = feels.lower()
+        for marker in H2_PLAN_ACTION_MARKERS:
+            assert marker.lower() not in low, f"UV {uv_value}: feels repeats plan action {marker!r}: {feels}"
+
+
+def cy_h2_nuance_does_not_restate_score_reasons() -> None:
+    """A nuance that merely rephrases the score is suppressed; new signal is kept."""
+    text = _h2_render_morning(H2_HEAT_UV_MORNING)
+    score = _h2_line(text, "✨ VayboMeter").lower()
+    nuance = _h2_line(text, "⚠️ Главный нюанс:")
+
+    # The score already names the heat, so the nuance must not repeat it.
+    assert "жара" in score
+    if nuance:
+        assert "жара во внутренних районах" not in nuance
+        assert not (
+            "жара" in nuance.lower() and "порыв" not in nuance.lower()
+        ), f"nuance only rephrases the score: {nuance}"
+
+
+def cy_h2_fog_safety_guidance_survives_dedup() -> None:
+    """Independent fog signal and its safety action are never deduplicated away."""
+    fog_source = H2_HEAT_UV_MORNING.replace(
+        "☀️ <b>УФ-индекс 9 (Very High)</b>: тень 11–16.",
+        "🌫 Видимость: утром местами около 300 м, вероятен туман.\n☀️ <b>УФ-индекс 9 (Very High)</b>: тень 11–16.",
+    )
+    text = _h2_render_morning(fog_source)
+    nuance = _h2_line(text, "⚠️ Главный нюанс:")
+    plan = _h2_line(text, "✅ План:")
+    assert "туман" in nuance.lower(), nuance
+    assert "дистанц" in plan.lower() or "скорость" in plan.lower(), plan
+
+
+def cy_h2_poor_air_advisory_is_not_suppressed() -> None:
+    """Air-quality advisory must survive semantic dedup."""
+    poor_air = H2_HEAT_UV_MORNING.replace(
+        "🏭 AQI 45 (низкий) • PM₂.₅ 9 / PM₁₀ 18",
+        "🏭 AQI 135 (высокий) • PM₂.₅ 38 / PM₁₀ 82",
+    )
+    text = _h2_render_morning(poor_air)
+    assert "AQI 135" in text
+    assert "PM₂.₅ 38" in text
+    assert "😷" in text or "неидеален" in text.lower(), "poor-air advisory disappeared"
+
+
+def cy_h2_factual_values_are_unchanged_by_role_separation() -> None:
+    """Role separation must not touch any factual value."""
+    text = _h2_render_morning(H2_HEAT_UV_MORNING)
+    for fact in ("37°", "26°", "AQI 45", "PM₂.₅ 9", "PM₁₀ 18", "УФ 9", "28°C"):
+        assert fact in text, fact
+    # Morning stays "today" and hashtags stay last.
+    assert "Кипр сегодня" in text
+    lines = [line for line in text.splitlines() if line.strip()]
+    assert lines[-1].startswith("#")
+    HTMLParser().feed(text)
+
+
+def cy_h2_editorial_truth_safety_covers_rain_wind_uv_and_nuance() -> None:
+    """CI-visible truth guard for LOCAL_WEATHER, WINDY_COAST, HOT_UV and wind nuance."""
+    from editorial_voice import CYPRUS_EVENING_VARIANTS, CYPRUS_MORNING_VARIANTS, _scenario
+
+    temperature_claim = re.compile(
+        r"\b(?:жар\w*|зно\w*|пекл\w*|тепл\w*|прохлад\w*|холод\w*)",
+        re.IGNORECASE,
+    )
+    wind_claim = re.compile(r"\b(?:ветр\w*|порыв\w*)", re.IGNORECASE)
+
+    rain_only = {
+        "rain": True,
+        "max_temp": 25,
+        "uv": 3,
+        "uv_high": False,
+        "heat": False,
+        "wind": False,
+        "gust": 3,
+        "aqi": 31,
+    }
+    assert _scenario(rain_only) == "LOCAL_WEATHER"
+    for bank in (CYPRUS_MORNING_VARIANTS, CYPRUS_EVENING_VARIANTS):
+        for phrase in bank["LOCAL_WEATHER"]:
+            assert temperature_claim.search(phrase) is None, phrase
+            assert wind_claim.search(phrase) is None, phrase
+
+    wind_only = {
+        "rain": False,
+        "max_temp": 27,
+        "uv": 4,
+        "uv_high": False,
+        "heat": False,
+        "wind": 7,
+        "gust": 11,
+        "aqi": 31,
+    }
+    assert _scenario(wind_only) == "WINDY_COAST"
+    for bank in (CYPRUS_MORNING_VARIANTS, CYPRUS_EVENING_VARIANTS):
+        for phrase in bank["WINDY_COAST"]:
+            assert temperature_claim.search(phrase) is None, phrase
+
+    uv_only = {
+        "rain": False,
+        "max_temp": 27,
+        "uv": 7,
+        "uv_high": True,
+        "heat": False,
+        "wind": False,
+        "gust": 3,
+        "aqi": 31,
+    }
+    assert _scenario(uv_only) == "HOT_UV"
+    for bank in (CYPRUS_MORNING_VARIANTS, CYPRUS_EVENING_VARIANTS):
+        for phrase in bank["HOT_UV"]:
+            assert re.search(r"жар\w*|зно\w*|пекл\w*", phrase, re.IGNORECASE) is None, phrase
+
+    wind_nuance_fixture = """<b>🌅 Кипр сегодня (04.05.2026)</b>
+✨ VayboMeter: 7.6/10 — хорошо; очень высокий УФ.
+🌡 Теплее всего — Никосия (28°), прохладнее — Тродос (21°).
+💨 Ветер: 7.0 м/с • порывы до 16 м/с • 🔹 1010 гПа →
+☀️ УФ 7 — высокий.
+🏭 Воздух: AQI 31 (низкий) • PM₂.₅ 9 / PM₁₀ 16
+#Кипр #погода #здоровье
+"""
+    nuance = _cyprus_main_nuance(wind_nuance_fixture)
+    assert nuance == "⚠️ Главный нюанс: порывы у моря."
+
+
 def cy_morning_final_publication_path_applies_editorial_voice_once() -> None:
     """The final FORMAT_V2 path must publish exactly one morning editorial line."""
     import safe_test_post as safe_module
@@ -3159,6 +3376,13 @@ def main() -> None:
         cy_evening_does_not_use_current_aqi_for_tomorrow_visibility,
         cy_evening_preserves_only_tomorrow_morning_visibility,
         cy_morning_safe_production_polish_keeps_fog_actions,
+        cy_h2_morning_heat_uv_roles_are_separated,
+        cy_h2_feels_line_never_carries_plan_actions_at_any_uv,
+        cy_h2_nuance_does_not_restate_score_reasons,
+        cy_h2_fog_safety_guidance_survives_dedup,
+        cy_h2_poor_air_advisory_is_not_suppressed,
+        cy_h2_factual_values_are_unchanged_by_role_separation,
+        cy_h2_editorial_truth_safety_covers_rain_wind_uv_and_nuance,
         cy_morning_final_publication_path_applies_editorial_voice_once,
         cy_final_orchestration_applies_editorial_voice_after_factual_passes,
         cy_astro_llm_cannot_override_canonical_lunar_facts,

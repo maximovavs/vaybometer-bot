@@ -528,7 +528,8 @@ def _cyprus_feels_line(v2_text: str) -> str:
     if isinstance(uv, (int, float)) and uv >= 8:
         parts.append("на солнце высокая нагрузка")
     elif isinstance(uv, (int, float)) and uv >= 6:
-        parts.append("SPF обязателен")
+        # Sensation only: the protective action (SPF) belongs to the plan line.
+        parts.append("на солнце ощутимо печёт")
     return "🌡 Ощущается: " + "; ".join(parts[:4]) + "." if parts else ""
 
 
@@ -995,6 +996,16 @@ def _apply_score_conclusion(v2_text: str) -> str:
     return _replace_conclusion(v2_text, _cyprus_score_conclusion(score))
 
 
+def _score_reason_mentions_heat(reasons: str) -> bool:
+    """True when the score line already names heat as a reason."""
+    return bool(re.search(r"жар\w*|пекл\w*|зно\w*", str(reasons or ""), flags=re.I))
+
+
+def _score_reason_mentions_wind(reasons: str) -> bool:
+    """True when the score line already names wind/gusts as a reason."""
+    return bool(re.search(r"порыв\w*|ветер|ветр\w*", str(reasons or ""), flags=re.I))
+
+
 def _cyprus_main_nuance(v2_text: str) -> str:
     reasons = _score_reasons(v2_text)
     low = (reasons + " " + _plain(v2_text)).lower()
@@ -1012,14 +1023,20 @@ def _cyprus_main_nuance(v2_text: str) -> str:
         return "⚠️ Главный нюанс: осадки возможны локально, особенно в горах; у моря жарко и порывисто."
     if rain:
         return "⚠️ Главный нюанс: осадки возможны локально; по маршруту лучше оставить запасной вариант."
-    if heat and wind:
-        return "⚠️ Главный нюанс: жара в Никосии и порывы у моря."
-    if heat:
-        return "⚠️ Главный нюанс: жара во внутренних районах острова."
-    if wind:
-        return "⚠️ Главный нюанс: порывы у моря — лучше сверить ветер утром."
     if mist:
         return "⚠️ Главный нюанс: локальная утренняя дымка/туман."
+    # Heat and coastal gusts are routinely already named by the score reasons.
+    # The nuance keeps only the hazard the score has not stated, and is dropped
+    # entirely when it would merely rephrase the score.
+    heat_is_new = heat and not _score_reason_mentions_heat(reasons)
+    wind_is_new = wind and not _score_reason_mentions_wind(reasons)
+    if heat_is_new and wind_is_new:
+        return "⚠️ Главный нюанс: жара в Никосии и порывы у моря."
+    if heat_is_new:
+        return "⚠️ Главный нюанс: жара во внутренних районах острова."
+    if wind_is_new:
+        # Signal only: the concrete wind guidance stays in the plan line.
+        return "⚠️ Главный нюанс: порывы у моря."
     return ""
 
 
@@ -1576,10 +1593,36 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
     return _inject_after_anchor(v2_text, score, ("💨", "🌡"))
 
 
+def _replace_existing_score_line(v2_text: str, new_score: str, prefixes: tuple[str, ...]) -> tuple[str, bool]:
+    """Replace an existing score line in place; report whether one was found.
+
+    The score is a single verdict about the day, so the recomputed line replaces the
+    one the factual layer already produced instead of being published beside it.
+    """
+    if not new_score:
+        return v2_text, False
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if not replaced and line.strip().startswith(prefixes):
+            out.append(new_score)
+            replaced = True
+            continue
+        out.append(line)
+    return "\n".join(out), replaced
+
+
 def _inject_evening_score(v2_text: str, mode: str) -> str:
     if mode.startswith("morn") or not _env_on("EVENING_VAYBOMETER_SCORE"):
         return v2_text
-    return _insert_before_anchor(v2_text, _cyprus_evening_score_line(v2_text), ("🎯 <b>Уверенность", "🎯"))
+    score = _cyprus_evening_score_line(v2_text)
+    replaced_text, replaced = _replace_existing_score_line(
+        v2_text, score, ("✨ VayboMeter завтра:", "✨ VayboMeter:")
+    )
+    if replaced:
+        return replaced_text
+    return _insert_before_anchor(v2_text, score, ("🎯 <b>Уверенность", "🎯"))
 
 
 def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:

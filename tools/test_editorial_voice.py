@@ -27,7 +27,13 @@ telegram_stub.Bot = object
 telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
 sys.modules.setdefault("telegram", telegram_stub)
 
-from editorial_voice import CYPRUS_EVENING_VARIANTS, CYPRUS_MORNING_VARIANTS, deterministic_variant  # noqa: E402
+from editorial_voice import (  # noqa: E402
+    CYPRUS_EVENING_VARIANTS,
+    CYPRUS_MORNING_VARIANTS,
+    build_evening_human_line,
+    build_morning_human_line,
+    deterministic_variant,
+)
 from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
 from safe_test_post import _apply_editorial_voice  # noqa: E402
 from send_weekly_forecast import build_weekly_forecast  # noqa: E402
@@ -257,6 +263,212 @@ def test_editorial_voice_keeps_hashtags_last_and_html_valid() -> None:
         _Parser().feed(text)
 
 
+# Concrete action wording that belongs to the plan line, never to the editorial voice.
+PLAN_ACTION_MARKERS = (
+    # Literal protective actions owned by the plan line.
+    "spf",
+    "11–16",
+    "11-16",
+    "до 11",
+    "после 18:30",
+    "18:30",
+    "вода с собой",
+    "воду с собой",
+    "в тени",
+    "в помещени",
+    "прогулка после заката",
+    "закрепить",
+    # Day-scheduling prescriptions: the plan says when to do things, the voice does not.
+    "два окна",
+    "активное утро",
+    "активным утром",
+    "свободный вечер",
+    "свободным вечером",
+    "оставить на утро",
+    "сделать утром",
+    "сделать до",
+    "перенести на",
+    "лучше выбрать",
+    "лучше выбирать",
+    "стоит сократить",
+    "лучше сократить",
+    "заложить запас",
+)
+
+
+def test_editorial_phrase_banks_carry_no_plan_actions() -> None:
+    """H.2: the voice states the meaning of the day, the plan states the actions."""
+    for bank_name, bank in (
+        ("morning", CYPRUS_MORNING_VARIANTS),
+        ("evening", CYPRUS_EVENING_VARIANTS),
+    ):
+        for scenario, phrases in bank.items():
+            for phrase in phrases:
+                low = phrase.lower()
+                for marker in PLAN_ACTION_MARKERS:
+                    assert marker not in low, f"{bank_name}/{scenario}: {phrase!r} repeats plan action {marker!r}"
+
+
+def test_hot_uv_voice_does_not_restate_the_smart_plan() -> None:
+    """Two consecutive HOT_UV days may differ, but neither may echo the plan."""
+    seen = set()
+    for day in (10, 11):
+        conditions = {"max_temp": 37, "uv": 9, "uv_high": True, "wind": False, "aqi": 40}
+        line = build_morning_human_line("Кипр", f"2026-08-{day:02d}", conditions)
+        assert line.startswith("💬 По ощущениям дня: ")
+        phrase = line.split(": ", 1)[1]
+        assert phrase in _phrases(CYPRUS_MORNING_VARIANTS, "HOT_UV")
+        low = phrase.lower()
+        for marker in PLAN_ACTION_MARKERS:
+            assert marker not in low, f"{phrase!r} repeats plan action {marker!r}"
+        seen.add(phrase)
+    # Deterministic per date; the bank is allowed to rotate between days.
+    assert build_morning_human_line(
+        "Кипр", "2026-08-10", {"max_temp": 37, "uv": 9, "uv_high": True}
+    ) == build_morning_human_line("Кипр", "2026-08-10", {"max_temp": 37, "uv": 9, "uv_high": True})
+
+
+# Heat claims that must never appear unconditionally in the HOT_UV banks, because
+# HOT_UV may fire on a UV-only day whose temperature is below the heat threshold.
+FALSE_HEAT_CLAIM_PATTERN = re.compile(r"жар\w*|зно\w*|пекл\w*", re.IGNORECASE)
+UNSUPPORTED_TEMPERATURE_CLAIM_PATTERN = re.compile(
+    r"\b(?:жар\w*|зно\w*|пекл\w*|тепл\w*|прохлад\w*|холод\w*)",
+    re.IGNORECASE,
+)
+UNSUPPORTED_WIND_CLAIM_PATTERN = re.compile(r"\b(?:ветр\w*|порыв\w*)", re.IGNORECASE)
+
+
+WIND_NUANCE_FIXTURE = """<b>🌅 Кипр сегодня (04.05.2026)</b>
+✨ VayboMeter: 7.6/10 — хорошо; очень высокий УФ.
+🌡 Теплее всего — Никосия (28°), прохладнее — Тродос (21°).
+💨 Ветер: 7.0 м/с • порывы до 16 м/с • 🔹 1010 гПа →
+☀️ УФ 7 — высокий.
+🏭 Воздух: AQI 31 (низкий) • PM₂.₅ 9 / PM₁₀ 16
+#Кипр #погода #здоровье
+"""
+
+# Action wording that belongs to the plan, never to the nuance signal line.
+NUANCE_ACTION_MARKERS = ("лучше", "сверить", "выбрать", "сделать")
+
+
+def test_wind_nuance_states_the_signal_without_an_action() -> None:
+    """The nuance names the gust signal; the plan keeps the concrete wind guidance."""
+    from safe_test_post import _cyprus_main_nuance, _cyprus_smart_plan_line, _score_reasons
+
+    # Precondition: the score reasons do not mention wind, so the nuance adds signal.
+    reasons = _score_reasons(WIND_NUANCE_FIXTURE)
+    assert "порыв" not in reasons.lower() and "ветер" not in reasons.lower(), reasons
+
+    nuance = _cyprus_main_nuance(WIND_NUANCE_FIXTURE)
+    assert "порывы у моря" in nuance, nuance
+    for marker in NUANCE_ACTION_MARKERS:
+        assert marker not in nuance.lower(), f"nuance carries action wording {marker!r}: {nuance}"
+
+    # The concrete wind actions still live in the plan.
+    plan = _cyprus_smart_plan_line(WIND_NUANCE_FIXTURE)
+    assert plan, "wind plan disappeared"
+    low = plan.lower()
+    assert "защищённые места" in low, plan
+    assert "фактическим ветром" in low or "сверять" in low, plan
+
+
+def test_hot_uv_bank_makes_no_heat_claim_on_uv_only_day() -> None:
+    """HOT_UV must stay correct at ~27°C with UV 7: no phrase may assert heat."""
+    conditions = {
+        "max_temp": 27,
+        "uv": 7,
+        "uv_high": True,
+        "heat": False,
+        "wind": False,
+        "aqi": 31,
+    }
+
+    # The scenario selection itself is unchanged: HOT_UV still applies.
+    from editorial_voice import _scenario
+
+    assert _scenario(conditions) == "HOT_UV"
+
+    morning = build_morning_human_line("Кипр", "2026-05-04", conditions)
+    evening = build_evening_human_line("Кипр", "2026-05-04", conditions)
+    assert morning.startswith("💬 По ощущениям дня: ")
+    assert evening.startswith("💬 Настрой на завтра: ")
+    assert morning.split(": ", 1)[1] in _phrases(CYPRUS_MORNING_VARIANTS, "HOT_UV")
+    assert evening.split(": ", 1)[1] in _phrases(CYPRUS_EVENING_VARIANTS, "HOT_UV")
+
+    # The whole bank must be safe, not just the variant this date happens to pick.
+    for bank_name, bank in (
+        ("morning", CYPRUS_MORNING_VARIANTS),
+        ("evening", CYPRUS_EVENING_VARIANTS),
+    ):
+        for phrase in bank["HOT_UV"]:
+            match = FALSE_HEAT_CLAIM_PATTERN.search(phrase)
+            assert match is None, (
+                f"{bank_name}/HOT_UV claims heat ({match.group(0)!r}) "
+                f"on a UV-only day: {phrase!r}"
+            )
+
+
+def test_local_weather_bank_does_not_invent_heat_or_wind_on_rain_only_day() -> None:
+    """Rain alone may select LOCAL_WEATHER, so its bank cannot invent heat or wind."""
+    from editorial_voice import _scenario
+
+    conditions = {
+        "rain": True,
+        "max_temp": 25,
+        "uv": 3,
+        "uv_high": False,
+        "heat": False,
+        "wind": False,
+        "gust": 3,
+        "aqi": 31,
+    }
+    assert _scenario(conditions) == "LOCAL_WEATHER"
+
+    for bank_name, bank in (
+        ("morning", CYPRUS_MORNING_VARIANTS),
+        ("evening", CYPRUS_EVENING_VARIANTS),
+    ):
+        for phrase in bank["LOCAL_WEATHER"]:
+            temp_match = UNSUPPORTED_TEMPERATURE_CLAIM_PATTERN.search(phrase)
+            wind_match = UNSUPPORTED_WIND_CLAIM_PATTERN.search(phrase)
+            assert temp_match is None, (
+                f"{bank_name}/LOCAL_WEATHER invents temperature ({temp_match.group(0)!r}) "
+                f"on a rain-only day: {phrase!r}"
+            )
+            assert wind_match is None, (
+                f"{bank_name}/LOCAL_WEATHER invents wind ({wind_match.group(0)!r}) "
+                f"on a rain-only day: {phrase!r}"
+            )
+
+
+def test_windy_coast_bank_does_not_invent_temperature_on_wind_only_day() -> None:
+    """Wind alone may select WINDY_COAST, so its bank cannot invent a temperature state."""
+    from editorial_voice import _scenario
+
+    conditions = {
+        "rain": False,
+        "max_temp": 27,
+        "uv": 4,
+        "uv_high": False,
+        "heat": False,
+        "wind": 7,
+        "gust": 11,
+        "aqi": 31,
+    }
+    assert _scenario(conditions) == "WINDY_COAST"
+
+    for bank_name, bank in (
+        ("morning", CYPRUS_MORNING_VARIANTS),
+        ("evening", CYPRUS_EVENING_VARIANTS),
+    ):
+        for phrase in bank["WINDY_COAST"]:
+            match = UNSUPPORTED_TEMPERATURE_CLAIM_PATTERN.search(phrase)
+            assert match is None, (
+                f"{bank_name}/WINDY_COAST invents temperature ({match.group(0)!r}) "
+                f"on a wind-only day: {phrase!r}"
+            )
+
+
 def test_safe_pollen_low_does_not_select_poor_air() -> None:
     text = _apply_editorial_voice(SAFE_POLLEN_MORNING, "morning")
     line = _voice_line(text, "💬 По ощущениям дня:")
@@ -351,6 +563,12 @@ def main() -> None:
         test_editorial_voice_never_strips_real_lunar_lines,
         test_editorial_voice_does_not_change_factual_values,
         test_editorial_voice_keeps_hashtags_last_and_html_valid,
+        test_editorial_phrase_banks_carry_no_plan_actions,
+        test_hot_uv_voice_does_not_restate_the_smart_plan,
+        test_hot_uv_bank_makes_no_heat_claim_on_uv_only_day,
+        test_wind_nuance_states_the_signal_without_an_action,
+        test_local_weather_bank_does_not_invent_heat_or_wind_on_rain_only_day,
+        test_windy_coast_bank_does_not_invent_temperature_on_wind_only_day,
     )
     for check in checks:
         check()
