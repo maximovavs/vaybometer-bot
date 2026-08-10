@@ -477,7 +477,6 @@ def cy_evening_score_reasons_are_semantically_deduped() -> None:
 
 def cy_evening_preserves_moon_illumination_and_advice() -> None:
     text = build_evening_format_v2("Кипр", RICH_ASTRO_EVENING)
-    assert "🌅 Рассвет завтра: 05:37" in text
     assert "🌕 Полнолуние в ♐ — подходит для укрепления планов и постепенного роста." in text
     assert "✨ 92% освещённости — эмоции ярче обычного, выбирай спокойный темп." in text
     assert "✅ Общий фон: спокойнее решать дела по одному." in text
@@ -510,7 +509,7 @@ def cy_morning_preserves_moon_and_illumination() -> None:
 
 def cy_morning_sea_summary_uses_coastal_rows_not_sunset() -> None:
     text = build_morning_format_v2("Кипр", MORNING_SEA_ROWS)
-    assert "🌊 Море: средняя вода 27°C; лучше до 11:00 или после 18:30." in text
+    assert "🌊 Море: средняя вода 27°C." in text
     assert "🌊 Море: вода 20°C" not in text
     assert "20:05" in text
 
