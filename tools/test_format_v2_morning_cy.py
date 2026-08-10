@@ -2817,13 +2817,25 @@ def cy_h2_morning_heat_uv_roles_are_separated() -> None:
 
 def cy_h3_sea_facts_and_protective_plan_are_separated() -> None:
     """Factual marine data has no timing; the existing high-UV/windy plan keeps it."""
+    assert format_v2_module._legacy_wind_pressure_line(
+        ["💨 Ветер: 6.0 м/с • порывы до 16 м/с • 🔹 1009 гПа →"]
+    ) == "💨 Ветер: 6.0 м/с • порывы до 16 м/с • 🔹 1009 гПа →"
+    assert format_v2_module._legacy_wind_pressure_line(
+        ["💨 Ветер: 6.0 м/с • порывы до 5 м/с • 🔹 1009 гПа →"]
+    ) == "💨 Ветер: 6.0 м/с • порывы до 5 м/с • 🔹 1009 гПа →"
+    assert format_v2_module._legacy_wind_pressure_line(
+        ["💨 Ветер: 6.0 м/с • порывы до 16 • 🔹 1009 гПа →"]
+    ) == "💨 Ветер: 6.0 м/с • порывы до 16 м/с • 🔹 1009 гПа →"
     source = H2_HEAT_UV_MORNING.replace("Никосия (37°)", "Никосия (29°)")
     text = build_morning_format_v2("Кипр", sanitize_post_text(source).text)
+    assert "порывы до 16 м/с" in text
+    assert "порывы до 1 м/с6 м/с" not in text
     sea_line = _h3_sea_line(text)
     assert sea_line == "🌊 Море: вода 28°C; волна спокойная."
     _assert_h3_factual_sea_line(sea_line)
     plan = _cyprus_smart_plan_line(text)
     conditions = safe_module._cyprus_conditions(text)
+    assert conditions.get("gust") == 16.0, conditions
     visibility = safe_module._cyprus_visibility_condition(text)
     routing_lines = [
         line.strip()

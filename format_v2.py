@@ -1014,7 +1014,7 @@ def _legacy_wind_pressure_line(lines: list[str]) -> str:
     for line in lines:
         s = line.strip()
         if s.startswith("💨") or s.startswith("🔹"):
-            return re.sub(r"\bпорывы до (\d+)(?!\s*м/с)", r"порывы до \1 м/с", s)
+            return re.sub(r"\bпорывы до (\d+)\b(?!\s*м/с)", r"порывы до \1 м/с", s)
     return ""
 
 
