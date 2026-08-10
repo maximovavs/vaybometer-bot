@@ -331,6 +331,11 @@ def test_hot_uv_voice_does_not_restate_the_smart_plan() -> None:
 # Heat claims that must never appear unconditionally in the HOT_UV banks, because
 # HOT_UV may fire on a UV-only day whose temperature is below the heat threshold.
 FALSE_HEAT_CLAIM_PATTERN = re.compile(r"жар\w*|зно\w*|пекл\w*", re.IGNORECASE)
+UNSUPPORTED_TEMPERATURE_CLAIM_PATTERN = re.compile(
+    r"\b(?:жар\w*|зно\w*|пекл\w*|тепл\w*|прохлад\w*|холод\w*)",
+    re.IGNORECASE,
+)
+UNSUPPORTED_WIND_CLAIM_PATTERN = re.compile(r"\b(?:ветр\w*|порыв\w*)", re.IGNORECASE)
 
 
 WIND_NUANCE_FIXTURE = """<b>🌅 Кипр сегодня (04.05.2026)</b>
@@ -400,6 +405,67 @@ def test_hot_uv_bank_makes_no_heat_claim_on_uv_only_day() -> None:
             assert match is None, (
                 f"{bank_name}/HOT_UV claims heat ({match.group(0)!r}) "
                 f"on a UV-only day: {phrase!r}"
+            )
+
+
+def test_local_weather_bank_does_not_invent_heat_or_wind_on_rain_only_day() -> None:
+    """Rain alone may select LOCAL_WEATHER, so its bank cannot invent heat or wind."""
+    from editorial_voice import _scenario
+
+    conditions = {
+        "rain": True,
+        "max_temp": 25,
+        "uv": 3,
+        "uv_high": False,
+        "heat": False,
+        "wind": False,
+        "gust": 3,
+        "aqi": 31,
+    }
+    assert _scenario(conditions) == "LOCAL_WEATHER"
+
+    for bank_name, bank in (
+        ("morning", CYPRUS_MORNING_VARIANTS),
+        ("evening", CYPRUS_EVENING_VARIANTS),
+    ):
+        for phrase in bank["LOCAL_WEATHER"]:
+            temp_match = UNSUPPORTED_TEMPERATURE_CLAIM_PATTERN.search(phrase)
+            wind_match = UNSUPPORTED_WIND_CLAIM_PATTERN.search(phrase)
+            assert temp_match is None, (
+                f"{bank_name}/LOCAL_WEATHER invents temperature ({temp_match.group(0)!r}) "
+                f"on a rain-only day: {phrase!r}"
+            )
+            assert wind_match is None, (
+                f"{bank_name}/LOCAL_WEATHER invents wind ({wind_match.group(0)!r}) "
+                f"on a rain-only day: {phrase!r}"
+            )
+
+
+def test_windy_coast_bank_does_not_invent_temperature_on_wind_only_day() -> None:
+    """Wind alone may select WINDY_COAST, so its bank cannot invent a temperature state."""
+    from editorial_voice import _scenario
+
+    conditions = {
+        "rain": False,
+        "max_temp": 27,
+        "uv": 4,
+        "uv_high": False,
+        "heat": False,
+        "wind": 7,
+        "gust": 11,
+        "aqi": 31,
+    }
+    assert _scenario(conditions) == "WINDY_COAST"
+
+    for bank_name, bank in (
+        ("morning", CYPRUS_MORNING_VARIANTS),
+        ("evening", CYPRUS_EVENING_VARIANTS),
+    ):
+        for phrase in bank["WINDY_COAST"]:
+            match = UNSUPPORTED_TEMPERATURE_CLAIM_PATTERN.search(phrase)
+            assert match is None, (
+                f"{bank_name}/WINDY_COAST invents temperature ({match.group(0)!r}) "
+                f"on a wind-only day: {phrase!r}"
             )
 
 
@@ -501,6 +567,8 @@ def main() -> None:
         test_hot_uv_voice_does_not_restate_the_smart_plan,
         test_hot_uv_bank_makes_no_heat_claim_on_uv_only_day,
         test_wind_nuance_states_the_signal_without_an_action,
+        test_local_weather_bank_does_not_invent_heat_or_wind_on_rain_only_day,
+        test_windy_coast_bank_does_not_invent_temperature_on_wind_only_day,
     )
     for check in checks:
         check()

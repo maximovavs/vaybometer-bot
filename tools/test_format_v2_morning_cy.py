@@ -2856,6 +2856,74 @@ def cy_h2_factual_values_are_unchanged_by_role_separation() -> None:
     HTMLParser().feed(text)
 
 
+def cy_h2_editorial_truth_safety_covers_rain_wind_uv_and_nuance() -> None:
+    """CI-visible truth guard for LOCAL_WEATHER, WINDY_COAST, HOT_UV and wind nuance."""
+    from editorial_voice import CYPRUS_EVENING_VARIANTS, CYPRUS_MORNING_VARIANTS, _scenario
+
+    temperature_claim = re.compile(
+        r"\b(?:жар\w*|зно\w*|пекл\w*|тепл\w*|прохлад\w*|холод\w*)",
+        re.IGNORECASE,
+    )
+    wind_claim = re.compile(r"\b(?:ветр\w*|порыв\w*)", re.IGNORECASE)
+
+    rain_only = {
+        "rain": True,
+        "max_temp": 25,
+        "uv": 3,
+        "uv_high": False,
+        "heat": False,
+        "wind": False,
+        "gust": 3,
+        "aqi": 31,
+    }
+    assert _scenario(rain_only) == "LOCAL_WEATHER"
+    for bank in (CYPRUS_MORNING_VARIANTS, CYPRUS_EVENING_VARIANTS):
+        for phrase in bank["LOCAL_WEATHER"]:
+            assert temperature_claim.search(phrase) is None, phrase
+            assert wind_claim.search(phrase) is None, phrase
+
+    wind_only = {
+        "rain": False,
+        "max_temp": 27,
+        "uv": 4,
+        "uv_high": False,
+        "heat": False,
+        "wind": 7,
+        "gust": 11,
+        "aqi": 31,
+    }
+    assert _scenario(wind_only) == "WINDY_COAST"
+    for bank in (CYPRUS_MORNING_VARIANTS, CYPRUS_EVENING_VARIANTS):
+        for phrase in bank["WINDY_COAST"]:
+            assert temperature_claim.search(phrase) is None, phrase
+
+    uv_only = {
+        "rain": False,
+        "max_temp": 27,
+        "uv": 7,
+        "uv_high": True,
+        "heat": False,
+        "wind": False,
+        "gust": 3,
+        "aqi": 31,
+    }
+    assert _scenario(uv_only) == "HOT_UV"
+    for bank in (CYPRUS_MORNING_VARIANTS, CYPRUS_EVENING_VARIANTS):
+        for phrase in bank["HOT_UV"]:
+            assert re.search(r"жар\w*|зно\w*|пекл\w*", phrase, re.IGNORECASE) is None, phrase
+
+    wind_nuance_fixture = """<b>🌅 Кипр сегодня (04.05.2026)</b>
+✨ VayboMeter: 7.6/10 — хорошо; очень высокий УФ.
+🌡 Теплее всего — Никосия (28°), прохладнее — Тродос (21°).
+💨 Ветер: 7.0 м/с • порывы до 16 м/с • 🔹 1010 гПа →
+☀️ УФ 7 — высокий.
+🏭 Воздух: AQI 31 (низкий) • PM₂.₅ 9 / PM₁₀ 16
+#Кипр #погода #здоровье
+"""
+    nuance = _cyprus_main_nuance(wind_nuance_fixture)
+    assert nuance == "⚠️ Главный нюанс: порывы у моря."
+
+
 def cy_morning_final_publication_path_applies_editorial_voice_once() -> None:
     """The final FORMAT_V2 path must publish exactly one morning editorial line."""
     import safe_test_post as safe_module
@@ -3314,6 +3382,7 @@ def main() -> None:
         cy_h2_fog_safety_guidance_survives_dedup,
         cy_h2_poor_air_advisory_is_not_suppressed,
         cy_h2_factual_values_are_unchanged_by_role_separation,
+        cy_h2_editorial_truth_safety_covers_rain_wind_uv_and_nuance,
         cy_morning_final_publication_path_applies_editorial_voice_once,
         cy_final_orchestration_applies_editorial_voice_after_factual_passes,
         cy_astro_llm_cannot_override_canonical_lunar_facts,
