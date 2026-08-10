@@ -1874,15 +1874,18 @@ def cy_image_repeated_pollinations_switches_backend_and_sends_receipt() -> None:
                 sys.modules.pop("world_en.imagegen", None)
             else:
                 sys.modules["world_en.imagegen"] = imagegen_old
-            for key, value in (
-                ("CY_SAFE_IMAGE_DIR", old_img_dir),
-                ("CY_IMG_MIN_BYTES", old_min),
-                ("CHANNEL_ID", old_channel),
-            ):
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+            if old_img_dir is None:
+                os.environ.pop("CY_SAFE_IMAGE_DIR", None)
+            else:
+                os.environ["CY_SAFE_IMAGE_DIR"] = old_img_dir
+            if old_min is None:
+                os.environ.pop("CY_IMG_MIN_BYTES", None)
+            else:
+                os.environ["CY_IMG_MIN_BYTES"] = old_min
+            if old_channel is None:
+                os.environ.pop("CHANNEL_ID", None)
+            else:
+                os.environ["CHANNEL_ID"] = old_channel
         return result, excluded_seen, photo_calls
 
     def _case(tmp: Path) -> None:
