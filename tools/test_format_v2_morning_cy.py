@@ -2823,7 +2823,20 @@ def cy_h3_sea_facts_and_protective_plan_are_separated() -> None:
     assert sea_line == "🌊 Море: вода 28°C; волна спокойная."
     _assert_h3_factual_sea_line(sea_line)
     plan = _cyprus_smart_plan_line(text)
-    assert plan == "✅ План: активность до 11:00 или после 18:30; 11–16 — тень; SPF 50, вода; у моря — защищённые места."
+    conditions = safe_module._cyprus_conditions(text)
+    visibility = safe_module._cyprus_visibility_condition(text)
+    routing_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith(("🌡", "💨", "☀️", "🌫"))
+    ]
+    expected_plan = "✅ План: активность до 11:00 или после 18:30; 11–16 — тень; SPF 50, вода; у моря — защищённые места."
+    assert plan == expected_plan, (
+        f"plan={plan!r}; conditions={conditions!r}; "
+        f"warm_t={conditions.get('warm_t')!r}; uv={conditions.get('uv')!r}; "
+        f"gust={conditions.get('gust')!r}; visibility={visibility!r}; "
+        f"routing_lines={routing_lines!r}"
+    )
 
 
 def cy_h2_feels_line_never_carries_plan_actions_at_any_uv() -> None:
