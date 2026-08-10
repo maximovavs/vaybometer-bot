@@ -672,7 +672,7 @@ def cy_city_forecast_does_not_shift_incomplete_or_malformed_arrays() -> None:
         },
         "hourly": {
             "time": ["bad-hourly-time", "2026-08-09T12:00"],
-            "windspeed_10m": [180.0, 10.8],
+            "windspeed_10m": [360.0, 10.8],
             "winddirection_10m": [270.0],
             "surface_pressure": [800.0, 1012.0],
             "windgusts_10m": [360.0, 18.0],
@@ -879,9 +879,11 @@ def cy_format_v2_source_missing_target_date_never_uses_tomorrow_or_current() -> 
     assert _format_v2_source_line(payload) == ""
     assert _replace_attrs(
         weather_module,
-        {"get_weather": lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("malformed title date reached weather source")
-        )},
+        {
+            "get_weather": lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("malformed title date reached weather source")
+            )
+        },
         lambda: format_v2_module._source_wind_pressure_line("not-a-date"),
     ) == ""
 
