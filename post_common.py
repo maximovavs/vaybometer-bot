@@ -739,10 +739,10 @@ def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
 _ASTRO_PHASE_TOKENS = {
     "новолун": "new",
     "полнолун": "full",
+    "перв": "first_quarter",
+    "последн": "last_quarter",
     "убыва": "waning",
     "растущ": "waxing",
-    "перв": "quarter",
-    "последн": "quarter",
 }
 
 _ASTRO_SIGN_SYMBOLS = "♈♉♊♋♌♍♎♏♐♑♒♓"
@@ -786,7 +786,7 @@ def astro_llm_line_contradicts_canonical(
             claimed = int(raw_value)
         except Exception:
             continue
-        if canonical_percent and claimed != canonical_percent:
+        if claimed != canonical_percent:
             return True
 
     canonical_sign_sym = str(sign_sym or "").strip()
@@ -802,13 +802,15 @@ def astro_llm_line_contradicts_canonical(
             if re.search(rf"(?<![а-яё]){re.escape(name[:4])}[а-яё]*", low) and name[:4] != canonical_sign_name[:4]:
                 return True
 
-    # A VoC window stated with different times contradicts the canonical interval.
-    if voc_text:
-        canonical_times = set(re.findall(r"\d{1,2}:\d{2}", str(voc_text)))
-        if canonical_times and re.search(r"\bvoc\b|без\s+курса|void", low):
-            line_times = set(re.findall(r"\d{1,2}:\d{2}", low))
-            if line_times and not (line_times & canonical_times):
-                return True
+    # A stated VoC fact must agree with canonical presence and the exact interval.
+    voc_claim = bool(re.search(r"\bvoc\b|без\s+курса|void", low))
+    if voc_claim:
+        canonical_times = re.findall(r"\d{1,2}:\d{2}", str(voc_text or ""))
+        line_times = re.findall(r"\d{1,2}:\d{2}", low)
+        if not canonical_times:
+            return True
+        if line_times and line_times != canonical_times:
+            return True
     return False
 
 

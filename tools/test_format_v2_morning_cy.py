@@ -1414,7 +1414,6 @@ def cy_image_diagnostics_redacts_secrets() -> None:
         secret = "fixture-secret-token"
         try:
             os.environ["POLLINATIONS_TOKEN"] = secret
-            # The implementation writes to the standard diagnostics dir; isolate via cwd-like env is not needed here.
             path = _cy_write_image_diagnostics(
                 mode="morning",
                 target_date="2026-07-06",
@@ -2719,7 +2718,6 @@ def cy_morning_final_publication_path_applies_editorial_voice_once() -> None:
     try:
         os.environ.update({key: "1" for key in old_values})
         sanitized_legacy = sanitize_post_text(MORNING_WITH_SEA).text
-        # Same order as the production orchestration.
         v2 = build_morning_format_v2("Кипр", sanitized_legacy)
         v2 = safe_module._inject_morning_score(v2, "morning")
         v2 = safe_module._apply_format_v2_test_polish(v2)
@@ -2742,10 +2740,8 @@ def cy_morning_final_publication_path_applies_editorial_voice_once() -> None:
 
     assert final_text.count("💬 По ощущениям дня:") == 1
     assert "💬 Настрой на завтра:" not in final_text
-    # Facts survive the injection.
     assert "🌊 Море: вода 28°C" in final_text
     assert "AQI 58" in final_text
-    # Hashtags stay last and the HTML stays parseable.
     lines = [line for line in final_text.splitlines() if line.strip()]
     assert lines[-1].startswith("#")
     HTMLParser().feed(final_text)
@@ -2766,7 +2762,6 @@ def cy_final_orchestration_applies_editorial_voice_after_factual_passes() -> Non
     )
 
     voice_index = source.index("_apply_editorial_voice(v2_raw, mode)")
-    # Applied after every factual transformation...
     for factual in (
         "_apply_astro_cleanup(v2_raw)",
         "_apply_cyprus_morning_raw_context(",
@@ -2775,7 +2770,6 @@ def cy_final_orchestration_applies_editorial_voice_after_factual_passes() -> Non
         "_inject_morning_smart_plan(v2_raw, mode)",
     ):
         assert source.index(factual) < voice_index, factual
-    # ...and before compaction, sanitizing and publication.
     assert voice_index < source.index("_apply_compact(v2_raw)")
     assert voice_index < source.index("sanitize_post_text(v2_raw)")
 
@@ -2800,7 +2794,6 @@ def cy_astro_llm_cannot_override_canonical_lunar_facts() -> None:
     for line in contradictory:
         assert post_common.astro_llm_line_contradicts_canonical(line, **canonical), line
 
-    # Interpretation that states no lunar facts of its own is kept.
     for line in (
         "✅ Хороший день для спокойных дел.",
         "💚 В плюсе: восстановление и завершение.",
@@ -2832,14 +2825,11 @@ def cy_astro_llm_cache_is_keyed_by_canonical_fingerprint() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         try:
             post_common.CACHE_DIR = Path(tmp)
-            # Seed a cache entry for the original canonical facts.
             stale_path = post_common._astro_cache_file(date_str, fp_base)
             stale_path.write_text("🌕 Stale interpretation for the old facts.", encoding="utf-8")
             assert post_common._astro_llm_bullets(date_str, *base) == [
                 "🌕 Stale interpretation for the old facts."
             ]
-
-            # After the lunar facts change, the stale prose must not be served.
             os.environ["DISABLE_LLM_DAILY"] = "1"
             post_common.USE_DAILY_LLM = False
             assert post_common._astro_llm_bullets(date_str, *changed) == []
@@ -2881,8 +2871,6 @@ def cy_astro_section_drops_contradictory_llm_lines() -> None:
             "void_of_course": {"start": "10.08 08:20", "end": "10.08 10:10"},
         }
     }
-    # Three contradictory factual claims plus three fact-free interpretations, so the
-    # surviving interpretation still forms a full block after filtering.
     contradictory = [
         "🌑 Новолуние — время новых намерений.",
         "✨ 42% освещённости — Луна почти тёмная.",
@@ -2900,7 +2888,6 @@ def cy_astro_section_drops_contradictory_llm_lines() -> None:
         post_common.load_calendar = lambda *args, **kwargs: calendar
         post_common._astro_llm_bullets = lambda *args, **kwargs: list(contradictory)
         if not had_timezone:
-            # The suite stubs pendulum; build_astro_section only needs a tz handle here.
             post_common.pendulum.timezone = lambda name: name
         section = post_common.build_astro_section(
             date_local=_pendulum_date(2026, 8, 10),
@@ -2914,15 +2901,12 @@ def cy_astro_section_drops_contradictory_llm_lines() -> None:
         else:
             post_common.pendulum.timezone = old_timezone
 
-    # Canonical facts survive.
     assert "Полнолуние" in section
     assert "100%" in section
     assert "♑" in section
-    # Every contradictory factual claim is gone.
     assert "Новолуние" not in section
     assert "42%" not in section
     assert "♒" not in section
-    # Interpretation carrying no lunar facts of its own is still allowed through.
     assert "Спокойный день для рутины" in section
 
 
@@ -2938,8 +2922,6 @@ def cy_astro_canonical_facts_are_never_crowded_out_by_llm() -> None:
             "void_of_course": {"start": "10.08 08:20", "end": "10.08 10:10"},
         }
     }
-    # Five fact-free interpretation lines: none contradict, all are eligible, and they
-    # would fill the whole block if canonical facts were not added first.
     verbose = [
         "✅ Спокойный день для рутины.",
         "🌟 Хорошее время завершать начатое.",
@@ -2969,7 +2951,6 @@ def cy_astro_canonical_facts_are_never_crowded_out_by_llm() -> None:
         else:
             post_common.pendulum.timezone = old_timezone
 
-    # Canonical phase, illumination and sign all survive a verbose LLM.
     assert "Полнолуние" in section
     assert "100%" in section
     assert "♑" in section
@@ -2992,6 +2973,115 @@ def cy_astro_block_is_correct_without_llm() -> None:
     assert "🌕 Полнолуние в ♑ — 100% освещённости." in text
     assert "⚫️ VoC: 08:20–10:10." in text
     HTMLParser().feed(text)
+
+
+def cy_astro_zero_percent_is_canonical() -> None:
+    canonical = dict(
+        phase_name="Новолуние",
+        percent=0,
+        sign_raw="Рак",
+        sign_sym="♋",
+        voc_text="",
+    )
+    assert post_common_module.astro_llm_line_contradicts_canonical(
+        "✨ 15% освещённости — Луна почти тёмная.", **canonical
+    )
+    assert not post_common_module.astro_llm_line_contradicts_canonical(
+        "🌑 Новолуние в ♋ — 0% освещённости.", **canonical
+    )
+
+
+def cy_astro_quarter_phases_are_distinct() -> None:
+    common = dict(percent=50, sign_raw="Рак", sign_sym="♋", voc_text="")
+    assert post_common_module.astro_llm_line_contradicts_canonical(
+        "🌗 Последняя четверть — время завершать дела.",
+        phase_name="Первая четверть",
+        **common,
+    )
+    assert post_common_module.astro_llm_line_contradicts_canonical(
+        "🌓 Первая четверть — пора набирать темп.",
+        phase_name="Последняя четверть",
+        **common,
+    )
+    assert not post_common_module.astro_llm_line_contradicts_canonical(
+        "🌓 Первая четверть — сохраняй спокойный темп.",
+        phase_name="Первая четверть",
+        **common,
+    )
+
+
+def cy_astro_voc_interval_requires_exact_match() -> None:
+    canonical = dict(
+        phase_name="Полнолуние",
+        percent=100,
+        sign_raw="Козерог",
+        sign_sym="♑",
+        voc_text="08:20–10:10",
+    )
+    assert post_common_module.astro_llm_line_contradicts_canonical(
+        "⚫️ VoC: 08:20–11:30 — без стартов.", **canonical
+    )
+    assert not post_common_module.astro_llm_line_contradicts_canonical(
+        "⚫️ VoC: 08:20–10:10 — без стартов.", **canonical
+    )
+
+    # Behavioral path: a partially matching interval must be filtered before merge.
+    calendar = {
+        "2026-08-10": {
+            "phase_name": "Полнолуние",
+            "percent": 100,
+            "sign": "Козерог",
+            "void_of_course": {"start": "10.08 08:20", "end": "10.08 10:10"},
+        }
+    }
+    llm_lines = [
+        "⚫️ VoC: 08:20–11:30 — без стартов.",
+        "✅ Спокойный день для рутины.",
+        "🌟 Хорошее время завершать начатое.",
+        "🧭 План дня держи простым.",
+    ]
+    old_calendar = post_common_module.load_calendar
+    old_bullets = post_common_module._astro_llm_bullets
+    had_timezone = hasattr(post_common_module.pendulum, "timezone")
+    old_timezone = getattr(post_common_module.pendulum, "timezone", None)
+    try:
+        post_common_module.load_calendar = lambda *args, **kwargs: calendar
+        post_common_module._astro_llm_bullets = lambda *args, **kwargs: list(llm_lines)
+        if not had_timezone:
+            post_common_module.pendulum.timezone = lambda name: name
+        section = post_common_module.build_astro_section(
+            date_local=_pendulum_date(2026, 8, 10),
+            tz_local="Asia/Nicosia",
+        )
+    finally:
+        post_common_module.load_calendar = old_calendar
+        post_common_module._astro_llm_bullets = old_bullets
+        if not had_timezone:
+            delattr(post_common_module.pendulum, "timezone")
+        else:
+            post_common_module.pendulum.timezone = old_timezone
+    assert "11:30" not in section
+    assert "08:20–10:10" in section
+    assert "Спокойный день для рутины" in section
+
+
+def cy_astro_absent_voc_cannot_be_invented_by_llm() -> None:
+    canonical = dict(
+        phase_name="Полнолуние",
+        percent=100,
+        sign_raw="Козерог",
+        sign_sym="♑",
+        voc_text="",
+    )
+    for fake in (
+        "⚫️ VoC: 12:00–13:00 — без стартов.",
+        "⚫️ Луна без курса 12:00–13:00 — отложи старты.",
+        "⚫️ Void of Course 12:00–13:00.",
+    ):
+        assert post_common_module.astro_llm_line_contradicts_canonical(fake, **canonical), fake
+    assert not post_common_module.astro_llm_line_contradicts_canonical(
+        "✅ Спокойный день для рутины.", **canonical
+    )
 
 
 def main() -> None:
@@ -3071,6 +3161,10 @@ def main() -> None:
         cy_astro_section_drops_contradictory_llm_lines,
         cy_astro_canonical_facts_are_never_crowded_out_by_llm,
         cy_astro_block_is_correct_without_llm,
+        cy_astro_zero_percent_is_canonical,
+        cy_astro_quarter_phases_are_distinct,
+        cy_astro_voc_interval_requires_exact_match,
+        cy_astro_absent_voc_cannot_be_invented_by_llm,
     )
     for check in checks:
         check()
