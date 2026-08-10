@@ -313,9 +313,23 @@ def _write_image_receipt(target_date: str, post_type: str = "morning", message_i
     return path
 
 
+def _h3_sea_line(text: str) -> str:
+    sea_lines = [line.strip() for line in str(text or "").splitlines() if line.strip().startswith("🌊 Море:")]
+    assert len(sea_lines) == 1, sea_lines
+    return sea_lines[0]
+
+
+def _assert_h3_factual_sea_line(line: str) -> None:
+    assert line.startswith("🌊 Море:")
+    for marker in ("лучше", "11:00", "18:30"):
+        assert marker not in line, f"actionable timing leaked into factual sea line: {line}"
+
+
 def cy_morning_adds_concise_sea_block_when_available() -> None:
     text = build_morning_format_v2("Кипр", MORNING_WITH_SEA)
-    assert "🌊 Море: вода 28°C; волна спокойная; лучше до 11:00 или после 18:30." in text
+    sea_line = _h3_sea_line(text)
+    assert sea_line == "🌊 Море: вода 28°C; волна спокойная."
+    _assert_h3_factual_sea_line(sea_line)
     assert "🏭 Воздух: AQI 58 (умеренный) • PM₂.₅ 14 / PM₁₀ 31 • 🌿 пыльца: низкая" in text
     assert "📟" not in text
     assert "🌿 пыльца" in text
@@ -354,7 +368,8 @@ def cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening() -> None
             "\n".join(rows) + "\n✅ Сегодня:",
         )
         morning = build_morning_format_v2("Кипр", raw_morning)
-        assert "🌊 Море: средняя вода 27°C;" in morning
+        assert _h3_sea_line(morning) == "🌊 Море: средняя вода 27°C."
+        _assert_h3_factual_sea_line(_h3_sea_line(morning))
 
         raw_evening = """<b>Кипр: погода на завтра (28.06.2026)</b>
 🏖 <b>Морские города</b>
@@ -980,31 +995,43 @@ def cy_evening_format_v2_preserves_tomorrow_city_values() -> None:
 
 def cy_morning_averages_coastal_sea_rows() -> None:
     text = build_morning_format_v2("Кипр", MORNING_WITH_COASTAL_ROWS)
-    assert "🌊 Море: средняя вода 27°C; лучше до 11:00 или после 18:30." in text
+    sea_line = _h3_sea_line(text)
+    assert sea_line == "🌊 Море: средняя вода 27°C."
+    _assert_h3_factual_sea_line(sea_line)
     assert "🌊 Море: вода 20°C" not in text
 
 
 def cy_morning_adds_sea_fallback_when_unavailable() -> None:
     text = build_morning_format_v2("Кипр", MORNING_NO_SEA)
-    assert "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30." in text
+    sea_line = _h3_sea_line(text)
+    assert sea_line == "🌊 Море: данные о температуре воды обновляются."
+    _assert_h3_factual_sea_line(sea_line)
 
 
 def cy_morning_rejects_non_marine_numbers_for_sea() -> None:
     text = build_morning_format_v2("Кипр", MORNING_NON_MARINE_NUMBERS)
-    assert "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30." in text
+    sea_line = _h3_sea_line(text)
+    assert sea_line == "🌊 Море: данные о температуре воды обновляются."
+    _assert_h3_factual_sea_line(sea_line)
     assert "🌊 Море: вода 20°C" not in text
     assert "🌊 Море: вода 31°C" not in text
+    assert "🌊 Море: вода 96°C" not in text
 
 
 def cy_morning_accepts_winter_explicit_sea_temperature() -> None:
     text = build_morning_format_v2("Кипр", MORNING_WINTER_WITH_SEA)
-    assert "🌊 Море: вода 19°C; волна спокойная; лучше до 11:00 или после 18:30." in text
+    sea_line = _h3_sea_line(text)
+    assert sea_line == "🌊 Море: вода 19°C; волна спокойная."
+    _assert_h3_factual_sea_line(sea_line)
 
 
 def cy_morning_winter_sunset_time_is_not_sea_temperature() -> None:
     text = build_morning_format_v2("Кипр", MORNING_WINTER_NON_MARINE_NUMBERS)
-    assert "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30." in text
+    sea_line = _h3_sea_line(text)
+    assert sea_line == "🌊 Море: данные о температуре воды обновляются."
+    _assert_h3_factual_sea_line(sea_line)
     assert "🌊 Море: вода 19°C" not in text
+    assert "18:30" not in sea_line
 
 
 def cy_morning_preserves_full_moon_line_without_illumination_duplicate() -> None:
@@ -1077,7 +1104,9 @@ def cy_morning_real_safe_path_restores_sea_and_astro_from_raw() -> None:
     text = _apply_cyprus_sensor_cleanup(text)
     text = sanitize_post_text(text).text
 
-    assert "🌊 Море: средняя вода 27°C; лучше до 11:00 или после 18:30." in text
+    sea_line = _h3_sea_line(text)
+    assert sea_line == "🌊 Море: средняя вода 27°C."
+    _assert_h3_factual_sea_line(sea_line)
     assert "🌊 Море: вода 20°C" not in text
     assert "☀️ <b>Солнце, Луна и ритм дня</b>" in text
     assert "🌇 Закат сегодня: 20:05" in text
@@ -2786,6 +2815,42 @@ def cy_h2_morning_heat_uv_roles_are_separated() -> None:
         assert marker.lower() not in voice.lower(), f"voice repeats plan action: {marker}"
 
 
+def cy_h3_sea_facts_and_protective_plan_are_separated() -> None:
+    """Factual marine data has no timing; the existing high-UV/windy plan keeps it."""
+    assert format_v2_module._legacy_wind_pressure_line(
+        ["💨 Ветер: 6.0 м/с • порывы до 16 м/с • 🔹 1009 гПа →"]
+    ) == "💨 Ветер: 6.0 м/с • порывы до 16 м/с • 🔹 1009 гПа →"
+    assert format_v2_module._legacy_wind_pressure_line(
+        ["💨 Ветер: 6.0 м/с • порывы до 5 м/с • 🔹 1009 гПа →"]
+    ) == "💨 Ветер: 6.0 м/с • порывы до 5 м/с • 🔹 1009 гПа →"
+    assert format_v2_module._legacy_wind_pressure_line(
+        ["💨 Ветер: 6.0 м/с • порывы до 16 • 🔹 1009 гПа →"]
+    ) == "💨 Ветер: 6.0 м/с • порывы до 16 м/с • 🔹 1009 гПа →"
+    source = H2_HEAT_UV_MORNING.replace("Никосия (37°)", "Никосия (29°)")
+    text = build_morning_format_v2("Кипр", sanitize_post_text(source).text)
+    assert "порывы до 16 м/с" in text
+    assert "порывы до 1 м/с6 м/с" not in text
+    sea_line = _h3_sea_line(text)
+    assert sea_line == "🌊 Море: вода 28°C; волна спокойная."
+    _assert_h3_factual_sea_line(sea_line)
+    plan = _cyprus_smart_plan_line(text)
+    conditions = safe_module._cyprus_conditions(text)
+    assert conditions.get("gust") == 16.0, conditions
+    visibility = safe_module._cyprus_visibility_condition(text)
+    routing_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith(("🌡", "💨", "☀️", "🌫"))
+    ]
+    expected_plan = "✅ План: активность до 11:00 или после 18:30; 11–16 — тень; SPF 50, вода; у моря — защищённые места."
+    assert plan == expected_plan, (
+        f"plan={plan!r}; conditions={conditions!r}; "
+        f"warm_t={conditions.get('warm_t')!r}; uv={conditions.get('uv')!r}; "
+        f"gust={conditions.get('gust')!r}; visibility={visibility!r}; "
+        f"routing_lines={routing_lines!r}"
+    )
+
+
 def cy_h2_feels_line_never_carries_plan_actions_at_any_uv() -> None:
     """Every UV branch of the feels line must describe sensation, not actions."""
     import safe_test_post as safe_module
@@ -2925,24 +2990,37 @@ def cy_h2_editorial_truth_safety_covers_rain_wind_uv_and_nuance() -> None:
 
 
 def cy_morning_final_publication_path_applies_editorial_voice_once() -> None:
-    """The final FORMAT_V2 path must publish exactly one morning editorial line."""
+    """The final FORMAT_V2 path keeps H.1/H.2 roles and H.3 factual sea provenance."""
     import safe_test_post as safe_module
 
     old_values = {
         key: os.environ.get(key)
-        for key in ("MORNING_VAYBOMETER_SCORE", "FORMAT_V2_MAIN_NUANCE", "MORNING_SMART_PLAN")
+        for key in (
+            "MORNING_FEELS_LIKE",
+            "MORNING_VAYBOMETER_SCORE",
+            "FORMAT_V2_MAIN_NUANCE",
+            "MORNING_SMART_PLAN",
+            "FORMAT_V2_SCORE_CONCLUSION",
+        )
     }
     try:
         os.environ.update({key: "1" for key in old_values})
         sanitized_legacy = sanitize_post_text(MORNING_WITH_SEA).text
         v2 = build_morning_format_v2("Кипр", sanitized_legacy)
+        v2 = safe_module._inject_morning_feels(v2, "morning")
+        v2 = safe_module._inject_morning_best_window(v2, "morning")
         v2 = safe_module._inject_morning_score(v2, "morning")
+        v2 = safe_module._inject_evening_score(v2, "morning")
         v2 = safe_module._apply_format_v2_test_polish(v2)
+        v2 = safe_module._apply_confidence_polish(v2)
         v2 = _insert_main_nuance(v2)
         v2 = _apply_astro_cleanup(v2)
+        v2 = _apply_cyprus_morning_raw_context(v2, MORNING_WITH_SEA, sanitized_legacy, "morning")
         v2 = _apply_cyprus_sensor_cleanup(v2)
+        v2 = safe_module._apply_score_conclusion(v2)
         v2 = safe_module._inject_morning_smart_plan(v2, "morning")
         v2 = safe_module._apply_editorial_voice(v2, "morning")
+        v2 = safe_module._apply_compact(v2)
         final_text = sanitize_post_text(v2).text
         final_text = finalize_hashtags_at_end(
             final_text,
@@ -2955,12 +3033,24 @@ def cy_morning_final_publication_path_applies_editorial_voice_once() -> None:
             else:
                 os.environ[key] = value
 
+    sea_line = _h3_sea_line(final_text)
+    assert sea_line == "🌊 Море: вода 28°C; волна спокойная."
+    _assert_h3_factual_sea_line(sea_line)
+    assert "<b>🌅 Кипр сегодня (27.06.2026)</b>" in final_text
+    assert final_text.count("🌊 Море:") == 1
     assert final_text.count("💬 По ощущениям дня:") == 1
     assert "💬 Настрой на завтра:" not in final_text
-    assert "🌊 Море: вода 28°C" in final_text
     assert "AQI 58" in final_text
+    feels = _h2_line(final_text, "🌡 Ощущается:")
+    voice = _h2_line(final_text, "💬 По ощущениям дня:")
+    plan = _h2_line(final_text, "✅ План:")
+    assert feels and voice and plan
+    for marker in H2_PLAN_ACTION_MARKERS:
+        assert marker.lower() not in feels.lower(), marker
+        assert marker.lower() not in voice.lower(), marker
+    assert "SPF" in plan and "11–16" in plan
     lines = [line for line in final_text.splitlines() if line.strip()]
-    assert lines[-1].startswith("#")
+    assert lines[-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
     HTMLParser().feed(final_text)
 
 
@@ -3377,6 +3467,7 @@ def main() -> None:
         cy_evening_preserves_only_tomorrow_morning_visibility,
         cy_morning_safe_production_polish_keeps_fog_actions,
         cy_h2_morning_heat_uv_roles_are_separated,
+        cy_h3_sea_facts_and_protective_plan_are_separated,
         cy_h2_feels_line_never_carries_plan_actions_at_any_uv,
         cy_h2_nuance_does_not_restate_score_reasons,
         cy_h2_fog_safety_guidance_survives_dedup,

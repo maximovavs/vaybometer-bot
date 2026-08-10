@@ -842,10 +842,10 @@ def _morning_sea_line(lines: list[str]) -> str:
             water_part = "вода комфортная"
         wave_part = f"волна {wave}" if wave else "волна спокойная"
         if len(waters) >= 2:
-            return f"🌊 Море: {water_part}; лучше до 11:00 или после 18:30."
-        return f"🌊 Море: {water_part}; {wave_part}; лучше до 11:00 или после 18:30."
+            return f"🌊 Море: {water_part}."
+        return f"🌊 Море: {water_part}; {wave_part}."
 
-    return "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30."
+    return "🌊 Море: данные о температуре воды обновляются."
 
 
 def _clean_uv_line(line: str) -> str:
@@ -1014,7 +1014,7 @@ def _legacy_wind_pressure_line(lines: list[str]) -> str:
     for line in lines:
         s = line.strip()
         if s.startswith("💨") or s.startswith("🔹"):
-            return re.sub(r"\bпорывы до (\d+)(?!\s*м/с)", r"порывы до \1 м/с", s)
+            return re.sub(r"\bпорывы до (\d+)\b(?!\s*м/с)", r"порывы до \1 м/с", s)
     return ""
 
 
