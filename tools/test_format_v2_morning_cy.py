@@ -1874,18 +1874,15 @@ def cy_image_repeated_pollinations_switches_backend_and_sends_receipt() -> None:
                 sys.modules.pop("world_en.imagegen", None)
             else:
                 sys.modules["world_en.imagegen"] = imagegen_old
-            if old_img_dir is None:
-                os.environ.pop("CY_SAFE_IMAGE_DIR", None)
-            else:
-                os.environ["CY_SAFE_IMAGE_DIR"] = old_img_dir
-            if old_min is None:
-                os.environ.pop("CY_IMG_MIN_BYTES", None)
-            else:
-                os.environ["CY_IMG_MIN_BYTES"] = old_min
-            if old_channel is None:
-                os.environ.pop("CHANNEL_ID", None)
-            else:
-                os.environ["CHANNEL_ID"] = old_channel
+            for key, value in (
+                ("CY_SAFE_IMAGE_DIR", old_img_dir),
+                ("CY_IMG_MIN_BYTES", old_min),
+                ("CHANNEL_ID", old_channel),
+            ):
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
         return result, excluded_seen, photo_calls
 
     def _case(tmp: Path) -> None:
@@ -3042,11 +3039,15 @@ def cy_astro_voc_interval_requires_exact_match() -> None:
     ]
     old_calendar = post_common_module.load_calendar
     old_bullets = post_common_module._astro_llm_bullets
+    old_voc_interval = post_common_module.voc_interval_for_date
     had_timezone = hasattr(post_common_module.pendulum, "timezone")
     old_timezone = getattr(post_common_module.pendulum, "timezone", None)
+    voc_start = types.SimpleNamespace(format=lambda _pattern: "08:20")
+    voc_end = types.SimpleNamespace(format=lambda _pattern: "10:10")
     try:
         post_common_module.load_calendar = lambda *args, **kwargs: calendar
         post_common_module._astro_llm_bullets = lambda *args, **kwargs: list(llm_lines)
+        post_common_module.voc_interval_for_date = lambda *args, **kwargs: (voc_start, voc_end)
         if not had_timezone:
             post_common_module.pendulum.timezone = lambda name: name
         section = post_common_module.build_astro_section(
@@ -3056,6 +3057,7 @@ def cy_astro_voc_interval_requires_exact_match() -> None:
     finally:
         post_common_module.load_calendar = old_calendar
         post_common_module._astro_llm_bullets = old_bullets
+        post_common_module.voc_interval_for_date = old_voc_interval
         if not had_timezone:
             delattr(post_common_module.pendulum, "timezone")
         else:
