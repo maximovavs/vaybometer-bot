@@ -842,10 +842,10 @@ def _morning_sea_line(lines: list[str]) -> str:
             water_part = "вода комфортная"
         wave_part = f"волна {wave}" if wave else "волна спокойная"
         if len(waters) >= 2:
-            return f"🌊 Море: {water_part}; лучше до 11:00 или после 18:30."
-        return f"🌊 Море: {water_part}; {wave_part}; лучше до 11:00 или после 18:30."
+            return f"🌊 Море: {water_part}."
+        return f"🌊 Море: {water_part}; {wave_part}."
 
-    return "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30."
+    return "🌊 Море: данные о температуре воды обновляются."
 
 
 def _clean_uv_line(line: str) -> str:
