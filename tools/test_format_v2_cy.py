@@ -477,6 +477,7 @@ def cy_evening_score_reasons_are_semantically_deduped() -> None:
 
 def cy_evening_preserves_moon_illumination_and_advice() -> None:
     text = build_evening_format_v2("Кипр", RICH_ASTRO_EVENING)
+    assert "🌅 Рассвет завтра: 05:37" in text
     assert "🌕 Полнолуние в ♐ — подходит для укрепления планов и постепенного роста." in text
     assert "✨ 92% освещённости — эмоции ярче обычного, выбирай спокойный темп." in text
     assert "✅ Общий фон: спокойнее решать дела по одному." in text
