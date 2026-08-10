@@ -1409,9 +1409,9 @@ def _cy_morning_sea_line_from_source(source_text: str) -> str:
             break
     if len(waters) >= 2:
         avg = sum(waters) / len(waters)
-        return f"🌊 Море: средняя вода {_fmt_cy_temp(avg)}°C; лучше до 11:00 или после 18:30."
+        return f"🌊 Море: средняя вода {_fmt_cy_temp(avg)}°C."
     if len(waters) == 1:
-        return f"🌊 Море: вода {_fmt_cy_temp(waters[0])}°C; волна спокойная; лучше до 11:00 или после 18:30."
+        return f"🌊 Море: вода {_fmt_cy_temp(waters[0])}°C; волна спокойная."
     return ""
 
 
