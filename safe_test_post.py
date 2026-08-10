@@ -1035,7 +1035,8 @@ def _cyprus_main_nuance(v2_text: str) -> str:
     if heat_is_new:
         return "⚠️ Главный нюанс: жара во внутренних районах острова."
     if wind_is_new:
-        return "⚠️ Главный нюанс: порывы у моря — лучше сверить ветер утром."
+        # Signal only: the concrete wind guidance stays in the plan line.
+        return "⚠️ Главный нюанс: порывы у моря."
     return ""
 
 
