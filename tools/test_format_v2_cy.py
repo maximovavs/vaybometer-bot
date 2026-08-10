@@ -842,6 +842,57 @@ def cy_workflow_morning_schedule_is_earlier() -> None:
     assert "github.event.schedule == '30 2 * * *'" not in workflow
 
 
+def cy_evening_final_publication_path_applies_editorial_voice_once() -> None:
+    """The final FORMAT_V2 path must publish exactly one evening editorial line."""
+    from html.parser import HTMLParser
+
+    import safe_test_post as safe_module
+
+    old_values = {
+        key: os.environ.get(key)
+        for key in ("EVENING_VAYBOMETER_SCORE", "FORMAT_V2_MAIN_NUANCE")
+    }
+    try:
+        os.environ.update({key: "1" for key in old_values})
+        v2 = build_evening_format_v2("Кипр", NORMAL_EVENING)
+        v2 = safe_module._inject_evening_score(v2, "evening")
+        v2 = _apply_format_v2_test_polish(v2)
+        v2 = _insert_main_nuance(v2)
+        v2 = _apply_astro_cleanup(v2)
+        v2 = _apply_cyprus_sensor_cleanup(v2)
+        v2 = safe_module._apply_editorial_voice(v2, "evening")
+        final_text = finalize_hashtags_at_end(
+            v2,
+            canonical_hashtags="#Кипр #погода #здоровье #Никосия #Тродос",
+        )
+    finally:
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    assert final_text.count("💬 Настрой на завтра:") == 1
+    assert "💬 По ощущениям дня:" not in final_text
+    # Evening context is tomorrow, and the facts are untouched.
+    assert "Кипр завтра" in final_text or "завтра" in final_text
+    assert "Лимассол" in final_text
+    lines = [line for line in final_text.splitlines() if line.strip()]
+    assert lines[-1].startswith("#")
+    HTMLParser().feed(final_text)
+
+    # Re-applying the helper stays idempotent on the evening path too.
+    again = safe_module._apply_editorial_voice(final_text, "evening")
+    assert again.count("💬 Настрой на завтра:") == 1
+
+
+def cy_evening_factual_formatter_still_omits_editorial_voice() -> None:
+    """format_v2 stays a factual-only layer."""
+    text = build_evening_format_v2("Кипр", NORMAL_EVENING)
+    assert "💬 Настрой на завтра:" not in text
+    assert "💬 По ощущениям дня:" not in text
+
+
 def main() -> None:
     checks = (
         cy_morning_preserves_quake_line,
@@ -882,6 +933,8 @@ def main() -> None:
         cy_evening_current_aqi_plus_reduced_visibility_uses_point_two,
         cy_evening_explicit_forecast_aqi_can_affect_tomorrow_score,
         cy_workflow_morning_schedule_is_earlier,
+        cy_evening_final_publication_path_applies_editorial_voice_once,
+        cy_evening_factual_formatter_still_omits_editorial_voice,
     )
     for check in checks:
         check()

@@ -3201,9 +3201,13 @@ async def main() -> None:
         v2_raw = _apply_astro_cleanup(v2_raw)
         v2_raw = _apply_cyprus_morning_raw_context(v2_raw, raw_msg, legacy_result.text, mode)
         v2_raw = _apply_cyprus_sensor_cleanup(v2_raw)
-        v2_raw = "\n".join(_without_editorial_voice(v2_raw))
         v2_raw = _apply_score_conclusion(v2_raw)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
+        # Editorial voice is applied exactly once, after every factual transformation
+        # and before compaction/sanitizing, so it reads the final factual text and
+        # cannot be reshaped by later factual passes. The helper strips any existing
+        # voice line first, so re-applying it never duplicates the 💬 line.
+        v2_raw = _apply_editorial_voice(v2_raw, mode)
         v2_raw = _apply_compact(v2_raw)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
