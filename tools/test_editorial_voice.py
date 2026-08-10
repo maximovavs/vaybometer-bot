@@ -27,7 +27,12 @@ telegram_stub.Bot = object
 telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
 sys.modules.setdefault("telegram", telegram_stub)
 
-from editorial_voice import CYPRUS_EVENING_VARIANTS, CYPRUS_MORNING_VARIANTS, deterministic_variant  # noqa: E402
+from editorial_voice import (  # noqa: E402
+    CYPRUS_EVENING_VARIANTS,
+    CYPRUS_MORNING_VARIANTS,
+    build_morning_human_line,
+    deterministic_variant,
+)
 from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
 from safe_test_post import _apply_editorial_voice  # noqa: E402
 from send_weekly_forecast import build_weekly_forecast  # noqa: E402
@@ -257,6 +262,71 @@ def test_editorial_voice_keeps_hashtags_last_and_html_valid() -> None:
         _Parser().feed(text)
 
 
+# Concrete action wording that belongs to the plan line, never to the editorial voice.
+PLAN_ACTION_MARKERS = (
+    # Literal protective actions owned by the plan line.
+    "spf",
+    "11–16",
+    "11-16",
+    "до 11",
+    "после 18:30",
+    "18:30",
+    "вода с собой",
+    "воду с собой",
+    "в тени",
+    "в помещени",
+    "прогулка после заката",
+    "закрепить",
+    # Day-scheduling prescriptions: the plan says when to do things, the voice does not.
+    "два окна",
+    "активное утро",
+    "активным утром",
+    "свободный вечер",
+    "свободным вечером",
+    "оставить на утро",
+    "сделать утром",
+    "сделать до",
+    "перенести на",
+    "лучше выбрать",
+    "лучше выбирать",
+    "стоит сократить",
+    "лучше сократить",
+    "заложить запас",
+)
+
+
+def test_editorial_phrase_banks_carry_no_plan_actions() -> None:
+    """H.2: the voice states the meaning of the day, the plan states the actions."""
+    for bank_name, bank in (
+        ("morning", CYPRUS_MORNING_VARIANTS),
+        ("evening", CYPRUS_EVENING_VARIANTS),
+    ):
+        for scenario, phrases in bank.items():
+            for phrase in phrases:
+                low = phrase.lower()
+                for marker in PLAN_ACTION_MARKERS:
+                    assert marker not in low, f"{bank_name}/{scenario}: {phrase!r} repeats plan action {marker!r}"
+
+
+def test_hot_uv_voice_does_not_restate_the_smart_plan() -> None:
+    """Two consecutive HOT_UV days may differ, but neither may echo the plan."""
+    seen = set()
+    for day in (10, 11):
+        conditions = {"max_temp": 37, "uv": 9, "uv_high": True, "wind": False, "aqi": 40}
+        line = build_morning_human_line("Кипр", f"2026-08-{day:02d}", conditions)
+        assert line.startswith("💬 По ощущениям дня: ")
+        phrase = line.split(": ", 1)[1]
+        assert phrase in _phrases(CYPRUS_MORNING_VARIANTS, "HOT_UV")
+        low = phrase.lower()
+        for marker in PLAN_ACTION_MARKERS:
+            assert marker not in low, f"{phrase!r} repeats plan action {marker!r}"
+        seen.add(phrase)
+    # Deterministic per date; the bank is allowed to rotate between days.
+    assert build_morning_human_line(
+        "Кипр", "2026-08-10", {"max_temp": 37, "uv": 9, "uv_high": True}
+    ) == build_morning_human_line("Кипр", "2026-08-10", {"max_temp": 37, "uv": 9, "uv_high": True})
+
+
 def test_safe_pollen_low_does_not_select_poor_air() -> None:
     text = _apply_editorial_voice(SAFE_POLLEN_MORNING, "morning")
     line = _voice_line(text, "💬 По ощущениям дня:")
@@ -351,6 +421,8 @@ def main() -> None:
         test_editorial_voice_never_strips_real_lunar_lines,
         test_editorial_voice_does_not_change_factual_values,
         test_editorial_voice_keeps_hashtags_last_and_html_valid,
+        test_editorial_phrase_banks_carry_no_plan_actions,
+        test_hot_uv_voice_does_not_restate_the_smart_plan,
     )
     for check in checks:
         check()

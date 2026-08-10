@@ -842,6 +842,58 @@ def cy_workflow_morning_schedule_is_earlier() -> None:
     assert "github.event.schedule == '30 2 * * *'" not in workflow
 
 
+def cy_h2_evening_score_is_not_published_twice() -> None:
+    """H.2: the recomputed evening score replaces the factual one, never doubles it."""
+    import safe_test_post as safe_module
+
+    old = os.environ.get("EVENING_VAYBOMETER_SCORE")
+    try:
+        os.environ["EVENING_VAYBOMETER_SCORE"] = "1"
+        v2 = build_evening_format_v2("Кипр", HEAT_WIND_EVENING)
+        before_count = sum(
+            1 for line in v2.splitlines() if line.strip().startswith("✨ VayboMeter")
+        )
+        after = safe_module._inject_evening_score(v2, "evening")
+    finally:
+        if old is None:
+            os.environ.pop("EVENING_VAYBOMETER_SCORE", None)
+        else:
+            os.environ["EVENING_VAYBOMETER_SCORE"] = old
+
+    assert before_count == 1, "fixture should already carry one factual score line"
+    after_count = sum(
+        1 for line in after.splitlines() if line.strip().startswith("✨ VayboMeter")
+    )
+    assert after_count == 1, f"evening score published {after_count} times"
+    # The factual city rows are untouched.
+    assert "Лимассол" in after and "Никосия" in after
+
+
+def cy_h2_evening_redundant_nuance_is_suppressed_independent_kept() -> None:
+    """A nuance rephrasing the score is dropped; an independent signal is kept."""
+    import safe_test_post as safe_module
+
+    # Score already names heat; a heat-only nuance adds nothing.
+    redundant = safe_module._cyprus_main_nuance(
+        "✨ VayboMeter завтра: 6.0/10 — с оговорками; сильная жара.\nНикосия: 38/24 °C • ясно\n"
+    )
+    assert "жара во внутренних районах" not in redundant
+
+    # Fog is an independent signal and must survive.
+    fog = safe_module._cyprus_main_nuance(
+        "✨ VayboMeter завтра: 6.0/10 — с оговорками; сильная жара.\n"
+        "🌫 Видимость: завтра утром местами около 250 м, вероятен туман.\n"
+    )
+    assert "туман" in fog.lower(), fog
+
+    # Local rain is an independent signal too.
+    rain = safe_module._cyprus_main_nuance(
+        "✨ VayboMeter завтра: 6.0/10 — с оговорками; сильная жара.\n"
+        "Тродос: 22/14 °C • местами дождь возможен\n"
+    )
+    assert "осадки" in rain.lower(), rain
+
+
 def cy_evening_final_publication_path_applies_editorial_voice_once() -> None:
     """The final FORMAT_V2 path must publish exactly one evening editorial line."""
     from html.parser import HTMLParser
@@ -933,6 +985,8 @@ def main() -> None:
         cy_evening_current_aqi_plus_reduced_visibility_uses_point_two,
         cy_evening_explicit_forecast_aqi_can_affect_tomorrow_score,
         cy_workflow_morning_schedule_is_earlier,
+        cy_h2_evening_score_is_not_published_twice,
+        cy_h2_evening_redundant_nuance_is_suppressed_independent_kept,
         cy_evening_final_publication_path_applies_editorial_voice_once,
         cy_evening_factual_formatter_still_omits_editorial_voice,
     )
