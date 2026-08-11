@@ -322,6 +322,19 @@ CITY_AIR_BROKEN_EVENING = """<b>🌅 Кипр: погода на завтра (2
 #Кипр #погода #здоровье #Никосия #Тродос
 """
 
+ALL_GREEN_CITY_AIR_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.0/10 — обычный день.
+🏖 <b>Морские города</b>
+Ларнака: 29/23 °C • ясно
+———
+🏭 Воздух: AQI 52 (умеренный) • PM₂.₅ 11 / PM₁₀ 17
+🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟢 · Пафос 🟢 · Айя-Напа 🟢
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
 
 GENERIC_UV_WARNING_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
 ✨ VayboMeter завтра: 8.1/10 — хорошо для обычных дел.
@@ -602,11 +615,21 @@ def cy_evening_surf_with_valid_wave_is_cautiously_positive() -> None:
     assert "🏄 Серф: есть рабочие окна по волне; проверить конкретный спот." in text
 
 
+def cy_evening_all_green_city_air_collapses_to_summary() -> None:
+    text = _safe_test_evening_pipeline(ALL_GREEN_CITY_AIR_EVENING)
+    assert "🏭 Воздух: AQI 52 (умеренный) • PM₂.₅ 11 / PM₁₀ 17" in text
+    assert "🏭 Воздух по городам: везде 🟢" in text
+    assert "Никосия 🟢" not in text
+    assert "Лимассол 🟢" not in text
+    assert text.count("🏭 Воздух по городам:") == 1
+
+
 def cy_evening_city_air_line_is_compact_and_parenthesized() -> None:
     text = _safe_test_evening_pipeline(CITY_AIR_BROKEN_EVENING)
     expected = "🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟡 (PM₂.₅ 18) · Пафос 🟠 (PM₂.₅ 28) · Айя-Напа 🟢"
     assert expected in text
     assert "Ларнака 🟡 PM₂.₅ 18 Пафос" not in text
+    assert "🏭 Воздух по городам: везде 🟢" not in text
     assert text.count("🏭 Воздух по городам:") == 1
 
 
@@ -971,6 +994,7 @@ def main() -> None:
         cy_evening_unstructured_dust_text_does_not_create_air_warning,
         cy_evening_surf_without_wave_is_not_excellent,
         cy_evening_surf_with_valid_wave_is_cautiously_positive,
+        cy_evening_all_green_city_air_collapses_to_summary,
         cy_evening_city_air_line_is_compact_and_parenthesized,
         cy_evening_integrated_guidance_is_not_repetitive,
         cy_evening_generic_warning_does_not_trigger_storm,
