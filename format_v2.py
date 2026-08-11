@@ -665,9 +665,14 @@ def _clean_city_air_line(line: str) -> str:
     pollutant_re = r"PM₂\.₅|PM2\.?5|PM₁₀|PM10|NO₂|NO2|O₃|O3|SO₂|SO2|CO"
     value_re = r"\d+(?:[\.,]\d+)?"
     chunks: list[str] = []
+    markers: list[str] = []
+    parsed_cities: set[str] = set()
+    required_all_green_cities = {"никосия", "лимассол", "ларнака", "пафос", "айя-напа"}
     token_re = rf"({city_re})\s+([🟢🟡🟠🔴])(?P<tail>.*?)(?=(?:\s*·\s*|\s+{city_re}\s+[🟢🟡🟠🔴]|$))"
     for m in re.finditer(token_re, body, flags=re.I):
         city, marker = m.group(1), m.group(2)
+        parsed_cities.add(city.casefold())
+        markers.append(marker)
         tail = (m.group("tail") or "").strip()
         pollutant = ""
         pollutant_match = re.search(rf"({pollutant_re})(?:\s*({value_re}))?", tail, flags=re.I)
@@ -680,6 +685,8 @@ def _clean_city_air_line(line: str) -> str:
                 pollutant = f"{pollutant} {value.replace(',', '.')}"
         chunks.append(f"{city} {marker}" + (f" ({pollutant})" if pollutant else ""))
     if chunks:
+        if required_all_green_cities.issubset(parsed_cities) and markers and all(marker == "🟢" for marker in markers):
+            return "🏭 Воздух по городам: везде 🟢"
         return "🏭 Воздух по городам: " + " · ".join(chunks[:6])
     return "🏭 Воздух по городам: " + body
 
