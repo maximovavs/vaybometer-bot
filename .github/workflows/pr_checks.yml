@@ -59,6 +59,44 @@ jobs:
             tools/test_weekly_forecast.py \
             tools/test_weekly_workflow_schedule.py
 
+      - name: Run Gemini migration checks offline
+        env:
+          VAYBOMETER_CACHE_DIR: ${{ runner.temp }}/vaybometer-cache
+          OPENAI_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GROQ_API_KEY: ""
+          TELEGRAM_TOKEN: ""
+          TELEGRAM_BOT_TOKEN: ""
+          TELEGRAM_TOKEN_CY: ""
+          POLLINATIONS_TOKEN: ""
+          POLLINATIONS_API_KEY: ""
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: localhost,127.0.0.1
+        run: |
+          python - <<'PY'
+          import runpy
+
+          suite = runpy.run_path(
+              "tools/test_groq_model_migration.py",
+              run_name="gemini_migration_offline",
+          )
+          checks = (
+              "test_no_deprecated_model_ids_in_runtime_files",
+              "test_default_groq_model_config",
+              "test_default_gemini_model_config",
+              "test_gemini_37_falls_back_without_legacy_sampling_controls",
+              "test_removed_gemini_preview_ids_are_not_runtime_candidates",
+              "test_primary_failure_attempts_fallback_model",
+              "test_total_groq_failure_uses_local_blurb_fallback",
+          )
+          for name in checks:
+              suite[name]()
+              print(f"PASS {name}")
+          print("PASS gemini_migration_offline")
+          PY
+
       - name: Run offline regressions with external HTTP disabled
         env:
           HTTP_PROXY: http://127.0.0.1:9
