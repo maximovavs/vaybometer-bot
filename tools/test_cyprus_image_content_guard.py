@@ -136,6 +136,24 @@ def five_dense_top_rows_are_rejected() -> None:
         guard._edge_metrics = original_edge_metrics
 
 
+def production_near_threshold_metrics_are_rejected() -> None:
+    original_edge_metrics = guard._edge_metrics
+    try:
+        guard._edge_metrics = lambda _image: (0.109375, 0.020479, 5.340741, 8)
+        with tempfile.TemporaryDirectory() as tmp_name:
+            out_path = Path(tmp_name) / "production-near-threshold.png"
+            out_path.write_bytes(_landscape_bytes())
+            verdict = guard.inspect_provider_image(out_path)
+            assert verdict.valid is False
+            assert verdict.reason == "screen_or_ui_chrome"
+            assert verdict.top_edge_density == 0.109375
+            assert verdict.body_edge_density == 0.020479
+            assert verdict.top_to_body_edge_ratio == 5.340741
+            assert verdict.dense_top_rows == 8
+    finally:
+        guard._edge_metrics = original_edge_metrics
+
+
 def ordinary_landscape_provider_image_is_accepted() -> None:
     previous_guard = _set_env("CY_IMAGE_CONTENT_GUARD", "1")
     previous_min = _set_env("IMAGEGEN_MIN_VALID_BYTES", "128")
@@ -234,6 +252,65 @@ def rejected_pollinations_image_falls_back_to_horde() -> None:
         _restore_env("IMAGEGEN_MIN_VALID_BYTES", previous_min)
 
 
+def near_threshold_pollinations_image_falls_back_to_horde() -> None:
+    previous_guard = _set_env("CY_IMAGE_CONTENT_GUARD", "1")
+    previous_min = _set_env("IMAGEGEN_MIN_VALID_BYTES", "128")
+    old_get = imagegen.requests.get
+    old_horde = imagegen._fetch_from_horde
+    old_attempts = imagegen.MAX_ATTEMPTS
+    old_custom_url = imagegen.CUSTOM_IMAGE_BASE_URL
+    original_edge_metrics = guard._edge_metrics
+    horde_calls: list[str] = []
+
+    def fake_get(*_args, **_kwargs):
+        return FakeResponse(_landscape_bytes())
+
+    def fake_horde(_prompt: str, out_path: Path, **_kwargs):
+        horde_calls.append(str(out_path))
+        payload = _landscape_bytes()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(payload)
+        return imagegen.ImageGenerationResult(
+            path=str(out_path),
+            backend="stable_horde",
+            byte_count=len(payload),
+            content_type="image/png",
+        )
+
+    try:
+        imagegen.requests.get = fake_get
+        imagegen._fetch_from_horde = fake_horde
+        imagegen.MAX_ATTEMPTS = 1
+        imagegen.CUSTOM_IMAGE_BASE_URL = ""
+        guard._edge_metrics = lambda _image: (0.109375, 0.020479, 5.340741, 8)
+        with tempfile.TemporaryDirectory() as tmp_name:
+            out_path = Path(tmp_name) / "near-threshold-candidate.png"
+            outcome = imagegen.generate_astro_image_outcome(
+                "Cyprus coast and forecast sky",
+                str(out_path),
+                max_backend_calls=2,
+            )
+            assert outcome.result is not None
+            assert outcome.result.backend == "stable_horde"
+            assert len(horde_calls) == 1
+            assert len(outcome.backend_attempts) == 2
+            rejected = outcome.backend_attempts[0]
+            assert rejected["backend"] == "pollinations"
+            assert rejected["result"] == "failed"
+            assert rejected["error_category"] == "semantic_mismatch"
+            assert rejected["content_guard"]["reason"] == "screen_or_ui_chrome"
+            assert rejected["content_guard"]["top_edge_density"] == 0.109375
+            assert rejected["content_guard"]["dense_top_rows"] == 8
+    finally:
+        guard._edge_metrics = original_edge_metrics
+        imagegen.requests.get = old_get
+        imagegen._fetch_from_horde = old_horde
+        imagegen.MAX_ATTEMPTS = old_attempts
+        imagegen.CUSTOM_IMAGE_BASE_URL = old_custom_url
+        _restore_env("CY_IMAGE_CONTENT_GUARD", previous_guard)
+        _restore_env("IMAGEGEN_MIN_VALID_BYTES", previous_min)
+
+
 def prompt_rejects_map_and_screen_outputs_and_bumps_cache_version() -> None:
     assert scene_prompt.CYPRUS_VISUAL_PROMPT_VERSION == "cyprus_visual_v10"
     ctx = SimpleNamespace(
@@ -271,16 +348,41 @@ def incident_fingerprints_are_pinned() -> None:
     assert guard._hamming_hex(guard._INCIDENT_PHASH, "d0692ba536263f36") == 0
 
 
+def known_incident_fingerprints_remain_rejected() -> None:
+    original_dhash = guard._dhash
+    original_phash = guard._phash
+    original_edge_metrics = guard._edge_metrics
+    try:
+        guard._dhash = lambda _image, **_kwargs: guard._INCIDENT_DHASH
+        guard._phash = lambda _image, **_kwargs: guard._INCIDENT_PHASH
+        guard._edge_metrics = lambda _image: (0.01, 0.05, 0.2, 0)
+        with tempfile.TemporaryDirectory() as tmp_name:
+            out_path = Path(tmp_name) / "known-incident.png"
+            out_path.write_bytes(_landscape_bytes())
+            verdict = guard.inspect_provider_image(out_path)
+            assert verdict.valid is False
+            assert verdict.reason == "known_unrelated_incident"
+            assert verdict.incident_dhash_distance == 0
+            assert verdict.incident_phash_distance == 0
+    finally:
+        guard._dhash = original_dhash
+        guard._phash = original_phash
+        guard._edge_metrics = original_edge_metrics
+
+
 def main() -> None:
     checks = (
         guard_is_installed_on_imagegen_validator,
         screen_like_provider_image_is_rejected_and_removed,
         five_dense_top_rows_are_rejected,
+        production_near_threshold_metrics_are_rejected,
         ordinary_landscape_provider_image_is_accepted,
         explicit_kill_switch_preserves_technical_validation,
         rejected_pollinations_image_falls_back_to_horde,
+        near_threshold_pollinations_image_falls_back_to_horde,
         prompt_rejects_map_and_screen_outputs_and_bumps_cache_version,
         incident_fingerprints_are_pinned,
+        known_incident_fingerprints_remain_rejected,
     )
     for check in checks:
         check()

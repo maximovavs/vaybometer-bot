@@ -177,7 +177,7 @@ def inspect_provider_image(path: str | Path) -> ImageContentVerdict:
         and incident_phash_distance <= _INCIDENT_PHASH_MAX_DISTANCE
     )
     screenshot_chrome = (
-        top >= 0.11
+        top >= 0.10
         and body <= 0.08
         and ratio >= 3.0
         and dense_top_rows >= 5
