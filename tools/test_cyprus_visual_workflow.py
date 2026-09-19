@@ -186,7 +186,16 @@ def _run_snapshot_helper(tmp: Path, artifacts: list[tuple[int, str, Path]], *, t
     old_cwd = Path.cwd()
     old_gh_json = module._gh_json
     old_download = module._download_artifact
+    old_datetime = module.datetime
     artifact_map = {artifact_id: zip_path for artifact_id, _created, zip_path in artifacts}
+
+    class _FixtureDateTime(old_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            fixed = old_datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+            if tz is None:
+                return fixed.replace(tzinfo=None)
+            return fixed.astimezone(tz)
 
     def fake_gh_json(_args):
         return {
@@ -219,10 +228,12 @@ def _run_snapshot_helper(tmp: Path, artifacts: list[tuple[int, str, Path]], *, t
             os.environ.pop("CY_RECOVERY_POST_TYPE", None)
         module._gh_json = fake_gh_json
         module._download_artifact = fake_download
+        module.datetime = _FixtureDateTime
         result = module.main()
     finally:
         module._gh_json = old_gh_json
         module._download_artifact = old_download
+        module.datetime = old_datetime
         os.chdir(old_cwd)
         for name, value in old_env.items():
             if value is None:
