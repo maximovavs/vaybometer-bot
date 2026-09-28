@@ -277,7 +277,7 @@ def cy_real_path_uses_only_marine_numbers_for_sea() -> None:
     text = _apply_cyprus_sensor_cleanup(text)
     text = sanitize_post_text(text).text
 
-    assert "🌊 Море: средняя вода 27°C; лучше до 11:00 или после 18:30." in text
+    assert "🌊 Море: средняя вода 27°C." in text
     assert "🌊 Море: вода 20°C" not in text
     assert "🌇 Закат сегодня: 20:05" in text
     assert text.splitlines()[-1] == "#Кипр #погода #здоровье"
@@ -285,7 +285,7 @@ def cy_real_path_uses_only_marine_numbers_for_sea() -> None:
 
 def cy_missing_marine_data_is_transparent() -> None:
     text = build_morning_format_v2("Кипр", NO_MARINE_DATA)
-    assert "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30." in text
+    assert not any(line.strip().startswith("🌊 Море:") for line in text.splitlines())
     assert "🌊 Море: вода 20°C" not in text
     assert "🌊 Море: вода 31°C" not in text
 
@@ -296,7 +296,7 @@ def cy_winter_raw_path_accepts_explicit_marine_temperature() -> None:
     text = _apply_cyprus_morning_raw_context(text, RAW_WINTER_WITH_SEA, legacy.text, "morning")
     text = sanitize_post_text(text).text
 
-    assert "🌊 Море: вода 19°C; волна спокойная; лучше до 11:00 или после 18:30." in text
+    assert "🌊 Море: вода 19°C; волна спокойная." in text
 
 
 def cy_winter_raw_path_does_not_use_sunset_time_as_sea() -> None:
@@ -305,7 +305,7 @@ def cy_winter_raw_path_does_not_use_sunset_time_as_sea() -> None:
     text = _apply_cyprus_morning_raw_context(text, LEGACY_WINTER_WITHOUT_SEA, legacy.text, "morning")
     text = sanitize_post_text(text).text
 
-    assert "🌊 Море: данные о температуре воды обновляются; лучше до 11:00 или после 18:30." in text
+    assert not any(line.strip().startswith("🌊 Море:") for line in text.splitlines())
     assert "🌊 Море: вода 19°C" not in text
 
 
