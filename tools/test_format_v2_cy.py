@@ -917,6 +917,55 @@ def cy_evening_hashtag_finalizer_and_caption_use_target_date() -> None:
     )
 
 
+
+def _cy_equal_highs_evening() -> str:
+    return (
+        NORMAL_EVENING
+        .replace("Лимассол: 29/22 °C", "Лимассол: 30/22 °C")
+        .replace("Айя-Напа: 29/23 °C", "Айя-Напа: 30/23 °C")
+        .replace("Никосия: 32/21 °C", "Никосия: 30/21 °C")
+        .replace("Тродос: 24/15 °C", "Тродос: 30/15 °C")
+    )
+
+
+def cy_evening_contrast_requires_existing_extrema_spread() -> None:
+    weak = build_evening_format_v2("Кипр", _cy_equal_highs_evening())
+    assert "заметен контраст побережья, центра острова и Тродоса" not in weak
+    assert "Тродос может ощущаться заметно прохладнее" not in weak
+    assert "🧭 Главное завтра: спокойный день для обычных дел и прогулок." in weak
+
+    strong = build_evening_format_v2("Кипр", NORMAL_EVENING)
+    assert "🧭 Главное завтра: заметен контраст побережья, центра острова и Тродоса." in strong
+    assert "Тродос может ощущаться заметно прохладнее" not in strong
+    assert strong.lower().count("контраст") == 1
+
+
+def cy_evening_uv_nuance_requires_numeric_high_uv() -> None:
+    base = _cy_equal_highs_evening()
+    moderate = build_evening_format_v2(
+        "Кипр",
+        base.replace("#Кипр #погода", "☀️ УФ 4 — умеренный\n#Кипр #погода"),
+    )
+    assert "дневное солнце требует SPF" not in moderate
+
+    high = build_evening_format_v2(
+        "Кипр",
+        base.replace("#Кипр #погода", "☀️ УФ 7 — высокий\n#Кипр #погода"),
+    )
+    assert "⚠️ Нюанс: дневное солнце требует SPF, воды и тени." in high
+
+
+def cy_evening_calm_scenario_does_not_echo_score_reason() -> None:
+    source = _cy_equal_highs_evening().replace(
+        "✨ VayboMeter завтра: 8.6/10 — комфортно для обычных дел и прогулок.",
+        "✨ VayboMeter завтра: 8.6/10 — мягкий спокойный день.",
+    )
+    text = build_evening_format_v2("Кипр", source)
+    assert "✨ VayboMeter завтра: 8.6/10 — мягкий спокойный день." in text
+    assert "🧭 Главное завтра: мягкий спокойный день." not in text
+    assert "🧭 Главное завтра: спокойный день для обычных дел и прогулок." in text
+
+
 def cy_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post.yml").read_text(encoding="utf-8")
     assert "cron: '0 1 * * *'" in workflow
@@ -1077,6 +1126,9 @@ def main() -> None:
         cy_evening_current_aqi_plus_fog_uses_only_fog_penalty,
         cy_evening_current_aqi_plus_reduced_visibility_uses_point_two,
         cy_evening_explicit_forecast_aqi_can_affect_tomorrow_score,
+        cy_evening_contrast_requires_existing_extrema_spread,
+        cy_evening_uv_nuance_requires_numeric_high_uv,
+        cy_evening_calm_scenario_does_not_echo_score_reason,
         cy_workflow_morning_schedule_is_earlier,
         cy_h2_evening_score_is_not_published_twice,
         cy_h2_evening_redundant_nuance_is_suppressed_independent_kept,
