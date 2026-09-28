@@ -116,6 +116,11 @@ def _astro_lines(lines: list[str]) -> list[str]:
     return keep
 
 
+def _weather_only_lines(lines: list[str]) -> list[str]:
+    """Project source text to factual weather inputs for weather decisions."""
+    return [line for line in lines if not _is_astro_candidate(line.strip())]
+
+
 def _storm_line(lines: list[str]) -> str:
     for line in lines:
         if "Шторм" in line or "шторм" in line:
@@ -436,11 +441,12 @@ def _normalize_evening_score_reasons(score_line: str) -> str:
 
 
 def _evening_flags(lines: list[str]) -> dict[str, bool]:
-    text = "\n".join(lines)
+    weather_lines = _weather_only_lines(lines)
+    text = "\n".join(weather_lines)
     max_wind = _max_wind_ms(text)
     max_gust = _max_gust_ms(text)
     max_temp = _max_temperature_c(text)
-    forecast_air_text = "\n".join(_forecast_air_lines(lines))
+    forecast_air_text = "\n".join(_forecast_air_lines(weather_lines))
     forecast_poor_air = _has_poor_air_signal(forecast_air_text)
     forecast_dust = _has_structured_dust_evidence(text, forecast_only=True)
     visibility_haze = _has_visibility_haze(text)
@@ -455,7 +461,6 @@ def _evening_flags(lines: list[str]) -> dict[str, bool]:
         "local": _has_any(text, ("локаль", "местами", "неравномер", "по часам", "микросценар")),
         "troodos": _has_any(text, ("тродос", "горы", "горн")),
         "uv": _has_any(text, ("уф", "uv", "spf")),
-        "astro_unfavorable": _has_any(text, ("неблагоприят", "не перегруж", "напряж", "сложн", "осторожнее")),
     }
 
 
@@ -465,7 +470,7 @@ def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
         return ""
     caution_count = sum(
         1
-        for key in ("storm", "rain", "dust", "heat", "wind", "astro_unfavorable")
+        for key in ("storm", "rain", "dust", "heat", "wind")
         if flags.get(key)
     )
     should_soften = (
@@ -474,7 +479,6 @@ def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
             (flags.get("heat") and flags.get("wind"))
             or flags.get("storm")
             or flags.get("rain")
-            or flags.get("astro_unfavorable")
             or caution_count >= 2
         )
     )
@@ -505,8 +509,6 @@ def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
             prefix = re.sub(r"\d+(?:[\.,]\d+)?\s*/\s*10", f"{target_score:.1f}/10", prefix, count=1)
     if flags.get("heat") and flags.get("wind"):
         reason = "жара и порывы у моря"
-    elif flags.get("astro_unfavorable"):
-        reason = "астрофон требует мягкого режима"
     elif flags.get("rain") or flags.get("storm"):
         reason = "локальные осадки и порывы требуют запаса по времени"
     elif flags.get("dust"):
