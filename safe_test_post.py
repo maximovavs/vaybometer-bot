@@ -1008,37 +1008,45 @@ def _score_reason_mentions_wind(reasons: str) -> bool:
 
 def _cyprus_main_nuance(v2_text: str) -> str:
     reasons = _score_reasons(v2_text)
-    low = (reasons + " " + _plain(v2_text)).lower()
-    heat = any(x in low for x in ("жара", "тепло"))
-    wind = any(x in low for x in ("порыв", "ветер"))
+    c = _cyprus_conditions(v2_text)
+    warm_city = str(c.get("warm_city") or "").strip()
+    warm_t = c.get("warm_t")
+    wind_ms = c.get("wind")
+    gust = c.get("gust")
+
+    heat = isinstance(warm_t, (int, float)) and warm_t >= 31
+    gusty = isinstance(gust, (int, float)) and gust >= 15
+    windy = gusty or (isinstance(wind_ms, (int, float)) and wind_ms >= 6)
     mist = has_structured_visibility_alert(v2_text)
     rain = _has_cyprus_precip_risk(v2_text)
+    low = _plain(v2_text).lower()
     troodos = "тродос" in low or "горы" in low
     visibility_condition = _cyprus_visibility_condition(v2_text)
+
     if visibility_condition in {"dense_fog", "fog"}:
         return "⚠️ Главный нюанс: до рассеивания тумана осторожнее на дорогах и развязках."
     if visibility_condition in {"mist", "reduced_visibility", "mixed_visibility"}:
         return "⚠️ Главный нюанс: утром видимость снижена — на дорогах и развязках нужна дополнительная дистанция."
-    if rain and wind and (heat or troodos):
-        return "⚠️ Главный нюанс: осадки возможны локально, особенно в горах; у моря жарко и порывисто."
+    if rain and troodos:
+        return "⚠️ Главный нюанс: осадки возможны локально, особенно в горах; по маршруту лучше оставить запасной вариант."
     if rain:
         return "⚠️ Главный нюанс: осадки возможны локально; по маршруту лучше оставить запасной вариант."
     if mist:
         return "⚠️ Главный нюанс: локальная утренняя дымка/туман."
-    # Heat and coastal gusts are routinely already named by the score reasons.
-    # The nuance keeps only the hazard the score has not stated, and is dropped
-    # entirely when it would merely rephrase the score.
-    heat_is_new = heat and not _score_reason_mentions_heat(reasons)
-    wind_is_new = wind and not _score_reason_mentions_wind(reasons)
-    if heat_is_new and wind_is_new:
-        return "⚠️ Главный нюанс: жара в Никосии и порывы у моря."
-    if heat_is_new:
-        return "⚠️ Главный нюанс: жара во внутренних районах острова."
-    if wind_is_new:
-        # Signal only: the concrete wind guidance stays in the plan line.
-        return "⚠️ Главный нюанс: порывы у моря."
-    return ""
 
+    # Heat/wind claims are grounded in structured extrema and numeric wind data.
+    # The nuance keeps only a signal not already named by the factual score.
+    heat_is_new = heat and not _score_reason_mentions_heat(reasons)
+    wind_is_new = windy and not _score_reason_mentions_wind(reasons)
+    heat_text = f"жара: {warm_city}" if warm_city else "жара"
+    wind_text = "порывы у моря" if gusty else "ветер у моря"
+    if heat_is_new and wind_is_new:
+        return f"⚠️ Главный нюанс: {heat_text}; {wind_text}."
+    if heat_is_new:
+        return f"⚠️ Главный нюанс: {heat_text}."
+    if wind_is_new:
+        return f"⚠️ Главный нюанс: {wind_text}."
+    return ""
 
 def _insert_main_nuance(v2_text: str) -> str:
     if not _env_on("FORMAT_V2_MAIN_NUANCE"):
@@ -1374,6 +1382,7 @@ def _valid_cy_sea_temp(value: float, date_s: str) -> bool:
 
 def _cy_morning_sea_line_from_source(source_text: str) -> str:
     waters: list[float] = []
+    sea_lines: list[str] = []
     date_s = _cy_date_from_text(source_text)
 
     for raw in str(source_text or "").splitlines():
@@ -1381,9 +1390,13 @@ def _cy_morning_sea_line_from_source(source_text: str) -> str:
         low = s.lower()
         if "закат" in low or "рассвет" in low or re.search(r"\b(?:aqi|pm₂|pm2|pm₁|pm10|гпа|hpa|давл|ветер|уф)\b", low, flags=re.I):
             continue
-        if not re.search(r"🌊|\bвода\b|\bsea\b", s, flags=re.I):
+        if not re.search(r"🌊|\bвода\b|\bsea\b|\bволна\b|\bwave\b", s, flags=re.I):
             continue
-        if "🌊" in s:
+        sea_lines.append(s)
+        wave_only = bool(re.search(r"\b(?:волна|wave)\b", low)) and not bool(
+            re.search(r"\bвода\b|\bsea\b|температур\w*\s+воды", low, flags=re.I)
+        )
+        if "🌊" in s and not wave_only:
             tail = s.split("🌊", 1)[1]
             m = re.search(r"([+-]?\d+(?:[\.,]\d+)?)", tail)
             if m:
@@ -1407,13 +1420,29 @@ def _cy_morning_sea_line_from_source(source_text: str) -> str:
             except Exception:
                 pass
             break
+
     if len(waters) >= 2:
         avg = sum(waters) / len(waters)
         return f"🌊 Море: средняя вода {_fmt_cy_temp(avg)}°C."
     if len(waters) == 1:
-        return f"🌊 Море: вода {_fmt_cy_temp(waters[0])}°C; волна спокойная."
+        sea_text = "\n".join(sea_lines)
+        wave = ""
+        wave_match = re.search(r"(?:волна|wave)\D{0,12}(\d+(?:[\.,]\d+)?)", sea_text, flags=re.I)
+        if wave_match:
+            try:
+                wave_value = float(wave_match.group(1).replace(",", "."))
+                if 0 <= wave_value <= 5:
+                    wave = "спокойная" if wave_value < 0.5 else "умеренная"
+            except Exception:
+                pass
+        low_sea = sea_text.lower()
+        if not wave and re.search(r"спокойн|штиль|calm", low_sea):
+            wave = "спокойная"
+        elif not wave and re.search(r"умерен|moderate|средн|неспокой", low_sea):
+            wave = "умеренная"
+        wave_part = f"; волна {wave}" if wave else ""
+        return f"🌊 Море: вода {_fmt_cy_temp(waters[0])}°C{wave_part}."
     return ""
-
 
 def _replace_cy_morning_sea_line(v2_text: str, sea_line: str) -> str:
     if not sea_line:

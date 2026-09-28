@@ -798,10 +798,13 @@ def _morning_sea_line(lines: list[str]) -> str:
         low = s.lower()
         if "закат" in low or "рассвет" in low or re.search(r"\b(?:aqi|pm₂|pm2|pm₁|pm10|гпа|hpa|давл|ветер|уф)\b", low, flags=re.I):
             continue
-        if not re.search(r"🌊|\bвода\b|\bsea\b|\bволна\b", s, flags=re.I):
+        if not re.search(r"🌊|\bвода\b|\bsea\b|\bволна\b|\bwave\b", s, flags=re.I):
             continue
         sea_lines.append(s)
-        if "🌊" in s:
+        wave_only = bool(re.search(r"\b(?:волна|wave)\b", low)) and not bool(
+            re.search(r"\bвода\b|\bsea\b|температур\w*\s+воды", low, flags=re.I)
+        )
+        if "🌊" in s and not wave_only:
             tail = s.split("🌊", 1)[1]
             nums: list[float] = []
             for raw_num in re.findall(r"([+-]?\d+(?:[\.,]\d+)?)", tail):
@@ -844,18 +847,12 @@ def _morning_sea_line(lines: list[str]) -> str:
     if waters:
         if len(waters) >= 2:
             avg = sum(waters) / len(waters)
-            water_part = f"средняя вода {_fmt_temp(avg)}°C"
-        elif waters:
-            water_part = f"вода {_fmt_temp(waters[0])}°C"
-        else:
-            water_part = "вода комфортная"
-        wave_part = f"волна {wave}" if wave else "волна спокойная"
-        if len(waters) >= 2:
-            return f"🌊 Море: {water_part}."
-        return f"🌊 Море: {water_part}; {wave_part}."
+            return f"🌊 Море: средняя вода {_fmt_temp(avg)}°C."
+        water_part = f"вода {_fmt_temp(waters[0])}°C"
+        wave_part = f"; волна {wave}" if wave else ""
+        return f"🌊 Море: {water_part}{wave_part}."
 
-    return "🌊 Море: данные о температуре воды обновляются."
-
+    return ""
 
 def _clean_uv_line(line: str) -> str:
     s = _plain(line).strip()
@@ -1115,7 +1112,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
             out.extend(_clean_air_line(item).splitlines())
     if radiation:
         out.append(radiation)
-    out.append(_morning_sea_line(lines))
+    sea = _morning_sea_line(lines)
+    if sea:
+        out.append(sea)
     for line in quakes:
         if line not in out:
             out.append(line)

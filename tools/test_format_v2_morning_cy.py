@@ -313,8 +313,12 @@ def _write_image_receipt(target_date: str, post_type: str = "morning", message_i
     return path
 
 
+def _h3_sea_lines(text: str) -> list[str]:
+    return [line.strip() for line in str(text or "").splitlines() if line.strip().startswith("🌊 Море:")]
+
+
 def _h3_sea_line(text: str) -> str:
-    sea_lines = [line.strip() for line in str(text or "").splitlines() if line.strip().startswith("🌊 Море:")]
+    sea_lines = _h3_sea_lines(text)
     assert len(sea_lines) == 1, sea_lines
     return sea_lines[0]
 
@@ -388,7 +392,7 @@ def cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening() -> None
             target_date=target_date,
         ) == []
         fallback = build_morning_format_v2("Кипр", MORNING_NO_SEA)
-        assert "данные о температуре воды обновляются" in fallback
+        assert _h3_sea_lines(fallback) == []
     finally:
         post_common_module._city_detail_line = old_city_detail_line
 
@@ -1001,21 +1005,30 @@ def cy_morning_averages_coastal_sea_rows() -> None:
     assert "🌊 Море: вода 20°C" not in text
 
 
-def cy_morning_adds_sea_fallback_when_unavailable() -> None:
+def cy_morning_omits_sea_line_when_unavailable() -> None:
     text = build_morning_format_v2("Кипр", MORNING_NO_SEA)
-    sea_line = _h3_sea_line(text)
-    assert sea_line == "🌊 Море: данные о температуре воды обновляются."
-    _assert_h3_factual_sea_line(sea_line)
+    assert _h3_sea_lines(text) == []
 
 
 def cy_morning_rejects_non_marine_numbers_for_sea() -> None:
     text = build_morning_format_v2("Кипр", MORNING_NON_MARINE_NUMBERS)
-    sea_line = _h3_sea_line(text)
-    assert sea_line == "🌊 Море: данные о температуре воды обновляются."
-    _assert_h3_factual_sea_line(sea_line)
+    assert _h3_sea_lines(text) == []
     assert "🌊 Море: вода 20°C" not in text
     assert "🌊 Море: вода 31°C" not in text
     assert "🌊 Море: вода 96°C" not in text
+
+    wave_only = MORNING_WINTER_NON_MARINE_NUMBERS.replace(
+        "🌇 Закат сегодня: 19:05",
+        "🌊 Волна: 19 м.\n🌇 Закат сегодня: 19:05",
+    )
+    assert _h3_sea_lines(build_morning_format_v2("Кипр", wave_only)) == []
+
+
+def cy_morning_single_sst_does_not_invent_wave_state() -> None:
+    source = MORNING_WITH_SEA.replace(", волна спокойная.", ".")
+    sea_line = _h3_sea_line(build_morning_format_v2("Кипр", source))
+    assert sea_line == "🌊 Море: вода 28°C."
+    assert "волна" not in sea_line.lower()
 
 
 def cy_morning_accepts_winter_explicit_sea_temperature() -> None:
@@ -1027,11 +1040,8 @@ def cy_morning_accepts_winter_explicit_sea_temperature() -> None:
 
 def cy_morning_winter_sunset_time_is_not_sea_temperature() -> None:
     text = build_morning_format_v2("Кипр", MORNING_WINTER_NON_MARINE_NUMBERS)
-    sea_line = _h3_sea_line(text)
-    assert sea_line == "🌊 Море: данные о температуре воды обновляются."
-    _assert_h3_factual_sea_line(sea_line)
+    assert _h3_sea_lines(text) == []
     assert "🌊 Море: вода 19°C" not in text
-    assert "18:30" not in sea_line
 
 
 def cy_morning_preserves_full_moon_line_without_illumination_duplicate() -> None:
@@ -2831,7 +2841,7 @@ def cy_h3_sea_facts_and_protective_plan_are_separated() -> None:
     assert "порывы до 16 м/с" in text
     assert "порывы до 1 м/с6 м/с" not in text
     sea_line = _h3_sea_line(text)
-    assert sea_line == "🌊 Море: вода 28°C; волна спокойная."
+    assert sea_line == "🌊 Море: вода 28°C."
     _assert_h3_factual_sea_line(sea_line)
     plan = _cyprus_smart_plan_line(text)
     conditions = safe_module._cyprus_conditions(text)
@@ -2867,6 +2877,50 @@ def cy_h2_feels_line_never_carries_plan_actions_at_any_uv() -> None:
         low = feels.lower()
         for marker in H2_PLAN_ACTION_MARKERS:
             assert marker.lower() not in low, f"UV {uv_value}: feels repeats plan action {marker!r}: {feels}"
+
+
+def cy_main_nuance_is_grounded_in_structured_extrema_and_wind() -> None:
+    ordinary_warm = """✨ VayboMeter: 9.0/10 — хорошо; тепло.
+🌡 Теплее всего — Ларнака (28°), прохладнее — Пафос (24°).
+💨 Ветер: 3.0 м/с • порывы до 5 м/с
+"""
+    assert _cyprus_main_nuance(ordinary_warm) == ""
+
+    larnaca_heat = """✨ VayboMeter: 8.0/10 — хорошо; УФ заметный.
+🌡 Теплее всего — Ларнака (31°), прохладнее — Пафос (25°).
+💨 Ветер: 3.0 м/с • порывы до 5 м/с
+"""
+    heat_nuance = _cyprus_main_nuance(larnaca_heat)
+    assert "жара: Ларнака" in heat_nuance, heat_nuance
+    assert "Никос" not in heat_nuance, heat_nuance
+
+    weak_wind = """✨ VayboMeter: 9.0/10 — хорошо; спокойно.
+🌡 Теплее всего — Ларнака (28°), прохладнее — Пафос (24°).
+💨 Ветер: 3.0 м/с • порывы до 5 м/с
+"""
+    assert _cyprus_main_nuance(weak_wind) == ""
+
+    true_gust = """✨ VayboMeter: 9.0/10 — хорошо; ясно.
+🌡 Теплее всего — Ларнака (28°), прохладнее — Пафос (24°).
+💨 Ветер: 4.0 м/с • порывы до 16 м/с
+"""
+    assert _cyprus_main_nuance(true_gust) == "⚠️ Главный нюанс: порывы у моря."
+    assert "защищённые места" in _cyprus_smart_plan_line(true_gust)
+
+    troodos_rain_no_heat = """✨ VayboMeter: 8.5/10 — отлично; спокойно.
+🌡 Теплее всего — Ларнака (28°), прохладнее — Тродос (20°).
+💨 Ветер: 6.0 м/с • порывы до 8 м/с
+Тродос: местами дождь возможен.
+"""
+    rain_nuance = _cyprus_main_nuance(troodos_rain_no_heat)
+    assert "осадки" in rain_nuance.lower(), rain_nuance
+    assert "жарк" not in rain_nuance.lower(), rain_nuance
+
+    no_signal = """✨ VayboMeter: 9.5/10 — отлично; комфортно.
+🌡 Теплее всего — Ларнака (27°), прохладнее — Пафос (23°).
+💨 Ветер: 2.0 м/с • порывы до 4 м/с
+"""
+    assert _cyprus_main_nuance(no_signal) == ""
 
 
 def cy_h2_nuance_does_not_restate_score_reasons() -> None:
@@ -3417,7 +3471,8 @@ def main() -> None:
         cy_morning_format_v2_current_sentinels_do_not_change_downstream,
         cy_evening_format_v2_preserves_tomorrow_city_values,
         cy_morning_averages_coastal_sea_rows,
-        cy_morning_adds_sea_fallback_when_unavailable,
+        cy_morning_omits_sea_line_when_unavailable,
+        cy_morning_single_sst_does_not_invent_wave_state,
         cy_morning_rejects_non_marine_numbers_for_sea,
         cy_morning_accepts_winter_explicit_sea_temperature,
         cy_morning_winter_sunset_time_is_not_sea_temperature,
@@ -3469,6 +3524,7 @@ def main() -> None:
         cy_h2_morning_heat_uv_roles_are_separated,
         cy_h3_sea_facts_and_protective_plan_are_separated,
         cy_h2_feels_line_never_carries_plan_actions_at_any_uv,
+        cy_main_nuance_is_grounded_in_structured_extrema_and_wind,
         cy_h2_nuance_does_not_restate_score_reasons,
         cy_h2_fog_safety_guidance_survives_dedup,
         cy_h2_poor_air_advisory_is_not_suppressed,
