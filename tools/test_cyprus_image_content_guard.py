@@ -62,6 +62,30 @@ def _screen_like_bytes() -> bytes:
     return _image_bytes(build)
 
 
+
+def _provider_branding_bytes() -> bytes:
+    def build(image: Image.Image) -> None:
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 511, 275), fill=(125, 160, 185))
+        draw.rectangle((0, 275, 511, 511), fill=(58, 105, 132))
+        icon_x = 335
+        for dx, dy, width, height in (
+            (0, 2, 5, 5),
+            (7, -3, 5, 5),
+            (7, 7, 5, 5),
+            (14, 2, 5, 5),
+        ):
+            draw.rectangle(
+                (icon_x + dx, 487 + dy, icon_x + dx + width, 487 + dy + height),
+                fill=(245, 245, 245),
+            )
+        x = 365
+        for width in (3, 5, 4, 5, 3, 5, 4, 5, 3, 5, 4, 5, 3, 5, 4, 5):
+            draw.rectangle((x, 490, x + width, 499), fill=(245, 245, 245))
+            x += width + 3
+
+    return _image_bytes(build)
+
 def _landscape_bytes() -> bytes:
     def build(image: Image.Image) -> None:
         draw = ImageDraw.Draw(image)
@@ -120,6 +144,31 @@ def screen_like_provider_image_is_rejected_and_removed() -> None:
         _restore_env("CY_IMAGE_CONTENT_GUARD", previous_guard)
         _restore_env("IMAGEGEN_MIN_VALID_BYTES", previous_min)
 
+
+
+def provider_branding_watermark_is_rejected_and_removed() -> None:
+    previous_guard = _set_env("CY_IMAGE_CONTENT_GUARD", "1")
+    previous_min = _set_env("IMAGEGEN_MIN_VALID_BYTES", "128")
+    try:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            out_path = Path(tmp_name) / "provider-branding.png"
+            result = imagegen._validate_generated_image(
+                backend="pollinations",
+                out_path=out_path,
+                payload=_provider_branding_bytes(),
+                status_code=200,
+                content_type="image/png",
+            )
+            assert result is None
+            assert not out_path.exists()
+            imagegen._set_backend_diagnostics("pollinations", {})
+            diagnostics = imagegen._take_backend_diagnostics("pollinations")
+            assert diagnostics["error_category"] == "semantic_mismatch"
+            assert diagnostics["content_guard"]["reason"] == "provider_branding_watermark"
+            assert diagnostics["content_guard"]["valid"] is False
+    finally:
+        _restore_env("CY_IMAGE_CONTENT_GUARD", previous_guard)
+        _restore_env("IMAGEGEN_MIN_VALID_BYTES", previous_min)
 
 def five_dense_top_rows_are_rejected() -> None:
     original_edge_metrics = guard._edge_metrics
@@ -198,7 +247,7 @@ def explicit_kill_switch_preserves_technical_validation() -> None:
         _restore_env("IMAGEGEN_MIN_VALID_BYTES", previous_min)
 
 
-def rejected_pollinations_image_falls_back_to_horde() -> None:
+def watermarked_pollinations_image_falls_back_to_horde() -> None:
     previous_guard = _set_env("CY_IMAGE_CONTENT_GUARD", "1")
     previous_min = _set_env("IMAGEGEN_MIN_VALID_BYTES", "128")
     old_get = imagegen.requests.get
@@ -208,7 +257,7 @@ def rejected_pollinations_image_falls_back_to_horde() -> None:
     horde_calls: list[str] = []
 
     def fake_get(*_args, **_kwargs):
-        return FakeResponse(_screen_like_bytes())
+        return FakeResponse(_provider_branding_bytes())
 
     def fake_horde(_prompt: str, out_path: Path, **_kwargs):
         horde_calls.append(str(out_path))
@@ -242,7 +291,7 @@ def rejected_pollinations_image_falls_back_to_horde() -> None:
             assert rejected["backend"] == "pollinations"
             assert rejected["result"] == "failed"
             assert rejected["error_category"] == "semantic_mismatch"
-            assert rejected["content_guard"]["reason"] == "screen_or_ui_chrome"
+            assert rejected["content_guard"]["reason"] == "provider_branding_watermark"
     finally:
         imagegen.requests.get = old_get
         imagegen._fetch_from_horde = old_horde
@@ -374,11 +423,12 @@ def main() -> None:
     checks = (
         guard_is_installed_on_imagegen_validator,
         screen_like_provider_image_is_rejected_and_removed,
+        provider_branding_watermark_is_rejected_and_removed,
         five_dense_top_rows_are_rejected,
         production_near_threshold_metrics_are_rejected,
         ordinary_landscape_provider_image_is_accepted,
         explicit_kill_switch_preserves_technical_validation,
-        rejected_pollinations_image_falls_back_to_horde,
+        watermarked_pollinations_image_falls_back_to_horde,
         near_threshold_pollinations_image_falls_back_to_horde,
         prompt_rejects_map_and_screen_outputs_and_bumps_cache_version,
         incident_fingerprints_are_pinned,

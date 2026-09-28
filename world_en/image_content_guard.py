@@ -6,7 +6,8 @@ be accepted by ``world_en.imagegen``. It deliberately targets only high
 confidence failures:
 
 * the known 2026-07-31 incident image (and very close perceptual variants);
-* screenshots / photographs of screens with a dense UI chrome band.
+* screenshots / photographs of screens with a dense UI chrome band;
+* high-confidence bottom-right provider-branding / watermark geometry.
 
 The local informative cover does not pass through ``world_en.imagegen`` and is
 therefore unaffected.
@@ -147,6 +148,115 @@ def _edge_metrics(image: "Image.Image") -> tuple[float, float, float, int]:
     return top, body, ratio, dense_top_rows
 
 
+
+_BRANDING_SAMPLE_WIDTH = 344
+_BRANDING_SAMPLE_HEIGHT = 83
+_BRANDING_MIN_COMPONENTS = 12
+_BRANDING_MIN_BRIGHT_AREA = 500
+_BRANDING_MIN_HORIZONTAL_SPAN = 120
+
+
+def _provider_branding_watermark(image: "Image.Image") -> bool:
+    """Detect the fixed production class of bottom-right provider branding.
+
+    This is deliberately not OCR. Provider prompts already prohibit visible text,
+    logos and watermarks. The guard only rejects a high-confidence cluster of many
+    small neutral-bright glyph/logo components aligned in the lower-right corner,
+    matching the production Pollinations branding geometry while avoiding ordinary
+    coast/sky texture.
+    """
+    width, height = image.size
+    if width < 128 or height < 128:
+        return False
+
+    left = int(width * 0.55)
+    top = int(height * 0.89)
+    right = max(left + 1, width - 2)
+    bottom = max(top + 1, height - 2)
+    sample = image.convert("RGB").crop((left, top, right, bottom)).resize(
+        (_BRANDING_SAMPLE_WIDTH, _BRANDING_SAMPLE_HEIGHT),
+        Image.Resampling.BILINEAR,
+    )
+    pixels = sample.load()
+    width = _BRANDING_SAMPLE_WIDTH
+    height = _BRANDING_SAMPLE_HEIGHT
+    mask = bytearray(width * height)
+
+    for y in range(height):
+        for x in range(width):
+            red, green, blue = pixels[x, y]
+            luminance = (299 * red + 587 * green + 114 * blue) // 1000
+            if luminance >= 200 and max(red, green, blue) - min(red, green, blue) <= 70:
+                mask[y * width + x] = 1
+
+    seen = bytearray(width * height)
+    qualifying: list[tuple[int, int, int]] = []
+    lower_start = int(height * 0.55)
+
+    for y in range(height):
+        for x in range(width):
+            start = y * width + x
+            if not mask[start] or seen[start]:
+                continue
+
+            stack = [start]
+            seen[start] = 1
+            area = 0
+            min_x = max_x = x
+            min_y = max_y = y
+
+            while stack:
+                index = stack.pop()
+                cy, cx = divmod(index, width)
+                area += 1
+                min_x = min(min_x, cx)
+                max_x = max(max_x, cx)
+                min_y = min(min_y, cy)
+                max_y = max(max_y, cy)
+
+                if cx > 0:
+                    neighbour = index - 1
+                    if mask[neighbour] and not seen[neighbour]:
+                        seen[neighbour] = 1
+                        stack.append(neighbour)
+                if cx + 1 < width:
+                    neighbour = index + 1
+                    if mask[neighbour] and not seen[neighbour]:
+                        seen[neighbour] = 1
+                        stack.append(neighbour)
+                if cy > 0:
+                    neighbour = index - width
+                    if mask[neighbour] and not seen[neighbour]:
+                        seen[neighbour] = 1
+                        stack.append(neighbour)
+                if cy + 1 < height:
+                    neighbour = index + width
+                    if mask[neighbour] and not seen[neighbour]:
+                        seen[neighbour] = 1
+                        stack.append(neighbour)
+
+            component_width = max_x - min_x + 1
+            component_height = max_y - min_y + 1
+            if (
+                min_y >= lower_start
+                and 8 <= area <= 220
+                and 2 <= component_width <= 20
+                and 3 <= component_height <= 20
+            ):
+                qualifying.append((area, min_x, max_x + 1))
+
+    if len(qualifying) < _BRANDING_MIN_COMPONENTS:
+        return False
+
+    bright_area = sum(area for area, _left, _right in qualifying)
+    horizontal_span = max(right for _area, _left, right in qualifying) - min(
+        left for _area, left, _right in qualifying
+    )
+    return (
+        bright_area >= _BRANDING_MIN_BRIGHT_AREA
+        and horizontal_span >= _BRANDING_MIN_HORIZONTAL_SPAN
+    )
+
 def inspect_provider_image(path: str | Path) -> ImageContentVerdict:
     if Image is None:
         return ImageContentVerdict(
@@ -169,6 +279,7 @@ def inspect_provider_image(path: str | Path) -> ImageContentVerdict:
         phash = _phash(image)
         incident_phash_distance = _hamming_hex(phash, _INCIDENT_PHASH)
         top, body, ratio, dense_top_rows = _edge_metrics(image)
+        provider_branding = _provider_branding_watermark(image)
 
     known_incident = (
         incident_dhash_distance is not None
@@ -185,6 +296,8 @@ def inspect_provider_image(path: str | Path) -> ImageContentVerdict:
 
     if known_incident:
         reason = "known_unrelated_incident"
+    elif provider_branding:
+        reason = "provider_branding_watermark"
     elif screenshot_chrome:
         reason = "screen_or_ui_chrome"
     else:
