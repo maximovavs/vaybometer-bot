@@ -479,6 +479,51 @@ def cy_evening_caution_score_softens_good_wording() -> None:
     assert [line for line in text.splitlines() if line.strip()][-1] == "#Кипр #погода #здоровье #Никосия #Тродос"
 
 
+
+def cy_evening_astro_state_cannot_change_weather_decision() -> None:
+    """Weather score/verdict/nuance/plan are invariant to favorable vs unfavorable astro."""
+    base = CAUTION_SCORE_EVENING.replace(
+        "✨ VayboMeter завтра: 7.4/10 — хорошо; сильная жара, порывы у моря.",
+        "✨ VayboMeter завтра: 7.4/10 — хорошо; сильная жара.",
+    ).replace(
+        "Лимассол: 35/25 °C • ясно • 💨 7 м/с • порывы до 15 м/с",
+        "Лимассол: 35/25 °C • ясно • 💨 4 м/с",
+    ).replace(
+        "Ларнака: 36/25 °C • ясно • 💨 8 м/с • порывы до 14 м/с",
+        "Ларнака: 36/25 °C • ясно • 💨 4 м/с",
+    )
+    favorable = base.replace(
+        "⚠️ Общий фон: не перегружать день.",
+        "✅ Общий фон: благоприятный день.",
+    )
+    unfavorable = base
+
+    favorable_text = build_evening_format_v2("Кипр", favorable)
+    unfavorable_text = build_evening_format_v2("Кипр", unfavorable)
+
+    def decision(text: str) -> tuple[str, ...]:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return tuple(
+            line
+            for line in lines
+            if line.startswith(
+                (
+                    "✨ VayboMeter",
+                    "🧭 Главное завтра:",
+                    "⚠️ Нюанс:",
+                    "⚠️ Главный нюанс:",
+                    "✅ План завтра:",
+                )
+            )
+        )
+
+    assert decision(favorable_text) == decision(unfavorable_text)
+    score_line = next(line for line in favorable_text.splitlines() if line.startswith("✨ VayboMeter"))
+    assert "7.4/10 — хорошо; сильная жара." in score_line
+    assert "✅ Общий фон: благоприятный день." in favorable_text
+    assert "⚠️ Общий фон: не перегружать день." in unfavorable_text
+
+
 def cy_evening_score_reasons_are_semantically_deduped() -> None:
     text = build_evening_format_v2("Кипр", SCORE_DUP_REASONS_EVENING)
     assert "✨ VayboMeter завтра: 6.4/10 — с оговорками; сильная жара и порывы у моря." in text
@@ -1002,6 +1047,7 @@ def main() -> None:
         cy_evening_preserves_weather_blocks,
         cy_evening_preserves_compact_astro,
         cy_evening_caution_score_softens_good_wording,
+        cy_evening_astro_state_cannot_change_weather_decision,
         cy_evening_score_reasons_are_semantically_deduped,
         cy_evening_preserves_moon_illumination_and_advice,
         cy_evening_normalizes_zodiac_symbol_suffix,
