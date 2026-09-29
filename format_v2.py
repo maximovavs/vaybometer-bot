@@ -306,6 +306,29 @@ def _max_temperature_c(text: str) -> float | None:
     return max(values) if values else None
 
 
+def _daytime_temperature_spread_c(text: str) -> float | None:
+    """City daytime spread using the existing 0.5°C extrema-display criterion."""
+    values: list[float] = []
+    for m in re.finditer(r"(-?\d+(?:[\.,]\d+)?)\s*/\s*-?\d+(?:[\.,]\d+)?\s*°C", text):
+        try:
+            values.append(float(m.group(1).replace(",", ".")))
+        except Exception:
+            continue
+    if len(values) < 2:
+        return None
+    return max(values) - min(values)
+
+
+def _max_uv_index(text: str) -> float | None:
+    values: list[float] = []
+    for m in re.finditer(r"\b(?:УФ|UV)\s*:?[ \t]*(\d+(?:[\.,]\d+)?)", _plain(text), flags=re.I):
+        try:
+            values.append(float(m.group(1).replace(",", ".")))
+        except Exception:
+            continue
+    return max(values) if values else None
+
+
 def _air_quality_values(text: str) -> dict[str, float]:
     values: dict[str, float] = {}
     for key, pattern in {
@@ -446,6 +469,8 @@ def _evening_flags(lines: list[str]) -> dict[str, bool]:
     max_wind = _max_wind_ms(text)
     max_gust = _max_gust_ms(text)
     max_temp = _max_temperature_c(text)
+    temp_spread = _daytime_temperature_spread_c(text)
+    uv_index = _max_uv_index(text)
     forecast_air_text = "\n".join(_forecast_air_lines(weather_lines))
     forecast_poor_air = _has_poor_air_signal(forecast_air_text)
     forecast_dust = _has_structured_dust_evidence(text, forecast_only=True)
@@ -460,7 +485,8 @@ def _evening_flags(lines: list[str]) -> dict[str, bool]:
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 7),
         "local": _has_any(text, ("локаль", "местами", "неравномер", "по часам", "микросценар")),
         "troodos": _has_any(text, ("тродос", "горы", "горн")),
-        "uv": _has_any(text, ("уф", "uv", "spf")),
+        "contrast": isinstance(temp_spread, (int, float)) and temp_spread >= 0.5,
+        "uv": isinstance(uv_index, (int, float)) and uv_index >= 6,
     }
 
 
@@ -519,7 +545,7 @@ def _polish_evening_score(score_line: str, flags: dict[str, bool]) -> str:
 
 
 def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
-    low = (score_line or "").lower()
+    del score_line
     if flags["storm"]:
         return "🧭 Главное завтра: сильные порывы у моря задают режим дня."
     if flags["rain"]:
@@ -536,11 +562,8 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
         return "🧭 Главное завтра: главная нагрузка — жара, активность лучше сместить на утро и вечер."
     if flags["wind"]:
         return "🧭 Главное завтра: основной фактор — ветер у моря и открытых участков."
-    if flags["troodos"]:
+    if flags.get("contrast"):
         return "🧭 Главное завтра: заметен контраст побережья, центра острова и Тродоса."
-    if low:
-        reason = re.sub(r"^.*?—\s*", "", score_line).strip(" .")
-        return "🧭 Главное завтра: " + (reason[0].lower() + reason[1:] if reason else "день подходит для обычных дел") + "."
     return "🧭 Главное завтра: спокойный день для обычных дел и прогулок."
 
 
@@ -557,14 +580,12 @@ def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_inland: bool) -> 
         return "⚠️ Нюанс: чувствительным людям лучше сократить интенсивную активность на улице."
     if flags.get("visibility_haze"):
         return "⚠️ Нюанс: воздух по текущим данным чистый, но локальная дымка может ухудшать видимость."
-    if flags["heat"] and has_inland:
+    if flags["heat"] and has_inland and flags.get("contrast"):
         return "⚠️ Нюанс: в Никосии и внутри острова жарче, чем на побережье."
     if flags["wind"] and has_sea:
         return "⚠️ Нюанс: у моря ощущение меняют порывы, а не только температура."
     if flags["uv"]:
         return "⚠️ Нюанс: дневное солнце требует SPF, воды и тени."
-    if flags["troodos"] and has_inland:
-        return "⚠️ Нюанс: Тродос может ощущаться заметно прохладнее центра острова."
     return ""
 
 
