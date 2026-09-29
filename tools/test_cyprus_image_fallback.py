@@ -1593,8 +1593,75 @@ def error_stage_is_none_on_successful_send() -> None:
     assert outcome["diagnostics"]["actual_renderer"] == ""
 
 
+
+def forecast_threshold_warning_copy_is_provenance_safe() -> None:
+    source = (ROOT / "post_common.py").read_text("utf-8")
+    assert source.count('"warning_text": "⚠️ <b>По прогнозу</b>: "') == 2
+    assert '"warning_text": "⚠️ <b>Штормовое предупреждение</b>:' not in source
+
+    derived = """🌅 Кипр сегодня (29.09.2026)
+🌡 Теплее всего — Никосия (30°), прохладнее — Тродос (21°).
+💨 Ветер: 4.3 м/с • порывы до 18 м/с.
+⚠️ По прогнозу: порывы до 18 м/с.
+"""
+    with tempfile.TemporaryDirectory() as tmp_name:
+        result = render_local_informative_cover(
+            derived,
+            target_date="2026-09-29",
+            post_type="morning",
+            output_path=Path(tmp_name) / "derived.png",
+            minimum_bytes=12000,
+        )
+        metadata = result["metadata"]
+        assert metadata["explicit_storm"] == "false"
+        assert metadata["severe_wind"] == "true"
+        assert "ШТОРМОВОЙ ВЕТЕР" not in metadata["rendered_text"]
+        assert "ПОРЫВЫ ДО 18 М/С" in metadata["rendered_text"]
+
+
+def informative_cover_variants_rotate_and_keep_preview_contrast() -> None:
+    def _channel(value: int) -> float:
+        scaled = value / 255.0
+        return scaled / 12.92 if scaled <= 0.04045 else ((scaled + 0.055) / 1.055) ** 2.4
+
+    def _luminance(rgb: tuple[int, int, int]) -> float:
+        r, g, b = (_channel(value) for value in rgb)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def _contrast(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+        light, dark = sorted((_luminance(a), _luminance(b)), reverse=True)
+        return (light + 0.05) / (dark + 0.05)
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        variants: set[str] = set()
+        preview_hashes: set[str] = set()
+        for day in range(15, 19):
+            result = render_local_informative_cover(
+                MESSAGE,
+                target_date=f"2026-07-{day:02d}",
+                post_type="morning",
+                output_path=tmp / f"{day}.png",
+                minimum_bytes=12000,
+            )
+            metadata = result["metadata"]
+            variants.add(str(metadata["cover_variant"]))
+            card = tuple(json.loads(metadata["fact_card_fill_rgba"]))[:3]
+            text_rgb = tuple(json.loads(metadata["fact_text_rgb"]))
+            assert _contrast(text_rgb, card) >= 7.0
+            with Image.open(result["path"]) as rendered:
+                preview = rendered.resize((270, 270))
+                preview_hashes.add(hashlib.sha256(preview.tobytes()).hexdigest())
+
+        assert len(variants) == 4
+        assert len(preview_hashes) >= 3
+
+
+
 def main() -> None:
     checks = (
+        forecast_threshold_warning_copy_is_provenance_safe,
+        informative_cover_variants_rotate_and_keep_preview_contrast,
         local_informative_cover_is_valid_deterministic_and_factual,
         informative_cover_long_facts_fit_pixel_bounds,
         local_cover_graphics_and_cache_follow_confirmed_facts,
