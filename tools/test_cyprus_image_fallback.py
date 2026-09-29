@@ -781,7 +781,7 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
             assert probe["metadata"]["cache_key"] == local_metadata["cache_key"]
             assert probe["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
             # G.1 must not touch the local renderer version or its cache identity.
-            assert LOCAL_INFORMATIVE_COVER_VERSION == "cy_local_informative_cover_v3"
+            assert LOCAL_INFORMATIVE_COVER_VERSION == "cy_local_informative_cover_v4"
             assert "scene_macro_family" not in probe["metadata"]
 
             amain_source = inspect.getsource(safe_module.main)
