@@ -20,8 +20,14 @@ from visual_context_cy import parse_visual_context_cy
 
 
 LOCAL_WEATHER_CARD_VERSION = "cy_local_atmospheric_visual_v2"
-LOCAL_INFORMATIVE_COVER_VERSION = "cy_local_informative_cover_v3"
+LOCAL_INFORMATIVE_COVER_VERSION = "cy_local_informative_cover_v4"
 LOCAL_INFORMATIVE_COVER_BRANDING = "VAYBOMETER · CYPRUS WEATHER BRIEF"
+_LOCAL_INFORMATIVE_COVER_VARIANTS = ("sea_glass", "sunstone", "deep_coast", "island_grid")
+_COVER_TITLE_PANEL_FILL = (8, 30, 45, 226)
+_COVER_TITLE_TEXT = (248, 250, 247)
+_COVER_BRANDING_TEXT = (205, 225, 233)
+_COVER_FACT_CARD_FILL = (250, 251, 249, 238)
+_COVER_FACT_TEXT = (17, 42, 58)
 PROVIDER_HEALTH_SCHEMA_VERSION = 1
 _PROVIDER_NAMES = ("pollinations", "stable_horde", "custom")
 _INVALID_ERROR_CATEGORIES = {
@@ -698,6 +704,8 @@ def _draw_cover_fact_cards(
     values: list[str],
     *,
     accent: tuple[int, int, int],
+    card_fill: tuple[int, int, int, int] = _COVER_FACT_CARD_FILL,
+    text_fill: tuple[int, int, int] = _COVER_FACT_TEXT,
 ) -> list[dict[str, Any]]:
     """Draw up to three bounded fact cards and return pixel-layout diagnostics."""
     layouts: list[dict[str, Any]] = []
@@ -713,7 +721,7 @@ def _draw_cover_fact_cards(
             raise RuntimeError("Cyprus informative-cover fact cards exceed the safe vertical area")
 
         card_bbox = (_COVER_FACT_CARD_LEFT, card_top, _COVER_FACT_CARD_RIGHT, card_bottom)
-        draw.rounded_rectangle(card_bbox, radius=28, fill=(255, 255, 255, 150))
+        draw.rounded_rectangle(card_bbox, radius=28, fill=card_fill)
         line_top = card_top + _COVER_FACT_PADDING_Y
         line_layouts: list[dict[str, Any]] = []
         for line, raw_box in zip(lines, raw_boxes):
@@ -729,7 +737,7 @@ def _draw_cover_fact_cards(
                 and pixel_bbox[3] <= card_bottom
             ):
                 raise RuntimeError(f"Cyprus informative-cover line escaped its card: {line!r}")
-            draw.text(origin, line, font=font, fill=(*accent, 255))
+            draw.text(origin, line, font=font, fill=(*text_fill, 255))
             line_layouts.append(
                 {
                     "text": line,
@@ -846,12 +854,57 @@ def _cover_palette(ctx: object) -> tuple[str, tuple[int, int, int], tuple[int, i
     return "fair", (101, 177, 211), (245, 237, 199), (25, 76, 107)
 
 
-def _draw_cover_weather_motif(draw: ImageDraw.ImageDraw, ctx: object, accent: tuple[int, int, int]) -> None:
-    # Purposefully graphic, not pseudo-photographic: sun, sea and factual hazard marks.
-    draw.ellipse((770, 105, 945, 280), fill=(*accent, 42), outline=(*accent, 115), width=5)
-    for offset in range(4):
-        y = 835 + offset * 34
-        draw.arc((90, y - 30, 990, y + 55), 195, 345, fill=(*accent, 115 - offset * 15), width=5)
+def _informative_cover_variant(target_date: str, post_type: str) -> str:
+    ordinal = date.fromisoformat(_safe_target_date(target_date)).toordinal()
+    offset = 1 if str(post_type).strip().lower() == "evening" else 0
+    return _LOCAL_INFORMATIVE_COVER_VARIANTS[(ordinal + offset) % len(_LOCAL_INFORMATIVE_COVER_VARIANTS)]
+
+
+def _cover_variant_palette(
+    variant: str,
+    top: tuple[int, int, int],
+    bottom: tuple[int, int, int],
+    accent: tuple[int, int, int],
+) -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
+    if variant == "sunstone":
+        return _mix(top, (245, 183, 93), 0.28), _mix(bottom, (255, 240, 210), 0.20), _mix(accent, (21, 71, 105), 0.35)
+    if variant == "deep_coast":
+        return _mix(top, (24, 70, 98), 0.32), _mix(bottom, (115, 176, 192), 0.22), _mix(accent, (14, 60, 88), 0.42)
+    if variant == "island_grid":
+        return _mix(top, (94, 160, 176), 0.18), _mix(bottom, (239, 226, 185), 0.16), _mix(accent, (19, 68, 96), 0.30)
+    return top, bottom, accent
+
+
+def _draw_cover_weather_motif(
+    draw: ImageDraw.ImageDraw,
+    ctx: object,
+    accent: tuple[int, int, int],
+    variant: str,
+) -> None:
+    # Purposefully graphic, not pseudo-photographic. Variants move large shapes
+    # so adjacent fallback days remain visually distinct under perceptual dedup.
+    if variant == "sunstone":
+        draw.ellipse((105, 680, 355, 930), fill=(*accent, 34), outline=(*accent, 118), width=6)
+        for offset in range(4):
+            x = 655 + offset * 55
+            draw.arc((x - 210, 130, x + 210, 390), 205, 338, fill=(*accent, 105 - offset * 12), width=5)
+    elif variant == "deep_coast":
+        draw.rounded_rectangle((720, 80, 990, 600), radius=100, fill=(*accent, 24), outline=(*accent, 86), width=4)
+        for offset in range(5):
+            y = 770 + offset * 38
+            draw.line((80 + offset * 36, y, 880 - offset * 24, y), fill=(*accent, 92 - offset * 10), width=5)
+    elif variant == "island_grid":
+        for offset in range(4):
+            x = 650 + offset * 72
+            draw.line((x, 90, x - 170, 500), fill=(*accent, 64 + offset * 10), width=4)
+        for offset in range(4):
+            y = 820 + offset * 34
+            draw.arc((120, y - 40, 970, y + 55), 195, 345, fill=(*accent, 110 - offset * 14), width=5)
+    else:
+        draw.ellipse((770, 105, 945, 280), fill=(*accent, 42), outline=(*accent, 115), width=5)
+        for offset in range(4):
+            y = 835 + offset * 34
+            draw.arc((90, y - 30, 990, y + 55), 195, 345, fill=(*accent, 115 - offset * 15), width=5)
     if bool(getattr(ctx, "strong_wind", False)):
         for index, width in enumerate((280, 390, 330)):
             y = 345 + index * 47
@@ -892,12 +945,15 @@ def render_local_informative_cover(
         visual_context=visual_context,
     )
     palette, top, bottom, accent = _cover_palette(ctx)
+    cover_variant = _informative_cover_variant(safe_date, mode)
+    top, bottom, accent = _cover_variant_palette(cover_variant, top, bottom, accent)
     rendered_lines = [LOCAL_INFORMATIVE_COVER_BRANDING, facts["headline"]]
     rendered_lines.extend(value for key, value in facts.items() if key != "headline" and value)
     rendered_text = "\n".join(rendered_lines[:5])
     cache_payload = {
         "renderer_version": LOCAL_INFORMATIVE_COVER_VERSION,
         "branding": LOCAL_INFORMATIVE_COVER_BRANDING,
+        "cover_variant": cover_variant,
         "target_date": safe_date,
         "post_type": mode,
         "visual_forecast_period": ctx.visual_forecast_period,
@@ -921,11 +977,12 @@ def render_local_informative_cover(
     draw = ImageDraw.Draw(image, "RGBA")
     for y in range(size):
         draw.line((0, y, size, y), fill=(*_mix(top, bottom, y / (size - 1)), 255))
-    _draw_cover_weather_motif(draw, ctx, accent)
-    draw.rounded_rectangle((68, 58, 1012, 1012), radius=48, fill=(255, 255, 255, 26), outline=(255, 255, 255, 88), width=3)
+    _draw_cover_weather_motif(draw, ctx, accent, cover_variant)
+    draw.rounded_rectangle((68, 58, 1012, 1012), radius=48, fill=(255, 255, 255, 30), outline=(255, 255, 255, 96), width=3)
     title_font = _cover_font(74, bold=True)
     small_font = _cover_font(28, bold=False)
-    draw.text((100, 105), facts["headline"], font=title_font, fill=(*accent, 255))
+    draw.rounded_rectangle((88, 88, 710, 286), radius=30, fill=_COVER_TITLE_PANEL_FILL)
+    draw.text((100, 105), facts["headline"], font=title_font, fill=(*_COVER_TITLE_TEXT, 255))
     branding_origin = (102, 205)
     branding_bbox = list(
         draw.textbbox(
@@ -938,13 +995,15 @@ def render_local_informative_cover(
         branding_origin,
         LOCAL_INFORMATIVE_COVER_BRANDING,
         font=small_font,
-        fill=(*accent, 175),
+        fill=(*_COVER_BRANDING_TEXT, 235),
     )
     fact_values = [facts["primary_fact"], facts["secondary_fact"], facts["tertiary_fact"]]
     fact_layout = _draw_cover_fact_cards(
         draw,
         [item for item in fact_values if item],
         accent=accent,
+        card_fill=_COVER_FACT_CARD_FILL,
+        text_fill=_COVER_FACT_TEXT,
     )
     fact_layout_json = json.dumps(fact_layout, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -956,6 +1015,10 @@ def render_local_informative_cover(
         "renderer_version": LOCAL_INFORMATIVE_COVER_VERSION,
         "branding": LOCAL_INFORMATIVE_COVER_BRANDING,
         "branding_bbox": json.dumps(branding_bbox, separators=(",", ":")),
+        "cover_variant": cover_variant,
+        "title_panel_fill_rgba": json.dumps(_COVER_TITLE_PANEL_FILL, separators=(",", ":")),
+        "fact_card_fill_rgba": json.dumps(_COVER_FACT_CARD_FILL, separators=(",", ":")),
+        "fact_text_rgb": json.dumps(_COVER_FACT_TEXT, separators=(",", ":")),
         "target_date": safe_date,
         "post_type": mode,
         "visual_forecast_period": ctx.visual_forecast_period,
