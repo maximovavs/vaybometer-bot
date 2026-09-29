@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from PIL import Image  # type: ignore  # noqa: E402
+from weekly_cover import RENDERER_VERSION as WEEKLY_COVER_VERSION, render_weekly_cover  # noqa: E402
 from send_weekly_forecast import (  # noqa: E402
     _aggregate_air_data,
     _fetch_air,
@@ -121,10 +123,11 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     assert "идеально" not in text.lower()
     assert "Кайт/винг: рабочие окна только для уверенных; порывы проверять по споту." in text
     assert "Серф: зависит от фактической волны; скорее не главный сценарий недели." in text
-    assert "🏭 Воздух" in text
-    assert "🧲 Космопогода" in text
-    assert "сильных бурь не видно" in text
-    assert "🌙 Луна" in text
+    assert "🏭 Воздух сейчас" in text
+    assert "Текущий снимок воздуха:" in text
+    assert "🧲 Космопогода сейчас" in text
+    assert "это текущий снимок, а не прогноз на всю неделю" in text
+    assert "🌙 Луна и астроритм (интерпретация)" in text
     assert "✅ Как прожить неделю" in text
     assert "Воздух неидеален" in text
     assert "🌕" in text and "Полнолуние" in text
@@ -248,6 +251,28 @@ def test_weekly_air_preserves_worst_island_values() -> None:
     assert aggregated == {"aqi": 145.0, "pm25": 37.0, "pm10": 91.0}
 
 
+
+def test_weekly_cover_is_high_contrast_factual_projection() -> None:
+    text = _base_text()
+    with tempfile.TemporaryDirectory() as tmp:
+        metadata = render_weekly_cover(
+            text,
+            start=date(2026, 7, 1),
+            output_path=Path(tmp) / "weekly.png",
+        )
+        assert metadata["renderer_version"] == WEEKLY_COVER_VERSION
+        assert metadata["main_fact"] in text
+        assert metadata["weather_fact"] in text
+        assert metadata["sea_fact"] in text
+        with Image.open(metadata["path"]) as image:
+            assert image.size == (1080, 1080)
+            assert image.format == "PNG"
+            assert image.info["renderer_version"] == WEEKLY_COVER_VERSION
+            assert image.info["week_start"] == "2026-07-01"
+            image.verify()
+
+
+
 def main() -> None:
     checks = (
         test_weekly_forecast_structure_without_optional_config,
@@ -257,6 +282,7 @@ def main() -> None:
         test_weekly_weather_preserves_island_extremes,
         test_weekly_air_fetches_exact_island_points,
         test_weekly_air_preserves_worst_island_values,
+        test_weekly_cover_is_high_contrast_factual_projection,
     )
     for check in checks:
         check()
