@@ -17,10 +17,11 @@ from typing import Any, Iterable, Mapping
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, PngImagePlugin
 
 from visual_context_cy import parse_visual_context_cy
+from curated_fallback_cy import CATALOG_VERSION as CURATED_FALLBACK_VERSION, render_curated_cover as _render_curated_cover
 
 
 LOCAL_WEATHER_CARD_VERSION = "cy_local_atmospheric_visual_v2"
-LOCAL_INFORMATIVE_COVER_VERSION = "cy_local_informative_cover_v4"
+LOCAL_INFORMATIVE_COVER_VERSION = CURATED_FALLBACK_VERSION
 LOCAL_INFORMATIVE_COVER_BRANDING = "VAYBOMETER · CYPRUS WEATHER BRIEF"
 _LOCAL_INFORMATIVE_COVER_VARIANTS = ("sea_glass", "sunstone", "deep_coast", "island_grid")
 _COVER_TITLE_PANEL_FILL = (8, 30, 45, 226)
@@ -928,12 +929,7 @@ def render_local_informative_cover(
     visual_context: Any | None = None,
     visibility_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Render a deterministic factual Cyprus cover after network providers fail.
-
-    ``visual_context`` and ``visibility_metadata`` carry the canonical decision's
-    provenance. When supplied, the post is not parsed again; legacy callers that omit
-    them keep the previous parse-on-demand behaviour.
-    """
+    """Render a factual curated Cyprus cover after network providers fail."""
 
     safe_date = _safe_target_date(target_date)
     mode = str(post_type or "").strip().lower()
@@ -944,136 +940,39 @@ def render_local_informative_cover(
         post_type=mode,
         visual_context=visual_context,
     )
-    palette, top, bottom, accent = _cover_palette(ctx)
-    cover_variant = _informative_cover_variant(safe_date, mode)
-    top, bottom, accent = _cover_variant_palette(cover_variant, top, bottom, accent)
-    rendered_lines = [LOCAL_INFORMATIVE_COVER_BRANDING, facts["headline"]]
-    rendered_lines.extend(value for key, value in facts.items() if key != "headline" and value)
-    rendered_text = "\n".join(rendered_lines[:5])
-    cache_payload = {
-        "renderer_version": LOCAL_INFORMATIVE_COVER_VERSION,
-        "branding": LOCAL_INFORMATIVE_COVER_BRANDING,
-        "cover_variant": cover_variant,
-        "target_date": safe_date,
-        "post_type": mode,
-        "visual_forecast_period": ctx.visual_forecast_period,
-        "primary_weather": ctx.primary_weather,
-        "hazards": ctx.hazards,
-        "scene_focus": ctx.scene_focus,
-        "headline": facts["headline"],
-        "primary_fact": facts["primary_fact"],
-        "secondary_fact": facts["secondary_fact"],
-        "tertiary_fact": facts["tertiary_fact"],
-        "actual_precipitation": ctx.actual_precipitation,
-        "explicit_storm": ctx.explicit_storm,
-        "severe_wind": ctx.severe_wind,
-        "visibility_condition": ctx.visibility_condition,
-    }
-    cache_json = json.dumps(cache_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    cache_key = f"{LOCAL_INFORMATIVE_COVER_VERSION}:{hashlib.sha256(cache_json.encode('utf-8')).hexdigest()}"
-
-    size = 1080
-    image = Image.new("RGBA", (size, size), (*top, 255))
-    draw = ImageDraw.Draw(image, "RGBA")
-    for y in range(size):
-        draw.line((0, y, size, y), fill=(*_mix(top, bottom, y / (size - 1)), 255))
-    _draw_cover_weather_motif(draw, ctx, accent, cover_variant)
-    draw.rounded_rectangle((68, 58, 1012, 1012), radius=48, fill=(255, 255, 255, 30), outline=(255, 255, 255, 96), width=3)
-    title_font = _cover_font(74, bold=True)
-    small_font = _cover_font(28, bold=False)
-    draw.rounded_rectangle((88, 88, 710, 286), radius=30, fill=_COVER_TITLE_PANEL_FILL)
-    draw.text((100, 105), facts["headline"], font=title_font, fill=(*_COVER_TITLE_TEXT, 255))
-    branding_origin = (102, 205)
-    branding_bbox = list(
-        draw.textbbox(
-            branding_origin,
-            LOCAL_INFORMATIVE_COVER_BRANDING,
-            font=small_font,
-        )
-    )
-    draw.text(
-        branding_origin,
-        LOCAL_INFORMATIVE_COVER_BRANDING,
-        font=small_font,
-        fill=(*_COVER_BRANDING_TEXT, 235),
-    )
-    fact_values = [facts["primary_fact"], facts["secondary_fact"], facts["tertiary_fact"]]
-    fact_layout = _draw_cover_fact_cards(
-        draw,
-        [item for item in fact_values if item],
-        accent=accent,
-        card_fill=_COVER_FACT_CARD_FILL,
-        text_fill=_COVER_FACT_TEXT,
-    )
-    fact_layout_json = json.dumps(fact_layout, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-    output = Path(output_path).with_suffix(".png")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    metadata: dict[str, Any] = {
-        "backend": "local_informative_cover",
-        "generator_version": LOCAL_INFORMATIVE_COVER_VERSION,
-        "renderer_version": LOCAL_INFORMATIVE_COVER_VERSION,
-        "branding": LOCAL_INFORMATIVE_COVER_BRANDING,
-        "branding_bbox": json.dumps(branding_bbox, separators=(",", ":")),
-        "cover_variant": cover_variant,
-        "title_panel_fill_rgba": json.dumps(_COVER_TITLE_PANEL_FILL, separators=(",", ":")),
-        "fact_card_fill_rgba": json.dumps(_COVER_FACT_CARD_FILL, separators=(",", ":")),
-        "fact_text_rgb": json.dumps(_COVER_FACT_TEXT, separators=(",", ":")),
-        "target_date": safe_date,
-        "post_type": mode,
+    extra_metadata: dict[str, Any] = {
         "visual_forecast_period": ctx.visual_forecast_period,
         "primary_weather": ctx.primary_weather,
         "hazards": ",".join(ctx.hazards),
         "scene_focus": ctx.scene_focus,
-        "headline": facts["headline"],
-        "primary_fact": facts["primary_fact"],
-        "secondary_fact": facts["secondary_fact"],
-        "tertiary_fact": facts["tertiary_fact"],
-        "fact_layout": fact_layout_json,
         "actual_precipitation": str(bool(ctx.actual_precipitation)).lower(),
         "explicit_storm": str(bool(ctx.explicit_storm)).lower(),
         "severe_wind": str(bool(ctx.severe_wind)).lower(),
         "rain_graphics": str(bool(ctx.actual_precipitation)).lower(),
         "storm_graphics": str(bool(ctx.explicit_storm)).lower(),
-        "rendered_text": rendered_text,
-        "palette": palette,
-        "cache_key": cache_key,
+        "visibility_condition": str(getattr(ctx, "visibility_condition", "")),
+        "visibility_forecast_window": str(getattr(ctx, "visibility_forecast_window", "")),
+        "dust_vs_fog_classification": str(getattr(ctx, "dust_vs_fog_classification", "")),
+        "visual_context_reused": str(visual_context is not None).lower(),
+        "visibility_metadata_provided": str(visibility_metadata is not None).lower(),
     }
-    # Diagnostics-only provenance, appended AFTER the local cache key is final so the
-    # same factual inputs keep producing the same local cache key as before.
-    metadata["visibility_condition"] = str(getattr(ctx, "visibility_condition", ""))
-    metadata["visibility_forecast_window"] = str(
-        getattr(ctx, "visibility_forecast_window", "")
-    )
-    metadata["dust_vs_fog_classification"] = str(
-        getattr(ctx, "dust_vs_fog_classification", "")
-    )
-    metadata["visual_context_reused"] = str(visual_context is not None).lower()
-    metadata["visibility_metadata_provided"] = str(visibility_metadata is not None).lower()
     if visibility_metadata is not None:
-        metadata["visibility_metadata"] = json.dumps(
+        extra_metadata["visibility_metadata"] = json.dumps(
             dict(visibility_metadata),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
             default=str,
         )
-    png_info = PngImagePlugin.PngInfo()
-    for key, value in metadata.items():
-        png_info.add_text(key, str(value))
-    image.convert("RGB").save(output, format="PNG", pnginfo=png_info, compress_level=6)
-    if output.stat().st_size <= int(minimum_bytes):
-        image.convert("RGB").save(output, format="PNG", pnginfo=png_info, compress_level=0)
-    with Image.open(output) as verify_image:
-        if verify_image.size != (size, size) or verify_image.format != "PNG":
-            raise RuntimeError("local informative cover has invalid dimensions or format")
-        verify_image.verify()
-    if output.stat().st_size <= int(minimum_bytes):
-        raise RuntimeError(
-            f"local informative cover is too small: {output.stat().st_size} bytes; must exceed {minimum_bytes}"
-        )
-    return {"path": str(output), "bytes": output.stat().st_size, "metadata": metadata}
-
+    return _render_curated_cover(
+        ctx,
+        facts,
+        target_date=safe_date,
+        post_type=mode,
+        output_path=output_path,
+        minimum_bytes=minimum_bytes,
+        extra_metadata=extra_metadata,
+    )
 
 def render_local_weather_card(
     final_text: str,
