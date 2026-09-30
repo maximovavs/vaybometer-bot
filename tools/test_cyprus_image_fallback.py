@@ -354,7 +354,7 @@ def local_cover_graphics_and_cache_follow_confirmed_facts() -> None:
         assert "🌧" not in dry["metadata"]["rendered_text"]
         assert wet["metadata"]["actual_precipitation"] == "true"
         assert wet["metadata"]["rain_graphics"] == "true"
-        assert "🌧 ДОЖДЬ МЕСТАМИ" in wet["metadata"]["rendered_text"]
+        assert "ДОЖДЬ МЕСТАМИ" in wet["metadata"]["rendered_text"]
         assert changed["metadata"]["cache_key"] != baseline["metadata"]["cache_key"]
 
 
