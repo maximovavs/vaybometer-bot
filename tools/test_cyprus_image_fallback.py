@@ -1584,28 +1584,63 @@ def forecast_threshold_warning_copy_is_provenance_safe() -> None:
 def informative_cover_variants_rotate_and_keep_preview_contrast() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
-        assets: set[str] = set()
-        scenarios: set[str] = set()
-        preview_hashes: set[str] = set()
+
+        # The production-like windy fixture intentionally maps to a singleton
+        # approved pool. A singleton weather scenario must stay deterministic;
+        # rotation is required only where the curated catalog actually provides
+        # multiple eligible backgrounds.
+        windy_assets: set[str] = set()
+        windy_pools: set[tuple[str, ...]] = set()
         for day in range(15, 24):
             result = render_local_informative_cover(
                 MESSAGE,
                 target_date=f"2026-07-{day:02d}",
                 post_type="morning",
-                output_path=tmp / f"{day}.png",
+                output_path=tmp / f"windy-{day}.png",
                 minimum_bytes=12000,
             )
             metadata = result["metadata"]
-            assets.add(str(metadata["curated_asset_id"]))
-            scenarios.add(str(metadata["curated_scenario"]))
-            assert str(metadata["curated_asset_id"]).startswith("cy_")
+            pool = tuple(json.loads(str(metadata["curated_pool"])))
+            windy_assets.add(str(metadata["curated_asset_id"]))
+            windy_pools.add(pool)
+            assert metadata["curated_scenario"] == "strong_wind"
+            assert str(metadata["curated_asset_id"]) in pool
+            with Image.open(result["path"]) as rendered:
+                assert rendered.size == (1080, 1350)
+
+        assert windy_pools == {("cy_windy_sea_01",)}
+        assert windy_assets == {"cy_windy_sea_01"}
+
+        # Clear weather has a real multi-asset pool, so adjacent target dates
+        # must exercise more than one approved background while preserving the
+        # same scenario and Telegram-preview readability.
+        clear_assets: set[str] = set()
+        clear_pools: set[tuple[str, ...]] = set()
+        preview_hashes: set[str] = set()
+        for day in range(15, 24):
+            result = render_local_informative_cover(
+                AIR_ONLY_MESSAGE,
+                target_date=f"2026-07-{day:02d}",
+                post_type="morning",
+                output_path=tmp / f"clear-{day}.png",
+                minimum_bytes=12000,
+            )
+            metadata = result["metadata"]
+            pool = tuple(json.loads(str(metadata["curated_pool"])))
+            clear_assets.add(str(metadata["curated_asset_id"]))
+            clear_pools.add(pool)
+            assert metadata["curated_scenario"] == "clear"
+            assert str(metadata["curated_asset_id"]) in pool
             with Image.open(result["path"]) as rendered:
                 assert rendered.size == (1080, 1350)
                 preview = rendered.resize((216, 270))
                 preview_hashes.add(hashlib.sha256(preview.tobytes()).hexdigest())
 
-        assert scenarios
-        assert len(assets) >= 2
+        assert len(clear_pools) == 1
+        clear_pool = next(iter(clear_pools))
+        assert len(clear_pool) >= 2
+        assert clear_assets <= set(clear_pool)
+        assert len(clear_assets) >= 2
         assert len(preview_hashes) >= 2
 
 def main() -> None:
