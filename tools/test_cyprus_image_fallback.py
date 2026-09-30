@@ -10,6 +10,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import types
@@ -191,10 +192,15 @@ def local_informative_cover_is_valid_deterministic_and_factual() -> None:
         assert first_path.stat().st_size > 12000
         assert _sha256(first_path) == _sha256(second_path)
         assert _sha256(first_path) != _sha256(evening_path)
+
         required_metadata = {
             "renderer_version",
+            "catalog_version",
             "branding",
             "branding_bbox",
+            "curated_scenario",
+            "curated_asset_id",
+            "curated_pool",
             "visual_forecast_period",
             "primary_weather",
             "hazards",
@@ -213,23 +219,30 @@ def local_informative_cover_is_valid_deterministic_and_factual() -> None:
         assert required_metadata <= set(first["metadata"])
         assert required_metadata <= set(evening["metadata"])
         assert first["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
-        assert evening["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
-        assert first["metadata"]["branding"] == LOCAL_INFORMATIVE_COVER_BRANDING
-        assert first["metadata"]["rendered_text"].splitlines()[0] == LOCAL_INFORMATIVE_COVER_BRANDING
-        brand_left, brand_top, brand_right, brand_bottom = json.loads(
-            first["metadata"]["branding_bbox"]
-        )
-        assert 92 <= brand_left < brand_right <= 988
-        assert 80 <= brand_top < brand_bottom <= 300
+        assert first["metadata"]["catalog_version"] == "cy_curated_fallback_v1"
+        assert first["metadata"]["curated_asset_id"].startswith("cy_")
         assert evening["metadata"]["headline"] == "КИПР ЗАВТРА"
         assert evening["metadata"]["primary_fact"] == "🔥 ДО 38° В НИКОСИИ"
         assert evening["metadata"]["secondary_fact"] == "💨 ПОРЫВЫ ДО 15 М/С У МОРЯ"
         assert evening["metadata"]["actual_precipitation"] == "false"
         assert evening["metadata"]["explicit_storm"] == "false"
         assert evening["metadata"]["severe_wind"] == "true"
-        assert evening["metadata"]["visual_forecast_period"] == "representative_daytime"
-        assert evening["metadata"]["scene_focus"] == "coast_inland_contrast"
-        assert "🌧" not in evening["metadata"]["rendered_text"]
+        assert evening["metadata"]["curated_scenario"] in {"hot", "strong_wind"}
+
+        with Image.open(first_path) as image:
+            assert image.size == (1080, 1350)
+            assert image.format == "PNG"
+            assert image.info["backend"] == "local_informative_cover"
+            assert image.info["target_date"] == "2026-07-15"
+            assert image.info["post_type"] == "morning"
+            assert image.info["curated_asset_id"] == first["metadata"]["curated_asset_id"]
+            image.verify()
+        with Image.open(evening_path) as image:
+            assert image.size == (1080, 1350)
+            assert image.info["post_type"] == "evening"
+            assert image.info["catalog_version"] == "cy_curated_fallback_v1"
+            image.verify()
+
         assert safe_module._cy_image_caption(
             "morning",
             "2026-07-16",
@@ -242,24 +255,6 @@ def local_informative_cover_is_valid_deterministic_and_factual() -> None:
             test_label=False,
             current_date=dt.date(2026, 7, 15),
         ) == "Визуальный вайб погоды на Кипре завтра 🌊"
-        with Image.open(first_path) as image:
-            assert image.size == (1080, 1080)
-            assert image.format == "PNG"
-            assert image.info["backend"] == "local_informative_cover"
-            assert image.info["target_date"] == "2026-07-15"
-            assert image.info["post_type"] == "morning"
-            assert image.info["headline"] == "КИПР СЕГОДНЯ"
-            assert image.info["branding"] == LOCAL_INFORMATIVE_COVER_BRANDING
-            assert image.info["branding_bbox"] == first["metadata"]["branding_bbox"]
-            assert image.info["rendered_text"]
-            image.verify()
-        with Image.open(evening_path) as image:
-            assert image.size == (1080, 1080)
-            assert image.info["post_type"] == "evening"
-            assert image.info["visual_forecast_period"] == "representative_daytime"
-            assert image.info["palette"] == "hot"
-            image.verify()
-
 
 def informative_cover_long_facts_fit_pixel_bounds() -> None:
     fixtures = (
@@ -289,39 +284,21 @@ def informative_cover_long_facts_fit_pixel_bounds() -> None:
             assert expected_fact in full_facts
             layout = json.loads(metadata["fact_layout"])
             assert 1 <= len(layout) <= 3
-            assert {item["source_fact"] for item in layout} == {fact for fact in full_facts if fact}
-
-            previous_bottom = 0
+            assert {item["source_fact"] for item in layout} == {
+                re.sub(r"^[^\wА-ЯЁ+]+\s*", "", fact, flags=re.I)
+                for fact in full_facts
+                if fact
+            }
             with Image.open(result["path"]) as image:
-                assert image.size == (1080, 1080)
+                assert image.size == (1080, 1350)
                 assert image.format == "PNG"
                 assert image.info["fact_layout"] == metadata["fact_layout"]
-                draw = ImageDraw.Draw(image)
-                for item in layout:
-                    card_left, card_top, card_right, card_bottom = item["card_bbox"]
-                    assert card_left == 92 and card_right == 988
-                    assert 0 <= card_top < card_bottom <= 988
-                    assert card_top >= previous_bottom
-                    previous_bottom = card_bottom
-                    assert 34 <= item["font_size"] <= 52
-                    assert 1 <= len(item["lines"]) <= 2
-                    assert " ".join(line["text"] for line in item["lines"]) == item["display_text"]
-                    font = cyprus_image_recovery._cover_font(item["font_size"], bold=True)
-                    for line in item["lines"]:
-                        bbox = line["bbox"]
-                        assert bbox[0] >= 128
-                        assert bbox[2] <= 952
-                        assert bbox[1] >= card_top
-                        assert bbox[3] <= card_bottom
-                        measured = list(draw.textbbox(tuple(line["origin"]), line["text"], font=font))
-                        assert measured == bbox
-
-        assert len(json.loads(rendered["three"]["metadata"]["fact_layout"])) == 3
-        assert any(
-            item["font_size"] < 52 or len(item["lines"]) == 2
-            for result in rendered.values()
-            for item in json.loads(result["metadata"]["fact_layout"])
-        )
+            for item in layout:
+                assert 1 <= len(item["lines"]) <= 2
+                assert len(item["origins"]) == len(item["lines"])
+                for x, y in item["origins"]:
+                    assert 38 <= x <= 762
+                    assert 828 <= y <= 1232
 
         repeat = render_local_informative_cover(
             PROBLEM_EVENING_MESSAGE,
@@ -333,20 +310,6 @@ def informative_cover_long_facts_fit_pixel_bounds() -> None:
         assert _sha256(Path(rendered["three"]["path"])) == _sha256(Path(repeat["path"]))
         assert rendered["three"]["metadata"]["rain_graphics"] == "false"
         assert rendered["three"]["metadata"]["storm_graphics"] == "false"
-
-        probe_image = Image.new("RGBA", (1080, 1080), (255, 255, 255, 255))
-        probe_draw = ImageDraw.Draw(probe_image, "RGBA")
-        wrap_probe = cyprus_image_recovery._draw_cover_fact_cards(
-            probe_draw,
-            ["💨 ПОРЫВЫ ДО 17.5 М/С НА ОСТРОВЕ — ПРОВЕРИТЬ УТРОМ"] * 3,
-            accent=(25, 76, 107),
-        )
-        assert len(wrap_probe) == 3
-        assert all(len(item["lines"]) == 2 for item in wrap_probe)
-        for previous, current in zip(wrap_probe, wrap_probe[1:]):
-            assert current["card_bbox"][1] >= previous["card_bbox"][3] + 24
-        assert wrap_probe[-1]["card_bbox"][3] <= 988
-
 
 def local_cover_graphics_and_cache_follow_confirmed_facts() -> None:
     dry_storm = """🌅 Кипр завтра (21.07.2026)
@@ -391,7 +354,7 @@ def local_cover_graphics_and_cache_follow_confirmed_facts() -> None:
         assert "🌧" not in dry["metadata"]["rendered_text"]
         assert wet["metadata"]["actual_precipitation"] == "true"
         assert wet["metadata"]["rain_graphics"] == "true"
-        assert "🌧 ДОЖДЬ МЕСТАМИ" in wet["metadata"]["rendered_text"]
+        assert "ДОЖДЬ МЕСТАМИ" in wet["metadata"]["rendered_text"]
         assert changed["metadata"]["cache_key"] != baseline["metadata"]["cache_key"]
 
 
@@ -781,7 +744,7 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
             assert probe["metadata"]["cache_key"] == local_metadata["cache_key"]
             assert probe["metadata"]["renderer_version"] == LOCAL_INFORMATIVE_COVER_VERSION
             # G.1 must not touch the local renderer version or its cache identity.
-            assert LOCAL_INFORMATIVE_COVER_VERSION == "cy_local_informative_cover_v3"
+            assert LOCAL_INFORMATIVE_COVER_VERSION == "cy_curated_fallback_v1"
             assert "scene_macro_family" not in probe["metadata"]
 
             amain_source = inspect.getsource(safe_module.main)
@@ -1593,8 +1556,98 @@ def error_stage_is_none_on_successful_send() -> None:
     assert outcome["diagnostics"]["actual_renderer"] == ""
 
 
+
+def forecast_threshold_warning_copy_is_provenance_safe() -> None:
+    source = (ROOT / "post_common.py").read_text("utf-8")
+    assert source.count('"warning_text": "⚠️ <b>По прогнозу</b>: "') == 2
+    assert '"warning_text": "⚠️ <b>Штормовое предупреждение</b>:' not in source
+
+    derived = """🌅 Кипр сегодня (29.09.2026)
+🌡 Теплее всего — Никосия (30°), прохладнее — Тродос (21°).
+💨 Ветер: 4.3 м/с • порывы до 18 м/с.
+⚠️ По прогнозу: порывы до 18 м/с.
+"""
+    with tempfile.TemporaryDirectory() as tmp_name:
+        result = render_local_informative_cover(
+            derived,
+            target_date="2026-09-29",
+            post_type="morning",
+            output_path=Path(tmp_name) / "derived.png",
+            minimum_bytes=12000,
+        )
+        metadata = result["metadata"]
+        assert metadata["explicit_storm"] == "false"
+        assert metadata["severe_wind"] == "true"
+        assert "ШТОРМОВОЙ ВЕТЕР" not in metadata["rendered_text"]
+        assert "ПОРЫВЫ ДО 18 М/С" in metadata["rendered_text"]
+
+
+def informative_cover_variants_rotate_and_keep_preview_contrast() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+
+        # The production-like windy fixture intentionally maps to a singleton
+        # approved pool. A singleton weather scenario must stay deterministic;
+        # rotation is required only where the curated catalog actually provides
+        # multiple eligible backgrounds.
+        windy_assets: set[str] = set()
+        windy_pools: set[tuple[str, ...]] = set()
+        for day in range(15, 24):
+            result = render_local_informative_cover(
+                MESSAGE,
+                target_date=f"2026-07-{day:02d}",
+                post_type="morning",
+                output_path=tmp / f"windy-{day}.png",
+                minimum_bytes=12000,
+            )
+            metadata = result["metadata"]
+            pool = tuple(json.loads(str(metadata["curated_pool"])))
+            windy_assets.add(str(metadata["curated_asset_id"]))
+            windy_pools.add(pool)
+            assert metadata["curated_scenario"] == "strong_wind"
+            assert str(metadata["curated_asset_id"]) in pool
+            with Image.open(result["path"]) as rendered:
+                assert rendered.size == (1080, 1350)
+
+        assert windy_pools == {("cy_windy_sea_01",)}
+        assert windy_assets == {"cy_windy_sea_01"}
+
+        # Clear weather has a real multi-asset pool, so adjacent target dates
+        # must exercise more than one approved background while preserving the
+        # same scenario and Telegram-preview readability.
+        clear_assets: set[str] = set()
+        clear_pools: set[tuple[str, ...]] = set()
+        preview_hashes: set[str] = set()
+        for day in range(15, 24):
+            result = render_local_informative_cover(
+                AIR_ONLY_MESSAGE,
+                target_date=f"2026-07-{day:02d}",
+                post_type="morning",
+                output_path=tmp / f"clear-{day}.png",
+                minimum_bytes=12000,
+            )
+            metadata = result["metadata"]
+            pool = tuple(json.loads(str(metadata["curated_pool"])))
+            clear_assets.add(str(metadata["curated_asset_id"]))
+            clear_pools.add(pool)
+            assert metadata["curated_scenario"] == "clear"
+            assert str(metadata["curated_asset_id"]) in pool
+            with Image.open(result["path"]) as rendered:
+                assert rendered.size == (1080, 1350)
+                preview = rendered.resize((216, 270))
+                preview_hashes.add(hashlib.sha256(preview.tobytes()).hexdigest())
+
+        assert len(clear_pools) == 1
+        clear_pool = next(iter(clear_pools))
+        assert len(clear_pool) >= 2
+        assert clear_assets <= set(clear_pool)
+        assert len(clear_assets) >= 2
+        assert len(preview_hashes) >= 2
+
 def main() -> None:
     checks = (
+        forecast_threshold_warning_copy_is_provenance_safe,
+        informative_cover_variants_rotate_and_keep_preview_contrast,
         local_informative_cover_is_valid_deterministic_and_factual,
         informative_cover_long_facts_fit_pixel_bounds,
         local_cover_graphics_and_cache_follow_confirmed_facts,

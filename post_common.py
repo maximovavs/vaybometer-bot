@@ -1475,7 +1475,7 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[
         "heavy_rain": heavy_rain,
         "thunder": thunder,
         "warning": bool(reasons),
-        "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else "",
+        "warning_text": "⚠️ <b>По прогнозу</b>: " + ", ".join(reasons) if reasons else "",
     }
 
 
@@ -1525,7 +1525,7 @@ def storm_flags_for_today(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[str
         "heavy_rain": heavy_rain,
         "thunder": thunder,
         "warning": bool(reasons),
-        "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else "",
+        "warning_text": "⚠️ <b>По прогнозу</b>: " + ", ".join(reasons) if reasons else "",
     }
 
 

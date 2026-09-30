@@ -163,6 +163,7 @@ def _compact_warning(line: str) -> str:
     s = str(line or "").strip()
     s = re.sub(r"^⚠️\s*", "", s)
     s = s.replace("<b>Штормовое предупреждение</b>:", "Штормовое предупреждение:")
+    s = s.replace("<b>По прогнозу</b>:", "По прогнозу:")
     return s.strip()
 
 
