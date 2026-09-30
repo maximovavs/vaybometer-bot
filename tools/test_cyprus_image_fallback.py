@@ -10,6 +10,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import types
