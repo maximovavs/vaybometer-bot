@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
+import base64
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -10,36 +12,44 @@ from typing import Any, Mapping
 from PIL import Image, ImageDraw, ImageFont, ImageStat, PngImagePlugin
 
 CATALOG_VERSION = "cy_curated_fallback_v1"
-ATLAS_PATH = Path(__file__).resolve().parent / "assets" / "fallback" / "cy_fallback_atlas.jpg"
-ATLAS_CELL_SIZE = (240, 300)
+ASSET_ROOT = Path(__file__).resolve().parent / "assets" / "fallback" / "cy"
+MANIFEST_PATH = ASSET_ROOT / "manifest.json"
 OUTPUT_SIZE = (1080, 1350)
 BRANDING = "VAYBOMETER · CYPRUS"
 
-_ASSET_ORDER = (
-    "cy_clear_01", "cy_clear_02", "cy_clear_03", "cy_hot_01",
-    "cy_sunset_01", "cy_windy_sea_01", "cy_rain_01", "cy_thunderstorm_01",
-    "cy_dust_01", "cy_overcast_01", "cy_dust_02", "cy_partly_cloudy_01",
-    "cy_overcast_02", "cy_sunset_02", "cy_fog_01", "cy_dust_extreme_01",
-)
+def _manifest() -> dict[str, Any]:
+    payload = json.loads(MANIFEST_PATH.read_text("utf-8"))
+    if payload.get("version") != CATALOG_VERSION:
+        raise RuntimeError("invalid Cyprus curated fallback manifest version")
+    if payload.get("canvas") != [1080, 1350]:
+        raise RuntimeError("invalid Cyprus curated fallback canvas")
+    return payload
+
+_MANIFEST = _manifest()
+_ASSET_ORDER = tuple(str(value) for value in _MANIFEST["asset_order"])
 _SCENARIO_POOLS = {
-    "clear": ("cy_clear_01", "cy_clear_02", "cy_clear_03"),
-    "hot": ("cy_hot_01", "cy_clear_03"),
-    "partly_cloudy": ("cy_partly_cloudy_01",),
-    "overcast": ("cy_overcast_01", "cy_overcast_02"),
-    "rain": ("cy_rain_01",),
-    "thunderstorm": ("cy_thunderstorm_01",),
-    "strong_wind": ("cy_windy_sea_01",),
-    "fog": ("cy_fog_01",),
-    "dust": ("cy_dust_01", "cy_dust_02"),
-    "dust_extreme": ("cy_dust_extreme_01",),
-    "sunset": ("cy_sunset_01", "cy_sunset_02"),
+    str(key): tuple(str(value) for value in values)
+    for key, values in _MANIFEST["scenario_pools"].items()
 }
+ATLAS_CELL_SIZE = tuple(int(value) for value in _MANIFEST["cell_size"])
 
 def _asset_box(asset_id: str) -> tuple[int, int, int, int]:
     index = _ASSET_ORDER.index(asset_id)
-    col, row = index % 4, index // 4
+    col, row = index % int(_MANIFEST["columns"]), index // int(_MANIFEST["columns"])
     w, h = ATLAS_CELL_SIZE
     return col * w, row * h, (col + 1) * w, (row + 1) * h
+
+def _load_atlas() -> Image.Image:
+    encoded = "".join(
+        (ASSET_ROOT / str(name)).read_text("ascii")
+        for name in _MANIFEST["atlas_parts"]
+    )
+    raw = base64.b64decode(encoded, validate=True)
+    with Image.open(io.BytesIO(raw)) as atlas:
+        expected = tuple(int(value) for value in _MANIFEST["atlas_size"])
+        if atlas.size != expected:
+            raise RuntimeError(f"invalid Cyprus curated atlas size: {atlas.size}; expected {expected}")
+        return atlas.convert("RGB")
 
 def scenario_for_context(ctx: Any) -> str:
     visibility = str(getattr(ctx, "visibility_condition", "") or "").lower()
@@ -134,10 +144,8 @@ def render_curated_cover(
     extra_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     scenario, asset_id, pool = select_asset(ctx, target_date=target_date, post_type=post_type)
-    if not ATLAS_PATH.exists():
-        raise RuntimeError(f"Cyprus curated fallback atlas is missing: {ATLAS_PATH}")
-    with Image.open(ATLAS_PATH) as atlas:
-        image = atlas.convert("RGB").crop(_asset_box(asset_id)).resize(OUTPUT_SIZE, Image.Resampling.LANCZOS)
+    atlas = _load_atlas()
+    image = atlas.crop(_asset_box(asset_id)).resize(OUTPUT_SIZE, Image.Resampling.LANCZOS)
 
     draw = ImageDraw.Draw(image)
     title_box = (42, 84, 710, 230)
