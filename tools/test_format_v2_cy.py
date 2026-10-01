@@ -1083,6 +1083,50 @@ def cy_evening_factual_formatter_still_omits_editorial_voice() -> None:
     assert "💬 По ощущениям дня:" not in text
 
 
+def cy_evening_astro_general_statuses_are_explicitly_labeled() -> None:
+    cases = (
+        (
+            "✅ Общий фон: благоприятный день.",
+            "✅ Астроритм: благоприятный (общий фон по лунному календарю).",
+        ),
+        (
+            "⚠️ Общий фон: неблагоприятный день.",
+            "⚠️ Астроритм: напряжённый (общий фон по лунному календарю).",
+        ),
+        (
+            "➿ Общий фон: день с разным фоном — прислушивайся к себе.",
+            "➿ Астроритм: смешанный (общий фон по лунному календарю).",
+        ),
+    )
+    for source_line, expected_line in cases:
+        source = NORMAL_EVENING.replace(
+            "💚 В плюсе: порядок, прогулки, мягкий режим.",
+            source_line + "\n💚 В плюсе: порядок, прогулки, мягкий режим.",
+        )
+        pre_sanitized = sanitize_post_text(source).text
+        assert expected_line in pre_sanitized
+        final_text = _safe_test_evening_pipeline(pre_sanitized)
+        assert expected_line in final_text
+        assert source_line not in final_text
+
+    unfavorable = NORMAL_EVENING.replace(
+        "💚 В плюсе: порядок, прогулки, мягкий режим.",
+        "⚠️ Общий фон: неблагоприятный день.\n💚 В плюсе: порядок, прогулки, мягкий режим.",
+    )
+    final_unfavorable = _safe_test_evening_pipeline(sanitize_post_text(unfavorable).text)
+    assert "✨ VayboMeter завтра: 8.6/10" in final_unfavorable
+    assert "⚠️ Общий фон: неблагоприятный день." not in final_unfavorable
+
+
+def cy_evening_local_troodos_rain_plan_is_scoped() -> None:
+    text = build_evening_format_v2("Кипр", INTEGRATED_LOCAL_RAIN_GUSTS_EVENING)
+    assert (
+        "✅ План завтра: для поездки в Тродос/горы — радар перед выездом; "
+        "на побережье — ветер по месту."
+    ) in text
+    assert "запасной indoor-вариант" not in text
+
+
 def main() -> None:
     checks = (
         cy_morning_preserves_quake_line,
@@ -1097,6 +1141,8 @@ def main() -> None:
         cy_evening_preserves_compact_astro,
         cy_evening_caution_score_softens_good_wording,
         cy_evening_astro_state_cannot_change_weather_decision,
+        cy_evening_astro_general_statuses_are_explicitly_labeled,
+        cy_evening_local_troodos_rain_plan_is_scoped,
         cy_evening_score_reasons_are_semantically_deduped,
         cy_evening_preserves_moon_illumination_and_advice,
         cy_evening_normalizes_zodiac_symbol_suffix,
