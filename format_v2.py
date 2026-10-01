@@ -476,9 +476,21 @@ def _evening_flags(lines: list[str]) -> dict[str, bool]:
     forecast_poor_air = _has_poor_air_signal(forecast_air_text)
     forecast_dust = _has_structured_dust_evidence(text, forecast_only=True)
     visibility_haze = _has_visibility_haze(text)
+    rain_words = ("дожд", "ливн", "гроза", "осад")
+    coastal_weather_lines = _section_after(weather_lines, "Морские города")
+    inland_weather_lines = _section_after(weather_lines, "Континентальные города")
+    coastal_rain = _has_any("\n".join(coastal_weather_lines), rain_words)
+    inland_rain = _has_any("\n".join(inland_weather_lines), rain_words)
+    troodos_rain = any(
+        "тродос" in _plain(line).lower() and _has_any(line, rain_words)
+        for line in inland_weather_lines
+    )
     return {
         "storm": _has_actual_storm_signal(text, max_gust),
-        "rain": _has_any(text, ("дожд", "ливн", "гроза", "осад")),
+        "rain": _has_any(text, rain_words),
+        "coastal_rain": coastal_rain,
+        "inland_rain": inland_rain,
+        "troodos_rain": troodos_rain,
         "dust": forecast_dust,
         "poor_air": forecast_poor_air,
         "visibility_haze": visibility_haze and not forecast_dust,
@@ -603,6 +615,11 @@ def _evening_confidence_line(flags: dict[str, bool]) -> str:
 def _evening_plan(flags: dict[str, bool]) -> str:
     if flags["storm"]:
         return "✅ План завтра: защищённый берег, короткие перемещения и без лишнего риска у открытого моря."
+    if flags["rain"] and flags.get("inland_rain") and not flags.get("coastal_rain"):
+        coast_note = "ветер по месту" if flags["wind"] else "местные условия"
+        if flags.get("troodos_rain"):
+            return f"✅ План завтра: для поездки в Тродос/горы — радар перед выездом; на побережье — {coast_note}."
+        return f"✅ План завтра: для поездок во внутренние районы — радар перед выездом; на побережье — {coast_note}."
     if flags["rain"]:
         return "✅ План завтра: запасной indoor-вариант; радар — перед выездом."
     if flags["heat"] and flags["wind"]:
