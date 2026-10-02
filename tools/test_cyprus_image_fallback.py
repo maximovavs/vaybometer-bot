@@ -38,6 +38,7 @@ from PIL import Image, ImageDraw  # type: ignore  # noqa: E402
 
 import cyprus_visual_dedup  # noqa: E402
 import cyprus_image_recovery  # noqa: E402
+import daily_ai_presentation  # noqa: E402
 from cyprus_image_recovery import (  # noqa: E402
     LOCAL_INFORMATIVE_COVER_BRANDING,
     LOCAL_INFORMATIVE_COVER_VERSION,
@@ -1380,6 +1381,7 @@ def _run_stage_failure_case(
     break_history: bool = False,
     break_receipt: bool = False,
     break_local_renderer: bool = False,
+    break_presentation: bool = False,
 ) -> dict:
     """Drive _build_safe_test_image with one lifecycle stage failing; return diagnostics.
 
@@ -1402,6 +1404,7 @@ def _run_stage_failure_case(
     old_availability = imagegen.configured_image_backends
     old_record = cyprus_visual_dedup.record_cyprus_visual_publication
     old_renderer = cyprus_image_recovery.render_local_informative_cover
+    old_presentation = daily_ai_presentation.render_branded_ai_presentation
     old_atomic = safe_module._cy_write_json_atomic
     old_prod_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
     old_test_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
@@ -1455,6 +1458,9 @@ def _run_stage_failure_case(
     def failing_renderer(*_args, **_kwargs):
         raise RuntimeError("fixture local renderer failure")
 
+    def failing_presentation(*_args, **_kwargs):
+        raise RuntimeError("fixture presentation renderer failure")
+
     def guarded_atomic(path, payload):
         if break_receipt and "cy_image_delivery" in str(path):
             raise RuntimeError("fixture receipt write failure")
@@ -1487,6 +1493,8 @@ def _run_stage_failure_case(
             safe_module.record_cyprus_visual_publication = failing_record
         if break_local_renderer:
             cyprus_image_recovery.render_local_informative_cover = failing_renderer
+        if break_presentation:
+            daily_ai_presentation.render_branded_ai_presentation = failing_presentation
         if break_receipt:
             safe_module._cy_write_json_atomic = guarded_atomic
 
@@ -1504,10 +1512,14 @@ def _run_stage_failure_case(
         diagnostics = json.loads(
             (tmp / "cy_image_diagnostics" / "2026-07-16-evening" / "image_result.json").read_text("utf-8")
         )
+        receipt_path = tmp / "cy_image_delivery" / "2026-07-16-evening.json"
+        receipt = json.loads(receipt_path.read_text("utf-8")) if receipt_path.exists() else None
+        history_entries = json.loads(history_path.read_text("utf-8"))
     finally:
         cyprus_visual_dedup.record_cyprus_visual_publication = old_record
         safe_module.record_cyprus_visual_publication = old_record
         cyprus_image_recovery.render_local_informative_cover = old_renderer
+        daily_ai_presentation.render_branded_ai_presentation = old_presentation
         safe_module._cy_write_json_atomic = old_atomic
         imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
         imagegen.configured_image_backends = old_availability
@@ -1521,7 +1533,12 @@ def _run_stage_failure_case(
             else:
                 os.environ[name] = value
 
-    return {"result": result, "diagnostics": diagnostics}
+    return {
+        "result": result,
+        "diagnostics": diagnostics,
+        "receipt": receipt,
+        "history_entries": history_entries,
+    }
 
 
 def error_stage_reports_the_failing_lifecycle_stage() -> None:
@@ -1644,8 +1661,50 @@ def informative_cover_variants_rotate_and_keep_preview_contrast() -> None:
         assert len(clear_assets) >= 2
         assert len(preview_hashes) >= 2
 
+
+
+def ai_primary_presentation_keeps_raw_history_and_published_receipt_separate() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        outcome = _run_stage_failure_case(Path(tmp_name))
+        result = outcome["result"]
+        receipt = outcome["receipt"]
+        history_entries = outcome["history_entries"]
+        assert result["result"] == "sent"
+        assert result["backend"] == "pollinations"
+        assert result["presentation_version"] == daily_ai_presentation.PRESENTATION_VERSION
+        published = Path(result["path"])
+        source = Path(result["source_path"])
+        assert published != source
+        with Image.open(published) as rendered:
+            assert rendered.size == (1080, 1350)
+            assert rendered.info["presentation_version"] == daily_ai_presentation.PRESENTATION_VERSION
+        assert receipt is not None
+        assert history_entries
+        assert receipt["sha256"] == _sha256(published)
+        assert receipt["source_sha256"] == history_entries[-1]["sha256"]
+        assert receipt["source_sha256"] == _sha256(source)
+        assert receipt["sha256"] != receipt["source_sha256"]
+        assert history_entries[-1]["path"] == str(source)
+        assert outcome["diagnostics"]["actual_provider"] == "pollinations"
+
+
+def ai_presentation_failure_falls_through_to_existing_local_cover() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        outcome = _run_stage_failure_case(Path(tmp_name), break_presentation=True)
+        result = outcome["result"]
+        assert result["result"] == "sent"
+        assert result["backend"] == "local_informative_cover"
+        assert result["presentation_version"] == ""
+        with Image.open(result["path"]) as rendered:
+            assert rendered.size == (1080, 1350)
+        assert outcome["receipt"] is not None
+        assert outcome["receipt"]["backend"] == "local_informative_cover"
+
+
 def main() -> None:
     checks = (
+        ai_primary_presentation_keeps_raw_history_and_published_receipt_separate,
+        ai_presentation_failure_falls_through_to_existing_local_cover,
         forecast_threshold_warning_copy_is_provenance_safe,
         informative_cover_variants_rotate_and_keep_preview_contrast,
         local_informative_cover_is_valid_deterministic_and_factual,
