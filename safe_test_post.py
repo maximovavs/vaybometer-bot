@@ -570,6 +570,10 @@ def _cyprus_smart_plan_line(v2_text: str) -> str:
     visibility_condition = _cyprus_visibility_condition(v2_text)
     precipitation_kind = _cyprus_local_precipitation_kind(v2_text)
 
+    if visibility_condition in {"dense_fog", "fog"} and precipitation_kind == "storm":
+        return "✅ План: утром снизить скорость и увеличить дистанцию; планы держать гибкими, перед выходом проверь радар; при грозе не задерживайся на открытом побережье."
+    if visibility_condition in {"dense_fog", "fog"} and precipitation_kind:
+        return "✅ План: утром снизить скорость и увеличить дистанцию; держи запасной indoor-вариант и перед выходом проверь радар."
     if visibility_condition in {"dense_fog", "fog"} and (hot or high_uv):
         return "✅ План: утром снизить скорость и увеличить дистанцию; после прояснения — вода, SPF и тень."
     if visibility_condition in {"dense_fog", "fog"}:

@@ -1957,32 +1957,31 @@ def _city_precipitation_summary_for_date(
             probability_values.append(value)
     max_probability = max(probability_values) if probability_values else None
 
-    amount_values: List[float] = []
-    for key in ("precipitation_sum", "rain_sum"):
-        value = _number_at(_pick(daily, key, default=[]), daily_idx)
-        if value is not None:
-            amount_values.append(value)
+    liquid_amount_values: List[float] = []
+    daily_rain = _number_at(_pick(daily, "rain_sum", default=[]), daily_idx)
+    if daily_rain is not None:
+        liquid_amount_values.append(daily_rain)
     for key in ("rain", "showers"):
         values = _pick(hourly, key, default=[])
         for idx in hourly_indices:
             value = _number_at(values, idx)
             if value is not None:
-                amount_values.append(value)
+                liquid_amount_values.append(value)
 
     has_storm = any(code in _CY_THUNDER_WMO_CODES for code in codes)
     has_precipitation_code = any(code in _CY_PRECIP_WMO_CODES for code in codes)
-    has_precipitation_amount = any(value > 0 for value in amount_values)
+    has_liquid_precipitation_amount = any(value > 0 for value in liquid_amount_values)
     has_probability_signal = bool(
         max_probability is not None
         and max_probability >= _CY_PRECIP_PROBABILITY_SIGNAL_MIN
     )
 
-    if not (has_storm or has_precipitation_code or has_precipitation_amount or has_probability_signal):
+    if not (has_storm or has_precipitation_code or has_liquid_precipitation_amount or has_probability_signal):
         return None
 
     if has_storm:
         label = "⛈ гроза"
-    elif has_precipitation_code or has_precipitation_amount:
+    elif has_precipitation_code or has_liquid_precipitation_amount:
         label = "🌧 дождь"
     else:
         label = "🌦 осадки"

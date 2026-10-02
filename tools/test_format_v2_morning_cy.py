@@ -688,6 +688,20 @@ def cy_city_precipitation_truth_uses_target_date_rich_signals() -> None:
         assert "☁️ пасмурно" in storm_line and "⛈ гроза" in storm_line
         assert "100%" not in storm_line
 
+        snow_payload = json.loads(json.dumps(probability_payload))
+        snow_payload["daily"]["weathercode"] = [71, 95]
+        snow_payload["daily"]["precipitation_probability_max"] = [20, 99]
+        snow_payload["daily"]["precipitation_sum"] = [4.0, 8.0]
+        snow_payload["daily"]["rain_sum"] = [0.0, 8.0]
+        snow_payload["hourly"]["weathercode"] = [71, 71, 95]
+        snow_payload["hourly"]["precipitation_probability"] = [10, 20, 100]
+        snow_payload["hourly"]["rain"] = [0.0, 0.0, 9.0]
+        snow_payload["hourly"]["showers"] = [0.0, 0.0, 9.0]
+        snow_line = city_line(snow_payload)
+        assert "❄️ снег" in snow_line
+        assert "🌧 дождь" not in snow_line
+        assert "🌦 осадки" not in snow_line
+
         dry_payload = json.loads(json.dumps(probability_payload))
         dry_payload["daily"]["precipitation_probability_max"] = [39, 99]
         dry_payload["hourly"]["precipitation_probability"] = [10, 39, 100]
@@ -740,6 +754,43 @@ def cy_morning_precipitation_truth_survives_format_score_plan_and_visual() -> No
     assert dry_decision.context.explicit_storm is False
     assert "precipitation: none confirmed" in dry_decision.prompt
     assert "no rain" in dry_decision.prompt
+
+
+def cy_morning_combined_fog_and_local_precipitation_plan_preserves_both_hazards() -> None:
+    fog_line = "🌫 Видимость: утром местами около 300 м, вероятен туман."
+
+    storm_text = "\n".join(
+        (
+            "<b>🌅 Кипр сегодня (02.10.2026)</b>",
+            fog_line,
+            "🌦 Локально: Пафос — гроза",
+        )
+    )
+    storm_plan = _cyprus_smart_plan_line(storm_text)
+    for expected in (
+        "снизить скорость",
+        "увеличить дистанцию",
+        "планы держать гибкими",
+        "проверь радар",
+        "открытом побережье",
+    ):
+        assert expected in storm_plan, storm_plan
+
+    precipitation_text = "\n".join(
+        (
+            "<b>🌅 Кипр сегодня (02.10.2026)</b>",
+            fog_line,
+            "🌦 Локально: Лимассол — осадки до 60%",
+        )
+    )
+    precipitation_plan = _cyprus_smart_plan_line(precipitation_text)
+    for expected in (
+        "снизить скорость",
+        "увеличить дистанцию",
+        "запасной indoor-вариант",
+        "проверь радар",
+    ):
+        assert expected in precipitation_plan, precipitation_plan
 
 
 def cy_city_forecast_omits_row_when_target_daily_date_is_missing() -> None:
@@ -3573,6 +3624,7 @@ def main() -> None:
         cy_evening_keeps_tomorrow_city_forecast,
         cy_city_precipitation_truth_uses_target_date_rich_signals,
         cy_morning_precipitation_truth_survives_format_score_plan_and_visual,
+        cy_morning_combined_fog_and_local_precipitation_plan_preserves_both_hazards,
         cy_city_forecast_omits_row_when_target_daily_date_is_missing,
         cy_city_forecast_does_not_shift_incomplete_or_malformed_arrays,
         cy_city_forecast_never_uses_current_for_missing_target_hourly_date,
