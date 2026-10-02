@@ -631,6 +631,168 @@ def cy_evening_keeps_tomorrow_city_forecast() -> None:
     assert ("evening", date(2026, 8, 10)) in context_calls
 
 
+def cy_city_precipitation_truth_uses_target_date_rich_signals() -> None:
+    target_date = date(2026, 8, 9)
+
+    def city_line(payload: dict) -> str:
+        _tmax, line = _replace_attrs(
+            post_common_module,
+            {"get_weather": lambda *_args, **_kwargs: payload},
+            lambda: post_common_module._city_detail_line(
+                "Limassol",
+                1.0,
+                2.0,
+                types.SimpleNamespace(name="Asia/Nicosia"),
+                include_sst=False,
+                target_date=target_date,
+            ),
+        )
+        assert line is not None
+        return line
+
+    def run() -> None:
+        probability_payload = {
+            "daily": {
+                "time": ["2026-08-09", "2026-08-10"],
+                "temperature_2m_max": [24.0, 30.0],
+                "temperature_2m_min": [18.0, 20.0],
+                "weathercode": [3, 95],
+                "precipitation_probability_max": [35, 99],
+                "precipitation_sum": [0.0, 8.0],
+                "rain_sum": [0.0, 8.0],
+            },
+            "hourly": {
+                "time": ["2026-08-09T06:00", "2026-08-09T12:00", "2026-08-10T12:00"],
+                "weathercode": [3, 3, 95],
+                "precipitation_probability": [20, 60, 100],
+                "rain": [0.0, 0.0, 9.0],
+                "showers": [0.0, 0.0, 9.0],
+            },
+        }
+        probability_line = city_line(probability_payload)
+        assert "☁️ пасмурно" in probability_line
+        assert "🌦 осадки • риск осадков до 60%" in probability_line
+        assert "99%" not in probability_line and "100%" not in probability_line
+        assert "⛈ гроза" not in probability_line
+
+        rain_payload = json.loads(json.dumps(probability_payload))
+        rain_payload["hourly"]["precipitation_probability"] = [20, 55, 100]
+        rain_payload["hourly"]["rain"] = [0.0, 0.4, 9.0]
+        rain_line = city_line(rain_payload)
+        assert "🌧 дождь • риск осадков до 55%" in rain_line
+
+        storm_payload = json.loads(json.dumps(probability_payload))
+        storm_payload["hourly"]["weathercode"] = [3, 95, 95]
+        storm_payload["hourly"]["precipitation_probability"] = [20, 30, 100]
+        storm_line = city_line(storm_payload)
+        assert "☁️ пасмурно" in storm_line and "⛈ гроза" in storm_line
+        assert "100%" not in storm_line
+
+        snow_payload = json.loads(json.dumps(probability_payload))
+        snow_payload["daily"]["weathercode"] = [71, 95]
+        snow_payload["daily"]["precipitation_probability_max"] = [20, 99]
+        snow_payload["daily"]["precipitation_sum"] = [4.0, 8.0]
+        snow_payload["daily"]["rain_sum"] = [0.0, 8.0]
+        snow_payload["hourly"]["weathercode"] = [71, 71, 95]
+        snow_payload["hourly"]["precipitation_probability"] = [10, 20, 100]
+        snow_payload["hourly"]["rain"] = [0.0, 0.0, 9.0]
+        snow_payload["hourly"]["showers"] = [0.0, 0.0, 9.0]
+        snow_line = city_line(snow_payload)
+        assert "❄️ снег" in snow_line
+        assert "🌧 дождь" not in snow_line
+        assert "🌦 осадки" not in snow_line
+
+        dry_payload = json.loads(json.dumps(probability_payload))
+        dry_payload["daily"]["precipitation_probability_max"] = [39, 99]
+        dry_payload["hourly"]["precipitation_probability"] = [10, 39, 100]
+        dry_line = city_line(dry_payload)
+        assert dry_line == "<b>Лимассол</b>: 24/18 °C • ☁️ пасмурно"
+
+    _with_forecast_clock(run)
+
+
+def cy_morning_precipitation_truth_survives_format_score_plan_and_visual() -> None:
+    raw = """<b>Кипр: погода на сегодня (02.10.2026)</b>
+👋 Доброе утро! Теплее всего — Никосия (26°), прохладнее — Тродос (18°).
+☀️ <b>УФ-индекс 6 (High)</b>: SPF 30–50, очки/головной убор, по возможности тень в полдень
+<b>Лимассол</b>: 24/18 °C • ☁️ пасмурно • 🌦 осадки • риск осадков до 60% • 💨 3.5 м/с • 🌊 26
+<b>Пафос</b>: 23/19 °C • ⛈ гроза • 💨 3.0 м/с • 🌊 26
+🌇 Закат сегодня: 18:31
+✅ Сегодня: вода и завтрак.
+#Кипр #погода #здоровье
+"""
+    formatted = build_morning_format_v2("Кипр", raw)
+    assert "🌦 Локально: Лимассол — осадки до 60% · Пафос — гроза" in formatted
+    assert "<b>Лимассол</b>:" not in formatted and "<b>Пафос</b>:" not in formatted
+
+    score = _cyprus_score_line(formatted)
+    plan = _cyprus_smart_plan_line(formatted)
+    assert "локальная гроза" in score
+    assert float(score.split(":", 1)[1].split("/", 1)[0].strip()) < 9.3
+    assert "проверь радар" in plan and "открытом побережье" in plan
+
+    decision = cy_scene_prompt.build_cyprus_visual_decision(formatted, post_type="morning")
+    assert decision.context.actual_precipitation is True
+    assert decision.context.coastal_precipitation is True
+    assert decision.context.explicit_storm is True
+    assert decision.context.primary_weather == "rain"
+    assert "precipitation: confirmed" in decision.prompt
+    assert "storm: explicitly confirmed" in decision.prompt
+    assert "precipitation: none confirmed" not in decision.prompt
+    assert "no rain" not in decision.prompt
+
+    dry_raw = raw.replace(
+        "<b>Лимассол</b>: 24/18 °C • ☁️ пасмурно • 🌦 осадки • риск осадков до 60% • 💨 3.5 м/с • 🌊 26\n"
+        "<b>Пафос</b>: 23/19 °C • ⛈ гроза • 💨 3.0 м/с • 🌊 26",
+        "<b>Лимассол</b>: 24/18 °C • ☁️ пасмурно • 💨 3.5 м/с • 🌊 26\n"
+        "<b>Пафос</b>: 23/19 °C • ☁️ пасмурно • 💨 3.0 м/с • 🌊 26",
+    )
+    dry_formatted = build_morning_format_v2("Кипр", dry_raw)
+    assert "🌦 Локально:" not in dry_formatted
+    dry_decision = cy_scene_prompt.build_cyprus_visual_decision(dry_formatted, post_type="morning")
+    assert dry_decision.context.actual_precipitation is False
+    assert dry_decision.context.explicit_storm is False
+    assert "precipitation: none confirmed" in dry_decision.prompt
+    assert "no rain" in dry_decision.prompt
+
+
+def cy_morning_combined_fog_and_local_precipitation_plan_preserves_both_hazards() -> None:
+    fog_line = "🌫 Видимость: утром местами около 300 м, вероятен туман."
+
+    storm_text = "\n".join(
+        (
+            "<b>🌅 Кипр сегодня (02.10.2026)</b>",
+            fog_line,
+            "🌦 Локально: Пафос — гроза",
+        )
+    )
+    storm_plan = _cyprus_smart_plan_line(storm_text)
+    for expected in (
+        "снизить скорость",
+        "увеличить дистанцию",
+        "планы держать гибкими",
+        "проверь радар",
+        "открытом побережье",
+    ):
+        assert expected in storm_plan, storm_plan
+
+    precipitation_text = "\n".join(
+        (
+            "<b>🌅 Кипр сегодня (02.10.2026)</b>",
+            fog_line,
+            "🌦 Локально: Лимассол — осадки до 60%",
+        )
+    )
+    precipitation_plan = _cyprus_smart_plan_line(precipitation_text)
+    for expected in (
+        "снизить скорость",
+        "увеличить дистанцию",
+        "запасной indoor-вариант",
+        "проверь радар",
+    ):
+        assert expected in precipitation_plan, precipitation_plan
+
+
 def cy_city_forecast_omits_row_when_target_daily_date_is_missing() -> None:
     payload = {
         "daily": {
@@ -3460,6 +3622,9 @@ def main() -> None:
         cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening,
         cy_morning_uses_today_for_raw_format_score_feels_and_plan,
         cy_evening_keeps_tomorrow_city_forecast,
+        cy_city_precipitation_truth_uses_target_date_rich_signals,
+        cy_morning_precipitation_truth_survives_format_score_plan_and_visual,
+        cy_morning_combined_fog_and_local_precipitation_plan_preserves_both_hazards,
         cy_city_forecast_omits_row_when_target_daily_date_is_missing,
         cy_city_forecast_does_not_shift_incomplete_or_malformed_arrays,
         cy_city_forecast_never_uses_current_for_missing_target_hourly_date,

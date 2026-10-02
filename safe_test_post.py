@@ -547,6 +547,18 @@ def _cyprus_visibility_condition(v2_text: str) -> str:
     return visibility_condition_from_text(_plain(v2_text))
 
 
+def _cyprus_local_precipitation_kind(text: str) -> str:
+    for raw in str(text or "").splitlines():
+        line = _plain(raw).strip().lower()
+        if not line.startswith("🌦 локально:"):
+            continue
+        if "гроз" in line:
+            return "storm"
+        if re.search(r"дожд|ливн|морос|осад", line, flags=re.I):
+            return "precipitation"
+    return ""
+
+
 def _cyprus_smart_plan_line(v2_text: str) -> str:
     c = _cyprus_conditions(v2_text)
     warm_t = c.get("warm_t")
@@ -556,11 +568,21 @@ def _cyprus_smart_plan_line(v2_text: str) -> str:
     high_uv = isinstance(uv, (int, float)) and uv >= 8
     windy = isinstance(gust, (int, float)) and gust >= 15
     visibility_condition = _cyprus_visibility_condition(v2_text)
+    precipitation_kind = _cyprus_local_precipitation_kind(v2_text)
 
+    if visibility_condition in {"dense_fog", "fog"} and precipitation_kind == "storm":
+        return "✅ План: утром снизить скорость и увеличить дистанцию; планы держать гибкими, перед выходом проверь радар; при грозе не задерживайся на открытом побережье."
+    if visibility_condition in {"dense_fog", "fog"} and precipitation_kind:
+        return "✅ План: утром снизить скорость и увеличить дистанцию; держи запасной indoor-вариант и перед выходом проверь радар."
     if visibility_condition in {"dense_fog", "fog"} and (hot or high_uv):
         return "✅ План: утром снизить скорость и увеличить дистанцию; после прояснения — вода, SPF и тень."
     if visibility_condition in {"dense_fog", "fog"}:
         return "✅ План: утром снизить скорость и увеличить дистанцию; прогулку у моря перенести на время после прояснения."
+
+    if precipitation_kind == "storm":
+        return "✅ План: локальная гроза — планы держать гибкими; перед выходом проверь радар, при грозе не задерживайся на открытом побережье."
+    if precipitation_kind:
+        return "✅ План: локальные осадки — держи запасной indoor-вариант и перед выходом проверь радар."
 
     if hot and high_uv and windy:
         return "✅ План: дела и прогулка до 11:00; 11–16 — тень/помещение; SPF 50 и вода с собой; у моря — защищённые места."
@@ -576,6 +598,8 @@ def _cyprus_smart_plan_line(v2_text: str) -> str:
 
 
 def _has_cyprus_precip_risk(text: str) -> bool:
+    if _cyprus_local_precipitation_kind(text):
+        return True
     low = _plain(text).lower()
     if re.search(r"без\s+осад|осад\w*\s+не\s+ожида|дожд\w*\s+не\s+буд", low, flags=re.I):
         return False
@@ -596,6 +620,7 @@ def _cyprus_score_line(v2_text: str) -> str:
     wind = c.get("wind")
     aqi = c.get("aqi")
     visibility_condition = _cyprus_visibility_condition(v2_text)
+    precipitation_kind = _cyprus_local_precipitation_kind(v2_text)
 
     score = 10.0
     reasons: list[str] = []
@@ -632,6 +657,12 @@ def _cyprus_score_line(v2_text: str) -> str:
         reasons.append("утренний туман")
     elif visibility_condition != "clear":
         reasons.append("видимость снижена")
+    if precipitation_kind == "storm":
+        score -= 1.0
+        reasons.append("локальная гроза")
+    elif precipitation_kind:
+        score -= 0.7
+        reasons.append("локальные осадки")
 
     score = max(1.0, min(10.0, score))
     label = _score_label(score)

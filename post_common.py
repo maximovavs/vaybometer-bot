@@ -1907,6 +1907,90 @@ def _city_daily_metrics_for_date(
     return tmax, tmin, weather_code
 
 
+_CY_PRECIP_PROBABILITY_SIGNAL_MIN = 40.0
+_CY_PRECIP_WMO_CODES = {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99}
+_CY_THUNDER_WMO_CODES = {95, 96, 99}
+
+
+def _weather_code_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _city_precipitation_summary_for_date(
+    wm: Dict[str, Any],
+    tz_obj: pendulum.Timezone,
+    target_date: Any,
+    daily_weather_code: Any = None,
+) -> Optional[str]:
+    """Summarize target-date city precipitation without using current or adjacent-day rows."""
+
+    daily = wm.get("daily") or {}
+    daily_idx = _daily_idx_for_date(wm, tz_obj, target_date)
+    hourly = wm.get("hourly") or {}
+    raw_times = _pick(hourly, "time", "time_local", "timestamp", default=[])
+    hourly_indices = _source_indices_for_date(raw_times, target_date, tz_obj)
+
+    codes: List[int] = []
+    daily_code = _weather_code_int(daily_weather_code)
+    if daily_code is not None:
+        codes.append(daily_code)
+    hourly_codes = _pick(hourly, "weathercode", "weather_code", default=[])
+    for idx in hourly_indices:
+        code = _weather_code_int(_value_at(hourly_codes, idx))
+        if code is not None:
+            codes.append(code)
+
+    probability_values: List[float] = []
+    daily_probability = _number_at(
+        _pick(daily, "precipitation_probability_max", default=[]),
+        daily_idx,
+    )
+    if daily_probability is not None and 0 <= daily_probability <= 100:
+        probability_values.append(daily_probability)
+    hourly_probability = _pick(hourly, "precipitation_probability", default=[])
+    for idx in hourly_indices:
+        value = _number_at(hourly_probability, idx)
+        if value is not None and 0 <= value <= 100:
+            probability_values.append(value)
+    max_probability = max(probability_values) if probability_values else None
+
+    liquid_amount_values: List[float] = []
+    daily_rain = _number_at(_pick(daily, "rain_sum", default=[]), daily_idx)
+    if daily_rain is not None:
+        liquid_amount_values.append(daily_rain)
+    for key in ("rain", "showers"):
+        values = _pick(hourly, key, default=[])
+        for idx in hourly_indices:
+            value = _number_at(values, idx)
+            if value is not None:
+                liquid_amount_values.append(value)
+
+    has_storm = any(code in _CY_THUNDER_WMO_CODES for code in codes)
+    has_precipitation_code = any(code in _CY_PRECIP_WMO_CODES for code in codes)
+    has_liquid_precipitation_amount = any(value > 0 for value in liquid_amount_values)
+    has_probability_signal = bool(
+        max_probability is not None
+        and max_probability >= _CY_PRECIP_PROBABILITY_SIGNAL_MIN
+    )
+
+    if not (has_storm or has_precipitation_code or has_liquid_precipitation_amount or has_probability_signal):
+        return None
+
+    if has_storm:
+        label = "⛈ гроза"
+    elif has_precipitation_code or has_liquid_precipitation_amount:
+        label = "🌧 дождь"
+    else:
+        label = "🌦 осадки"
+
+    if has_probability_signal and max_probability is not None:
+        label += f" • риск осадков до {int(round(max_probability))}%"
+    return label
+
+
 def _city_header_metrics_for_date(
     wm: Dict[str, Any],
     tz_obj: pendulum.Timezone,
@@ -2218,6 +2302,12 @@ def _city_detail_line(
         return None, None
 
     descx = code_desc(weather_code)
+    precipx = _city_precipitation_summary_for_date(
+        wm,
+        tz_obj,
+        wanted_date,
+        daily_weather_code=weather_code,
+    )
     wind_ms, wind_dir, press_val, press_trend, gust = _city_header_metrics_for_date(
         wm,
         tz_obj,
@@ -2231,6 +2321,19 @@ def _city_detail_line(
     parts = [f"{name_html}: {temp_part}"]
     if descx:
         parts.append(descx)
+    if precipx:
+        desc_low = str(descx or "").lower()
+        precip_low = precipx.lower()
+        same_kind = (
+            ("гроз" in precip_low and "гроз" in desc_low)
+            or ("дожд" in precip_low and any(token in desc_low for token in ("дожд", "лив", "морос")))
+        )
+        if same_kind:
+            probability = re.search(r"(риск осадков до \d+%)", precipx)
+            if probability:
+                parts.append(probability.group(1))
+        else:
+            parts.append(precipx)
     if isinstance(wind_ms, (int, float)):
         wind_part = f"💨 {float(wind_ms):.1f} м/с"
         if isinstance(wind_dir, int):

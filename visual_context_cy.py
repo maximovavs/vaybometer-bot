@@ -270,6 +270,8 @@ def _has_actual_precipitation(line: str) -> bool:
         return False
     if _PRECIP_FACTUAL_RE.search(low) or _PRECIP_EXPLICIT_RE.search(low):
         return True
+    if low.startswith("🌦 локально:") and "гроз" in low:
+        return True
     if "гроз" in low and any(token in low for token in ("дожд", "лив", "осад", "мокр", "rain", "wet")):
         return True
     return False

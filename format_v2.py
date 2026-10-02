@@ -1111,6 +1111,44 @@ def _safecast_private_sensor_line() -> str:
     return ""
 
 
+_MORNING_CITY_PRECIP_RE = re.compile(
+    r"^(Никосия|Лимассол|Ларнака|Пафос|Айя-Напа|Тродос)\s*:\s*(.+)$",
+    re.I,
+)
+
+
+def _morning_local_precipitation_line(lines: list[str]) -> str:
+    """Keep one compact city-level precipitation/storm fact from the legacy source rows."""
+
+    facts: list[str] = []
+    for raw in lines:
+        plain = _plain(raw).strip()
+        match = _MORNING_CITY_PRECIP_RE.match(plain)
+        if not match:
+            continue
+        city, tail = match.group(1), match.group(2)
+        low = tail.lower()
+        if not re.search(r"дожд|ливн|морос|гроз|осад", low, flags=re.I):
+            continue
+        if "гроз" in low:
+            label = "гроза"
+        elif "ливн" in low:
+            label = "ливень"
+        elif "морос" in low:
+            label = "морось"
+        elif "дожд" in low:
+            label = "дождь"
+        else:
+            label = "осадки"
+        probability = re.search(r"риск\s+осад\w*\s+до\s+(\d{1,3})\s*%", low, flags=re.I)
+        if probability:
+            label += f" до {int(probability.group(1))}%"
+        fact = f"{city} — {label}"
+        if fact not in facts:
+            facts.append(fact)
+    return "🌦 Локально: " + " · ".join(facts[:4]) if facts else ""
+
+
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     """Compact morning post: only actionable weather, air, UV, valid Kp, wind/pressure and short plan."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
@@ -1121,6 +1159,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     temp_note = _temperature_note(greeting)
     warning = _storm_line(lines)
     weather_line = _legacy_wind_pressure_line(lines) or _source_wind_pressure_line(date_s)
+    local_precipitation = _morning_local_precipitation_line(lines)
     visibility = _morning_pick(lines, ("🌫 Видимость:",))
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌇",))
@@ -1139,6 +1178,8 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(temp_note)
     if weather_line:
         out.append(weather_line)
+    if local_precipitation:
+        out.append(local_precipitation)
     for line in visibility:
         if line not in out:
             out.append(line)
