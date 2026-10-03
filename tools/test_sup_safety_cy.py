@@ -158,8 +158,15 @@ def _tomorrow_weather(
     wind_dir: list[float | None] | None = None,
     pressure: list[float | None] | None = None,
     current: dict | None = None,
+    daily_weather_code: int = 0,
 ) -> dict:
     return {
+        "daily": {
+            "time": ["2026-08-10"],
+            "temperature_2m_max": [30.0],
+            "temperature_2m_min": [24.0],
+            "weathercode": [daily_weather_code],
+        },
         "hourly": {
             "time": times if times is not None else ["2026-08-10T12:00"],
             "windspeed_10m": wind_kmh if wind_kmh is not None else [28.8],
@@ -210,6 +217,7 @@ def _decision(
     wind_dir: float | None = 180.0,
     weather_time: str = "2026-08-10T12:00",
     wave_time: str = "2026-08-10T12:00",
+    thunder: bool = False,
 ) -> str | None:
     sample = _sup_weather_sample(
         _weather(
@@ -234,6 +242,7 @@ def _decision(
             TARGET_DATE,
             TZ,
         ),
+        thunder=thunder,
     )
 
 
@@ -506,6 +515,62 @@ def missing_or_malformed_tomorrow_wind_is_fail_closed_for_surf() -> None:
         assert "Отлично: Сёрф" not in _water_line(payload, wave_h=1.2)
 
 
+def local_thunder_blocks_otherwise_excellent_sup() -> None:
+    assert _decision(
+        wind_ms=3.0,
+        gust_ms=7.0,
+        wave_h=0.3,
+        wind_dir=180.0,
+        thunder=True,
+    ) == "delay"
+
+
+def calm_non_thunder_conditions_remain_excellent() -> None:
+    assert _decision(
+        wind_ms=3.0,
+        gust_ms=7.0,
+        wave_h=0.3,
+        wind_dir=180.0,
+        thunder=False,
+    ) == "excellent"
+
+
+def thunder_patch_preserves_gust_thresholds() -> None:
+    assert _decision(wind_ms=2.5, gust_ms=12.0, thunder=False) == "caution"
+    assert _decision(wind_ms=2.5, gust_ms=14.9, thunder=False) == "caution"
+    assert _decision(wind_ms=2.5, gust_ms=15.0, thunder=False) == "delay"
+
+
+def thunder_patch_preserves_offshore_rules() -> None:
+    assert _decision(wind_ms=2.5, gust_ms=6.0, wind_dir=0.0, thunder=False) == "caution"
+    assert _decision(wind_ms=5.0, gust_ms=7.0, wind_dir=0.0, thunder=False) == "delay"
+
+
+def water_highlight_uses_same_city_daily_thunder_code() -> None:
+    thunder_payload = _tomorrow_weather(
+        wind_kmh=[10.8],
+        gust_kmh=[25.2],
+        wind_dir=[180.0],
+        daily_weather_code=95,
+    )
+    thunder_line = _water_line(thunder_payload, wave_h=0.3)
+    assert "Отлично: SUP" not in thunder_line
+    assert "SUP лучше отложить: гроза" in thunder_line
+    assert "ветер 3 м/с" in thunder_line
+    assert "порывы до 7 м/с" in thunder_line
+    assert "волна 0.3 м" in thunder_line
+
+    calm_payload = _tomorrow_weather(
+        wind_kmh=[10.8],
+        gust_kmh=[25.2],
+        wind_dir=[180.0],
+        daily_weather_code=3,
+    )
+    calm_line = _water_line(calm_payload, wave_h=0.3)
+    assert "Отлично: SUP" in calm_line
+    assert "SUP лучше отложить: гроза" not in calm_line
+
+
 CHECKS = [
     calm_onshore_is_excellent,
     calm_cross_shore_is_excellent,
@@ -529,6 +594,11 @@ CHECKS = [
     current_sentinels_do_not_change_final_evening_format_v2,
     safe_surf_and_sup_recommendations_preserve_existing_behavior,
     missing_or_malformed_tomorrow_wind_is_fail_closed_for_surf,
+    local_thunder_blocks_otherwise_excellent_sup,
+    calm_non_thunder_conditions_remain_excellent,
+    thunder_patch_preserves_gust_thresholds,
+    thunder_patch_preserves_offshore_rules,
+    water_highlight_uses_same_city_daily_thunder_code,
 ]
 
 
