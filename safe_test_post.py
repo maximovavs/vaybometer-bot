@@ -2634,10 +2634,28 @@ async def _build_safe_test_image(
                 backend,
                 None,
             )
+            provider_candidate_allowed = False
             if provider_switch_reason == "provider_repeated_output":
                 duplicate_candidate_count += 1
             elif duplicate_result.accepted:
-                # Raw provider truth/content/dedup identity is fixed before presentation.
+                provider_candidate_allowed = True
+            elif _cy_accept_lru_recent_visual_candidate(metadata, duplicate_result.reason):
+                attempts[-1]["dedup_reason"] = f"{duplicate_result.reason}_lru_allowed"
+                print(f"CY_SAFE_IMAGE_DEDUP_LRU_ALLOWED: {duplicate_result.reason}")
+                provider_candidate_allowed = True
+            else:
+                duplicate_candidate_count += 1
+
+            if provider_candidate_allowed:
+                # Generate-only/offline diagnostics preserve the pre-presentation
+                # contract: the accepted raw provider image is the generated result.
+                if image_chat is None:
+                    selected_candidate = candidate
+                    break
+
+                # Publication paths always brand the already-accepted raw provider
+                # image. Guard/dedup identity stays raw and is never re-evaluated on
+                # the presentation frame.
                 try:
                     _, presentation_facts = _informative_cover_facts(
                         final_text,
@@ -2699,13 +2717,6 @@ async def _build_safe_test_image(
                         exc,
                     )
                     break
-            elif _cy_accept_lru_recent_visual_candidate(metadata, duplicate_result.reason):
-                attempts[-1]["dedup_reason"] = f"{duplicate_result.reason}_lru_allowed"
-                print(f"CY_SAFE_IMAGE_DEDUP_LRU_ALLOWED: {duplicate_result.reason}")
-                selected_candidate = candidate
-                break
-            else:
-                duplicate_candidate_count += 1
             try:
                 quarantine = image_path.with_suffix(image_path.suffix + f".rejected.{duplicate_reason}")
                 image_path.replace(quarantine)
