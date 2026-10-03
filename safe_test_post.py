@@ -1787,6 +1787,7 @@ _CY_ERROR_STAGES = (
     "provider_validation",
     "dedup",
     "fallback_render",
+    "presentation_render",
     "telegram_send",
     "history",
     "receipt",
@@ -2090,9 +2091,11 @@ async def _build_safe_test_image(
             provider_health_exclusions,
             provider_health_path,
             record_provider_attempts,
+            _informative_cover_facts,
             render_local_informative_cover,
             write_provider_health,
         )
+        import daily_ai_presentation as ai_presentation
         from cyprus_visual_policy import (
             CYPRUS_MACRO_LOCAL_COVER,
             blocked_macro_families,
@@ -2625,22 +2628,95 @@ async def _build_safe_test_image(
             candidate = (
                 decision,
                 image_path,
+                image_path,
                 image_size,
                 duplicate_result,
                 backend,
+                None,
             )
+            provider_candidate_allowed = False
             if provider_switch_reason == "provider_repeated_output":
                 duplicate_candidate_count += 1
             elif duplicate_result.accepted:
-                selected_candidate = candidate
-                break
+                provider_candidate_allowed = True
             elif _cy_accept_lru_recent_visual_candidate(metadata, duplicate_result.reason):
                 attempts[-1]["dedup_reason"] = f"{duplicate_result.reason}_lru_allowed"
                 print(f"CY_SAFE_IMAGE_DEDUP_LRU_ALLOWED: {duplicate_result.reason}")
-                selected_candidate = candidate
-                break
+                provider_candidate_allowed = True
             else:
                 duplicate_candidate_count += 1
+
+            if provider_candidate_allowed:
+                # Generate-only/offline diagnostics preserve the pre-presentation
+                # contract: the accepted raw provider image is the generated result.
+                if image_chat is None:
+                    selected_candidate = candidate
+                    break
+
+                # Publication paths always brand the already-accepted raw provider
+                # image. Guard/dedup identity stays raw and is never re-evaluated on
+                # the presentation frame.
+                try:
+                    _, presentation_facts = _informative_cover_facts(
+                        final_text,
+                        post_type=mode,
+                        visual_context=canonical_visual_context,
+                    )
+                    presentation_path = _cy_safe_image_output_path(
+                        f"provider_presentation_{metadata['forecast_date']}_{mode}"
+                    ).with_suffix(".png")
+                    lifecycle_stage = "presentation_render"
+                    presentation_metadata = ai_presentation.render_branded_ai_presentation(
+                        image_path,
+                        headline=str(presentation_facts.get("headline") or ""),
+                        date_value=str(metadata["forecast_date"]),
+                        facts=[
+                            str(presentation_facts.get(key) or "")
+                            for key in ("primary_fact", "secondary_fact", "tertiary_fact")
+                            if str(presentation_facts.get(key) or "").strip()
+                        ],
+                        branding="VAYBOMETER · CYPRUS",
+                        output_path=presentation_path,
+                    )
+                    lifecycle_stage = "orchestration"
+                    publication_path = Path(str(presentation_metadata["path"]))
+                    publication_size = int(presentation_metadata["bytes"])
+                    attempts[-1].update(
+                        {
+                            "presentation_version": presentation_metadata.get("presentation_version", ""),
+                            "source_sha256": presentation_metadata.get("source_sha256", ""),
+                            "published_sha256": presentation_metadata.get("published_sha256", ""),
+                            "published_image_path": str(publication_path),
+                            "published_image_bytes": publication_size,
+                        }
+                    )
+                    selected_candidate = (
+                        decision,
+                        image_path,
+                        publication_path,
+                        publication_size,
+                        duplicate_result,
+                        backend,
+                        presentation_metadata,
+                    )
+                    break
+                except Exception as exc:
+                    lifecycle_stage = "orchestration"
+                    generation_failures += 1
+                    last_failure_stage = "presentation_render"
+                    backend_generation_calls = backend_call_limit
+                    attempts[-1].update(
+                        {
+                            "presentation_error_type": exc.__class__.__name__,
+                            "presentation_error": _redact_secret_text(str(exc))[:300],
+                        }
+                    )
+                    logging.error(
+                        "Cyprus accepted provider image presentation failed; "
+                        "forcing validated local fallback: %s",
+                        exc,
+                    )
+                    break
             try:
                 quarantine = image_path.with_suffix(image_path.suffix + f".rejected.{duplicate_reason}")
                 image_path.replace(quarantine)
@@ -2819,9 +2895,11 @@ async def _build_safe_test_image(
                             visibility_metadata=visibility_metadata,
                         ),
                         local_path,
+                        local_path,
                         local_size,
                         None,
                         "local_informative_cover",
+                        None,
                     )
                     print(
                         "CY_SAFE_IMAGE_LOCAL_INFORMATIVE_COVER: "
@@ -2915,7 +2993,15 @@ async def _build_safe_test_image(
         # The canonical decision selected above is reused verbatim: no late rebuild and
         # no reselection, so provider input, dedup, history, receipt and diagnostics all
         # report the same identity.
-        selected_decision, image_path, image_size, duplicate_result, selected_backend = selected_candidate
+        (
+            selected_decision,
+            source_image_path,
+            image_path,
+            image_size,
+            duplicate_result,
+            selected_backend,
+            presentation_metadata,
+        ) = selected_candidate
         prompt = selected_decision.prompt
         style_name = selected_decision.style_name
         metadata = selected_decision.metadata
@@ -2927,7 +3013,7 @@ async def _build_safe_test_image(
         if image_chat is not None:
             if selected_backend != "local_informative_cover":
                 duplicate_result = evaluate_cyprus_visual_candidate(
-                    image_path,
+                    source_image_path,
                     date_value=metadata["forecast_date"],
                     post_type=mode,
                     selected_scene=metadata["selected_scene"],
@@ -3009,7 +3095,7 @@ async def _build_safe_test_image(
             history_entry = record_cyprus_visual_publication(
                 date_value=metadata["forecast_date"],
                 post_type=mode,
-                image_path=image_path,
+                image_path=source_image_path,
                 selected_scene=metadata["selected_scene"],
                 prompt_version=metadata["prompt_version"],
                 cache_key=metadata["cache_key"],
@@ -3034,7 +3120,8 @@ async def _build_safe_test_image(
                     "post_type": mode,
                     "chat_type": "production",
                     "telegram_message_id": message_id,
-                    "sha256": history_entry.get("sha256"),
+                    "sha256": sha256_file(image_path),
+                    "source_sha256": history_entry.get("sha256"),
                     "perceptual_hash": history_entry.get("perceptual_hash"),
                     "phash": history_entry.get("phash"),
                     "selected_scene": metadata["selected_scene"],
@@ -3078,6 +3165,12 @@ async def _build_safe_test_image(
                 "style_name": style_name,
                 "cache_key": metadata.get("cache_key", ""),
                 "backend": selected_backend,
+                "presentation_version": (
+                    str((presentation_metadata or {}).get("presentation_version") or "")
+                ),
+                "source_path": str(source_image_path),
+                "source_sha256": sha256_file(source_image_path),
+                "published_sha256": sha256_file(image_path),
                 "attempts": attempts,
                 "metadata": metadata,
                 **_generation_summary("sent", selected_backend),
