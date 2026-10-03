@@ -2139,6 +2139,7 @@ def sup_safety_level(
     wave_h: Optional[float],
     shore: Optional[str],
     samples_aligned: bool,
+    thunder: bool = False,
 ) -> Optional[str]:
     """Return excellent/caution/delay; None means no confident SUP advice."""
 
@@ -2147,6 +2148,8 @@ def sup_safety_level(
     wave = float(wave_h) if isinstance(wave_h, (int, float)) and math.isfinite(float(wave_h)) else None
     shore_kind = shore if shore in {"onshore", "offshore", "cross"} else None
 
+    if bool(thunder):
+        return "delay"
     if gust is not None and gust >= SUP_GUST_STOP_MIN:
         return "delay"
     if shore_kind == "offshore" and (
@@ -2182,6 +2185,7 @@ def _sup_guidance_line(
     shore: Optional[str],
     shore_src: Optional[str],
     sst: Optional[float],
+    thunder: bool = False,
 ) -> Optional[str]:
     if level is None:
         return None
@@ -2210,6 +2214,8 @@ def _sup_guidance_line(
         return f"🧜‍♂️ Отлично: SUP{spot_part}{env_mark}{evidence}{dir_part}{suit_part}"
     if level == "caution":
         return f"🧜‍♂️ SUP: только опытным и короткая сессия{evidence}{dir_part}."
+    if thunder:
+        return f"🧜‍♂️ SUP лучше отложить: гроза{evidence}{dir_part}."
     return f"🧜‍♂️ SUP лучше отложить{evidence}{dir_part}."
 
 
@@ -2376,6 +2382,8 @@ def _morning_sea_city_lines(
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
     wm = get_weather(la, lo) or {}
     target_date = pendulum.today(tz_obj).add(days=1).date()
+    _, _, local_daily_weather_code = _city_daily_metrics_for_date(wm, tz_obj, target_date)
+    local_thunder = _weather_code_int(local_daily_weather_code) in _CY_THUNDER_WMO_CODES
     wave_h, _, wave_at = _fetch_wave_for_tomorrow(
         la,
         lo,
@@ -2413,6 +2421,7 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
             target_date,
             tz_obj,
         ),
+        thunder=local_thunder,
     )
 
     kite_good = False
@@ -2466,6 +2475,7 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         shore=sup_shore,
         shore_src=sup_shore_src,
         sst=sst,
+        thunder=local_thunder,
     )
     if sup_line:
         highlights.append(sup_line)
