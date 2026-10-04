@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 from PIL import Image  # type: ignore  # noqa: E402
 import send_weekly_forecast as weekly_module  # noqa: E402
 import weather as weather_module  # noqa: E402
+import weekly_snapshot as snapshot_module  # noqa: E402
 from weekly_cover import RENDERER_VERSION as WEEKLY_COVER_VERSION, render_weekly_cover  # noqa: E402
 from send_weekly_forecast import (  # noqa: E402
     _aggregate_air_data,
@@ -497,8 +498,144 @@ def test_weekly_rows_do_not_fabricate_dates_without_daily_time() -> None:
     assert weekly_module._daily_rows(synthetic, date(2026, 7, 6)) == []
 
 
+def _snapshot_days_fixture(*, temp_shift: float = 0.0, rainy_days: int = 2, windy_days: int = 2, gust_peak: float = 12.0) -> list[dict]:
+    from datetime import timedelta
+    return [
+        {"date":(date(2026,7,6)+timedelta(days=idx)).isoformat(),"tmax":30.0+temp_shift,"tmin":20.0+temp_shift,
+         "wind":5.0,"gust":gust_peak if idx < windy_days else 7.0,"rainy":idx < rainy_days,"precip_sum":None}
+        for idx in range(7)
+    ]
+
+def _snapshot_candidate_fixture(**kwargs) -> dict:
+    return snapshot_module.build_snapshot_candidate(region="cyprus",week_start=date(2026,7,6),weather_days=_snapshot_days_fixture(**kwargs),
+        weather_coverage_days=7,weather_coverage_complete=True,sea_temps=[27.0]*len(weekly_module.SEA_POINTS),
+        expected_sea_samples=len(weekly_module.SEA_POINTS),generated_at_utc="2026-07-04T19:00:00Z")
+
+def _authoritative_snapshot(candidate: dict, message_id: int = 101) -> dict:
+    return snapshot_module.finalize_snapshot(candidate,message_id,published_at_utc="2026-07-04T19:05:00Z")
+
+def _previous_candidate(**kwargs) -> dict:
+    from datetime import timedelta
+    days=[dict(day,date=(date(2026,6,29)+timedelta(days=i)).isoformat()) for i,day in enumerate(_snapshot_days_fixture(**kwargs))]
+    return snapshot_module.build_snapshot_candidate(region="cyprus",week_start=date(2026,6,29),weather_days=days,
+        weather_coverage_days=7,weather_coverage_complete=True,sea_temps=[26.0]*len(weekly_module.SEA_POINTS),
+        expected_sea_samples=len(weekly_module.SEA_POINTS),generated_at_utc="2026-06-27T19:00:00Z")
+
+def test_weekly_snapshot_serialization_and_validation() -> None:
+    authoritative=_authoritative_snapshot(_snapshot_candidate_fixture())
+    with tempfile.TemporaryDirectory() as tmp:
+        path=Path(tmp)/"snapshot.json"; snapshot_module.write_snapshot_atomic(path,authoritative)
+        loaded=snapshot_module.load_snapshot_file(path,region="cyprus",expected_week_start="2026-07-06")
+    assert loaded==authoritative and loaded["thermal_midpoint_c"]==25.0
+
+def test_weekly_snapshot_rejects_corrupt_wrong_region_week_and_incomplete() -> None:
+    auth=_authoritative_snapshot(_snapshot_candidate_fixture())
+    with tempfile.TemporaryDirectory() as tmp:
+        path=Path(tmp)/"snapshot.json"; path.write_text("{broken",encoding="utf-8")
+        assert snapshot_module.load_snapshot_file(path,region="cyprus",expected_week_start="2026-07-06") is None
+    assert not snapshot_module.validate_snapshot(dict(auth,region="kld"),region="cyprus",expected_week_start="2026-07-06")
+    assert not snapshot_module.validate_snapshot(auth,region="cyprus",expected_week_start="2026-06-29")
+    assert not snapshot_module.validate_snapshot(dict(auth,weather_coverage_complete=False,weather_coverage_days=6),region="cyprus",expected_week_start="2026-07-06")
+
+def test_weekly_snapshot_selects_exact_previous_and_earliest_canonical() -> None:
+    first=_authoritative_snapshot(_previous_candidate(),201); late=_authoritative_snapshot(_previous_candidate(),202)
+    selected=snapshot_module.select_earliest_valid_snapshot([
+        {"created_at":"2026-07-04T19:00:00Z","payload":_authoritative_snapshot(_snapshot_candidate_fixture(),303)},
+        {"created_at":"2026-06-28T10:00:00Z","payload":late},
+        {"created_at":"2026-06-27T19:00:00Z","payload":first}],region="cyprus",expected_week_start="2026-06-29")
+    assert selected["production_text_message_id"]==201
+
+def test_weekly_delta_thresholds_and_conflict_rules() -> None:
+    prev=_authoritative_snapshot(_previous_candidate())
+    assert snapshot_module.derive_delta(_snapshot_candidate_fixture(temp_shift=2.0),prev,region="cyprus")["temperature"]["direction"]=="warmer"
+    assert snapshot_module.derive_delta(_snapshot_candidate_fixture(temp_shift=-2.0),prev,region="cyprus")["temperature"]["direction"]=="colder"
+    assert "temperature" not in snapshot_module.derive_delta(_snapshot_candidate_fixture(temp_shift=1.9),prev,region="cyprus")
+    assert snapshot_module.derive_delta(_snapshot_candidate_fixture(rainy_days=4),prev,region="cyprus")["rain"]["direction"]=="wetter"
+    assert snapshot_module.derive_delta(_snapshot_candidate_fixture(rainy_days=2),_authoritative_snapshot(_previous_candidate(rainy_days=4),402),region="cyprus")["rain"]["direction"]=="drier"
+    assert snapshot_module.derive_delta(_snapshot_candidate_fixture(windy_days=4),prev,region="cyprus")["wind"]["direction"]=="windier"
+    assert snapshot_module.derive_delta(_snapshot_candidate_fixture(windy_days=2,gust_peak=15.0),prev,region="cyprus")["wind"]["direction"]=="windier"
+    conflict=snapshot_module.derive_delta(_snapshot_candidate_fixture(windy_days=2,gust_peak=16.0),_authoritative_snapshot(_previous_candidate(windy_days=4,gust_peak=12.0),403),region="cyprus")
+    assert conflict["wind"]["direction"]=="mixed"
+
+def test_weekly_sea_delta_requires_complete_point_coverage() -> None:
+    prev=_authoritative_snapshot(_previous_candidate(),501); cur=_snapshot_candidate_fixture()
+    assert snapshot_module.derive_delta(cur,prev,region="cyprus")["sea"]["direction"]=="warmer"
+    assert "sea" not in snapshot_module.derive_delta(dict(cur,sea_sample_count=len(weekly_module.SEA_POINTS)-1),prev,region="cyprus")
+
+def test_weekly_incomplete_current_is_not_snapshot_authority() -> None:
+    partial=json.loads(json.dumps(WEATHER)); partial["daily"]["time"]=partial["daily"]["time"][:-1]
+    for key,values in list(partial["daily"].items()):
+        if key!="time" and isinstance(values,list): partial["daily"][key]=values[:-1]
+    payload={city:partial for city,_coords in EXPECTED_ISLAND_POINTS}
+    assert weekly_module._build_snapshot_candidate(date(2026,7,1),payload,[27.0]*len(weekly_module.SEA_POINTS)) is None
+
+def _run_snapshot_authority_case(*, cover_fails=False, text_fails=False, production=True) -> bool:
+    old_token=os.environ.get("TELEGRAM_TOKEN"); old_telegram=sys.modules.get("telegram"); old_renderer=weekly_module.render_weekly_cover
+    class Message: message_id=777
+    class ParseMode: HTML="HTML"
+    class Constants: pass
+    Constants.ParseMode=ParseMode
+    class Bot:
+        def __init__(self,token): pass
+        async def send_photo(self,**kwargs): return object()
+        async def send_message(self,**kwargs):
+            if text_fails: raise RuntimeError("synthetic text failure")
+            return Message()
+    module=ModuleType("telegram"); module.Bot=Bot; module.constants=Constants
+    with tempfile.TemporaryDirectory() as tmp:
+        out=Path(tmp)/"snapshot.json"
+        def fake_render(text: str, *, start: date, output_path: str | Path):
+            if cover_fails: raise RuntimeError("synthetic cover failure")
+            path=Path(tmp)/"cover.png"; path.write_bytes(b"fixture"); return {"path":str(path)}
+        try:
+            os.environ["TELEGRAM_TOKEN"]="test"; sys.modules["telegram"]=module; weekly_module.render_weekly_cover=fake_render
+            try:
+                asyncio.run(weekly_module._send("weekly text","-100123",date(2026,7,6),snapshot_candidate=_snapshot_candidate_fixture(),
+                    production_snapshot_out=out,production_chat_id="-100123" if production else "-100999"))
+            except RuntimeError: pass
+            return out.exists()
+        finally:
+            weekly_module.render_weekly_cover=old_renderer
+            if old_telegram is None: sys.modules.pop("telegram",None)
+            else: sys.modules["telegram"]=old_telegram
+            if old_token is None: os.environ.pop("TELEGRAM_TOKEN",None)
+            else: os.environ["TELEGRAM_TOKEN"]=old_token
+
+def test_weekly_snapshot_authority_follows_production_text_success() -> None:
+    assert _run_snapshot_authority_case(cover_fails=True) is True
+    assert _run_snapshot_authority_case(text_fails=True) is False
+    assert _run_snapshot_authority_case(production=False) is False
+
+def test_weekly_first_run_without_history_has_no_delta_block() -> None:
+    text=build_weekly_forecast(date(2026,7,1),weather_payload=WEATHER,air_data=AIR,sea_temps=[27.2,28.1,27.6],kp_tuple=KP,lunar_data=LUNAR,
+        astro_events_paths=[Path("__missing_astro_events.json")],delta_lines=[])
+    assert "↔️ К прошлому недельному прогнозу" not in text
+
+def test_weekly_delta_block_is_compact_and_forecast_labeled() -> None:
+    text=build_weekly_forecast(date(2026,7,1),weather_payload=WEATHER,air_data=AIR,sea_temps=[27.2,28.1,27.6],kp_tuple=KP,lunar_data=LUNAR,
+        astro_events_paths=[Path("__missing_astro_events.json")],delta_lines=["Температура: новый недельный прогноз заметно теплее.","Осадки: новый прогноз заметно суше."])
+    assert "↔️ К прошлому недельному прогнозу" in text and "фактически была" not in text
+
+def test_weekly_snapshot_workflow_contract_is_production_only_and_30_days() -> None:
+    workflow=(ROOT/".github"/"workflows"/"weekly_forecast.yml").read_text("utf-8")
+    assert 'if [ "${DRY_RUN:-}" = "true" ]; then' in workflow
+    assert 'if [ "${labels[$i]}" = "production" ]' in workflow
+    assert "--production-snapshot-out" in workflow and "retention-days: 30" in workflow
+    assert "weekly-snapshot-cy-" in workflow and "canonical-exists" in workflow
+
+
 def main() -> None:
     checks = (
+        test_weekly_snapshot_serialization_and_validation,
+        test_weekly_snapshot_rejects_corrupt_wrong_region_week_and_incomplete,
+        test_weekly_snapshot_selects_exact_previous_and_earliest_canonical,
+        test_weekly_delta_thresholds_and_conflict_rules,
+        test_weekly_sea_delta_requires_complete_point_coverage,
+        test_weekly_incomplete_current_is_not_snapshot_authority,
+        test_weekly_snapshot_authority_follows_production_text_success,
+        test_weekly_first_run_without_history_has_no_delta_block,
+        test_weekly_delta_block_is_compact_and_forecast_labeled,
+        test_weekly_snapshot_workflow_contract_is_production_only_and_30_days,
         test_weekly_source_requests_exact_range_and_units_without_network,
         test_weekly_source_rejects_six_eight_and_wrong_dates,
         test_weekly_partial_city_cannot_make_island_complete,

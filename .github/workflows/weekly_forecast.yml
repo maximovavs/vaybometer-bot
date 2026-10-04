@@ -36,6 +36,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: weekly-vaybometer-forecast-cy
@@ -147,6 +148,24 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
+      - name: Restore previous canonical weekly snapshot
+        if: steps.schedule_guard.outputs.should_run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          week_start="${{ steps.weekly_date.outputs.week_start }}"
+          rm -f weekly_snapshot_state/previous.json
+          if [ -z "$week_start" ]; then
+            echo "WeeklySnapshot restore skipped: no explicit week_start."
+            exit 0
+          fi
+          python weekly_snapshot.py restore \
+            --region cyprus \
+            --current-week-start "$week_start" \
+            --artifact-prefix weekly-snapshot-cy \
+            --output weekly_snapshot_state/previous.json
       - name: Install dependencies
         if: steps.schedule_guard.outputs.should_run == 'true'
         run: |
@@ -244,5 +263,38 @@ jobs:
           for i in "${!targets[@]}"; do
             echo "Weekly forecast target: ${labels[$i]}"
             send_args=("${args[@]}" "--send" "--chat-id" "${targets[$i]}")
+            if [ "${labels[$i]}" = "production" ] && [ -n "${WEEK_START_DATE:-}" ]; then
+              send_args+=("--production-snapshot-out" "weekly_snapshot_state/current.json")
+            fi
             python "${send_args[@]}"
           done
+
+      - name: Check existing canonical weekly snapshot
+        id: weekly_snapshot_gate
+        if: steps.schedule_guard.outputs.should_run == 'true' && success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s weekly_snapshot_state/current.json ]; then
+            echo "should_upload=false" >> "$GITHUB_OUTPUT"
+            echo "No authoritative current WeeklySnapshot produced."
+            exit 0
+          fi
+          week_start="$(python -c 'import json; print(json.load(open("weekly_snapshot_state/current.json", encoding="utf-8"))["week_start"])')"
+          if python weekly_snapshot.py canonical-exists --region cyprus --week-start "$week_start" --artifact-prefix weekly-snapshot-cy; then
+            echo "should_upload=false" >> "$GITHUB_OUTPUT"
+            echo "Canonical WeeklySnapshot already exists; late/duplicate run will not overwrite it."
+          else
+            echo "should_upload=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload canonical weekly snapshot
+        if: steps.weekly_snapshot_gate.outputs.should_upload == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-snapshot-cy-${{ steps.weekly_date.outputs.week_start }}
+          path: weekly_snapshot_state/current.json
+          if-no-files-found: error
+          retention-days: 30
