@@ -1777,6 +1777,21 @@ def _cy_is_production_text_send(chat_id: int | None) -> bool:
     return bool(production_chat and chat_id is not None and str(chat_id) == production_chat)
 
 
+def _cy_should_skip_production_text(
+    chat_id: int | None,
+    target_date: str,
+    post_type: str,
+) -> bool:
+    """Production text delivery is authoritative by canonical receipt, not trigger type."""
+    if not _cy_is_production_text_send(chat_id):
+        return False
+    return has_valid_cy_text_delivery(
+        target_date,
+        post_type,
+        allow_legacy_morning=(post_type == "morning"),
+    )
+
+
 _CY_LOCAL_RENDERER_NAME = "local_informative_cover"
 
 # Fixed vocabulary; diagnostics must not invent new stage names.
@@ -3492,6 +3507,22 @@ async def main() -> None:
         if resolved_text_chat_id is not None
         else resolve_chat_id(args.chat_id, args.to_test)
     )
+    text_target_date = _cy_extract_receipt_date(
+        final_result.text,
+        base_date.to_date_string(),
+    )
+    if _cy_should_skip_production_text(chat_id, text_target_date, mode):
+        receipt_path = cy_text_delivery_path(text_target_date, mode)
+        print(f"CY_TEXT_DELIVERY_SKIP_RECEIPT_EXISTS: {receipt_path}")
+        _cy_morning_phase(
+            "text_skipped_receipt_exists",
+            target_date=text_target_date,
+            chat_type=chat_type,
+            receipt_path=str(receipt_path),
+            chunk_count=len(chunks),
+            image_result=image_result.get("result"),
+        )
+        return
 
 
     bot = Bot(token=TOKEN)
@@ -3567,7 +3598,7 @@ async def main() -> None:
         receipt_path=receipt_path,
     )
     if _cy_is_production_text_send(chat_id) and len(sent_message_ids) >= len(chunks):
-        target_date = _cy_extract_receipt_date(final_result.text, base_date.to_date_string())
+        target_date = text_target_date
         receipt = {
             "target_date": target_date,
             "post_type": mode,

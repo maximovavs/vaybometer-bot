@@ -51,6 +51,7 @@ from safe_test_post import (  # noqa: E402
     _cy_image_receipt_path,
     _cy_image_caption,
     _cy_text_receipt_path,
+    _cy_should_skip_production_text,
     _cy_write_image_diagnostics,
     _send_telegram_text_chunks,
     cy_morning_delivery_path,
@@ -1607,6 +1608,53 @@ def cy_missing_image_message_id_does_not_validate_receipt() -> None:
 
     _with_temp_delivery_dir(_case)
 
+
+
+def cy_production_text_receipt_guard_is_trigger_agnostic_and_keyed() -> None:
+    def _case(_tmp: Path) -> None:
+        old_channel = os.environ.get("CHANNEL_ID")
+        old_event = os.environ.get("GITHUB_EVENT_NAME")
+        try:
+            os.environ["CHANNEL_ID"] = "-1001234567890"
+            production_chat = -1001234567890
+            other_chat = -1009876543210
+
+            # I1: no receipt => first production invocation may send text.
+            assert not _cy_should_skip_production_text(production_chat, "2026-07-06", "morning")
+
+            # I2/I3: text receipt exists while image may be missing => text is suppressed.
+            _write_canonical_text_receipt("2026-07-06", "morning", ids=[7001])
+            assert _cy_should_skip_production_text(production_chat, "2026-07-06", "morning")
+            assert not is_valid_cy_image_receipt("2026-07-06", "morning")
+
+            # I4: image-only state does not suppress a still-missing text phase.
+            _write_image_receipt("2026-07-07", "morning", message_id=7002)
+            assert not _cy_should_skip_production_text(production_chat, "2026-07-07", "morning")
+
+            # I5/I6: target date and post type are exact receipt keys.
+            assert not _cy_should_skip_production_text(production_chat, "2026-07-08", "morning")
+            assert not _cy_should_skip_production_text(production_chat, "2026-07-06", "evening")
+
+            # I7: production receipts never suppress another/test chat.
+            assert not _cy_should_skip_production_text(other_chat, "2026-07-06", "morning")
+
+            # I8: trigger type is irrelevant to the publication-layer guard.
+            os.environ["GITHUB_EVENT_NAME"] = "schedule"
+            scheduled = _cy_should_skip_production_text(production_chat, "2026-07-06", "morning")
+            os.environ["GITHUB_EVENT_NAME"] = "workflow_dispatch"
+            dispatched = _cy_should_skip_production_text(production_chat, "2026-07-06", "morning")
+            assert scheduled is True and dispatched is True
+        finally:
+            if old_channel is None:
+                os.environ.pop("CHANNEL_ID", None)
+            else:
+                os.environ["CHANNEL_ID"] = old_channel
+            if old_event is None:
+                os.environ.pop("GITHUB_EVENT_NAME", None)
+            else:
+                os.environ["GITHUB_EVENT_NAME"] = old_event
+
+    _with_temp_delivery_dir(_case)
 
 def cy_image_diagnostics_redacts_secrets() -> None:
     def _case(tmp: Path) -> None:
@@ -3663,6 +3711,7 @@ def main() -> None:
         cy_manual_prod_text_receipt_suppresses_scheduled_recovery,
         cy_legacy_morning_receipt_remains_compatibility_fallback,
         cy_missing_image_message_id_does_not_validate_receipt,
+        cy_production_text_receipt_guard_is_trigger_agnostic_and_keyed,
         cy_image_diagnostics_redacts_secrets,
         cy_image_recovery_force_regenerates_instead_of_reusing_cache,
         cy_test_image_checks_prod_history_and_writes_only_test_history,
