@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import urllib.parse
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
@@ -19,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from PIL import Image  # type: ignore  # noqa: E402
 import send_weekly_forecast as weekly_module  # noqa: E402
+import weather as weather_module  # noqa: E402
 from weekly_cover import RENDERER_VERSION as WEEKLY_COVER_VERSION, render_weekly_cover  # noqa: E402
 from send_weekly_forecast import (  # noqa: E402
     _aggregate_air_data,
@@ -183,16 +185,32 @@ def test_weekly_forecast_keeps_stronger_kite_warning_for_high_gusts() -> None:
 
 
 def test_weekly_weather_fetches_exact_island_points() -> None:
-    calls: list[tuple[float, float]] = []
+    calls: list[tuple[float, float, str, str, str]] = []
 
-    def fake_get_weather(lat: float, lon: float) -> dict:
-        calls.append((lat, lon))
+    def fake_get_weekly_weather(
+        lat: float,
+        lon: float,
+        *,
+        start_date: str,
+        end_date: str,
+        tz_name: str,
+    ) -> dict:
+        calls.append((lat, lon, start_date, end_date, tz_name))
         return WEATHER
 
     weather_module = ModuleType("weather")
-    weather_module.get_weather = fake_get_weather
-    payload = _with_module("weather", weather_module, _fetch_weather)
-    assert calls == [coords for _city, coords in EXPECTED_ISLAND_POINTS]
+    weather_module.get_weekly_weather = fake_get_weekly_weather
+    payload = _with_module(
+        "weather",
+        weather_module,
+        lambda: _fetch_weather(date(2026, 7, 1)),
+    )
+    assert [(lat, lon) for lat, lon, _start, _end, _tz in calls] == [
+        coords for _city, coords in EXPECTED_ISLAND_POINTS
+    ]
+    assert all(start == "2026-07-01" for _lat, _lon, start, _end, _tz in calls)
+    assert all(end == "2026-07-07" for _lat, _lon, _start, end, _tz in calls)
+    assert all(tz == "Asia/Nicosia" for _lat, _lon, _start, _end, tz in calls)
     assert list(payload) == [city for city, _coords in EXPECTED_ISLAND_POINTS]
 
 
@@ -352,8 +370,139 @@ def test_weekly_send_survives_image_send_failure() -> None:
     assert _run_weekly_send_case(image_fails=True) == ["cover", "photo", "text"]
 
 
+def _weekly_api_fixture(dates: list[str]) -> dict:
+    count = len(dates)
+    return {
+        "daily": {
+            "time": dates,
+            "temperature_2m_max": [30 + idx for idx in range(count)],
+            "temperature_2m_min": [20 + idx for idx in range(count)],
+            "weather_code": [0] * count,
+            "precipitation_probability_max": [10] * count,
+            "precipitation_sum": [0.0] * count,
+            "wind_speed_10m_max": [5.0] * count,
+            "wind_gusts_10m_max": [8.0] * count,
+            "uv_index_max": [7.0] * count,
+        },
+        "daily_units": {
+            "temperature_2m_max": "°C",
+            "temperature_2m_min": "°C",
+            "precipitation_probability_max": "%",
+            "precipitation_sum": "mm",
+            "wind_speed_10m_max": "m/s",
+            "wind_gusts_10m_max": "m/s",
+        },
+    }
+
+
+def test_weekly_source_requests_exact_range_and_units_without_network() -> None:
+    captured: list[str] = []
+    old_http = weather_module._http_get_json
+    dates = [f"2026-07-{day:02d}" for day in range(6, 13)]
+
+    def fake_http(url: str, timeout_sec: float) -> dict:
+        assert timeout_sec == weather_module.TIMEOUT_SEC
+        captured.append(url)
+        return _weekly_api_fixture(dates)
+
+    try:
+        weather_module._http_get_json = fake_http
+        payload = weather_module.get_weekly_weather(
+            34.707,
+            33.022,
+            start_date="2026-07-06",
+            end_date="2026-07-12",
+            tz_name="Asia/Nicosia",
+        )
+    finally:
+        weather_module._http_get_json = old_http
+
+    assert len(captured) == 1
+    parsed = urllib.parse.urlparse(captured[0])
+    query = urllib.parse.parse_qs(parsed.query)
+    assert query["start_date"] == ["2026-07-06"]
+    assert query["end_date"] == ["2026-07-12"]
+    assert "forecast_days" not in query
+    assert query["wind_speed_unit"] == ["ms"]
+    assert query["precipitation_unit"] == ["mm"]
+    assert query["temperature_unit"] == ["celsius"]
+    assert "precipitation_sum" in query["daily"][0]
+    assert payload["_weekly_meta"]["coverage_complete"] is True
+    assert payload["_weekly_meta"]["coverage_days"] == 7
+    assert payload["_weekly_meta"]["normalized_units"]["wind_speed"] == "m/s"
+    assert payload["_weekly_meta"]["normalized_units"]["precipitation"] == "mm"
+    assert payload["_weekly_meta"]["source_daily_units"]["wind_speed_10m_max"] == "m/s"
+
+
+def test_weekly_source_rejects_six_eight_and_wrong_dates() -> None:
+    old_http = weather_module._http_get_json
+    variants = [
+        [f"2026-07-{day:02d}" for day in range(6, 12)],
+        [f"2026-07-{day:02d}" for day in range(5, 13)],
+        [f"2026-07-{day:02d}" for day in range(7, 14)],
+    ]
+    try:
+        for dates in variants:
+            weather_module._http_get_json = lambda url, timeout_sec, dates=dates: _weekly_api_fixture(dates)
+            payload = weather_module.get_weekly_weather(
+                34.707,
+                33.022,
+                start_date="2026-07-06",
+                end_date="2026-07-12",
+                tz_name="Asia/Nicosia",
+            )
+            assert payload["_weekly_meta"]["coverage_complete"] is False
+    finally:
+        weather_module._http_get_json = old_http
+
+
+def test_weekly_partial_city_cannot_make_island_complete() -> None:
+    dates = [f"2026-07-{day:02d}" for day in range(6, 13)]
+    complete = _weekly_api_fixture(dates)
+    complete["_weekly_meta"] = {
+        "coverage_complete": True,
+        "weather_code_system": "wmo",
+        "normalized_units": {"wind_speed": "m/s", "precipitation": "mm"},
+    }
+    partial = _weekly_api_fixture(dates[:-1])
+    partial["_weekly_meta"] = {
+        "coverage_complete": False,
+        "weather_code_system": "wmo",
+        "normalized_units": {"wind_speed": "m/s", "precipitation": "mm"},
+    }
+    payload = {name: complete for name, _coords in EXPECTED_ISLAND_POINTS}
+    payload["Troodos"] = partial
+    metrics = weekly_module._weather_metrics_for_payload(payload, date(2026, 7, 6))
+    assert metrics["coverage_complete"] is False
+    text = build_weekly_forecast(
+        date(2026, 7, 6),
+        weather_payload=payload,
+        air_data=AIR,
+        sea_temps=[27.2, 28.1, 27.6],
+        kp_tuple=KP,
+        lunar_data=LUNAR,
+        astro_events_paths=[Path("__missing_astro_events.json")],
+    )
+    assert "Полный прогноз на все 7 дней пока не собран" in text
+
+
+def test_weekly_rows_do_not_fabricate_dates_without_daily_time() -> None:
+    synthetic = {
+        "daily": {
+            "temperature_2m_max": [31, 31],
+            "temperature_2m_min": [22, 22],
+            "weathercode": [500, 500],
+        }
+    }
+    assert weekly_module._daily_rows(synthetic, date(2026, 7, 6)) == []
+
+
 def main() -> None:
     checks = (
+        test_weekly_source_requests_exact_range_and_units_without_network,
+        test_weekly_source_rejects_six_eight_and_wrong_dates,
+        test_weekly_partial_city_cannot_make_island_complete,
+        test_weekly_rows_do_not_fabricate_dates_without_daily_time,
         test_weekly_forecast_structure_without_optional_config,
         test_weekly_forecast_includes_curated_astro_events,
         test_weekly_forecast_keeps_stronger_kite_warning_for_high_gusts,
