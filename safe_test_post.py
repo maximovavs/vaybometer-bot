@@ -34,6 +34,7 @@ from visibility_context import (
     visibility_condition_from_text,
     visibility_penalty,
 )
+from cyprus_provider_image_qa import evaluate_provider_image_semantics
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -1800,6 +1801,7 @@ _CY_ERROR_STAGES = (
     "decision",
     "provider_generation",
     "provider_validation",
+    "semantic_qa",
     "dedup",
     "fallback_render",
     "presentation_render",
@@ -2532,6 +2534,101 @@ async def _build_safe_test_image(
                     break
                 continue
 
+            semantic_qa_result: dict[str, object] = {
+                "status": "skipped_generate_only",
+                "accepted": True,
+                "reason_codes": ["generate_only"],
+                "confidence": 1.0,
+                "error_type": "",
+            }
+            if image_chat is not None:
+                lifecycle_stage = "semantic_qa"
+                try:
+                    semantic_qa_result = dict(
+                        evaluate_provider_image_semantics(
+                            image_path,
+                            scene_family=str(metadata.get("selected_scene") or ""),
+                            composition=str(metadata.get("composition") or ""),
+                            visual_context={
+                                "primary_weather": str(metadata.get("primary_weather") or ""),
+                                "weather_scenario": str(metadata.get("weather_scenario") or ""),
+                                "visibility_condition": str(metadata.get("visibility_condition") or "clear"),
+                                "scene_focus": str(metadata.get("scene_focus") or ""),
+                                "actual_precipitation": bool(canonical_visual_context.actual_precipitation),
+                                "explicit_storm": bool(canonical_visual_context.explicit_storm),
+                                "severe_wind": bool(canonical_visual_context.severe_wind),
+                            },
+                        )
+                    )
+                except Exception as exc:
+                    semantic_qa_result = {
+                        "status": "unavailable",
+                        "accepted": False,
+                        "reason_codes": ["qa_exception"],
+                        "confidence": 0.0,
+                        "error_type": exc.__class__.__name__,
+                    }
+                lifecycle_stage = "orchestration"
+                qa_status = str(semantic_qa_result.get("status") or "unavailable")
+                qa_reasons = [
+                    str(value)
+                    for value in (semantic_qa_result.get("reason_codes") or [])
+                    if str(value)
+                ]
+                semantic_qa_diag = {
+                    "status": qa_status,
+                    "accepted": bool(semantic_qa_result.get("accepted")),
+                    "reason_codes": qa_reasons,
+                    "confidence": semantic_qa_result.get("confidence"),
+                    "error_type": str(semantic_qa_result.get("error_type") or ""),
+                    "model": str(semantic_qa_result.get("model") or ""),
+                }
+                if qa_status != "accept":
+                    candidate_attempt = generation_attempt + 1
+                    generation_attempt += 1
+                    last_failure_stage = "semantic_qa"
+                    attempts.append({
+                        "attempt": candidate_attempt,
+                        "variation_attempt": variation_attempt,
+                        "selected_scene": metadata["selected_scene"],
+                        "composition": metadata.get("composition", ""),
+                        "visual_archetype": metadata.get("visual_archetype", ""),
+                        "style_name": style_name,
+                        "cache_key": cache_key,
+                        "cache_status": cache_state,
+                        "backend": backend,
+                        "backend_attempts": backend_attempts,
+                        "backend_call_count": backend_generation_calls,
+                        "backend_call_limit": backend_call_limit,
+                        "image_path": str(image_path),
+                        "image_bytes": image_size,
+                        "semantic_qa": semantic_qa_diag,
+                        "dedup_reason": "semantic_qa:" + qa_status + ":" + ",".join(qa_reasons),
+                    })
+                    try:
+                        quarantine = image_path.with_suffix(
+                            image_path.suffix + f".rejected.semantic_qa_{qa_status}"
+                        )
+                        image_path.replace(quarantine)
+                        attempts[-1]["quarantined_path"] = str(quarantine)
+                    except Exception as exc:
+                        logging.warning("Cyprus semantic-QA quarantine failed: %s", exc)
+                    logging.warning(
+                        "Cyprus provider image semantic QA rejected candidate: status=%s reasons=%s scene=%s",
+                        qa_status,
+                        ",".join(qa_reasons) or "unknown",
+                        metadata["selected_scene"],
+                    )
+                    if qa_status == "unavailable":
+                        backend_generation_calls = backend_call_limit
+                        stop_generation = True
+                    variation_attempt += 1
+                    if stop_generation:
+                        break
+                    continue
+            else:
+                semantic_qa_diag = dict(semantic_qa_result)
+
             valid_candidate_count += 1
             lifecycle_stage = "dedup"
             duplicate_result = evaluate_cyprus_visual_candidate(
@@ -2631,6 +2728,7 @@ async def _build_safe_test_image(
                     "repeated_output_hash": ":".join(same_run_key) if provider_switch_reason else "",
                     "image_path": str(image_path),
                     "image_bytes": image_size,
+                    "semantic_qa": semantic_qa_diag,
                     "dedup_reason": duplicate_reason,
                     "sha256": duplicate_result.sha256,
                     "perceptual_hash": duplicate_result.perceptual_hash,

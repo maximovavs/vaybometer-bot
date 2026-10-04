@@ -52,6 +52,7 @@ from cyprus_image_recovery import (  # noqa: E402
 )
 import safe_test_post as safe_module  # noqa: E402
 import world_en.imagegen as imagegen  # noqa: E402
+from cyprus_provider_image_qa import normalize_semantic_verdict  # noqa: E402
 
 
 MESSAGE = """🌅 Кипр сегодня (15.07.2026)
@@ -1192,6 +1193,7 @@ def canonical_decision_is_not_rebuilt_after_provider_success() -> None:
         old_outcome = imagegen.generate_astro_image_outcome_with_exclusions
         old_availability = imagegen.configured_image_backends
         old_builder = image_prompt_cy_scene.build_cyprus_visual_decision
+        old_semantic_qa = safe_module.evaluate_provider_image_semantics
         old_prod_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
         old_test_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
 
@@ -1291,6 +1293,13 @@ def canonical_decision_is_not_rebuilt_after_provider_success() -> None:
             }
             image_prompt_cy_scene.build_cyprus_visual_decision = counting_builder
             cyprus_visual_dedup.evaluate_cyprus_visual_candidate = recording_evaluate
+            safe_module.evaluate_provider_image_semantics = lambda *_args, **_kwargs: {
+                "status": "accept",
+                "accepted": True,
+                "reason_codes": ["accepted"],
+                "confidence": 0.99,
+                "error_type": "",
+            }
 
             result = await safe_module._build_safe_test_image(
                 EVENING_MESSAGE,
@@ -1305,6 +1314,7 @@ def canonical_decision_is_not_rebuilt_after_provider_success() -> None:
             receipt_path = safe_module._cy_image_receipt_path("2026-07-16", "evening")
         finally:
             image_prompt_cy_scene.build_cyprus_visual_decision = old_builder
+            safe_module.evaluate_provider_image_semantics = old_semantic_qa
             cyprus_visual_dedup.evaluate_cyprus_visual_candidate = old_evaluate
             imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
             imagegen.configured_image_backends = old_availability
@@ -1382,6 +1392,7 @@ def _run_stage_failure_case(
     break_receipt: bool = False,
     break_local_renderer: bool = False,
     break_presentation: bool = False,
+    semantic_qa_status: str = "accept",
 ) -> dict:
     """Drive _build_safe_test_image with one lifecycle stage failing; return diagnostics.
 
@@ -1405,6 +1416,7 @@ def _run_stage_failure_case(
     old_record = cyprus_visual_dedup.record_cyprus_visual_publication
     old_renderer = cyprus_image_recovery.render_local_informative_cover
     old_presentation = daily_ai_presentation.render_branded_ai_presentation
+    old_semantic_qa = safe_module.evaluate_provider_image_semantics
     old_atomic = safe_module._cy_write_json_atomic
     old_prod_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
     old_test_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
@@ -1488,6 +1500,19 @@ def _run_stage_failure_case(
             "available_backends": ["pollinations"],
             "unconfigured_backends": [],
         }
+        safe_module.evaluate_provider_image_semantics = lambda *_args, **_kwargs: {
+            "status": semantic_qa_status,
+            "accepted": semantic_qa_status == "accept",
+            "reason_codes": (
+                ["accepted"]
+                if semantic_qa_status == "accept"
+                else ["scene_missing_or_non_dominant"]
+                if semantic_qa_status == "reject"
+                else ["qa_unavailable"]
+            ),
+            "confidence": 0.99 if semantic_qa_status != "unavailable" else 0.0,
+            "error_type": "" if semantic_qa_status != "unavailable" else "FixtureUnavailable",
+        }
         if break_history:
             cyprus_visual_dedup.record_cyprus_visual_publication = failing_record
             safe_module.record_cyprus_visual_publication = failing_record
@@ -1520,6 +1545,7 @@ def _run_stage_failure_case(
         safe_module.record_cyprus_visual_publication = old_record
         cyprus_image_recovery.render_local_informative_cover = old_renderer
         daily_ai_presentation.render_branded_ai_presentation = old_presentation
+        safe_module.evaluate_provider_image_semantics = old_semantic_qa
         safe_module._cy_write_json_atomic = old_atomic
         imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
         imagegen.configured_image_backends = old_availability
@@ -1701,8 +1727,61 @@ def ai_presentation_failure_falls_through_to_existing_local_cover() -> None:
         assert outcome["receipt"]["backend"] == "local_informative_cover"
 
 
+def semantic_qa_structured_verdict_is_deterministic() -> None:
+    base = {
+        "scene_dominant": True,
+        "composition_present": True,
+        "mediterranean_plausible": True,
+        "tropical_mismatch": False,
+        "malformed_structure": False,
+        "weather_compatible": True,
+        "text_logo_watermark_absent": True,
+        "screen_ui_absent": True,
+        "photographic_realism": True,
+        "confidence": 0.98,
+    }
+    accepted = normalize_semantic_verdict(base)
+    assert accepted["status"] == "accept"
+    assert accepted["accepted"] is True
+    missing_prom = normalize_semantic_verdict(
+        {**base, "scene_dominant": False, "composition_present": False, "confidence": 0.96}
+    )
+    assert missing_prom["status"] == "reject"
+    assert "scene_missing_or_non_dominant" in missing_prom["reason_codes"]
+    assert "composition_missing" in missing_prom["reason_codes"]
+    tropical = normalize_semantic_verdict(
+        {**base, "mediterranean_plausible": False, "tropical_mismatch": True, "confidence": 0.97}
+    )
+    assert tropical["status"] == "reject"
+    assert "tropical_or_jungle_mismatch" in tropical["reason_codes"]
+
+
+def semantic_qa_reject_and_unavailable_never_blind_send_provider_image() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        rejected = _run_stage_failure_case(Path(tmp_name), semantic_qa_status="reject")
+    assert rejected["result"]["result"] == "sent"
+    assert rejected["result"]["backend"] == "local_informative_cover"
+    assert rejected["diagnostics"]["actual_renderer"] == "local_informative_cover"
+    assert any(
+        str(item.get("dedup_reason") or "").startswith("semantic_qa:reject:")
+        for item in rejected["diagnostics"]["attempts"]
+    )
+    with tempfile.TemporaryDirectory() as tmp_name:
+        unavailable = _run_stage_failure_case(Path(tmp_name), semantic_qa_status="unavailable")
+    assert unavailable["result"]["result"] == "sent"
+    assert unavailable["result"]["backend"] == "local_informative_cover"
+    assert unavailable["diagnostics"]["actual_renderer"] == "local_informative_cover"
+    qa_attempts = [
+        item for item in unavailable["diagnostics"]["attempts"]
+        if str(item.get("dedup_reason") or "").startswith("semantic_qa:unavailable:")
+    ]
+    assert len(qa_attempts) == 1
+
+
 def main() -> None:
     checks = (
+        semantic_qa_structured_verdict_is_deterministic,
+        semantic_qa_reject_and_unavailable_never_blind_send_provider_image,
         ai_primary_presentation_keeps_raw_history_and_published_receipt_separate,
         ai_presentation_failure_falls_through_to_existing_local_cover,
         forecast_threshold_warning_copy_is_provenance_safe,

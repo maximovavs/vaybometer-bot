@@ -1730,7 +1730,41 @@ def cy_macro_fields_are_absent_from_the_ordered_cache_key() -> None:
             assert decision.style_name.endswith(expected_digest)
 
 
+def cy_clear_coastal_scene_ignores_inland_only_fog_haze() -> None:
+    text = """
+    🌅 Кипр завтра (05.10.2026)
+    🌊 Ларнака: 26/18 °C • пасмурно • ветер 1.6 м/с.
+    🌊 Лимассол: 25/16 °C • пасмурно • ветер 2.9 м/с.
+    🏙 Никосия: 27/16 °C • туман • дождь.
+    🏔 Троодос: 19/10 °C • туман.
+    """
+    ctx = parse_visual_context_cy(text, post_type="evening")
+    prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(text, post_type="evening")
+    assert ctx.coastal_focus is True
+    assert ctx.visibility_condition == "clear"
+    assert ctx.visibility_haze is False
+    assert metadata["cloud_haze_category"] != "visibility_haze"
+    assert "soft humid haze with reduced distant visibility" not in prompt.lower()
+
+
+def cy_clear_coastal_scene_keeps_real_coastal_haze() -> None:
+    text = """
+    🌅 Кипр завтра (06.10.2026)
+    🌊 Ларнака: 27/19 °C • местами дымка у моря • ветер 2 м/с.
+    🏙 Никосия: 30/18 °C • ясно.
+    """
+    ctx = parse_visual_context_cy(text, post_type="evening")
+    prompt, _style, metadata = build_cyprus_scene_prompt_with_metadata(text, post_type="evening")
+    assert ctx.coastal_focus is True
+    assert ctx.visibility_condition == "clear"
+    assert ctx.visibility_haze is True
+    assert metadata["cloud_haze_category"] == "visibility_haze"
+    assert "soft humid haze with reduced distant visibility" in prompt.lower()
+
+
 TESTS = [
+    cy_clear_coastal_scene_ignores_inland_only_fog_haze,
+    cy_clear_coastal_scene_keeps_real_coastal_haze,
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
     cy_evening_hot_coast,

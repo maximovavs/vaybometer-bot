@@ -394,6 +394,9 @@ def parse_visual_context_cy(
         "uv_candidates": [],
         "dust_lines": [],
         "haze_lines": [],
+        "coastal_haze_lines": [],
+        "inland_haze_lines": [],
+        "generic_haze_lines": [],
         "visibility_lines": [],
         "precipitation_lines": [],
         "coastal_precipitation_lines": [],
@@ -421,6 +424,9 @@ def parse_visual_context_cy(
     coastal_day_temps: list[float] = []
     dust_lines: list[str] = []
     haze_lines: list[str] = []
+    coastal_haze_lines: list[str] = []
+    inland_haze_lines: list[str] = []
+    generic_haze_lines: list[str] = []
     actual_precipitation = False
     coastal_precipitation = False
     inland_precipitation = False
@@ -550,6 +556,15 @@ def parse_visual_context_cy(
         elif line_has_haze:
             haze_lines.append(line)
             evidence["haze_lines"].append(line)
+            if is_coastal:
+                coastal_haze_lines.append(line)
+                evidence["coastal_haze_lines"].append(line)
+            elif cities or is_troodos_or_mountain:
+                inland_haze_lines.append(line)
+                evidence["inland_haze_lines"].append(line)
+            else:
+                generic_haze_lines.append(line)
+                evidence["generic_haze_lines"].append(line)
 
         line_has_storm = _has_actual_storm_signal(line)
         if line_has_storm:
@@ -679,6 +694,19 @@ def parse_visual_context_cy(
         scene_focus = "inland"
     else:
         scene_focus = "island_wide"
+
+    # Free-text haze is legacy evidence. Keep it useful, but do not let inland
+    # Nicosia/Troodos fog leak into a clear coastal provider scene.
+    if visibility_condition != "clear":
+        scene_relevant_haze_lines = list(haze_lines)
+    elif scene_focus in {"coastal", "coast_inland_contrast"}:
+        scene_relevant_haze_lines = [*coastal_haze_lines, *generic_haze_lines]
+    elif scene_focus == "inland":
+        scene_relevant_haze_lines = [*inland_haze_lines, *generic_haze_lines]
+    else:
+        scene_relevant_haze_lines = [*generic_haze_lines] or list(haze_lines)
+    evidence["scene_relevant_haze_lines"] = list(scene_relevant_haze_lines)
+
     visual_forecast_period = _visual_forecast_period(
         resolved_post_type,
         visibility_forecast_window,
@@ -716,7 +744,7 @@ def parse_visual_context_cy(
         uv_level=uv_level,
         aqi_level=aqi_level,
         dust_hint="; ".join(dust_lines) if dust_lines else None,
-        visibility_haze=bool(haze_lines),
+        visibility_haze=bool(scene_relevant_haze_lines),
         visibility_condition=visibility_condition,
         visibility_forecast_window=visibility_forecast_window,
         current_visibility_m=visibility_metadata_values["current_visibility_m"],
