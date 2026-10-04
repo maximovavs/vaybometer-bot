@@ -327,6 +327,58 @@ def cy_visual_ordinary_haze_is_not_dust() -> None:
     assert "suspended dust" not in cues
 
 
+def cy_inland_only_haze_does_not_bleed_into_clear_coastal_scene() -> None:
+    text = """
+    Добрый вечер, Кипр. 2026-10-05
+    Ларнака: ясно, море спокойно.
+    Никосия: утром туман.
+    Троодос: местами дымка в горах.
+    """
+    visibility_metadata = {
+        "condition": "clear",
+        "weather_code": 1,
+        "weather_code_source": "hourly_tomorrow",
+    }
+    ctx = parse_visual_context_cy(text, post_type="evening", visibility_metadata=visibility_metadata)
+    scene = apply_visual_rules_cy(ctx)
+    prompt, _style = build_cyprus_scene_prompt(
+        text,
+        post_type="evening",
+        visibility_metadata=visibility_metadata,
+    )
+    assert ctx.coastal_focus is True
+    assert ctx.visibility_condition == "clear"
+    assert ctx.visibility_haze is False
+    assert scene.diagnostics["visibility_haze_rule"] is False
+    assert "Soft humid haze with reduced distant visibility" not in prompt
+    assert ctx.evidence["inland_haze_lines"]
+    assert ctx.evidence["scene_haze_lines"] == []
+
+
+def cy_coastal_haze_remains_scene_relevant_when_structured_visibility_is_clear() -> None:
+    text = """
+    Добрый вечер, Кипр. 2026-10-05
+    Ларнака: утром локальная дымка, море спокойно.
+    Никосия: ясно.
+    """
+    visibility_metadata = {
+        "condition": "clear",
+        "weather_code": 1,
+        "weather_code_source": "hourly_tomorrow",
+    }
+    ctx = parse_visual_context_cy(text, post_type="evening", visibility_metadata=visibility_metadata)
+    scene = apply_visual_rules_cy(ctx)
+    prompt, _style = build_cyprus_scene_prompt(
+        text,
+        post_type="evening",
+        visibility_metadata=visibility_metadata,
+    )
+    assert ctx.visibility_haze is True
+    assert scene.diagnostics["visibility_haze_rule"] is True
+    assert "Soft humid haze with reduced distant visibility" in prompt
+    assert ctx.evidence["coastal_haze_lines"]
+
+
 def cy_visual_dust_haze_is_dust() -> None:
     text = """
     Кипр: прогноз на завтра.
@@ -1744,6 +1796,8 @@ TESTS = [
     cy_visual_explicit_dry_storm_keeps_rain_false,
     cy_visual_precipitation_uncertainty_is_not_rain,
     cy_visual_ordinary_haze_is_not_dust,
+    cy_inland_only_haze_does_not_bleed_into_clear_coastal_scene,
+    cy_coastal_haze_remains_scene_relevant_when_structured_visibility_is_clear,
     cy_visual_dust_haze_is_dust,
     cy_no_baltic_leak,
     cy_prompt_morning_sanitized,
