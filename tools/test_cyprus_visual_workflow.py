@@ -398,6 +398,25 @@ def test_daily_visual_history_cache() -> None:
     print("PASS daily_visual_history_cache")
 
 
+
+def test_daily_production_text_idempotency_guard_is_trigger_agnostic() -> None:
+    daily = _read(DAILY)
+    source = (ROOT / "safe_test_post.py").read_text("utf-8")
+    start = source.index("def _cy_should_skip_production_text(")
+    end = source.index("_CY_LOCAL_RENDERER_NAME", start)
+    guard = source[start:end]
+    skip_idx = source.index("CY_TEXT_DELIVERY_SKIP_RECEIPT_EXISTS")
+    send_idx = source.index("_send_telegram_text_chunks(", skip_idx)
+    _assert("cy_text_guard_exists", "has_valid_cy_text_delivery(" in guard)
+    _assert("cy_text_guard_not_schedule_specific", "GITHUB_EVENT_NAME" not in guard)
+    _assert("cy_text_guard_used_before_send", skip_idx < send_idx)
+    _assert("workflow_dispatch_preserved", "workflow_dispatch:" in daily)
+    _assert("workflow_dispatch_morning_preserved", "run_morning:" in daily)
+    _assert("workflow_dispatch_evening_preserved", "run_evening:" in daily)
+    _assert("native_morning_cron_preserved", "cron: '0 1 * * *'" in daily)
+    _assert("native_evening_cron_preserved", "cron: '0 13 * * *'" in daily)
+    print("PASS daily_production_text_idempotency_guard_is_trigger_agnostic")
+
 def test_safe_test_visual_history_cache() -> None:
     text = _read(SAFE_TEST)
     _assert("safe_cache_action", "uses: actions/cache@v4" in text)
@@ -1104,6 +1123,7 @@ def test_legacy_post_cy_restores_env_after_exception() -> None:
 
 TESTS = [
     test_daily_visual_history_cache,
+    test_daily_production_text_idempotency_guard_is_trigger_agnostic,
     test_safe_test_visual_history_cache,
     test_prod_and_test_history_are_separated,
     test_evening_waits_for_morning_without_losing_dispatch_paths,
