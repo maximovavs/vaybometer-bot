@@ -557,6 +557,29 @@ def test_weekly_delta_thresholds_and_conflict_rules() -> None:
     conflict=snapshot_module.derive_delta(_snapshot_candidate_fixture(windy_days=2,gust_peak=16.0),_authoritative_snapshot(_previous_candidate(windy_days=4,gust_peak=12.0),403),region="cyprus")
     assert conflict["wind"]["direction"]=="mixed"
 
+def test_weekly_delta_terminal_threshold_matrix() -> None:
+    prev=_authoritative_snapshot(_previous_candidate())
+
+    # +1 rainy day is below the material-change threshold.
+    rain_neutral=snapshot_module.derive_delta(_snapshot_candidate_fixture(rainy_days=3),prev,region="cyprus")
+    assert "rain" not in rain_neutral
+
+    # Two fewer windy days is a deterministic calmer signal.
+    wind_count_prev=_authoritative_snapshot(_previous_candidate(windy_days=4,gust_peak=12.0),406)
+    wind_count=snapshot_module.derive_delta(_snapshot_candidate_fixture(windy_days=2,gust_peak=12.0),wind_count_prev,region="cyprus")
+    assert wind_count["wind"]["direction"]=="calmer"
+
+    # With the windy-day count unchanged, -3 m/s max gust is the fallback calmer threshold.
+    gust_prev=_authoritative_snapshot(_previous_candidate(windy_days=2,gust_peak=15.0),407)
+    gust=snapshot_module.derive_delta(_snapshot_candidate_fixture(windy_days=2,gust_peak=12.0),gust_prev,region="cyprus")
+    assert gust["wind"]["direction"]=="calmer"
+
+    # Complete sea-point coverage permits the <= -1.0 C colder direction.
+    sea_prev=_authoritative_snapshot(_previous_candidate(),408)
+    sea_colder=dict(_snapshot_candidate_fixture(),sea_mean_c=25.0,sea_min_c=25.0,sea_max_c=25.0)
+    assert snapshot_module.derive_delta(sea_colder,sea_prev,region="cyprus")["sea"]["direction"]=="colder"
+
+
 def test_weekly_sea_delta_requires_complete_point_coverage() -> None:
     prev=_authoritative_snapshot(_previous_candidate(),501); cur=_snapshot_candidate_fixture()
     assert snapshot_module.derive_delta(cur,prev,region="cyprus")["sea"]["direction"]=="warmer"
@@ -630,6 +653,7 @@ def main() -> None:
         test_weekly_snapshot_rejects_corrupt_wrong_region_week_and_incomplete,
         test_weekly_snapshot_selects_exact_previous_and_earliest_canonical,
         test_weekly_delta_thresholds_and_conflict_rules,
+        test_weekly_delta_terminal_threshold_matrix,
         test_weekly_sea_delta_requires_complete_point_coverage,
         test_weekly_incomplete_current_is_not_snapshot_authority,
         test_weekly_snapshot_authority_follows_production_text_success,
