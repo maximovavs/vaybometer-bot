@@ -1730,6 +1730,55 @@ def cy_macro_fields_are_absent_from_the_ordered_cache_key() -> None:
             assert decision.style_name.endswith(expected_digest)
 
 
+def cy_inland_only_haze_does_not_inject_coastal_reduced_visibility() -> None:
+    text = """
+    🌅 Кипр завтра (05.10.2026)
+    Ларнака: 30/22 °C • ясно • море спокойное.
+    Никосия: 31/20 °C • утром туман.
+    Тродос: 20/12 °C • локальная дымка.
+    """
+    metadata = {"condition": "clear"}
+    ctx = parse_visual_context_cy(text, post_type="evening", visibility_metadata=metadata)
+    decision = image_prompt_cy_scene.build_cyprus_visual_decision(
+        text, post_type="evening", visibility_metadata=metadata
+    )
+    assert ctx.visibility_condition == "clear"
+    assert ctx.visibility_haze is False
+    assert ctx.evidence["inland_haze_lines"]
+    assert not ctx.evidence["haze_lines"]
+    assert "Soft humid haze with reduced distant visibility" not in decision.prompt
+
+
+def cy_coastal_legacy_haze_survives_structured_clear() -> None:
+    text = """
+    🌅 Кипр завтра (05.10.2026)
+    Ларнака: 30/22 °C • локальная утренняя дымка у побережья.
+    Никосия: 31/20 °C • ясно.
+    """
+    ctx = parse_visual_context_cy(
+        text, post_type="evening", visibility_metadata={"condition": "clear"}
+    )
+    scene = apply_visual_rules_cy(ctx)
+    assert ctx.visibility_condition == "clear"
+    assert ctx.visibility_haze is True
+    assert ctx.evidence["haze_lines"]
+    assert "soft humid haze with reduced distant visibility" in _all_cues(scene)
+
+
+def cy_structured_visibility_remains_authoritative_after_haze_filter() -> None:
+    base = "🌅 Кипр завтра (05.10.2026)\nЛарнака: 30/22 °C • ясно."
+    fog = parse_visual_context_cy(
+        base, post_type="evening", visibility_metadata={"condition": "fog"}
+    )
+    dust = parse_visual_context_cy(
+        base, post_type="evening", visibility_metadata={"condition": "dust_haze"}
+    )
+    assert fog.visibility_condition == "fog"
+    assert dust.visibility_condition == "dust_haze"
+    assert "fog" in fog.hazards
+    assert "dust" in dust.hazards
+
+
 TESTS = [
     cy_morning_clear_high_uv,
     cy_morning_dust_haze,
@@ -1803,6 +1852,9 @@ TESTS = [
     cy_metadata_macro_matches_selected_scene,
     cy_cooldown_inputs_include_blocked_macro_families,
     cy_macro_fields_are_absent_from_the_ordered_cache_key,
+    cy_inland_only_haze_does_not_inject_coastal_reduced_visibility,
+    cy_coastal_legacy_haze_survives_structured_clear,
+    cy_structured_visibility_remains_authoritative_after_haze_filter,
 ]
 
 

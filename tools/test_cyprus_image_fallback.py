@@ -39,6 +39,7 @@ from PIL import Image, ImageDraw  # type: ignore  # noqa: E402
 import cyprus_visual_dedup  # noqa: E402
 import cyprus_image_recovery  # noqa: E402
 import daily_ai_presentation  # noqa: E402
+import cyprus_provider_image_qa as provider_image_qa  # noqa: E402
 from cyprus_image_recovery import (  # noqa: E402
     LOCAL_INFORMATIVE_COVER_BRANDING,
     LOCAL_INFORMATIVE_COVER_VERSION,
@@ -1382,6 +1383,7 @@ def _run_stage_failure_case(
     break_receipt: bool = False,
     break_local_renderer: bool = False,
     break_presentation: bool = False,
+    semantic_qa_mode: str = "accept",
 ) -> dict:
     """Drive _build_safe_test_image with one lifecycle stage failing; return diagnostics.
 
@@ -1406,6 +1408,8 @@ def _run_stage_failure_case(
     old_renderer = cyprus_image_recovery.render_local_informative_cover
     old_presentation = daily_ai_presentation.render_branded_ai_presentation
     old_atomic = safe_module._cy_write_json_atomic
+    old_semantic_eval = provider_image_qa.evaluate_provider_image_semantics
+    old_semantic_required = safe_module._cy_provider_semantic_qa_required
     old_prod_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
     old_test_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
 
@@ -1466,6 +1470,23 @@ def _run_stage_failure_case(
             raise RuntimeError("fixture receipt write failure")
         return old_atomic(path, payload)
 
+    qa_calls: list[str] = []
+
+    def _qa_payload(**overrides):
+        checks = {key: True for key in provider_image_qa.REQUIRED_CHECKS}
+        checks.update(overrides)
+        return {"confidence": "high", "checks": checks}
+
+    def fake_semantic_eval(*_args, **_kwargs):
+        qa_calls.append(semantic_qa_mode)
+        if semantic_qa_mode == "unavailable":
+            return provider_image_qa.unavailable_verdict("fixture_unavailable")
+        if semantic_qa_mode == "reject_first" and len(qa_calls) == 1:
+            return provider_image_qa.verdict_from_structured(
+                _qa_payload(scene_family_dominant=False), model="fixture"
+            )
+        return provider_image_qa.verdict_from_structured(_qa_payload(), model="fixture")
+
     try:
         os.environ.update(
             {
@@ -1482,6 +1503,8 @@ def _run_stage_failure_case(
         cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = test_history_path
         safe_module.TOKEN = "fixture-token"
         safe_module.Bot = FakeBot
+        provider_image_qa.evaluate_provider_image_semantics = fake_semantic_eval
+        safe_module._cy_provider_semantic_qa_required = lambda _module: True
         imagegen.generate_astro_image_outcome_with_exclusions = fake_outcome
         imagegen.configured_image_backends = lambda **_kwargs: {
             "configured_backends": ["pollinations"],
@@ -1521,6 +1544,8 @@ def _run_stage_failure_case(
         cyprus_image_recovery.render_local_informative_cover = old_renderer
         daily_ai_presentation.render_branded_ai_presentation = old_presentation
         safe_module._cy_write_json_atomic = old_atomic
+        provider_image_qa.evaluate_provider_image_semantics = old_semantic_eval
+        safe_module._cy_provider_semantic_qa_required = old_semantic_required
         imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
         imagegen.configured_image_backends = old_availability
         safe_module.TOKEN = old_token
@@ -1538,7 +1563,54 @@ def _run_stage_failure_case(
         "diagnostics": diagnostics,
         "receipt": receipt,
         "history_entries": history_entries,
+        "qa_calls": list(qa_calls),
     }
+
+
+def semantic_qa_structured_verdicts_are_deterministic() -> None:
+    def payload(**overrides):
+        checks = {key: True for key in provider_image_qa.REQUIRED_CHECKS}
+        checks.update(overrides)
+        return {"confidence": "high", "checks": checks}
+
+    compliant = provider_image_qa.verdict_from_structured(payload(), model="fixture")
+    missing_prom = provider_image_qa.verdict_from_structured(
+        payload(scene_family_present=False, scene_family_dominant=False), model="fixture"
+    )
+    tropical = provider_image_qa.verdict_from_structured(
+        payload(no_incompatible_tropical_jungle=False), model="fixture"
+    )
+    invalid = provider_image_qa.verdict_from_structured(
+        {"confidence": "high", "checks": {"scene_family_present": True}}, model="fixture"
+    )
+    assert compliant.accepted is True and compliant.status == "accepted"
+    assert missing_prom.accepted is False and "scene_family_dominant" in missing_prom.failed_checks
+    assert tropical.accepted is False and "no_incompatible_tropical_jungle" in tropical.failed_checks
+    assert invalid.accepted is False and invalid.status == "invalid_response"
+
+
+def semantic_qa_rejection_continues_provider_ladder() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        outcome = _run_stage_failure_case(Path(tmp_name), semantic_qa_mode="reject_first")
+    assert outcome["result"]["result"] == "sent"
+    assert outcome["result"]["backend"] == "pollinations"
+    assert len(outcome["qa_calls"]) == 2
+    attempts = outcome["diagnostics"]["selected_scene_attempts"]
+    assert attempts[0]["semantic_qa"]["status"] == "rejected"
+    assert attempts[-1]["semantic_qa"]["status"] == "accepted"
+    assert outcome["diagnostics"]["semantic_qa_rejections"] == 1
+
+
+def semantic_qa_unavailable_routes_once_to_validated_local_fallback() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        outcome = _run_stage_failure_case(Path(tmp_name), semantic_qa_mode="unavailable")
+    assert outcome["result"]["result"] == "sent"
+    assert outcome["result"]["backend"] == "local_informative_cover"
+    assert outcome["diagnostics"]["actual_provider"] == ""
+    assert outcome["diagnostics"]["actual_renderer"] == "local_informative_cover"
+    assert outcome["diagnostics"]["semantic_qa_unavailable"] is True
+    assert outcome["diagnostics"]["semantic_qa_calls"] == 1
+    assert outcome["qa_calls"] == ["unavailable"]
 
 
 def error_stage_reports_the_failing_lifecycle_stage() -> None:
@@ -1703,6 +1775,9 @@ def ai_presentation_failure_falls_through_to_existing_local_cover() -> None:
 
 def main() -> None:
     checks = (
+        semantic_qa_structured_verdicts_are_deterministic,
+        semantic_qa_rejection_continues_provider_ladder,
+        semantic_qa_unavailable_routes_once_to_validated_local_fallback,
         ai_primary_presentation_keeps_raw_history_and_published_receipt_separate,
         ai_presentation_failure_falls_through_to_existing_local_cover,
         forecast_threshold_warning_copy_is_provenance_safe,

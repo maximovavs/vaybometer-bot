@@ -1800,6 +1800,7 @@ _CY_ERROR_STAGES = (
     "decision",
     "provider_generation",
     "provider_validation",
+    "semantic_qa",
     "dedup",
     "fallback_render",
     "presentation_render",
@@ -2023,6 +2024,12 @@ def _cy_remove_broken_image(path: Path | None) -> None:
         pass
 
 
+def _cy_provider_semantic_qa_required(imagegen_module: object) -> bool:
+    """Run semantic QA only for the real provider stack after its content guard."""
+    validator = getattr(imagegen_module, "_validate_generated_image", None)
+    return bool(callable(validator) and getattr(validator, "_cyprus_content_guard_installed", False))
+
+
 async def _build_safe_test_image(
     final_text: str,
     mode: str,
@@ -2111,6 +2118,7 @@ async def _build_safe_test_image(
             write_provider_health,
         )
         import daily_ai_presentation as ai_presentation
+        import cyprus_provider_image_qa as provider_semantic_qa
         from cyprus_visual_policy import (
             CYPRUS_MACRO_LOCAL_COVER,
             blocked_macro_families,
@@ -2218,6 +2226,11 @@ async def _build_safe_test_image(
         local_render_failed = False
         last_failure_stage = ""
         horde_credential_state: dict[str, object] = {}
+        semantic_qa_required = _cy_provider_semantic_qa_required(imagegen_module)
+        semantic_qa_calls = 0
+        semantic_qa_rejections = 0
+        semantic_qa_unavailable = False
+        semantic_qa_last_status = "not_required" if not semantic_qa_required else "pending"
 
         def _remaining_provider_calls() -> dict[str, int]:
             return {
@@ -2251,6 +2264,11 @@ async def _build_safe_test_image(
                 "provider_health_path": provider_health_file,
                 "local_fallback_generated": local_fallback_generated,
                 "local_render_failed": local_render_failed,
+                "semantic_qa_required": semantic_qa_required,
+                "semantic_qa_calls": semantic_qa_calls,
+                "semantic_qa_rejections": semantic_qa_rejections,
+                "semantic_qa_unavailable": semantic_qa_unavailable,
+                "semantic_qa_last_status": semantic_qa_last_status,
                 "selected_backend": selected_backend,
                 "final_reason": final_reason,
             }
@@ -2533,6 +2551,90 @@ async def _build_safe_test_image(
                 continue
 
             valid_candidate_count += 1
+
+            if semantic_qa_required:
+                lifecycle_stage = "semantic_qa"
+                semantic_qa_calls += 1
+                try:
+                    qa_verdict = provider_semantic_qa.evaluate_provider_image_semantics(
+                        image_path,
+                        requested_scene_family=str(metadata.get("selected_scene") or ""),
+                        requested_composition=str(metadata.get("composition") or ""),
+                        visual_context=canonical_visual_context,
+                    )
+                except Exception as exc:
+                    qa_verdict = provider_semantic_qa.unavailable_verdict(
+                        f"semantic_qa_error:{exc.__class__.__name__}"
+                    )
+                qa_payload = qa_verdict.to_dict()
+                semantic_qa_last_status = str(qa_payload.get("status") or "invalid_response")
+                if not qa_verdict.accepted:
+                    is_unavailable = semantic_qa_last_status in {"unavailable", "invalid_response", "error"}
+                    if is_unavailable:
+                        semantic_qa_unavailable = True
+                        last_failure_stage = "semantic_qa"
+                        backend_generation_calls = backend_call_limit
+                        stop_generation = True
+                    else:
+                        semantic_qa_rejections += 1
+                    qa_reason = re.sub(
+                        r"[^a-zA-Z0-9_.-]+", "_",
+                        str(qa_payload.get("reason") or semantic_qa_last_status),
+                    )[:80]
+                    attempts.append({
+                        "attempt": generation_attempt + 1,
+                        "variation_attempt": variation_attempt,
+                        "selected_scene": metadata["selected_scene"],
+                        "composition": metadata.get("composition", ""),
+                        "visual_archetype": metadata.get("visual_archetype", ""),
+                        "scene_selection_mode": metadata.get("scene_selection_mode", ""),
+                        "composition_selection_mode": metadata.get("composition_selection_mode", ""),
+                        "style_name": style_name,
+                        "cache_key": cache_key,
+                        "cache_status": cache_state,
+                        "backend": backend,
+                        "backend_attempts": backend_attempts,
+                        "backend_call_count": backend_generation_calls,
+                        "backend_call_limit": backend_call_limit,
+                        "backend_excluded": sorted(excluded_backends),
+                        "image_path": str(image_path),
+                        "image_bytes": image_size,
+                        "semantic_qa": qa_payload,
+                        "dedup_reason": "not_evaluated_after_semantic_qa",
+                    })
+                    try:
+                        quarantine = image_path.with_suffix(
+                            image_path.suffix + f".rejected.semantic_qa.{qa_reason}"
+                        )
+                        image_path.replace(quarantine)
+                        attempts[-1]["quarantined_path"] = str(quarantine)
+                    except Exception as exc:
+                        logging.warning("Cyprus semantic-QA quarantine failed: %s", exc)
+                    logging.warning(
+                        "Cyprus provider image semantic QA rejected candidate: status=%s reason=%s scene=%s",
+                        semantic_qa_last_status,
+                        qa_payload.get("reason"),
+                        metadata["selected_scene"],
+                    )
+                    generation_attempt += 1
+                    variation_attempt += 1
+                    lifecycle_stage = "orchestration"
+                    if stop_generation:
+                        break
+                    continue
+                attempts_qa = qa_payload
+                lifecycle_stage = "orchestration"
+            else:
+                attempts_qa = {
+                    "accepted": True,
+                    "status": "not_required",
+                    "reason": "non_provider_test_stack",
+                    "checks": {},
+                    "failed_checks": [],
+                    "confidence": "",
+                    "model": "",
+                }
+
             lifecycle_stage = "dedup"
             duplicate_result = evaluate_cyprus_visual_candidate(
                 image_path,
@@ -2637,6 +2739,7 @@ async def _build_safe_test_image(
                     "phash": duplicate_result.phash,
                     "min_distance": duplicate_result.min_distance,
                     "min_phash_distance": duplicate_result.min_phash_distance,
+                    "semantic_qa": attempts_qa,
                 }
             )
 

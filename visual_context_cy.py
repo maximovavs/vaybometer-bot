@@ -286,6 +286,27 @@ def _has_visibility_haze(line: str) -> bool:
     return bool(_HAZE_RE.search(str(line or ""))) and not _has_dust_signal(line)
 
 
+def _is_scene_relevant_legacy_haze(
+    line: str,
+    *,
+    cities: list[str],
+    is_coastal: bool,
+) -> bool:
+    """Keep free-text haze global only when it can describe the selected island/coast scene.
+
+    Structured visibility remains authoritative elsewhere. This filter is only
+    for legacy/free-text haze evidence: a named inland-only Nicosia/Troodos
+    line must not make an otherwise clear coastal scene look foggy.
+    """
+    if not _has_visibility_haze(line):
+        return False
+    if is_coastal:
+        return True
+    if cities:
+        return bool(set(cities) & _COASTAL_CITIES)
+    return True
+
+
 def _visibility_facts(lines: list[str]) -> dict[str, Any]:
     visibility_lines = [line for line in lines if line.startswith("🌫 Видимость:")]
     if not visibility_lines:
@@ -394,6 +415,7 @@ def parse_visual_context_cy(
         "uv_candidates": [],
         "dust_lines": [],
         "haze_lines": [],
+        "inland_haze_lines": [],
         "visibility_lines": [],
         "precipitation_lines": [],
         "coastal_precipitation_lines": [],
@@ -528,7 +550,12 @@ def parse_visual_context_cy(
 
         line_has_precipitation = _has_actual_precipitation(line)
         line_has_dust = _has_dust_signal(line)
-        line_has_haze = _has_visibility_haze(line)
+        raw_line_has_haze = _has_visibility_haze(line)
+        line_has_haze = _is_scene_relevant_legacy_haze(
+            line,
+            cities=cities,
+            is_coastal=is_coastal,
+        )
         is_troodos_or_mountain = "troodos" in cities or any(x in low for x in ("тродос", "горы", "горн", "mountain"))
 
         if line_has_precipitation:
@@ -550,6 +577,8 @@ def parse_visual_context_cy(
         elif line_has_haze:
             haze_lines.append(line)
             evidence["haze_lines"].append(line)
+        elif raw_line_has_haze:
+            evidence["inland_haze_lines"].append(line)
 
         line_has_storm = _has_actual_storm_signal(line)
         if line_has_storm:
