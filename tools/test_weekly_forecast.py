@@ -185,16 +185,32 @@ def test_weekly_forecast_keeps_stronger_kite_warning_for_high_gusts() -> None:
 
 
 def test_weekly_weather_fetches_exact_island_points() -> None:
-    calls: list[tuple[float, float]] = []
+    calls: list[tuple[float, float, str, str, str]] = []
 
-    def fake_get_weather(lat: float, lon: float) -> dict:
-        calls.append((lat, lon))
+    def fake_get_weekly_weather(
+        lat: float,
+        lon: float,
+        *,
+        start_date: str,
+        end_date: str,
+        tz_name: str,
+    ) -> dict:
+        calls.append((lat, lon, start_date, end_date, tz_name))
         return WEATHER
 
     weather_module = ModuleType("weather")
-    weather_module.get_weather = fake_get_weather
-    payload = _with_module("weather", weather_module, _fetch_weather)
-    assert calls == [coords for _city, coords in EXPECTED_ISLAND_POINTS]
+    weather_module.get_weekly_weather = fake_get_weekly_weather
+    payload = _with_module(
+        "weather",
+        weather_module,
+        lambda: _fetch_weather(date(2026, 7, 1)),
+    )
+    assert [(lat, lon) for lat, lon, _start, _end, _tz in calls] == [
+        coords for _city, coords in EXPECTED_ISLAND_POINTS
+    ]
+    assert all(start == "2026-07-01" for _lat, _lon, start, _end, _tz in calls)
+    assert all(end == "2026-07-07" for _lat, _lon, _start, end, _tz in calls)
+    assert all(tz == "Asia/Nicosia" for _lat, _lon, _start, _end, tz in calls)
     assert list(payload) == [city for city, _coords in EXPECTED_ISLAND_POINTS]
 
 
