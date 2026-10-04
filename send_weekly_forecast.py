@@ -17,8 +17,16 @@ from typing import Any
 from editorial_voice import build_weekly_meaning
 from settings_cy import INLAND_CITIES, MARINE_CITIES
 from weekly_cover import render_weekly_cover
+from weekly_snapshot import (
+    build_snapshot_candidate as _make_weekly_snapshot,
+    derive_delta_lines,
+    finalize_snapshot,
+    load_snapshot_file,
+    write_snapshot_atomic,
+)
 
 REGION_NAME = "Кипр"
+SNAPSHOT_REGION = "cyprus"
 TZ_STR = os.getenv("TZ", "Asia/Nicosia")
 ISLAND_POINTS = [*MARINE_CITIES.items(), *INLAND_CITIES.items()]
 SEA_POINTS = list(MARINE_CITIES.items())
@@ -269,6 +277,34 @@ def _weather_metrics_for_payload(weather_payload: dict[str, Any], start: date) -
     return metrics
 
 
+def _snapshot_weather_days(weather_payload: dict[str, Any], start: date) -> list[dict[str, Any]]:
+    payloads = _weather_payloads(weather_payload)
+    if len(payloads) != len(ISLAND_POINTS):
+        return []
+    city_rows = [_daily_rows(payload, start) for payload in payloads]
+    result: list[dict[str, Any]] = []
+    for target in _week_dates(start):
+        matches = [next((row for row in rows if row.get("date") == target), None) for rows in city_rows]
+        if any(row is None for row in matches):
+            return []
+        rows = [row for row in matches if isinstance(row, dict)]
+        def complete_values(key: str) -> list[float] | None:
+            values=[_num(row.get(key)) for row in rows]
+            return [float(value) for value in values] if all(value is not None for value in values) else None
+        highs=complete_values("tmax"); lows=complete_values("tmin"); winds=complete_values("wind"); gusts=complete_values("gust")
+        rain_known=all(_num(row.get("rain_prob")) is not None or _num(row.get("code")) is not None for row in rows)
+        rainy=(any((_num(row.get("rain_prob")) or 0)>=40 or int(_num(row.get("code")) or -1) in RAIN_CODES for row in rows) if rain_known else None)
+        result.append({"date":target.isoformat(),"tmax":max(highs) if highs else None,"tmin":min(lows) if lows else None,
+            "wind":max(winds) if winds else None,"gust":max(gusts) if gusts else None,"rainy":rainy,"precip_sum":None})
+    return result
+
+def _build_snapshot_candidate(start: date, weather_payload: dict[str, Any], sea_temps: list[float]) -> dict[str, Any] | None:
+    metrics=_weather_metrics_for_payload(weather_payload,start)
+    return _make_weekly_snapshot(region=SNAPSHOT_REGION,week_start=start,weather_days=_snapshot_weather_days(weather_payload,start),
+        weather_coverage_days=int(metrics.get("coverage_days") or 0),weather_coverage_complete=metrics.get("coverage_complete") is True,
+        sea_temps=sea_temps,expected_sea_samples=len(SEA_POINTS))
+
+
 def _aggregate_air_data(air_data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(air_data, dict):
         return {}
@@ -502,6 +538,7 @@ def build_weekly_forecast(
     kp_tuple: tuple[Any, ...] | None = None,
     lunar_data: dict[str, Any] | None = None,
     astro_events_paths: list[Path] | None = None,
+    delta_lines: list[str] | None = None,
 ) -> str:
     start = start or _today()
     weather_payload = weather_payload if weather_payload is not None else _fetch_weather(start)
@@ -519,6 +556,7 @@ def build_weekly_forecast(
     plan = _plan_lines(decision_metrics, poor_air, elevated_kp, lunar)
     water_sport = _water_sport_lines(decision_metrics)
     weekly_meaning = build_weekly_meaning(REGION_NAME, start, decision_metrics)
+    delta_section = ["", "↔️ К прошлому недельному прогнозу", *delta_lines] if delta_lines else []
 
     lines = [
         f"🗓 Вайб недели: {_fmt_week_range(start)}",
@@ -546,6 +584,7 @@ def build_weekly_forecast(
         "",
         "🌙 Луна и астроритм (интерпретация)",
         *lunar,
+        *delta_section,
         "",
         "✅ Как прожить неделю",
         *plan,
@@ -558,51 +597,54 @@ def build_weekly_forecast(
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
-async def _send(text: str, chat_id: str, start: date) -> None:
+async def _send(
+    text: str, chat_id: str, start: date, *, snapshot_candidate: dict[str, Any] | None = None,
+    production_snapshot_out: Path | None = None, production_chat_id: str = "",
+) -> int | None:
     from telegram import Bot, constants  # type: ignore
-
-    token = os.getenv("TELEGRAM_TOKEN", "").strip()
-    if not token:
-        raise SystemExit("TELEGRAM_TOKEN is not set")
-    destination = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
-    bot = Bot(token=token)
+    token=os.getenv("TELEGRAM_TOKEN","").strip()
+    if not token: raise SystemExit("TELEGRAM_TOKEN is not set")
+    destination=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
+    bot=Bot(token=token)
     try:
-        cover = render_weekly_cover(text, start=start, output_path=Path("weekly_cover.png"))
+        cover=render_weekly_cover(text,start=start,output_path=Path("weekly_cover.png"))
         with Path(cover["path"]).open("rb") as photo:
-            await bot.send_photo(
-                chat_id=destination,
-                photo=photo,
-                caption=f"Вайб недели: {_fmt_week_range(start)}",
-            )
+            await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
     except Exception as exc:
-        print(f"Weekly cover unavailable; text will still be sent: {type(exc).__name__}: {exc}", file=sys.stderr)
-    await bot.send_message(
-        chat_id=destination,
-        text=text,
-        parse_mode=constants.ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
-
+        print(f"Weekly cover unavailable; text will still be sent: {type(exc).__name__}: {exc}",file=sys.stderr)
+    message=await bot.send_message(chat_id=destination,text=text,parse_mode=constants.ParseMode.HTML,disable_web_page_preview=True)
+    message_id=getattr(message,"message_id",None)
+    if (snapshot_candidate is not None and production_snapshot_out is not None and str(production_chat_id).strip()
+        and str(chat_id)==str(production_chat_id) and isinstance(message_id,int) and not isinstance(message_id,bool) and message_id>0):
+        write_snapshot_atomic(production_snapshot_out,finalize_snapshot(snapshot_candidate,message_id))
+        print(f"WEEKLY_SNAPSHOT: {production_snapshot_out}")
+    return message_id if isinstance(message_id,int) and not isinstance(message_id,bool) else None
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Build/send weekly Cyprus VayboMeter forecast")
-    parser.add_argument("--date", default="", help="Week start date, YYYY-MM-DD. Defaults to today.")
-    parser.add_argument("--send", action="store_true")
-    parser.add_argument("--chat-id", default=os.getenv("CHANNEL_ID", ""))
-    parser.add_argument("--cover-out", default="", help="Optional path for a deterministic weekly cover preview.")
-    args = parser.parse_args()
-
-    start = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else _today()
-    text = build_weekly_forecast(start)
+    parser=argparse.ArgumentParser(description="Build/send weekly Cyprus VayboMeter forecast")
+    parser.add_argument("--date",default="",help="Week start date, YYYY-MM-DD. Defaults to today.")
+    parser.add_argument("--send",action="store_true")
+    parser.add_argument("--chat-id",default=os.getenv("CHANNEL_ID",""))
+    parser.add_argument("--cover-out",default="",help="Optional path for a deterministic weekly cover preview.")
+    parser.add_argument("--production-snapshot-out",default="",help="Write authoritative WeeklySnapshot only after successful production text send.")
+    args=parser.parse_args()
+    start=datetime.strptime(args.date,"%Y-%m-%d").date() if args.date else _today()
+    weather_payload=_fetch_weather(start); air_data=_fetch_air(); sea_temps=_fetch_sea_temps(); kp_tuple=_fetch_kp(); lunar_data=_load_lunar_calendar()
+    candidate=_build_snapshot_candidate(start,weather_payload,sea_temps)
+    previous=load_snapshot_file(Path(os.getenv("WEEKLY_PREVIOUS_SNAPSHOT","weekly_snapshot_state/previous.json")),
+        region=SNAPSHOT_REGION,expected_week_start=(start-timedelta(days=7)).isoformat())
+    delta_lines=derive_delta_lines(candidate,previous,region=SNAPSHOT_REGION) if candidate else []
+    text=build_weekly_forecast(start,weather_payload=weather_payload,air_data=air_data,sea_temps=sea_temps,kp_tuple=kp_tuple,
+        lunar_data=lunar_data,delta_lines=delta_lines)
     print(text)
     if args.cover_out:
-        metadata = render_weekly_cover(text, start=start, output_path=args.cover_out)
-        print("WEEKLY_COVER: " + json.dumps(metadata, ensure_ascii=False, sort_keys=True))
+        metadata=render_weekly_cover(text,start=start,output_path=args.cover_out)
+        print("WEEKLY_COVER: "+json.dumps(metadata,ensure_ascii=False,sort_keys=True))
     if args.send:
-        if not args.chat_id:
-            raise SystemExit("--chat-id or CHANNEL_ID is required for sending")
-        await _send(text, args.chat_id, start)
+        if not args.chat_id: raise SystemExit("--chat-id or CHANNEL_ID is required for sending")
+        await _send(text,args.chat_id,start,snapshot_candidate=candidate,
+            production_snapshot_out=Path(args.production_snapshot_out) if args.production_snapshot_out else None,
+            production_chat_id=os.getenv("CHANNEL_ID",""))
 
-
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
