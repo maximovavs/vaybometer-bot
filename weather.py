@@ -36,6 +36,7 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -411,6 +412,127 @@ def _is_error_payload(obj: Any) -> bool:
     return False
 
 
+WEEKLY_DAILY_FIELDS = [
+    "temperature_2m_max",
+    "temperature_2m_min",
+    "weather_code",
+    "precipitation_probability_max",
+    "precipitation_sum",
+    "wind_speed_10m_max",
+    "wind_gusts_10m_max",
+    "uv_index_max",
+]
+
+
+def _weekly_expected_dates(start_date: str, end_date: str) -> list[str]:
+    try:
+        start = date.fromisoformat(str(start_date)[:10])
+        end = date.fromisoformat(str(end_date)[:10])
+    except (TypeError, ValueError):
+        return []
+    if (end - start).days != 6:
+        return []
+    return [(start + timedelta(days=offset)).isoformat() for offset in range(7)]
+
+
+def _annotate_weekly_payload(
+    payload: Dict[str, Any],
+    *,
+    start_date: str,
+    end_date: str,
+    provider: str = "open-meteo",
+) -> Dict[str, Any]:
+    out = dict(payload) if isinstance(payload, dict) else {}
+    expected = _weekly_expected_dates(start_date, end_date)
+    daily = out.get("daily") if isinstance(out.get("daily"), dict) else {}
+    raw_dates = daily.get("time") or daily.get("date") or []
+    returned_dates = [str(item)[:10] for item in raw_dates if item is not None] if isinstance(raw_dates, list) else []
+    expected_set = set(expected)
+    coverage_days = len(expected_set.intersection(returned_dates))
+    coverage_complete = (
+        len(expected) == 7
+        and len(returned_dates) == 7
+        and len(set(returned_dates)) == 7
+        and returned_dates == expected
+    )
+    out["_weekly_meta"] = {
+        "provider": provider,
+        "requested_start": str(start_date)[:10],
+        "requested_end": str(end_date)[:10],
+        "returned_dates": returned_dates,
+        "coverage_days": coverage_days,
+        "coverage_complete": coverage_complete,
+        "weather_code_system": "wmo",
+        "source_daily_units": dict(out.get("daily_units") or {}),
+        "normalized_units": {
+            "temperature": "celsius",
+            "wind_speed": "m/s",
+            "precipitation": "mm",
+            "precipitation_probability": "%",
+        },
+    }
+    return out
+
+
+def get_weekly_weather(
+    lat: float,
+    lon: float,
+    *,
+    start_date: str,
+    end_date: str,
+    tz_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Fetch an exact weekly Open-Meteo range with explicit normalized units.
+
+    This helper is intentionally separate from get_weather() so daily-post
+    provider/cache semantics remain unchanged.
+    """
+    expected = _weekly_expected_dates(start_date, end_date)
+    if len(expected) != 7:
+        return _annotate_weekly_payload(
+            {},
+            start_date=start_date,
+            end_date=end_date,
+            provider="open-meteo",
+        )
+
+    tz_name_eff = (tz_name or TZ_DEFAULT or "auto").strip() or "auto"
+    params: Dict[str, Any] = {
+        "latitude": float(lat),
+        "longitude": float(lon),
+        "timezone": tz_name_eff,
+        "start_date": expected[0],
+        "end_date": expected[-1],
+        "temperature_unit": "celsius",
+        "wind_speed_unit": "ms",
+        "precipitation_unit": "mm",
+        "daily": ",".join(WEEKLY_DAILY_FIELDS),
+    }
+    url = f"{OPEN_METEO_URL}?{urllib.parse.urlencode(params, safe=',:')}"
+    tries = 1 + max(0, RETRIES)
+    for attempt in range(tries):
+        try:
+            obj = _http_get_json(url, timeout_sec=TIMEOUT_SEC)
+            if _is_error_payload(obj):
+                break
+            normalized = _ensure_aliases(_normalize_times(obj, tz_name_eff))
+            return _annotate_weekly_payload(
+                normalized,
+                start_date=expected[0],
+                end_date=expected[-1],
+                provider="open-meteo",
+            )
+        except Exception:
+            if attempt < tries - 1:
+                time.sleep(BACKOFF ** attempt)
+    return _annotate_weekly_payload(
+        {},
+        start_date=expected[0],
+        end_date=expected[-1],
+        provider="open-meteo",
+    )
+
+
 # ---------- Public API ----------
 def get_weather(
     lat: float,
@@ -642,6 +764,7 @@ __all__ = [
     "fetch_tomorrow_temps",
     "get_cyprus_visibility_context",
     "get_weather",
+    "get_weekly_weather",
     "load_cyprus_visibility_diagnostics",
     "save_cyprus_visibility_diagnostics",
     "visibility_air_penalty",
