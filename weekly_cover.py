@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-RENDERER_VERSION = "cy_weekly_cover_v1"
+RENDERER_VERSION = "cy_weekly_cover_v2_portrait"
 BRANDING = "VAYBOMETER · CYPRUS"
 TITLE = "ВАЙБ НЕДЕЛИ"
 
@@ -89,7 +89,7 @@ def render_weekly_cover(text: str, *, start: date, output_path: str | Path) -> d
         "deep_blue": ((17, 46, 78), (62, 133, 157), (228, 214, 171)),
     }
     top, middle, bottom = palettes[variant]
-    width = height = 1080
+    width, height = 1080, 1350
     image = Image.new("RGB", (width, height), top)
     draw = ImageDraw.Draw(image)
     for y in range(height):
@@ -103,8 +103,8 @@ def render_weekly_cover(text: str, *, start: date, output_path: str | Path) -> d
         draw.line((0, y, width, y), fill=color)
 
     for offset in range(4):
-        y = 875 + offset * 30
-        draw.arc((70, y - 40, 1010, y + 60), 195, 345, fill=(235, 246, 243), width=5)
+        y = 1150 + offset * 38
+        draw.arc((70, y - 42, 1010, y + 62), 195, 345, fill=(235, 246, 243), width=5)
 
     draw.rounded_rectangle((64, 58, 1016, 300), radius=42, fill=(8, 30, 45), outline=(235, 243, 240), width=3)
     draw.text((105, 94), BRANDING, font=_font(27, bold=True), fill=(185, 220, 229))
@@ -116,18 +116,18 @@ def render_weekly_cover(text: str, *, start: date, output_path: str | Path) -> d
         ("ПОГОДА", weather_fact),
         ("МОРЕ", sea_fact),
     )
-    y = 350
+    y = 370
     body_font = _font(34, bold=True)
     label_font = _font(24, bold=True)
     for label, fact in cards:
-        draw.rounded_rectangle((88, y, 992, y + 150), radius=26, fill=(249, 250, 247), outline=(225, 234, 232), width=2)
-        draw.text((125, y + 20), label, font=label_font, fill=(31, 92, 111))
+        draw.rounded_rectangle((88, y, 992, y + 190), radius=26, fill=(249, 250, 247), outline=(225, 234, 232), width=2)
+        draw.text((125, y + 24), label, font=label_font, fill=(31, 92, 111))
         lines = _wrap(draw, fact, body_font, 815, 2)
-        line_y = y + 58
+        line_y = y + 72
         for line in lines:
             draw.text((125, line_y), line, font=body_font, fill=(17, 42, 58))
-            line_y += 42
-        y += 172
+            line_y += 46
+        y += 220
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
