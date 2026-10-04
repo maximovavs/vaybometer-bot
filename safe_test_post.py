@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover - local lightweight telegram module fallba
     NetworkError = RetryAfter = ServerError = TimedOut = None  # type: ignore[assignment]
 
 from editorial_voice import build_evening_human_line, build_morning_human_line
+from cyprus_provider_image_qa import inspect_cyprus_provider_image as _cy_provider_image_qa
 from post_common import build_message, sup_safety_level
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
 from visibility_context import (
@@ -2032,6 +2033,7 @@ async def _build_safe_test_image(
     send_image_to_chat: bool,
     image_chat_id: int | None,
     image_only_recovery: bool = False,
+    provider_image_qa_fn=None,
 ) -> dict[str, object]:
     if send_image_to_test and send_image_to_chat:
         raise SystemExit(
@@ -2217,6 +2219,7 @@ async def _build_safe_test_image(
         local_fallback_generated = False
         local_render_failed = False
         last_failure_stage = ""
+        semantic_qa_force_fallback = False
         horde_credential_state: dict[str, object] = {}
 
         def _remaining_provider_calls() -> dict[str, int]:
@@ -2533,6 +2536,104 @@ async def _build_safe_test_image(
                 continue
 
             valid_candidate_count += 1
+            if mode == "evening" and image_chat is not None:
+                lifecycle_stage = "semantic_qa"
+                qa_fn = provider_image_qa_fn or _cy_provider_image_qa
+                try:
+                    semantic_qa = dict(
+                        qa_fn(
+                            image_path,
+                            metadata=metadata,
+                            visual_context=canonical_visual_context,
+                        )
+                    )
+                except Exception as exc:
+                    semantic_qa = {
+                        "available": False,
+                        "accepted": False,
+                        "status": "unavailable",
+                        "reason": "qa_exception",
+                        "confidence": "none",
+                        "error_type": exc.__class__.__name__,
+                    }
+                lifecycle_stage = "orchestration"
+                qa_available = semantic_qa.get("available") is True
+                qa_accepted = semantic_qa.get("accepted") is True
+                print(
+                    "CY_SAFE_IMAGE_SEMANTIC_QA: "
+                    f"available={str(qa_available).lower()}; "
+                    f"accepted={str(qa_accepted).lower()}; "
+                    f"status={semantic_qa.get('status', '')}; "
+                    f"reason={semantic_qa.get('reason', '')}; "
+                    f"confidence={semantic_qa.get('confidence', '')}"
+                )
+                if not qa_accepted:
+                    candidate_attempt = generation_attempt + 1
+                    generation_attempt += 1
+                    attempts.append(
+                        {
+                            "attempt": candidate_attempt,
+                            "variation_attempt": variation_attempt,
+                            "selected_scene": metadata["selected_scene"],
+                            "composition": metadata.get("composition", ""),
+                            "visual_archetype": metadata.get("visual_archetype", ""),
+                            "scene_selection_mode": metadata.get("scene_selection_mode", ""),
+                            "composition_selection_mode": metadata.get("composition_selection_mode", ""),
+                            "style_name": style_name,
+                            "cache_key": cache_key,
+                            "cache_status": cache_state,
+                            "backend": backend,
+                            "backend_attempts": backend_attempts,
+                            "backend_call_count": backend_generation_calls,
+                            "backend_call_limit": backend_call_limit,
+                            "backend_excluded": sorted(excluded_backends),
+                            "image_path": str(image_path),
+                            "image_bytes": image_size,
+                            "semantic_qa": semantic_qa,
+                            "dedup_reason": "semantic_qa_rejected",
+                        }
+                    )
+                    try:
+                        quarantine_reason = str(semantic_qa.get("reason") or "semantic_qa")
+                        quarantine = image_path.with_suffix(
+                            image_path.suffix + f".rejected.semantic_qa_{quarantine_reason}"
+                        )
+                        image_path.replace(quarantine)
+                        attempts[-1]["quarantined_path"] = str(quarantine)
+                    except Exception as exc:
+                        logging.warning("Cyprus semantic-QA quarantine failed: %s", exc)
+
+                    if not qa_available or str(semantic_qa.get("status") or "") in {
+                        "unavailable",
+                        "invalid_response",
+                        "indeterminate",
+                    }:
+                        semantic_qa_force_fallback = True
+                        last_failure_stage = "semantic_qa"
+                        logging.warning(
+                            "Cyprus provider semantic QA unavailable/indeterminate; "
+                            "forcing validated local fallback."
+                        )
+                        break
+
+                    logging.warning(
+                        "Cyprus provider candidate rejected by semantic QA: "
+                        "reason=%s scene=%s attempt=%s",
+                        semantic_qa.get("reason", ""),
+                        metadata["selected_scene"],
+                        variation_attempt,
+                    )
+                    variation_attempt += 1
+                    continue
+                attempts_semantic_qa = semantic_qa
+            else:
+                attempts_semantic_qa = {
+                    "available": None,
+                    "accepted": None,
+                    "status": "not_required",
+                    "reason": "non_evening_or_generate_only",
+                }
+
             lifecycle_stage = "dedup"
             duplicate_result = evaluate_cyprus_visual_candidate(
                 image_path,
@@ -2637,6 +2738,7 @@ async def _build_safe_test_image(
                     "phash": duplicate_result.phash,
                     "min_distance": duplicate_result.min_distance,
                     "min_phash_distance": duplicate_result.min_phash_distance,
+                    "semantic_qa": attempts_semantic_qa,
                 }
             )
 
@@ -2748,7 +2850,9 @@ async def _build_safe_test_image(
 
         if selected_candidate is None:
             network_backends_exhausted = bool(
-                _network_backends_exhausted() or backend_generation_calls >= backend_call_limit
+                semantic_qa_force_fallback
+                or _network_backends_exhausted()
+                or backend_generation_calls >= backend_call_limit
             )
             valid_image_receipt = bool(
                 target_date_for_diag != "undated"

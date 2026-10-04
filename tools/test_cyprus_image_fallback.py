@@ -52,7 +52,26 @@ from cyprus_image_recovery import (  # noqa: E402
 )
 import safe_test_post as safe_module  # noqa: E402
 import world_en.imagegen as imagegen  # noqa: E402
+from cyprus_provider_image_qa import evaluate_structured_verdict, inspect_cyprus_provider_image  # noqa: E402
 
+
+
+
+def _semantic_qa_accept(*_args, **_kwargs) -> dict[str, object]:
+    return {
+        "available": True,
+        "accepted": True,
+        "status": "accepted",
+        "reason": "all_required_checks_passed",
+        "confidence": "high",
+        "checks": {},
+        "model": "fixture",
+    }
+
+
+# Existing image-flow regressions exercise provider/dedup/presentation behavior,
+# not an external vision service. Keep them offline and explicitly approved.
+safe_module._cy_provider_image_qa = _semantic_qa_accept
 
 MESSAGE = """🌅 Кипр сегодня (15.07.2026)
 ✨ VayboMeter: 6.8/10 — с оговорками; жара и порывы у моря.
@@ -1701,8 +1720,196 @@ def ai_presentation_failure_falls_through_to_existing_local_cover() -> None:
         assert outcome["receipt"]["backend"] == "local_informative_cover"
 
 
+
+def provider_semantic_qa_structured_verdict_matrix_is_deterministic() -> None:
+    accepted = {
+        "confidence": "high",
+        "scene_dominant": True,
+        "composition_present": True,
+        "mediterranean_plausible": True,
+        "tropical_mismatch": False,
+        "malformed_major_structure": False,
+        "weather_compatible": True,
+        "no_text_logo_watermark": True,
+        "no_ui_screenshot": True,
+        "photographic_realism": True,
+        "reason_codes": [],
+    }
+    ok = evaluate_structured_verdict(accepted, model="fixture")
+    assert ok["available"] is True and ok["accepted"] is True
+    assert ok["status"] == "accepted"
+
+    absent = dict(accepted, scene_dominant=False, reason_codes=["scene_not_dominant"])
+    rejected = evaluate_structured_verdict(absent, model="fixture")
+    assert rejected["accepted"] is False
+    assert rejected["reason"] == "scene_not_dominant"
+
+    tropical = dict(accepted, tropical_mismatch=True, reason_codes=["tropical_mismatch"])
+    rejected = evaluate_structured_verdict(tropical, model="fixture")
+    assert rejected["accepted"] is False
+    assert rejected["reason"] == "tropical_mismatch"
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        image_path = Path(tmp_name) / "fixture.png"
+        _write_dhash_fixture(image_path, flipped_rows=2)
+        via_injection = inspect_cyprus_provider_image(
+            image_path,
+            metadata={
+                "selected_scene": "coastal_promenade",
+                "composition": "Linear seafront composition with the promenade as the main structure",
+                "primary_weather": "rain",
+                "visibility_condition": "clear",
+            },
+            visual_context=types.SimpleNamespace(),
+            request_fn=lambda **_kwargs: accepted,
+        )
+    assert via_injection["accepted"] is True
+    assert via_injection["model"] == "injected"
+
+
+def provider_semantic_qa_reject_rotates_and_unavailable_forces_local_fallback() -> None:
+    async def run_case(tmp: Path, *, qa_mode: str) -> tuple[dict[str, object], int, int]:
+        tmp.mkdir(parents=True, exist_ok=True)
+        history = tmp / "history.json"
+        history.write_text("[]", encoding="utf-8")
+        test_history = tmp / "history-test.json"
+        test_history.write_text("[]", encoding="utf-8")
+        old_prod = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
+        old_test = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
+        old_token = safe_module.TOKEN
+        old_bot = safe_module.Bot
+        old_outcome = imagegen.generate_astro_image_outcome_with_exclusions
+        old_availability = imagegen.configured_image_backends
+        old_env = {name: os.environ.get(name) for name in (
+            "CHANNEL_ID",
+            "CY_SAFE_IMAGE_DIR",
+            "CY_IMG_MIN_BYTES",
+            "CY_IMAGE_DELIVERY_DIR",
+            "CY_TEXT_DELIVERY_DIR",
+            "CY_IMAGE_DIAGNOSTICS_DIR",
+            "CY_IMAGE_PROVIDER_HEALTH_DIR",
+        )}
+        provider_calls = 0
+        qa_calls = 0
+        photo_calls: list[dict[str, object]] = []
+
+        def provider(_prompt: str, requested_path: str, **_kwargs):
+            nonlocal provider_calls
+            provider_calls += 1
+            path = Path(requested_path)
+            _write_dhash_fixture(path, flipped_rows=min(provider_calls + 1, 7))
+            generated = types.SimpleNamespace(
+                path=str(path),
+                backend="pollinations",
+                byte_count=path.stat().st_size,
+                backend_attempts=[{"backend": "pollinations", "result": "success"}],
+            )
+            return types.SimpleNamespace(
+                result=generated,
+                backend_attempts=[{"backend": "pollinations", "result": "success"}],
+                error_type="",
+                error_message="",
+                exhausted=False,
+                actual_backend_call_count=1,
+            )
+
+        def qa(_image_path, **_kwargs):
+            nonlocal qa_calls
+            qa_calls += 1
+            if qa_mode == "unavailable":
+                return {
+                    "available": False,
+                    "accepted": False,
+                    "status": "unavailable",
+                    "reason": "fixture_unavailable",
+                    "confidence": "none",
+                }
+            if qa_calls == 1:
+                return {
+                    "available": True,
+                    "accepted": False,
+                    "status": "rejected",
+                    "reason": "scene_not_dominant",
+                    "confidence": "high",
+                }
+            return _semantic_qa_accept()
+
+        class FakeBot:
+            def __init__(self, token: str) -> None:
+                assert token == "fixture-token"
+
+            async def send_photo(self, **kwargs):
+                photo_calls.append(kwargs)
+                kwargs["photo"].read()
+                return types.SimpleNamespace(message_id=91000 + len(photo_calls))
+
+        try:
+            os.environ.update({
+                "CHANNEL_ID": "777",
+                "CY_SAFE_IMAGE_DIR": str(tmp / "images"),
+                "CY_IMG_MIN_BYTES": "10",
+                "CY_IMAGE_DELIVERY_DIR": str(tmp / "image-delivery"),
+                "CY_TEXT_DELIVERY_DIR": str(tmp / "text-delivery"),
+                "CY_IMAGE_DIAGNOSTICS_DIR": str(tmp / "diagnostics"),
+                "CY_IMAGE_PROVIDER_HEALTH_DIR": str(tmp / "provider-health"),
+            })
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = history
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = test_history
+            safe_module.TOKEN = "fixture-token"
+            safe_module.Bot = FakeBot
+            imagegen.generate_astro_image_outcome_with_exclusions = provider
+            imagegen.configured_image_backends = lambda **_kwargs: {
+                "configured_backends": ["pollinations"],
+                "available_backends": ["pollinations"],
+                "unconfigured_backends": [],
+            }
+            result = await safe_module._build_safe_test_image(
+                EVENING_MESSAGE,
+                "evening",
+                generate_image=True,
+                send_image_to_test=False,
+                send_image_to_chat=True,
+                image_chat_id=777,
+                image_only_recovery=False,
+                provider_image_qa_fn=qa,
+            )
+            return result, provider_calls, qa_calls
+        finally:
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = old_prod
+            cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = old_test
+            safe_module.TOKEN = old_token
+            safe_module.Bot = old_bot
+            imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
+            imagegen.configured_image_backends = old_availability
+            for name, value in old_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        rotated, provider_calls, qa_calls = asyncio.run(
+            run_case(Path(tmp_name) / "rotate", qa_mode="reject")
+        )
+        assert rotated["result"] == "sent"
+        assert rotated["backend"] == "pollinations"
+        assert provider_calls == 2
+        assert qa_calls == 2
+        assert rotated["attempts"][0]["semantic_qa"]["reason"] == "scene_not_dominant"
+
+        fallback, provider_calls, qa_calls = asyncio.run(
+            run_case(Path(tmp_name) / "fallback", qa_mode="unavailable")
+        )
+        assert fallback["result"] == "sent"
+        assert fallback["backend"] == "local_informative_cover"
+        assert provider_calls == 1
+        assert qa_calls == 1
+        assert fallback["local_fallback_generated"] is True
+
 def main() -> None:
     checks = (
+        provider_semantic_qa_structured_verdict_matrix_is_deterministic,
+        provider_semantic_qa_reject_rotates_and_unavailable_forces_local_fallback,
         ai_primary_presentation_keeps_raw_history_and_published_receipt_separate,
         ai_presentation_failure_falls_through_to_existing_local_cover,
         forecast_threshold_warning_copy_is_provenance_safe,
