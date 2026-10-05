@@ -39,6 +39,7 @@ from PIL import Image, ImageDraw  # type: ignore  # noqa: E402
 import cyprus_visual_dedup  # noqa: E402
 import cyprus_image_recovery  # noqa: E402
 import daily_ai_presentation  # noqa: E402
+from cyprus_provider_image_qa import evaluate_cyprus_provider_image_qa  # noqa: E402
 from cyprus_image_recovery import (  # noqa: E402
     LOCAL_INFORMATIVE_COVER_BRANDING,
     LOCAL_INFORMATIVE_COVER_VERSION,
@@ -1382,6 +1383,7 @@ def _run_stage_failure_case(
     break_receipt: bool = False,
     break_local_renderer: bool = False,
     break_presentation: bool = False,
+    semantic_qa_evaluator: object = False,
 ) -> dict:
     """Drive _build_safe_test_image with one lifecycle stage failing; return diagnostics.
 
@@ -1507,6 +1509,7 @@ def _run_stage_failure_case(
                 send_image_to_chat=True,
                 image_chat_id=777,
                 image_only_recovery=False,
+                provider_semantic_qa_evaluator=semantic_qa_evaluator,
             )
         )
         diagnostics = json.loads(
@@ -1663,6 +1666,103 @@ def informative_cover_variants_rotate_and_keep_preview_contrast() -> None:
 
 
 
+def _semantic_qa_checks(**overrides: bool) -> dict[str, object]:
+    checks = {
+        "scene_family_present_and_dominant": True,
+        "composition_present_and_dominant": True,
+        "cyprus_mediterranean_character": True,
+        "tropical_or_jungle_mismatch": False,
+        "major_landscape_or_architecture_malformed": False,
+        "weather_compatible": True,
+        "visible_text_logo_or_watermark": False,
+        "screenshot_or_ui": False,
+        "photographic_editorial_realism": True,
+    }
+    checks.update(overrides)
+    return {"checks": checks}
+
+
+def provider_semantic_qa_structured_verdicts_are_deterministic() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        image_path = Path(tmp_name) / "candidate.jpg"
+        image_path.write_bytes(b"offline-fixture")
+
+        missing_scene = evaluate_cyprus_provider_image_qa(
+            image_path,
+            selected_scene="coastal_promenade",
+            composition="Linear seafront composition with the promenade as the main structure",
+            visual_context={"visibility_condition": "clear", "weather_main": "clear"},
+            structured_evaluator=lambda *_args, **_kwargs: _semantic_qa_checks(
+                scene_family_present_and_dominant=False
+            ),
+        )
+        assert missing_scene.accepted is False
+        assert missing_scene.status == "rejected"
+        assert missing_scene.reason == "requested_scene_not_dominant"
+
+        tropical = evaluate_cyprus_provider_image_qa(
+            image_path,
+            selected_scene="coastal_promenade",
+            composition="Linear seafront composition with the promenade as the main structure",
+            visual_context={"visibility_condition": "clear", "weather_main": "clear"},
+            structured_evaluator=lambda *_args, **_kwargs: _semantic_qa_checks(
+                tropical_or_jungle_mismatch=True
+            ),
+        )
+        assert tropical.accepted is False
+        assert tropical.reason == "tropical_jungle_mismatch"
+
+        compliant = evaluate_cyprus_provider_image_qa(
+            image_path,
+            selected_scene="coastal_promenade",
+            composition="Linear seafront composition with the promenade as the main structure",
+            visual_context={"visibility_condition": "clear", "weather_main": "clear"},
+            structured_evaluator=lambda *_args, **_kwargs: _semantic_qa_checks(),
+        )
+        assert compliant.accepted is True
+        assert compliant.status == "accepted"
+        assert compliant.reason == "accepted"
+
+
+def semantic_qa_rejection_exhausts_provider_candidates_then_uses_local_cover() -> None:
+    calls = 0
+
+    def reject(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _semantic_qa_checks(scene_family_present_and_dominant=False)
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        outcome = _run_stage_failure_case(Path(tmp_name), semantic_qa_evaluator=reject)
+    assert calls == 5
+    assert outcome["result"]["result"] == "sent"
+    assert outcome["result"]["backend"] == "local_informative_cover"
+    attempts = outcome["diagnostics"]["selected_scene_attempts"]
+    rejected = [item for item in attempts if item.get("dedup_reason") == "semantic_qa_rejected"]
+    assert len(rejected) == 5
+    assert all(item["semantic_qa"]["reason"] == "requested_scene_not_dominant" for item in rejected)
+
+
+def semantic_qa_unavailable_is_called_once_and_fails_closed_to_local_cover() -> None:
+    calls = 0
+
+    def invalid_response(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"checks": {"scene_family_present_and_dominant": True}}
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        outcome = _run_stage_failure_case(Path(tmp_name), semantic_qa_evaluator=invalid_response)
+    assert calls == 1
+    assert outcome["result"]["result"] == "sent"
+    assert outcome["result"]["backend"] == "local_informative_cover"
+    assert outcome["diagnostics"]["provider_semantic_qa_unavailable"] is True
+    attempts = outcome["diagnostics"]["selected_scene_attempts"]
+    unavailable = [item for item in attempts if item.get("dedup_reason") == "semantic_qa_unavailable"]
+    assert len(unavailable) == 1
+    assert unavailable[0]["semantic_qa"]["status"] == "unavailable"
+
+
 def ai_primary_presentation_keeps_raw_history_and_published_receipt_separate() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
         outcome = _run_stage_failure_case(Path(tmp_name))
@@ -1703,6 +1803,9 @@ def ai_presentation_failure_falls_through_to_existing_local_cover() -> None:
 
 def main() -> None:
     checks = (
+        provider_semantic_qa_structured_verdicts_are_deterministic,
+        semantic_qa_rejection_exhausts_provider_candidates_then_uses_local_cover,
+        semantic_qa_unavailable_is_called_once_and_fails_closed_to_local_cover,
         ai_primary_presentation_keeps_raw_history_and_published_receipt_separate,
         ai_presentation_failure_falls_through_to_existing_local_cover,
         forecast_threshold_warning_copy_is_provenance_safe,

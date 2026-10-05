@@ -394,6 +394,10 @@ def parse_visual_context_cy(
         "uv_candidates": [],
         "dust_lines": [],
         "haze_lines": [],
+        "coastal_haze_lines": [],
+        "inland_haze_lines": [],
+        "generic_haze_lines": [],
+        "scene_haze_lines": [],
         "visibility_lines": [],
         "precipitation_lines": [],
         "coastal_precipitation_lines": [],
@@ -421,6 +425,9 @@ def parse_visual_context_cy(
     coastal_day_temps: list[float] = []
     dust_lines: list[str] = []
     haze_lines: list[str] = []
+    coastal_haze_lines: list[str] = []
+    inland_haze_lines: list[str] = []
+    generic_haze_lines: list[str] = []
     actual_precipitation = False
     coastal_precipitation = False
     inland_precipitation = False
@@ -550,6 +557,18 @@ def parse_visual_context_cy(
         elif line_has_haze:
             haze_lines.append(line)
             evidence["haze_lines"].append(line)
+            if set(cities) & _COASTAL_CITIES:
+                coastal_haze_lines.append(line)
+                evidence["coastal_haze_lines"].append(line)
+            elif cities or is_troodos_or_mountain:
+                inland_haze_lines.append(line)
+                evidence["inland_haze_lines"].append(line)
+            elif is_coastal:
+                coastal_haze_lines.append(line)
+                evidence["coastal_haze_lines"].append(line)
+            else:
+                generic_haze_lines.append(line)
+                evidence["generic_haze_lines"].append(line)
 
         line_has_storm = _has_actual_storm_signal(line)
         if line_has_storm:
@@ -581,6 +600,16 @@ def parse_visual_context_cy(
         weather_hits.add("hot")
 
     coastal_focus = bool(coastal_lines)
+    # Legacy/free-text haze is scene-scoped. Named inland fog/haze must not
+    # contaminate an otherwise clear coastal scene, while generic island-wide
+    # and real coastal evidence remain usable.
+    if coastal_focus:
+        scene_haze_lines = [*coastal_haze_lines, *generic_haze_lines]
+    elif inland_haze_lines:
+        scene_haze_lines = [*inland_haze_lines, *generic_haze_lines]
+    else:
+        scene_haze_lines = list(generic_haze_lines)
+    evidence["scene_haze_lines"] = list(scene_haze_lines)
     weather_code_source = str(visibility_metadata_values["weather_code_source"] or "").lower()
     structured_storm = bool(
         visibility_metadata_values["weather_code"] in {95, 96, 99}
@@ -716,7 +745,7 @@ def parse_visual_context_cy(
         uv_level=uv_level,
         aqi_level=aqi_level,
         dust_hint="; ".join(dust_lines) if dust_lines else None,
-        visibility_haze=bool(haze_lines),
+        visibility_haze=bool(scene_haze_lines),
         visibility_condition=visibility_condition,
         visibility_forecast_window=visibility_forecast_window,
         current_visibility_m=visibility_metadata_values["current_visibility_m"],
