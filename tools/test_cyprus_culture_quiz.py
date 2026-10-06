@@ -515,6 +515,7 @@ def test_pilot_release_contract() -> None:
     _assert("pilot_rights", all(q.rights_status == "official_derived_rewrite" and q.publication_mode == "official_derived_rewrite" for q in questions))
     _assert("pilot_official_answer_sources", all(q.answer_source.startswith("https://") for q in questions))
     _assert("pilot_source_hashes", all(quiz.SOURCE_TEXT_HASH_RE.fullmatch(q.source_text_hash) for q in questions))
+    _assert("pilot_public_source_locators", all(q.source_locator == f"audit:{q.question_id}" and "libfile_" not in q.source_locator for q in questions))
     manifest = json.loads(PILOT_MANIFEST.read_text("utf-8"))
     digest = "sha256:" + hashlib.sha256(raw).hexdigest()
     _assert("manifest_bank_sha", manifest["bank_sha256"] == digest, digest)

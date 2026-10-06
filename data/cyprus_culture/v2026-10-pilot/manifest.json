@@ -1,7 +1,7 @@
 {
   "anchor_date": "2026-10-06",
   "bank_path": "data/cyprus_culture/v2026-10-pilot/questions.jsonl",
-  "bank_sha256": "sha256:d7aaf1303e5a55a26b4b1e9d887a9153e40f52795b6fc8c4067b51224310f8de",
+  "bank_sha256": "sha256:857fceddfb60556defe40b069048239848e28e2ab01fb61cbf8773cac0c148e5",
   "bank_version": "v2026-10-pilot",
   "canonical_jsonl": {
     "encoding": "UTF-8",
