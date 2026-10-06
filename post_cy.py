@@ -56,7 +56,7 @@ OTHER_LABEL = "Континентальные города"
 SEA_CITIES = {
     "Limassol": (34.707, 33.022),
     "Pafos":    (34.776, 32.424),
-    "Ayia Napa":(34.988, 34.012),
+    "Paralimni": (35.039, 33.982),
     "Larnaca":  (34.916, 33.624),
 }
 SEA_CITIES_ORDERED = list(SEA_CITIES.items())
