@@ -1381,7 +1381,11 @@ def _run_stage_failure_case(
     break_telegram: bool = False,
     break_history: bool = False,
     break_receipt: bool = False,
+    break_receipt_after_first: bool = False,
     break_local_renderer: bool = False,
+    force_provider_failure: bool = False,
+    seed_local_exact_history: bool = False,
+    repeat_after_failure: bool = False,
     break_presentation: bool = False,
     semantic_qa_evaluator: object = False,
 ) -> dict:
@@ -1408,6 +1412,7 @@ def _run_stage_failure_case(
     old_renderer = cyprus_image_recovery.render_local_informative_cover
     old_presentation = daily_ai_presentation.render_branded_ai_presentation
     old_atomic = safe_module._cy_write_json_atomic
+    old_receipt_writer = safe_module._cy_write_image_delivery_receipt
     old_prod_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH
     old_test_history = cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH
 
@@ -1417,7 +1422,7 @@ def _run_stage_failure_case(
     test_history_path.write_text("[]", "utf-8")
 
     def fake_outcome(_prompt: str, requested_path: str, **_kwargs):
-        if break_local_renderer:
+        if break_local_renderer or force_provider_failure:
             # Force the network path to fail so the local fallback is reached.
             return types.SimpleNamespace(
                 result=None,
@@ -1463,10 +1468,19 @@ def _run_stage_failure_case(
     def failing_presentation(*_args, **_kwargs):
         raise RuntimeError("fixture presentation renderer failure")
 
+    image_receipt_writes = 0
+
     def guarded_atomic(path, payload):
         if break_receipt and "cy_image_delivery" in str(path):
             raise RuntimeError("fixture receipt write failure")
         return old_atomic(path, payload)
+
+    def guarded_receipt_writer(path, payload):
+        nonlocal image_receipt_writes
+        image_receipt_writes += 1
+        if break_receipt_after_first and image_receipt_writes > 1:
+            raise RuntimeError("fixture receipt enrichment failure")
+        return old_receipt_writer(path, payload)
 
     try:
         os.environ.update(
@@ -1482,6 +1496,28 @@ def _run_stage_failure_case(
         )
         cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = history_path
         cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = test_history_path
+        if seed_local_exact_history:
+            seeded = render_local_informative_cover(
+                EVENING_MESSAGE,
+                target_date="2026-07-16",
+                post_type="evening",
+                output_path=tmp / "seed-local-cover.png",
+                minimum_bytes=10,
+            )
+            seeded_sha = hashlib.sha256(Path(seeded["path"]).read_bytes()).hexdigest()
+            history_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "date": "2026-07-15",
+                            "post_type": "morning",
+                            "sha256": seeded_sha,
+                            "selected_scene": "local_informative_cover",
+                        }
+                    ]
+                ),
+                "utf-8",
+            )
         safe_module.TOKEN = "fixture-token"
         safe_module.Bot = FakeBot
         imagegen.generate_astro_image_outcome_with_exclusions = fake_outcome
@@ -1499,6 +1535,8 @@ def _run_stage_failure_case(
             daily_ai_presentation.render_branded_ai_presentation = failing_presentation
         if break_receipt:
             safe_module._cy_write_json_atomic = guarded_atomic
+        if break_receipt_after_first:
+            safe_module._cy_write_image_delivery_receipt = guarded_receipt_writer
 
         result = asyncio.run(
             safe_module._build_safe_test_image(
@@ -1518,12 +1556,30 @@ def _run_stage_failure_case(
         receipt_path = tmp / "cy_image_delivery" / "2026-07-16-evening.json"
         receipt = json.loads(receipt_path.read_text("utf-8")) if receipt_path.exists() else None
         history_entries = json.loads(history_path.read_text("utf-8"))
+        repeat_result = None
+        if repeat_after_failure:
+            cyprus_visual_dedup.record_cyprus_visual_publication = old_record
+            safe_module.record_cyprus_visual_publication = old_record
+            safe_module._cy_write_image_delivery_receipt = old_receipt_writer
+            repeat_result = asyncio.run(
+                safe_module._build_safe_test_image(
+                    EVENING_MESSAGE,
+                    "evening",
+                    generate_image=True,
+                    send_image_to_test=False,
+                    send_image_to_chat=True,
+                    image_chat_id=777,
+                    image_only_recovery=False,
+                    provider_semantic_qa_evaluator=semantic_qa_evaluator,
+                )
+            )
     finally:
         cyprus_visual_dedup.record_cyprus_visual_publication = old_record
         safe_module.record_cyprus_visual_publication = old_record
         cyprus_image_recovery.render_local_informative_cover = old_renderer
         daily_ai_presentation.render_branded_ai_presentation = old_presentation
         safe_module._cy_write_json_atomic = old_atomic
+        safe_module._cy_write_image_delivery_receipt = old_receipt_writer
         imagegen.generate_astro_image_outcome_with_exclusions = old_outcome
         imagegen.configured_image_backends = old_availability
         safe_module.TOKEN = old_token
@@ -1541,7 +1597,99 @@ def _run_stage_failure_case(
         "diagnostics": diagnostics,
         "receipt": receipt,
         "history_entries": history_entries,
+        "repeat_result": repeat_result,
+        "image_receipt_writes": image_receipt_writes,
     }
+
+
+def image_delivery_receipt_survives_history_and_enrichment_failures() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        history_failure = _run_stage_failure_case(
+            Path(tmp_name),
+            break_history=True,
+            repeat_after_failure=True,
+        )
+    assert history_failure["result"]["result"] == "failed_non_fatal"
+    assert history_failure["diagnostics"]["error_stage"] == "history"
+    assert history_failure["receipt"] is not None
+    assert history_failure["receipt"]["telegram_message_id"] == 4242
+    assert history_failure["receipt"]["history_recorded"] is False
+    assert history_failure["history_entries"] == []
+    assert history_failure["repeat_result"]["result"] == "skipped_receipt_exists"
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        receipt_failure = _run_stage_failure_case(
+            Path(tmp_name),
+            break_receipt_after_first=True,
+            repeat_after_failure=True,
+        )
+    assert receipt_failure["result"]["result"] == "failed_non_fatal"
+    assert receipt_failure["diagnostics"]["error_stage"] == "receipt"
+    assert receipt_failure["receipt"] is not None
+    assert receipt_failure["receipt"]["telegram_message_id"] == 4242
+    assert receipt_failure["receipt"]["history_recorded"] is False
+    assert len(receipt_failure["history_entries"]) == 1
+    assert receipt_failure["image_receipt_writes"] == 2
+    assert receipt_failure["repeat_result"]["result"] == "skipped_receipt_exists"
+
+
+def local_cover_exact_duplicate_contract_is_exact_only() -> None:
+    prior = [{"date": "2026-07-15", "post_type": "morning", "sha256": "a" * 64}]
+    matched = safe_module._cy_find_local_exact_history_match(prior, "a" * 64)
+    assert matched is prior[0]
+    assert safe_module._cy_find_local_exact_history_match(prior, "b" * 64) is None
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        duplicate = _run_stage_failure_case(
+            Path(tmp_name),
+            force_provider_failure=True,
+            seed_local_exact_history=True,
+        )
+    assert duplicate["result"]["result"] == "skipped_duplicate_local_informative_cover"
+    assert duplicate["receipt"] is None
+    assert len(duplicate["history_entries"]) == 1
+
+    with tempfile.TemporaryDirectory() as tmp_name:
+        fresh = _run_stage_failure_case(Path(tmp_name), force_provider_failure=True)
+    assert fresh["result"]["result"] == "sent"
+    assert fresh["result"]["backend"] == "local_informative_cover"
+    assert fresh["receipt"] is not None
+
+
+def drizzle_and_thunderstorm_cover_copy_preserves_factual_intensity() -> None:
+    drizzle_ctx, drizzle = cyprus_image_recovery._informative_cover_facts(
+        "Кипр завтра.\nЛимассол: утром морось, ветер 4 м/с.",
+        post_type="evening",
+    )
+    drizzle_text = " | ".join(
+        value for key, value in drizzle.items() if key.endswith("_fact") and value
+    )
+    assert drizzle_ctx.actual_drizzle is True
+    assert drizzle_ctx.actual_rain is False
+    assert "МОРОСЬ" in drizzle_text
+    assert "ДОЖДЬ" not in drizzle_text
+
+    thunder_ctx, thunder = cyprus_image_recovery._informative_cover_facts(
+        "Кипр завтра.\nЛарнака: ясно.\nТроодос: местами гроза.",
+        post_type="evening",
+    )
+    thunder_text = " | ".join(
+        value for key, value in thunder.items() if key.endswith("_fact") and value
+    )
+    assert thunder_ctx.thunderstorm is True
+    assert thunder_ctx.storm_wind is False
+    assert "ШТОРМОВОЙ ВЕТЕР" not in thunder_text
+
+    storm_ctx, storm = cyprus_image_recovery._informative_cover_facts(
+        "Кипр завтра.\nПафос: штормовой ветер, без осадков.",
+        post_type="evening",
+    )
+    storm_text = " | ".join(
+        value for key, value in storm.items() if key.endswith("_fact") and value
+    )
+    assert storm_ctx.storm_wind is True
+    assert storm_ctx.actual_rain is False
+    assert "ШТОРМОВОЙ ВЕТЕР" in storm_text
 
 
 def error_stage_reports_the_failing_lifecycle_stage() -> None:
@@ -1804,6 +1952,9 @@ def ai_presentation_failure_falls_through_to_existing_local_cover() -> None:
 def main() -> None:
     checks = (
         provider_semantic_qa_structured_verdicts_are_deterministic,
+        drizzle_and_thunderstorm_cover_copy_preserves_factual_intensity,
+        image_delivery_receipt_survives_history_and_enrichment_failures,
+        local_cover_exact_duplicate_contract_is_exact_only,
         semantic_qa_rejection_exhausts_provider_candidates_then_uses_local_cover,
         semantic_qa_unavailable_is_called_once_and_fails_closed_to_local_cover,
         ai_primary_presentation_keeps_raw_history_and_published_receipt_separate,

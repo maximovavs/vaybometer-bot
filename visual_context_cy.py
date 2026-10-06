@@ -68,8 +68,16 @@ _STORM_NEGATION_RE = re.compile(
     r"шторм\w*\s+не\s+ожида|без\s+шторма|штормов\w*\s+предупрежден\w*\s+нет|риск\s+шторма\s+низк",
     re.I,
 )
-_STORM_POSITIVE_RE = re.compile(r"\b(?:шторм\w*|шквал\w*|гроз\w*)\b|thunderstorm|squall|storm", re.I)
-_PRECIP_FACTUAL_RE = re.compile(r"дожд\w*|ливн\w*|морос\w*|rain|showers?", re.I)
+_STORM_WIND_POSITIVE_RE = re.compile(r"\b(?:шторм\w*|шквал\w*)\b|squall|\bstorm(?:y)?\b", re.I)
+_THUNDERSTORM_RE = re.compile(r"\bгроз\w*\b|thunderstorm|thunder", re.I)
+_THUNDERSTORM_NEGATION_RE = re.compile(
+    r"гроз\w*\s+не\s+ожида|без\s+гроз\w*|риск\s+гроз\w*\s+низк|"
+    r"no\s+thunderstorms?|thunderstorms?\s+not\s+expected",
+    re.I,
+)
+_RAIN_FACTUAL_RE = re.compile(r"дожд\w*|ливн\w*|rain|showers?", re.I)
+_DRIZZLE_FACTUAL_RE = re.compile(r"морос\w*|drizzle", re.I)
+_PRECIP_FACTUAL_RE = re.compile(r"дожд\w*|ливн\w*|морос\w*|rain|showers?|drizzle", re.I)
 _PRECIP_EXPLICIT_RE = re.compile(
     r"осад\w*\s+(?:прогнозир\w*|ожида\w*)|ожида\w*\s+осад\w*|местами\s+осад\w*",
     re.I,
@@ -137,6 +145,10 @@ class VisualContextCY:
     visibility_evidence: Optional[str] = None
     dust_vs_fog_classification: str = "clear"
     actual_precipitation: bool = False
+    actual_rain: bool = False
+    actual_drizzle: bool = False
+    thunderstorm: bool = False
+    storm_wind: bool = False
     coastal_precipitation: bool = False
     inland_precipitation: bool = False
     inland_thunder_risk: bool = False
@@ -253,7 +265,16 @@ def _has_actual_storm_signal(line: str) -> bool:
         return False
     if _STORM_NEGATION_RE.search(str(line or "")):
         return False
-    return bool(_STORM_POSITIVE_RE.search(str(line or "")))
+    return bool(_STORM_WIND_POSITIVE_RE.search(str(line or "")))
+
+
+def _has_thunderstorm_signal(line: str) -> bool:
+    if _is_derived_summary_line(line):
+        return False
+    text = str(line or "")
+    if _THUNDERSTORM_NEGATION_RE.search(text):
+        return False
+    return bool(_THUNDERSTORM_RE.search(text))
 
 
 def _is_derived_summary_line(line: str) -> bool:
@@ -261,12 +282,40 @@ def _is_derived_summary_line(line: str) -> bool:
     return stripped.startswith(_DERIVED_SUMMARY_PREFIXES) or stripped.startswith(_MOON_PHASE_PREFIXES)
 
 
+def _precipitation_is_negated_or_uncertain(line: str) -> bool:
+    text = str(line or "")
+    low = text.lower()
+    return bool(
+        _is_derived_summary_line(text)
+        or _PRECIP_NEGATION_RE.search(low)
+        or _PRECIP_UNCERTAINTY_RE.search(low)
+    )
+
+
+def _has_actual_rain(line: str) -> bool:
+    text = str(line or "")
+    low = text.lower()
+    if _precipitation_is_negated_or_uncertain(text):
+        return False
+    if _RAIN_FACTUAL_RE.search(low):
+        return True
+    return bool(
+        "гроз" in low
+        and any(token in low for token in ("дожд", "лив", "rain", "wet"))
+    )
+
+
+def _has_actual_drizzle(line: str) -> bool:
+    text = str(line or "")
+    if _precipitation_is_negated_or_uncertain(text):
+        return False
+    return bool(_DRIZZLE_FACTUAL_RE.search(text.lower()))
+
+
 def _has_actual_precipitation(line: str) -> bool:
     text = str(line or "")
     low = text.lower()
-    if _is_derived_summary_line(text):
-        return False
-    if _PRECIP_NEGATION_RE.search(low) or _PRECIP_UNCERTAINTY_RE.search(low):
+    if _precipitation_is_negated_or_uncertain(text):
         return False
     if _PRECIP_FACTUAL_RE.search(low) or _PRECIP_EXPLICIT_RE.search(low):
         return True
@@ -400,10 +449,14 @@ def parse_visual_context_cy(
         "scene_haze_lines": [],
         "visibility_lines": [],
         "precipitation_lines": [],
+        "rain_lines": [],
+        "drizzle_lines": [],
         "coastal_precipitation_lines": [],
         "inland_precipitation_lines": [],
         "generic_precipitation_lines": [],
+        "coastal_thunder_lines": [],
         "inland_thunder_lines": [],
+        "generic_thunder_lines": [],
         "coastal_storm_lines": [],
         "inland_storm_lines": [],
         "generic_storm_lines": [],
@@ -429,6 +482,8 @@ def parse_visual_context_cy(
     inland_haze_lines: list[str] = []
     generic_haze_lines: list[str] = []
     actual_precipitation = False
+    actual_rain = False
+    actual_drizzle = False
     coastal_precipitation = False
     inland_precipitation = False
     inland_thunder_risk = False
@@ -534,6 +589,8 @@ def parse_visual_context_cy(
                 sea_state_lines.append(line)
 
         line_has_precipitation = _has_actual_precipitation(line)
+        line_has_rain = _has_actual_rain(line)
+        line_has_drizzle = _has_actual_drizzle(line)
         line_has_dust = _has_dust_signal(line)
         line_has_haze = _has_visibility_haze(line)
         is_troodos_or_mountain = "troodos" in cities or any(x in low for x in ("тродос", "горы", "горн", "mountain"))
@@ -541,6 +598,12 @@ def parse_visual_context_cy(
         if line_has_precipitation:
             actual_precipitation = True
             evidence["precipitation_lines"].append(line)
+            if line_has_rain:
+                actual_rain = True
+                evidence["rain_lines"].append(line)
+            if line_has_drizzle:
+                actual_drizzle = True
+                evidence["drizzle_lines"].append(line)
             if is_coastal:
                 coastal_precipitation = True
                 evidence["coastal_precipitation_lines"].append(line)
@@ -571,6 +634,7 @@ def parse_visual_context_cy(
                 evidence["generic_haze_lines"].append(line)
 
         line_has_storm = _has_actual_storm_signal(line)
+        line_has_thunderstorm = _has_thunderstorm_signal(line)
         if line_has_storm:
             if is_coastal:
                 evidence["coastal_storm_lines"].append(line)
@@ -579,7 +643,21 @@ def parse_visual_context_cy(
                 evidence["inland_storm_lines"].append(line)
             else:
                 evidence["generic_storm_lines"].append(line)
-        if line_has_precipitation:
+        if line_has_thunderstorm:
+            if is_coastal:
+                evidence["coastal_thunder_lines"].append(line)
+            elif cities or is_troodos_or_mountain:
+                inland_thunder_risk = True
+                evidence["inland_thunder_lines"].append(line)
+            else:
+                evidence["generic_thunder_lines"].append(line)
+        if line_has_rain:
+            weather_hits.add("rain")
+        elif line_has_drizzle:
+            weather_hits.add("drizzle")
+        elif line_has_precipitation:
+            # Keep legacy generic precipitation routing as rain; only factual drizzle
+            # gets the narrower primary_weather value.
             weather_hits.add("rain")
         if line_has_dust:
             weather_hits.add("dusty")
@@ -611,22 +689,32 @@ def parse_visual_context_cy(
         scene_haze_lines = list(generic_haze_lines)
     evidence["scene_haze_lines"] = list(scene_haze_lines)
     weather_code_source = str(visibility_metadata_values["weather_code_source"] or "").lower()
-    structured_storm = bool(
+    structured_thunderstorm = bool(
         visibility_metadata_values["weather_code"] in {95, 96, 99}
         and (
             resolved_post_type == "morning"
             or any(token in weather_code_source for token in ("forecast", "hourly", "tomorrow"))
         )
     )
-    explicit_storm = bool(
-        structured_storm
-        or evidence["coastal_storm_lines"]
+    storm_wind = bool(
+        evidence["coastal_storm_lines"]
         or evidence["generic_storm_lines"]
         or evidence["inland_storm_lines"]
     )
+    thunderstorm = bool(
+        structured_thunderstorm
+        or evidence["coastal_thunder_lines"]
+        or evidence["generic_thunder_lines"]
+        or evidence["inland_thunder_lines"]
+    )
+    # Compatibility: provider/prompt logic still treats thunderstorm as an explicit
+    # storm-like visual hazard. Safety-critical storm-wind copy uses storm_wind.
+    explicit_storm = bool(storm_wind or thunderstorm)
 
     if "rain" in weather_hits:
         weather_main = "rain"
+    elif "drizzle" in weather_hits:
+        weather_main = "drizzle"
     elif "dusty" in weather_hits:
         weather_main = "dusty"
     elif (
@@ -769,6 +857,10 @@ def parse_visual_context_cy(
         ),
         dust_vs_fog_classification=visibility_condition,
         actual_precipitation=actual_precipitation,
+        actual_rain=actual_rain,
+        actual_drizzle=actual_drizzle,
+        thunderstorm=thunderstorm,
+        storm_wind=storm_wind,
         coastal_precipitation=coastal_precipitation,
         inland_precipitation=inland_precipitation,
         inland_thunder_risk=inland_thunder_risk,

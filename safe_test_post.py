@@ -1767,6 +1767,29 @@ def _cy_write_json_atomic(path: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
+def _cy_write_image_delivery_receipt(path: Path, payload: dict) -> None:
+    """Persist authoritative post-send image delivery state atomically."""
+    _cy_write_json_atomic(path, payload)
+
+
+def _cy_find_local_exact_history_match(
+    history: list[dict[str, object]],
+    sha256_value: str,
+) -> dict[str, object] | None:
+    """Exact local bytes are never republished, regardless of historical date."""
+    wanted = str(sha256_value or "").strip()
+    if not wanted:
+        return None
+    return next(
+        (
+            entry
+            for entry in history
+            if str(entry.get("sha256") or "").strip() == wanted
+        ),
+        None,
+    )
+
+
 def _cy_is_production_image_send(*, send_image_to_chat: bool, image_chat: int | None) -> bool:
     production_chat = (os.getenv("CHANNEL_ID") or "").strip()
     return bool(send_image_to_chat and production_chat and image_chat is not None and str(image_chat) == production_chat)
@@ -2931,15 +2954,9 @@ async def _build_safe_test_image(
                     local_metadata["scene_macro_family"] = CYPRUS_MACRO_LOCAL_COVER
                     local_metadata["decision_id"] = _cy_local_decision_id(local_metadata)
                     local_sha256 = sha256_file(local_path)
-                    existing_local_exact = next(
-                        (
-                            entry
-                            for entry in restored_history
-                            if str(entry.get("sha256") or "") == local_sha256
-                            and str(entry.get("date") or "") == target_date_for_diag
-                            and str(entry.get("post_type") or "") == mode
-                        ),
-                        None,
+                    existing_local_exact = _cy_find_local_exact_history_match(
+                        restored_history,
+                        local_sha256,
                     )
                     attempts.append(
                         {
@@ -3196,6 +3213,39 @@ async def _build_safe_test_image(
             message_id = getattr(sent_message, "message_id", None)
             if isinstance(message_id, int):
                 sent_message_ids.append(message_id)
+
+            receipt_path: Path | None = None
+            authoritative_receipt: dict[str, object] | None = None
+            if production_image_send and isinstance(message_id, int) and message_id > 0:
+                receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
+                authoritative_receipt = {
+                    "target_date": metadata["forecast_date"],
+                    "post_type": mode,
+                    "chat_type": "production",
+                    "telegram_message_id": message_id,
+                    "sha256": sha256_file(image_path),
+                    "source_sha256": "",
+                    "perceptual_hash": "",
+                    "phash": "",
+                    "selected_scene": metadata["selected_scene"],
+                    "composition": metadata.get("composition", ""),
+                    "visual_archetype": metadata.get("visual_archetype", ""),
+                    "scene_macro_family": metadata.get("scene_macro_family", ""),
+                    "style_name": style_name,
+                    "cache_key": metadata["cache_key"],
+                    "backend": selected_backend,
+                    "history_recorded": False,
+                    "run_id": os.getenv("GITHUB_RUN_ID", ""),
+                    "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", ""),
+                    "sent_at_utc": _cy_utc_now(),
+                }
+                lifecycle_stage = "receipt"
+                _cy_write_image_delivery_receipt(receipt_path, authoritative_receipt)
+                lifecycle_stage = "orchestration"
+                print(f"CY_SAFE_IMAGE_RECEIPT_WRITTEN_AUTHORITATIVE: {receipt_path}")
+            elif production_image_send:
+                print("CY_SAFE_IMAGE_RECEIPT_NOT_WRITTEN: missing valid Telegram message_id")
+
             lifecycle_stage = "history"
             history_entry = record_cyprus_visual_publication(
                 date_value=metadata["forecast_date"],
@@ -3218,36 +3268,20 @@ async def _build_safe_test_image(
                 write_history_path,
                 after_history_count,
             )
-            message_id = getattr(sent_message, "message_id", None)
-            if production_image_send and isinstance(message_id, int) and message_id > 0:
-                receipt = {
-                    "target_date": metadata["forecast_date"],
-                    "post_type": mode,
-                    "chat_type": "production",
-                    "telegram_message_id": message_id,
-                    "sha256": sha256_file(image_path),
-                    "source_sha256": history_entry.get("sha256"),
-                    "perceptual_hash": history_entry.get("perceptual_hash"),
-                    "phash": history_entry.get("phash"),
-                    "selected_scene": metadata["selected_scene"],
-                    "composition": metadata.get("composition", ""),
-                    "visual_archetype": metadata.get("visual_archetype", ""),
-                    # Additive only; no other receipt field changes meaning.
-                    "scene_macro_family": metadata.get("scene_macro_family", ""),
-                    "style_name": style_name,
-                    "cache_key": metadata["cache_key"],
-                    "backend": selected_backend,
-                    "run_id": os.getenv("GITHUB_RUN_ID", ""),
-                    "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", ""),
-                    "sent_at_utc": _cy_utc_now(),
-                }
+            if authoritative_receipt is not None and receipt_path is not None:
+                enriched_receipt = dict(authoritative_receipt)
+                enriched_receipt.update(
+                    {
+                        "source_sha256": history_entry.get("sha256"),
+                        "perceptual_hash": history_entry.get("perceptual_hash"),
+                        "phash": history_entry.get("phash"),
+                        "history_recorded": True,
+                    }
+                )
                 lifecycle_stage = "receipt"
-                receipt_path = _cy_image_receipt_path(metadata["forecast_date"], mode)
-                _cy_write_json_atomic(receipt_path, receipt)
+                _cy_write_image_delivery_receipt(receipt_path, enriched_receipt)
                 lifecycle_stage = "orchestration"
-                print(f"CY_SAFE_IMAGE_RECEIPT_WRITTEN: {receipt_path}")
-            elif production_image_send:
-                print("CY_SAFE_IMAGE_RECEIPT_NOT_WRITTEN: missing valid Telegram message_id")
+                print(f"CY_SAFE_IMAGE_RECEIPT_ENRICHED: {receipt_path}")
             _cy_write_image_diagnostics(
                 mode=mode,
                 target_date=metadata["forecast_date"],
