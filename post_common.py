@@ -89,6 +89,7 @@ _RU_CITIES_MAP = {
     "lefkosia": "Никосия",
     "paphos": "Пафос",
     "pafos": "Пафос",
+    "paralimni": "Паралимни",
     "ayia napa": "Айя-Напа",
     "agia napa": "Айя-Напа",
     "aya napa": "Айя-Напа",
@@ -1720,7 +1721,7 @@ def _city_air_metric_hint(data: Dict[str, Any], compact_label: str) -> str:
 def _air_by_city_line(city_pairs: list[tuple[str, tuple[float, float]]]) -> Optional[str]:
     if os.getenv("CY_AIR_BY_CITY", "1").strip().lower() in ("0", "false", "no", "off"):
         return None
-    preferred = ("Nicosia", "Limassol", "Larnaca", "Pafos", "Paphos", "Ayia Napa", "Protaras", "Troodos")
+    preferred = ("Nicosia", "Limassol", "Larnaca", "Pafos", "Paphos", "Paralimni", "Ayia Napa", "Protaras", "Troodos")
     indexed: Dict[str, tuple[str, tuple[float, float]]] = {
         name.lower(): (name, coords) for name, coords in city_pairs or []
     }
