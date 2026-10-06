@@ -1497,12 +1497,21 @@ def _run_stage_failure_case(
         cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_PROD_PATH = history_path
         cyprus_visual_dedup.CYPRUS_VISUAL_HISTORY_TEST_PATH = test_history_path
         if seed_local_exact_history:
+            from image_prompt_cy_scene import build_visual_context_cy
+
+            canonical_seed_context = build_visual_context_cy(
+                EVENING_MESSAGE,
+                post_type="evening",
+                visibility_metadata=None,
+            )
             seeded = render_local_informative_cover(
                 EVENING_MESSAGE,
                 target_date="2026-07-16",
                 post_type="evening",
                 output_path=tmp / "seed-local-cover.png",
                 minimum_bytes=10,
+                visual_context=canonical_seed_context,
+                visibility_metadata=None,
             )
             seeded_sha = hashlib.sha256(Path(seeded["path"]).read_bytes()).hexdigest()
             history_path.write_text(
