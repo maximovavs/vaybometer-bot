@@ -21,6 +21,7 @@ _CITY_ALIASES = {
     "larnaca": ("larnaca", "ларнака"),
     "paphos": ("paphos", "pafos", "пафос"),
     "nicosia": ("nicosia", "никосия"),
+    "paralimni": ("paralimni", "паралимни"),
     "ayia_napa": ("ayia napa", "ayia-napa", "айя-напа", "айя напа"),
     "troodos": ("troodos", "троодос"),
 }
@@ -29,10 +30,11 @@ _CITY_DISPLAY = {
     "larnaca": "Ларнака",
     "paphos": "Пафос",
     "nicosia": "Никосия",
+    "paralimni": "Паралимни",
     "ayia_napa": "Айя-Напа",
     "troodos": "Троодос",
 }
-_COASTAL_CITIES = {"limassol", "larnaca", "paphos", "ayia_napa"}
+_COASTAL_CITIES = {"limassol", "larnaca", "paphos", "paralimni", "ayia_napa"}
 
 _COASTAL_WORDS = (
     "море", "моря", "морск", "вода", "воды", "у воды", "пляж", "побереж",
