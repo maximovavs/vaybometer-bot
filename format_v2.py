@@ -702,13 +702,13 @@ def _clean_city_air_line(line: str) -> str:
     body = re.sub(r"^🏭\s*Воздух по городам\s*:\s*", "", _plain(line).strip(), flags=re.I)
     if re.search(r"\b(?:ур\.|уровень)\s*\d\s*/\s*4", body, flags=re.I):
         return "🏭 Воздух по городам: " + body
-    city_re = r"Никосия|Лимассол|Ларнака|Пафос|Айя-Напа|Тродос"
+    city_re = r"Никосия|Лимассол|Ларнака|Пафос|Паралимни|Айя-Напа|Тродос"
     pollutant_re = r"PM₂\.₅|PM2\.?5|PM₁₀|PM10|NO₂|NO2|O₃|O3|SO₂|SO2|CO"
     value_re = r"\d+(?:[\.,]\d+)?"
     chunks: list[str] = []
     markers: list[str] = []
     parsed_cities: set[str] = set()
-    required_all_green_cities = {"никосия", "лимассол", "ларнака", "пафос", "айя-напа"}
+    required_all_green_cities = {"никосия", "лимассол", "ларнака", "пафос", "паралимни"}
     token_re = rf"({city_re})\s+([🟢🟡🟠🔴])(?P<tail>.*?)(?=(?:\s*·\s*|\s+{city_re}\s+[🟢🟡🟠🔴]|$))"
     for m in re.finditer(token_re, body, flags=re.I):
         city, marker = m.group(1), m.group(2)
@@ -1112,7 +1112,7 @@ def _safecast_private_sensor_line() -> str:
 
 
 _MORNING_CITY_PRECIP_RE = re.compile(
-    r"^(Никосия|Лимассол|Ларнака|Пафос|Айя-Напа|Тродос)\s*:\s*(.+)$",
+    r"^(Никосия|Лимассол|Ларнака|Пафос|Паралимни|Айя-Напа|Тродос)\s*:\s*(.+)$",
     re.I,
 )
 

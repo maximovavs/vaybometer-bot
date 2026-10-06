@@ -259,13 +259,13 @@ def test_city_summary_formatting() -> None:
     post_common.get_air_for_cities = lambda pairs: {
         "Limassol": {"src": "cy_official", "clean_label": "🟢 чисто"},
         "Nicosia": {"src": "cy_official", "clean_label": "🟡 PM₁₀", "pm25": 18, "pm10": 42, "dominant_pollutant": "PM10"},
-        "Ayia Napa": {"src": "cy_official", "clean_label": "🟢 чисто"},
+        "Paralimni": {"src": "cy_official", "clean_label": "🟢 чисто"},
     }
     try:
         line = post_common._air_by_city_line(
             [
                 ("Limassol", (34.707, 33.022)),
-                ("Ayia Napa", (34.988, 34.012)),
+                ("Paralimni", (35.039, 33.982)),
                 ("Nicosia", (35.170, 33.360)),
                 ("Troodos", (34.916, 32.823)),
             ]
@@ -274,6 +274,7 @@ def test_city_summary_formatting() -> None:
         assert_true("city_summary", "Воздух по городам:" in line)
         assert_true("city_summary", "Лимассол 🟢" in line)
         assert_true("city_summary", "Никосия 🟡 (PM₁₀ 42)" in line)
+        assert_true("city_summary", "Паралимни 🟢" in line)
         assert_true("city_summary", "Troodos" not in line)
     finally:
         post_common.get_air_for_cities = old_get
