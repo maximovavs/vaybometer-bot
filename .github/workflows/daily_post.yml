@@ -116,6 +116,9 @@ env:
   CYPRUS_VISUAL_HISTORY_PROD_PATH: ".cache/cyprus_visual_history_prod.json"
   CYPRUS_VISUAL_HISTORY_TEST_PATH: ".cache/cyprus_visual_history_test.json"
   CY_MORNING_DELIVERY_DIR: ".cache/cy_morning_delivery"
+  CY_CULTURE_QUIZ_ENABLED: "0"
+  CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture_questions.jsonl"
+  CY_QUIZ_DELIVERY_DIR: ".cache/cy_quiz_delivery"
 
   # Утренние картинки: 5 стилей, авто-ротация по дате
   CY_IMG_ENABLED: "1"
@@ -146,6 +149,7 @@ jobs:
             !.cache/cy_safe_images
             !.cache/cy_morning_delivery
             !.cache/cy_image_provider_health
+            !.cache/cy_quiz_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -453,6 +457,7 @@ jobs:
             .cache/cy_image_delivery
             .cache/cy_text_delivery
             .cache/cy_image_provider_health
+            .cache/cy_quiz_delivery
           if-no-files-found: ignore
           retention-days: 30
 
@@ -479,6 +484,7 @@ jobs:
             !.cache/cy_safe_images
             !.cache/cy_morning_delivery
             !.cache/cy_image_provider_health
+            !.cache/cy_quiz_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -604,6 +610,14 @@ jobs:
           runpy.run_path("post_cy.py", run_name="__main__")
           PY
 
+      - name: Post Cyprus Culture quiz
+        if: >
+          always() &&
+          github.event_name == 'schedule' &&
+          github.event.schedule == '0 13 * * *'
+        continue-on-error: true
+        run: python cyprus_culture_quiz.py
+
       - name: Upload Cyprus image diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -624,6 +638,7 @@ jobs:
             .cache/cy_image_delivery
             .cache/cy_text_delivery
             .cache/cy_image_provider_health
+            .cache/cy_quiz_delivery
           if-no-files-found: ignore
           retention-days: 30
 
@@ -643,6 +658,7 @@ jobs:
             !.cache/cyprus_visual_history_test.json
             !.cache/cy_safe_images
             !.cache/cy_image_provider_health
+            !.cache/cy_quiz_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -721,6 +737,7 @@ jobs:
             .cache/cy_image_delivery
             .cache/cy_text_delivery
             .cache/cy_image_provider_health
+            .cache/cy_quiz_delivery
           if-no-files-found: ignore
           retention-days: 30
 
@@ -740,6 +757,7 @@ jobs:
             !.cache/cyprus_visual_history_test.json
             !.cache/cy_safe_images
             !.cache/cy_image_provider_health
+            !.cache/cy_quiz_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
@@ -798,6 +816,14 @@ jobs:
           fi
           python safe_test_post.py --mode evening --format-v2 --generate-image --send-image-to-chat --image-only-recovery --chat-id "$CHANNEL_ID"
 
+      - name: Recover Cyprus Culture quiz if weather delivered
+        if: >
+          always() &&
+          github.event_name == 'schedule' &&
+          (github.event.schedule == '45 13 * * *' || github.event.schedule == '15 15 * * *')
+        continue-on-error: true
+        run: python cyprus_culture_quiz.py
+
       - name: Upload Cyprus image diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -818,6 +844,7 @@ jobs:
             .cache/cy_image_delivery
             .cache/cy_text_delivery
             .cache/cy_image_provider_health
+            .cache/cy_quiz_delivery
           if-no-files-found: ignore
           retention-days: 30
 
@@ -842,6 +869,7 @@ jobs:
             !.cache/cy_safe_images
             !.cache/cy_morning_delivery
             !.cache/cy_image_provider_health
+            !.cache/cy_quiz_delivery
           key: cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-${{ github.run_number }}
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-

@@ -160,6 +160,33 @@ def _valid_image_receipt(data: Any, *, target_date: str | None = None, post_type
     return isinstance(data.get("sent_at_utc"), str) and bool(str(data.get("sent_at_utc")).strip())
 
 
+def _valid_quiz_receipt(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if data.get("chat_type") != "production":
+        return False
+    if data.get("state") not in {"reserved", "sent"}:
+        return False
+    if not str(data.get("quiz_date") or "").strip():
+        return False
+    if not str(data.get("weather_target_date") or "").strip():
+        return False
+    if not str(data.get("question_id") or "").strip():
+        return False
+    if not str(data.get("bank_version") or "").strip():
+        return False
+    if not str(data.get("reserved_at_utc") or "").strip():
+        return False
+    if data.get("state") == "sent":
+        if not isinstance(data.get("telegram_message_id"), int) or data.get("telegram_message_id") <= 0:
+            return False
+        if not str(data.get("poll_id") or "").strip():
+            return False
+        if not str(data.get("sent_at_utc") or "").strip():
+            return False
+    return True
+
+
 def _valid_provider_health(
     data: Any,
     *,
@@ -342,6 +369,43 @@ def _restore_receipts(
         restored += 1
         status = "restored"
     if not (target_date and post_type) and restored:
+        status = "bulk_restored"
+    return restored, status
+
+
+def _restore_quiz_receipts(source_root: Path, destination_cache: Path) -> tuple[int, str]:
+    source_dir = _receipt_source_dir(source_root, "cy_quiz_delivery")
+    if not source_dir.is_dir():
+        return 0, "missing"
+
+    restored = 0
+    status = "missing"
+    destination_dir = destination_cache / "cy_quiz_delivery"
+    for source in sorted(source_dir.glob("*.json")):
+        if not source.is_file():
+            continue
+        try:
+            snapshot_data = _load_json(source)
+        except Exception:
+            status = "invalid"
+            continue
+        if not _valid_quiz_receipt(snapshot_data):
+            status = "invalid"
+            continue
+
+        destination = destination_dir / source.name
+        # At-most-once safety: any local receipt/reservation wins. Never overwrite
+        # an ambiguous local state from an older artifact.
+        if destination.exists():
+            status = "already_present"
+            continue
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        restored += 1
+        status = "restored"
+
+    if restored:
         status = "bulk_restored"
     return restored, status
 
@@ -533,6 +597,10 @@ def main() -> int:
                     target_date=target_date,
                     post_type=post_type,
                 )
+                quiz_restored, quiz_status = _restore_quiz_receipts(
+                    extract_dir,
+                    destination_cache,
+                )
                 text_ok = _local_receipt_valid(
                     destination_cache,
                     dir_name="cy_text_delivery",
@@ -555,6 +623,7 @@ def main() -> int:
                     f"text_receipt={text_status}; image_receipt={image_status}; "
                     f"text_receipts_restored={text_restored}; image_receipts_restored={image_restored}; "
                     f"provider_health={health_status}; provider_health_restored={health_restored}; "
+                    f"quiz_receipt={quiz_status}; quiz_receipts_restored={quiz_restored}; "
                     f"final_text_receipt={text_ok}; final_image_receipt={image_ok}."
                 )
                 local_entries = merged
