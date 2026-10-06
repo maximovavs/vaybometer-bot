@@ -802,10 +802,14 @@ def _informative_cover_facts(
     if ctx.gust_max is not None:
         location = "У МОРЯ" if ctx.coastal_focus else "НА ОСТРОВЕ"
         facts.append(f"💨 ПОРЫВЫ ДО {_cover_number(ctx.gust_max)} М/С {location}")
-    if ctx.explicit_storm and not ctx.actual_precipitation:
+    if getattr(ctx, "storm_wind", False) and not ctx.actual_precipitation:
         facts.append("⚠️ ШТОРМОВОЙ ВЕТЕР")
-    elif ctx.actual_precipitation:
+    elif getattr(ctx, "actual_rain", False):
         facts.append("🌧 ДОЖДЬ МЕСТАМИ")
+    elif getattr(ctx, "actual_drizzle", False):
+        facts.append("🌦 МОРОСЬ МЕСТАМИ")
+    elif ctx.actual_precipitation:
+        facts.append("🌦 ОСАДКИ МЕСТАМИ")
     elif ctx.visibility_condition in {"dense_fog", "fog", "mist"}:
         facts.append("🌫 ТУМАН УТРОМ")
     elif ctx.sea_temp_min is not None and ctx.sea_temp_max is not None:
@@ -825,6 +829,7 @@ def _informative_cover_facts(
             "dusty": "🌫 СУХАЯ ПЫЛЕВАЯ ДЫМКА",
             "fog": "🌫 ТУМАН УТРОМ",
             "rain": "🌧 ДОЖДЬ МЕСТАМИ",
+            "drizzle": "🌦 МОРОСЬ МЕСТАМИ",
         }
         facts.append(qualitative.get(ctx.primary_weather, "ПОГОДА НА КИПРЕ"))
     primary_fact = facts[0]
@@ -840,7 +845,7 @@ def _informative_cover_facts(
 
 def _cover_palette(ctx: object) -> tuple[str, tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
     primary = str(getattr(ctx, "primary_weather", "unknown"))
-    if bool(getattr(ctx, "explicit_storm", False)):
+    if bool(getattr(ctx, "storm_wind", False)):
         return "storm", (35, 50, 68), (85, 108, 126), (236, 242, 245)
     if bool(getattr(ctx, "actual_precipitation", False)):
         return "rain", (97, 126, 148), (184, 202, 213), (245, 249, 250)

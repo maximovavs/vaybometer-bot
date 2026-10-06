@@ -311,6 +311,47 @@ def cy_visual_precipitation_uncertainty_is_not_rain() -> None:
     assert factual.actual_precipitation is True
 
 
+
+def cy_visual_drizzle_is_wet_but_not_rain() -> None:
+    text = """
+    Кипр: прогноз на завтра.
+    Лимассол: утром морось, ветер 4 м/с.
+    """
+    ctx = parse_visual_context_cy(text, post_type="evening")
+    scene = apply_visual_rules_cy(ctx)
+    assert ctx.actual_precipitation is True
+    assert ctx.actual_drizzle is True
+    assert ctx.actual_rain is False
+    assert ctx.primary_weather == "drizzle"
+    assert scene.diagnostics["wet_rule"] is True
+
+
+def cy_visual_thunderstorm_is_independent_from_storm_wind() -> None:
+    thunder = parse_visual_context_cy(
+        "Кипр завтра.\nПафос: местами гроза, ветер 4 м/с.",
+        post_type="evening",
+    )
+    assert thunder.thunderstorm is True
+    assert thunder.storm_wind is False
+    assert thunder.actual_rain is False
+
+    explicit_wind = parse_visual_context_cy(
+        "Кипр завтра.\nПафос: штормовой ветер, без осадков.",
+        post_type="evening",
+    )
+    assert explicit_wind.storm_wind is True
+    assert explicit_wind.actual_rain is False
+
+    inland = parse_visual_context_cy(
+        "Кипр завтра.\nЛарнака: ясно.\nТроодос: местами гроза.",
+        post_type="evening",
+    )
+    assert inland.coastal_focus is True
+    assert inland.inland_thunder_risk is True
+    assert inland.thunderstorm is True
+    assert inland.storm_wind is False
+
+
 def cy_visual_ordinary_haze_is_not_dust() -> None:
     text = """
     Кипр: прогноз на завтра.
@@ -1795,6 +1836,8 @@ TESTS = [
     cy_visual_problem_scenario_keeps_heat_wind_and_coast_inland_truth,
     cy_visual_explicit_dry_storm_keeps_rain_false,
     cy_visual_precipitation_uncertainty_is_not_rain,
+    cy_visual_drizzle_is_wet_but_not_rain,
+    cy_visual_thunderstorm_is_independent_from_storm_wind,
     cy_visual_ordinary_haze_is_not_dust,
     cy_inland_only_haze_does_not_bleed_into_clear_coastal_scene,
     cy_coastal_haze_remains_scene_relevant_when_structured_visibility_is_clear,
