@@ -1,0 +1,67 @@
+{
+  "anchor_date": "2026-10-06",
+  "bank_path": "data/cyprus_culture/v2026-10-pilot/questions.jsonl",
+  "bank_sha256": "sha256:857fceddfb60556defe40b069048239848e28e2ab01fb61cbf8773cac0c148e5",
+  "bank_version": "v2026-10-pilot",
+  "canonical_jsonl": {
+    "encoding": "UTF-8",
+    "final_newline": true,
+    "json_key_order": "sorted",
+    "json_separators": [
+      ",",
+      ":"
+    ],
+    "line_endings": "LF"
+  },
+  "category_counts": {
+    "culture": 3,
+    "environment": 1,
+    "geography": 7,
+    "history": 2,
+    "institutions": 4,
+    "language": 1,
+    "traditions": 2
+  },
+  "immutability": true,
+  "manifest_schema_version": 1,
+  "ordered_question_ids": [
+    "jul2026-a03",
+    "jul2026-a04",
+    "jul2026-a09",
+    "jul2026-a11",
+    "jul2026-a12",
+    "jul2026-a13",
+    "jul2026-a15",
+    "jul2026-a20",
+    "jul2026-a22",
+    "jul2026-a23",
+    "jul2026-a24",
+    "jul2026-b06",
+    "jul2026-b07",
+    "jul2026-b09",
+    "jul2026-b10",
+    "jul2026-b14",
+    "jul2026-b16",
+    "jul2026-b18",
+    "jul2026-b23",
+    "jul2026-b25"
+  ],
+  "provenance_tier_counts": {
+    "P1": 8,
+    "P2": 12
+  },
+  "question_count": 20,
+  "rights_mode_counts": {
+    "official_derived_rewrite": 20
+  },
+  "source_provenance_summary": {
+    "answer_verification": "independent official Cyprus public-body sources",
+    "source_corpus": "user-held July 2026 screenshot audit; topic/provenance inspiration only",
+    "source_wording_reuse": false
+  },
+  "temporal_class_counts": {
+    "stable": 20
+  },
+  "verification_as_of": "2026-10-06",
+  "verified_count": 20
+}
