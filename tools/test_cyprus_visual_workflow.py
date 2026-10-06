@@ -1125,7 +1125,12 @@ def test_legacy_post_cy_restores_env_after_exception() -> None:
 def test_culture_quiz_workflow_contract() -> None:
     text = _read(DAILY)
     _assert("quiz_default_off", 'CY_CULTURE_QUIZ_ENABLED: "0"' in text)
-    _assert("quiz_bank_path_configured", 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture_questions.jsonl"' in text)
+    _assert(
+        "quiz_bank_path_configured",
+        'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-pilot/questions.jsonl"' in text,
+    )
+    _assert("quiz_bank_version", 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-pilot"' in text)
+    _assert("quiz_anchor_date", 'CY_CULTURE_QUIZ_ANCHOR_DATE: "2026-10-06"' in text)
     _assert("quiz_receipt_dir_configured", 'CY_QUIZ_DELIVERY_DIR: ".cache/cy_quiz_delivery"' in text)
 
     evening = _block(text, "  evening:", "  morning_image_recovery:")

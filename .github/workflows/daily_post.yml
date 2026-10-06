@@ -117,7 +117,9 @@ env:
   CYPRUS_VISUAL_HISTORY_TEST_PATH: ".cache/cyprus_visual_history_test.json"
   CY_MORNING_DELIVERY_DIR: ".cache/cy_morning_delivery"
   CY_CULTURE_QUIZ_ENABLED: "0"
-  CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture_questions.jsonl"
+  CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-pilot/questions.jsonl"
+  CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-pilot"
+  CY_CULTURE_QUIZ_ANCHOR_DATE: "2026-10-06"
   CY_QUIZ_DELIVERY_DIR: ".cache/cy_quiz_delivery"
 
   # Утренние картинки: 5 стилей, авто-ротация по дате

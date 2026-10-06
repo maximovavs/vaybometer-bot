@@ -17,10 +17,15 @@ from zoneinfo import ZoneInfo
 
 
 TZ_NAME = "Asia/Nicosia"
-DEFAULT_BANK_PATH = Path("data/cyprus_culture_questions.jsonl")
+DEFAULT_BANK_PATH = Path("data/cyprus_culture/v2026-10-pilot/questions.jsonl")
 DEFAULT_QUIZ_RECEIPT_DIR = Path(".cache/cy_quiz_delivery")
 DEFAULT_WEATHER_TEXT_RECEIPT_DIR = Path(".cache/cy_text_delivery")
 ALLOWED_PRODUCTION_SCHEDULES = {"0 13 * * *", "45 13 * * *", "15 15 * * *"}
+SUPPORTED_TEMPORAL_CLASSES = {"stable", "date_sensitive", "current_events"}
+SUPPORTED_RIGHTS_STATUSES = {"official_derived_rewrite", "exact_source_wording"}
+SUPPORTED_REVIEW_STATUSES = {"verified_official"}
+PROVENANCE_TIER_RE = re.compile(r"^P[1-3]$")
+SOURCE_TEXT_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 SUPPORTED_CATEGORIES = {
     "geography",
     "history",
@@ -53,6 +58,17 @@ class QuizQuestion:
     explanation_ru: str
     source: str
     verified: bool
+    provenance_tier: str
+    source_locator: str
+    answer_source: str
+    rights_status: str
+    publication_mode: str
+    source_text_hash: str
+    as_of: str
+    valid_from: str | None
+    valid_until: str | None
+    review_status: str
+    temporal_class: str
 
 
 @dataclass(frozen=True)
@@ -76,6 +92,14 @@ def _utc_now() -> str:
 
 def _normalize_option(value: str) -> str:
     return " ".join(str(value or "").split()).casefold()
+
+
+def _valid_iso_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _positive_int_list(value: Any) -> list[int]:
@@ -122,6 +146,22 @@ def _parse_question_record(record: Any) -> QuizQuestion | None:
     correct = record.get("correct_option_index")
     explanation = str(record.get("explanation_ru") or "").strip()
     source = str(record.get("source") or "").strip()
+    provenance_tier = str(record.get("provenance_tier") or "").strip()
+    source_locator = str(record.get("source_locator") or "").strip()
+    answer_source = str(record.get("answer_source") or "").strip()
+    rights_status = str(record.get("rights_status") or "").strip()
+    publication_mode = str(record.get("publication_mode") or "").strip()
+    source_text_hash = str(record.get("source_text_hash") or "").strip()
+    as_of = str(record.get("as_of") or "").strip()
+    review_status = str(record.get("review_status") or "").strip()
+    temporal_class = str(record.get("temporal_class") or "").strip()
+
+    if "valid_from" not in record or "valid_until" not in record:
+        return None
+    valid_from_raw = record.get("valid_from")
+    valid_until_raw = record.get("valid_until")
+    valid_from = None if valid_from_raw is None else str(valid_from_raw).strip()
+    valid_until = None if valid_until_raw is None else str(valid_until_raw).strip()
 
     if not QUESTION_ID_RE.fullmatch(question_id):
         return None
@@ -156,6 +196,29 @@ def _parse_question_record(record: Any) -> QuizQuestion | None:
 
     if not isinstance(correct, int) or isinstance(correct, bool) or not 0 <= correct < len(clean_el):
         return None
+    if not PROVENANCE_TIER_RE.fullmatch(provenance_tier):
+        return None
+    if not source_locator or not answer_source.startswith("https://"):
+        return None
+    if rights_status not in SUPPORTED_RIGHTS_STATUSES or publication_mode != rights_status:
+        return None
+    if not SOURCE_TEXT_HASH_RE.fullmatch(source_text_hash):
+        return None
+    if not _valid_iso_date(as_of):
+        return None
+    if review_status not in SUPPORTED_REVIEW_STATUSES:
+        return None
+    if temporal_class not in SUPPORTED_TEMPORAL_CLASSES:
+        return None
+    for value in (valid_from, valid_until):
+        if value is not None and (not value or not _valid_iso_date(value)):
+            return None
+    if valid_from is not None and valid_until is not None and valid_from > valid_until:
+        return None
+    if temporal_class in {"date_sensitive", "current_events"} and (
+        valid_from is None or valid_until is None
+    ):
+        return None
 
     return QuizQuestion(
         question_id=question_id,
@@ -169,8 +232,18 @@ def _parse_question_record(record: Any) -> QuizQuestion | None:
         explanation_ru=explanation,
         source=source,
         verified=True,
+        provenance_tier=provenance_tier,
+        source_locator=source_locator,
+        answer_source=answer_source,
+        rights_status=rights_status,
+        publication_mode=publication_mode,
+        source_text_hash=source_text_hash,
+        as_of=as_of,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        review_status=review_status,
+        temporal_class=temporal_class,
     )
-
 
 def load_verified_questions(path: Path) -> list[QuizQuestion]:
     if not path.is_file():

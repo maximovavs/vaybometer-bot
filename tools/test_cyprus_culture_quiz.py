@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime
 import importlib.util
+import hashlib
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,41 @@ if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
 import cyprus_culture_quiz as quiz
+
+
+PILOT_BANK = ROOT / "data" / "cyprus_culture" / "v2026-10-pilot" / "questions.jsonl"
+PILOT_MANIFEST = ROOT / "data" / "cyprus_culture" / "v2026-10-pilot" / "manifest.json"
+EXPECTED_PILOT_IDS = [
+    "jul2026-a03",
+    "jul2026-a04",
+    "jul2026-a09",
+    "jul2026-a11",
+    "jul2026-a12",
+    "jul2026-a13",
+    "jul2026-a15",
+    "jul2026-a20",
+    "jul2026-a22",
+    "jul2026-a23",
+    "jul2026-a24",
+    "jul2026-b06",
+    "jul2026-b07",
+    "jul2026-b09",
+    "jul2026-b10",
+    "jul2026-b14",
+    "jul2026-b16",
+    "jul2026-b18",
+    "jul2026-b23",
+    "jul2026-b25"
+]
+EXPECTED_CATEGORY_COUNTS = {
+    "geography": 7,
+    "history": 2,
+    "culture": 3,
+    "institutions": 4,
+    "traditions": 2,
+    "language": 1,
+    "environment": 1,
+}
 
 
 def _assert(name: str, condition: bool, detail="") -> None:
@@ -36,13 +73,14 @@ def _record(
     question_el: str = "Ποια είναι η έκταση της Κύπρου;",
     question_ru: str = "Какова площадь Кипра?",
     explanation_ru: str = "Правильный ответ подтверждён источником.",
+    **extra: object,
 ) -> dict:
     options_el = ["8 251 km²", "9 251 km²", "10 251 km²", "11 251 km²"][:option_count]
     options_ru = ["8 251 км²", "9 251 км²", "10 251 км²", "11 251 км²"][:option_count]
     if option_count > 4:
         options_el += [f"{12 + idx} 251 km²" for idx in range(option_count - 4)]
         options_ru += [f"{12 + idx} 251 км²" for idx in range(option_count - 4)]
-    return {
+    record = {
         "question_id": question_id,
         "rotation_rank": rotation_rank,
         "category": "geography",
@@ -52,10 +90,22 @@ def _record(
         "options_ru": options_ru,
         "correct_option_index": correct_option_index,
         "explanation_ru": explanation_ru,
-        "source": "fixture://verified-source",
+        "source": "https://example.invalid/verified-source",
         "verified": verified,
+        "provenance_tier": "P1",
+        "source_locator": "library:fixture#question",
+        "answer_source": "https://example.invalid/verified-source",
+        "rights_status": "official_derived_rewrite",
+        "publication_mode": "official_derived_rewrite",
+        "source_text_hash": "sha256:" + "a" * 64,
+        "as_of": "2026-10-06",
+        "valid_from": None,
+        "valid_until": None,
+        "review_status": "verified_official",
+        "temporal_class": "stable",
     }
-
+    record.update(extra)
+    return record
 
 def _write_bank(path: Path, records: list[dict | str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -421,7 +471,81 @@ def test_quiz_snapshot_restore_does_not_alter_weather_gating() -> None:
     print("PASS quiz_snapshot_restore_does_not_alter_weather_gating")
 
 
+
+def test_missing_provenance_metadata_fails_closed() -> None:
+    required = ["provenance_tier","source_locator","answer_source","rights_status","publication_mode","source_text_hash","as_of","valid_from","valid_until","review_status","temporal_class"]
+    for field in required:
+        record = _record()
+        record.pop(field)
+        _assert(f"missing_{field}", quiz._parse_question_record(record) is None)
+    print("PASS missing_provenance_metadata_fails_closed")
+
+
+def test_invalid_temporal_and_rights_metadata_fail_closed() -> None:
+    _assert("invalid_temporal", quiz._parse_question_record(_record(temporal_class="breaking_news")) is None)
+    _assert("invalid_rights", quiz._parse_question_record(_record(rights_status="unknown", publication_mode="unknown")) is None)
+    _assert("mismatched_publication_mode", quiz._parse_question_record(_record(publication_mode="exact_source_wording")) is None)
+    print("PASS invalid_temporal_and_rights_metadata_fail_closed")
+
+
+def test_date_sensitive_requires_bounded_validity_window() -> None:
+    _assert("date_sensitive_without_window", quiz._parse_question_record(_record(temporal_class="date_sensitive")) is None)
+    valid = quiz._parse_question_record(_record(temporal_class="date_sensitive", valid_from="2026-10-06", valid_until="2026-12-31"))
+    _assert("date_sensitive_with_window", valid is not None)
+    print("PASS date_sensitive_requires_bounded_validity_window")
+
+
+def test_pilot_release_contract() -> None:
+    raw = PILOT_BANK.read_bytes()
+    _assert("pilot_final_newline", raw.endswith(b"\n"))
+    _assert("pilot_lf_only", b"\r" not in raw)
+    text = raw.decode("utf-8")
+    lines = text.splitlines()
+    _assert("pilot_raw_count", len(lines) == 20, str(len(lines)))
+    records = [json.loads(line) for line in lines]
+    for idx, (line, record) in enumerate(zip(lines, records)):
+        canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        _assert(f"canonical_line_{idx}", line == canonical)
+    questions = quiz.load_verified_questions(PILOT_BANK)
+    _assert("pilot_verified_count", len(questions) == 20, str(len(questions)))
+    _assert("pilot_ids", [q.question_id for q in questions] == EXPECTED_PILOT_IDS)
+    _assert("pilot_ranks", [q.rotation_rank for q in questions] == list(range(20)))
+    _assert("pilot_category_counts", Counter(q.category for q in questions) == Counter(EXPECTED_CATEGORY_COUNTS))
+    _assert("pilot_temporal", all(q.temporal_class == "stable" for q in questions))
+    _assert("pilot_rights", all(q.rights_status == "official_derived_rewrite" and q.publication_mode == "official_derived_rewrite" for q in questions))
+    _assert("pilot_official_answer_sources", all(q.answer_source.startswith("https://") for q in questions))
+    _assert("pilot_source_hashes", all(quiz.SOURCE_TEXT_HASH_RE.fullmatch(q.source_text_hash) for q in questions))
+    manifest = json.loads(PILOT_MANIFEST.read_text("utf-8"))
+    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    _assert("manifest_bank_sha", manifest["bank_sha256"] == digest, digest)
+    _assert("manifest_version", manifest["bank_version"] == "v2026-10-pilot")
+    _assert("manifest_anchor", manifest["anchor_date"] == "2026-10-06")
+    _assert("manifest_count", manifest["question_count"] == 20)
+    _assert("manifest_verified", manifest["verified_count"] == 20)
+    _assert("manifest_ids", manifest["ordered_question_ids"] == EXPECTED_PILOT_IDS)
+    _assert("manifest_categories", manifest["category_counts"] == EXPECTED_CATEGORY_COUNTS)
+    _assert("manifest_temporal", manifest["temporal_class_counts"] == {"stable": 20})
+    _assert("manifest_provenance", manifest["provenance_tier_counts"] == {"P1": 8, "P2": 12})
+    _assert("manifest_rights", manifest["rights_mode_counts"] == {"official_derived_rewrite": 20})
+    _assert("manifest_immutable", manifest["immutability"] is True)
+    _assert("manifest_as_of", manifest["verification_as_of"] == "2026-10-06")
+    _assert("manifest_no_source_wording_reuse", manifest["source_provenance_summary"]["source_wording_reuse"] is False)
+    print("PASS pilot_release_contract")
+
+
+def test_pilot_rotation_matches_manifest_order() -> None:
+    questions = quiz.load_verified_questions(PILOT_BANK)
+    picked = [quiz.select_question(questions, quiz_date=date(2026, 10, 6 + idx), anchor_date=date(2026, 10, 6)).question_id for idx in range(20)]
+    _assert("pilot_rotation_order", picked == EXPECTED_PILOT_IDS, str(picked))
+    print("PASS pilot_rotation_matches_manifest_order")
+
+
 TESTS = [
+    test_missing_provenance_metadata_fails_closed,
+    test_invalid_temporal_and_rights_metadata_fail_closed,
+    test_date_sensitive_requires_bounded_validity_window,
+    test_pilot_release_contract,
+    test_pilot_rotation_matches_manifest_order,
     test_valid_verified_bilingual_question_is_accepted,
     test_unverified_is_never_publishable,
     test_malformed_record_is_skipped,
