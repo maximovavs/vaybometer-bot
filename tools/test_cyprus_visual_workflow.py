@@ -1125,8 +1125,8 @@ def test_legacy_post_cy_restores_env_after_exception() -> None:
 def test_culture_quiz_workflow_contract() -> None:
     text = _read(DAILY)
     _assert("quiz_legacy_flag_removed", 'CY_CULTURE_QUIZ_ENABLED:' not in text)
-    _assert("quiz_evening_default_off", 'CY_CULTURE_QUIZ_EVENING_ENABLED: "0"' in text)
-    _assert("quiz_fx_default_off", 'CY_CULTURE_QUIZ_FX_ENABLED: "0"' in text)
+    _assert("quiz_evening_default_off", 'CY_CULTURE_QUIZ_EVENING_ENABLED: "1"' in text)
+    _assert("quiz_fx_default_off", 'CY_CULTURE_QUIZ_FX_ENABLED: "1"' in text)
     _assert("quiz_full_bank", 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-full/questions.jsonl"' in text)
     _assert("quiz_full_version", 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-full"' in text)
     _assert("quiz_anchor", 'CY_CULTURE_QUIZ_ANCHOR_DATE: "2026-10-07"' in text)
