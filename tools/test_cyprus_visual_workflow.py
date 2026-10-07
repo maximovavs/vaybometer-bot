@@ -1124,55 +1124,41 @@ def test_legacy_post_cy_restores_env_after_exception() -> None:
 
 def test_culture_quiz_workflow_contract() -> None:
     text = _read(DAILY)
-    _assert("quiz_default_off", 'CY_CULTURE_QUIZ_ENABLED: "0"' in text)
-    _assert(
-        "quiz_bank_path_configured",
-        'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-pilot/questions.jsonl"' in text,
-    )
-    _assert("quiz_bank_version", 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-pilot"' in text)
-    _assert("quiz_anchor_date", 'CY_CULTURE_QUIZ_ANCHOR_DATE: "2026-10-06"' in text)
-    _assert("quiz_receipt_dir_configured", 'CY_QUIZ_DELIVERY_DIR: ".cache/cy_quiz_delivery"' in text)
+    _assert("quiz_legacy_flag_removed", 'CY_CULTURE_QUIZ_ENABLED:' not in text)
+    _assert("quiz_evening_default_off", 'CY_CULTURE_QUIZ_EVENING_ENABLED: "0"' in text)
+    _assert("quiz_fx_default_off", 'CY_CULTURE_QUIZ_FX_ENABLED: "0"' in text)
+    _assert("quiz_full_bank", 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-full/questions.jsonl"' in text)
+    _assert("quiz_full_version", 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-full"' in text)
+    _assert("quiz_anchor", 'CY_CULTURE_QUIZ_ANCHOR_DATE: "2026-10-07"' in text)
+    _assert("fx_receipt_dir", 'CY_FX_DELIVERY_DIR: ".cache/cy_fx_delivery"' in text)
 
     evening = _block(text, "  evening:", "  morning_image_recovery:")
     evening_quiz = _block(evening, "Post Cyprus Culture quiz", "Upload Cyprus image diagnostics")
     _assert("quiz_after_evening_weather", evening.index("Post evening (announce tomorrow)") < evening.index("Post Cyprus Culture quiz"))
-    _assert("quiz_evening_natural_schedule_only", "github.event.schedule == '0 13 * * *'" in evening_quiz)
-    _assert("quiz_evening_always_checks_receipt", "always() &&" in evening_quiz)
+    _assert("quiz_evening_natural", "github.event.schedule == '0 13 * * *'" in evening_quiz)
     _assert("quiz_evening_non_blocking", "continue-on-error: true" in evening_quiz)
-    _assert("quiz_evening_uses_dedicated_module", "python cyprus_culture_quiz.py" in evening_quiz)
+    _assert("quiz_evening_slot", "python cyprus_culture_quiz.py --slot evening_general" in evening_quiz)
 
     recovery = _block(text, "  evening_image_recovery:", "  noon_fx:")
     recovery_quiz = _block(recovery, "Recover Cyprus Culture quiz if weather delivered", "Upload Cyprus image diagnostics")
-    _assert("quiz_recovery_after_weather_recovery", recovery.index("Recover evening image only") < recovery.index("Recover Cyprus Culture quiz if weather delivered"))
-    _assert("quiz_recovery_primary_schedule", "github.event.schedule == '45 13 * * *'" in recovery_quiz)
-    _assert("quiz_recovery_late_schedule", "github.event.schedule == '15 15 * * *'" in recovery_quiz)
+    _assert("quiz_recovery_schedules", "45 13 * * *" in recovery_quiz and "15 15 * * *" in recovery_quiz)
+    _assert("quiz_recovery_slot", "python cyprus_culture_quiz.py --slot evening_general" in recovery_quiz)
     _assert("quiz_recovery_non_blocking", "continue-on-error: true" in recovery_quiz)
-    _assert("quiz_recovery_uses_same_module", "python cyprus_culture_quiz.py" in recovery_quiz)
 
-    cache_blocks = _blocks(text, "Restore .cache (FX + intermarket deltas)") + _blocks(
-        text,
-        "Restore .cache (delivery receipts)",
-    )
-    _assert("quiz_generic_cache_block_count", len(cache_blocks) == 5, str(len(cache_blocks)))
-    for idx, block in enumerate(cache_blocks, start=1):
-        _assert(
-            f"quiz_generic_cache_{idx}_excludes_receipts",
-            "!.cache/cy_quiz_delivery" in block,
-            block,
-        )
-    _assert("quiz_receipt_snapshotted", text.count(".cache/cy_quiz_delivery") >= 5)
+    noon = text[text.index("  noon_fx:"):]
+    _assert("fx_quiz_after_fx", noon.index("Post FX Market Pulse only") < noon.index("Post Cyprus Culture FX economy quiz"))
+    fx_quiz = noon[noon.index("Post Cyprus Culture FX economy quiz"):]
+    _assert("fx_quiz_natural_only", "github.event_name == 'schedule'" in fx_quiz and "github.event.schedule == '0 7 * * *'" in fx_quiz)
+    _assert("fx_quiz_non_blocking", "continue-on-error: true" in fx_quiz)
+    _assert("fx_quiz_slot", "python cyprus_culture_quiz.py --slot fx_economy" in fx_quiz)
+    _assert("fx_quiz_cache", ".cache/cy_quiz_delivery/fx_economy" in noon)
 
+    fx_source = _read(ROOT / "post_cy_fx_market_pulse.py")
+    _assert("fx_authoritative_receipt_helper", "send_production_fx_with_receipt" in fx_source)
     helper = _read(SNAPSHOT_HELPER)
-    _assert("quiz_snapshot_validator", "def _valid_quiz_receipt" in helper)
-    _assert("quiz_snapshot_restore", "def _restore_quiz_receipts" in helper)
-    _assert("quiz_restore_diagnostics", "quiz_receipts_restored" in helper)
-    _assert(
-        "quiz_not_in_weather_restore_gate",
-        "if target_date and post_type and not (text_ok and image_ok):" in helper
-        and "quiz_ok" not in helper,
-    )
+    _assert("nested_quiz_restore", 'rglob("*.json")' in helper and '"evening_general", "fx_economy"' in helper)
+    _assert("quiz_not_in_weather_restore_gate", "if target_date and post_type and not (text_ok and image_ok):" in helper and "quiz_ok" not in helper)
     print("PASS culture_quiz_workflow_contract")
-
 
 def test_culture_quiz_offline_suite() -> None:
     suite = runpy.run_path(

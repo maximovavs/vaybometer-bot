@@ -116,11 +116,13 @@ env:
   CYPRUS_VISUAL_HISTORY_PROD_PATH: ".cache/cyprus_visual_history_prod.json"
   CYPRUS_VISUAL_HISTORY_TEST_PATH: ".cache/cyprus_visual_history_test.json"
   CY_MORNING_DELIVERY_DIR: ".cache/cy_morning_delivery"
-  CY_CULTURE_QUIZ_ENABLED: "0"
-  CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-pilot/questions.jsonl"
-  CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-pilot"
-  CY_CULTURE_QUIZ_ANCHOR_DATE: "2026-10-06"
+  CY_CULTURE_QUIZ_EVENING_ENABLED: "0"
+  CY_CULTURE_QUIZ_FX_ENABLED: "0"
+  CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-full/questions.jsonl"
+  CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-full"
+  CY_CULTURE_QUIZ_ANCHOR_DATE: "2026-10-07"
   CY_QUIZ_DELIVERY_DIR: ".cache/cy_quiz_delivery"
+  CY_FX_DELIVERY_DIR: ".cache/cy_fx_delivery"
 
   # Утренние картинки: 5 стилей, авто-ротация по дате
   CY_IMG_ENABLED: "1"
@@ -618,7 +620,7 @@ jobs:
           github.event_name == 'schedule' &&
           github.event.schedule == '0 13 * * *'
         continue-on-error: true
-        run: python cyprus_culture_quiz.py
+        run: python cyprus_culture_quiz.py --slot evening_general
 
       - name: Upload Cyprus image diagnostics
         if: always()
@@ -824,7 +826,7 @@ jobs:
           github.event_name == 'schedule' &&
           (github.event.schedule == '45 13 * * *' || github.event.schedule == '15 15 * * *')
         continue-on-error: true
-        run: python cyprus_culture_quiz.py
+        run: python cyprus_culture_quiz.py --slot evening_general
 
       - name: Upload Cyprus image diagnostics
         if: always()
@@ -876,6 +878,13 @@ jobs:
           restore-keys: |
             cy-cache-${{ runner.os }}-${{ github.workflow }}-${{ github.ref_name }}-
 
+      - name: Restore Cyprus FX quiz delivery receipts
+        uses: actions/cache@v4
+        with:
+          path: .cache/cy_quiz_delivery/fx_economy
+          key: cy-fx-quiz-delivery-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            cy-fx-quiz-delivery-
       - name: Time debug
         run: |
           echo "UTC:    $(date -u)"
@@ -922,3 +931,9 @@ jobs:
           sys.argv = args
           runpy.run_path("post_cy_fx_market_pulse.py", run_name="__main__")
           PY
+      - name: Post Cyprus Culture FX economy quiz
+        if: >
+          github.event_name == 'schedule' &&
+          github.event.schedule == '0 7 * * *'
+        continue-on-error: true
+        run: python cyprus_culture_quiz.py --slot fx_economy

@@ -13,11 +13,14 @@ import importlib
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import pendulum
 import requests
 from telegram import Bot, constants
+
+from cyprus_fx_delivery import send_production_fx_with_receipt
 
 from post_cy import (
     TOKEN,
@@ -384,11 +387,18 @@ async def main() -> None:
 
     chat_id = resolve_chat_id(args.chat_id, args.to_test)
     bot = Bot(token=TOKEN)
-    await bot.send_message(
+    await send_production_fx_with_receipt(
+        send_message=bot.send_message,
         chat_id=chat_id,
+        production_chat_id=(os.getenv("CHANNEL_ID") or "").strip(),
+        to_test=args.to_test,
+        publication_date=date_local.date(),
+        receipt_dir=Path(os.getenv("CY_FX_DELIVERY_DIR", ".cache/cy_fx_delivery")),
         text=text,
         parse_mode=constants.ParseMode.HTML,
         disable_web_page_preview=True,
+        run_id=os.getenv("GITHUB_RUN_ID", ""),
+        run_attempt=os.getenv("GITHUB_RUN_ATTEMPT", ""),
     )
     _save_caches(fx_cache_path, inter_cache_path, cbr_date, text, date_local, inter_today)
     logging.info("FX Market Pulse sent: chat=%s", chat_id)

@@ -1,565 +1,199 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Deterministic, non-blocking Cyprus Culture Telegram quiz delivery."""
-
+"""Deterministic, slot-scoped Cyprus Culture Telegram quiz delivery."""
 from __future__ import annotations
-
-import argparse
-import asyncio
+import argparse, asyncio, hashlib, json, os, re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-import json
-import os
 from pathlib import Path
-import re
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
-
-TZ_NAME = "Asia/Nicosia"
-DEFAULT_BANK_PATH = Path("data/cyprus_culture/v2026-10-pilot/questions.jsonl")
-DEFAULT_QUIZ_RECEIPT_DIR = Path(".cache/cy_quiz_delivery")
-DEFAULT_WEATHER_TEXT_RECEIPT_DIR = Path(".cache/cy_text_delivery")
-ALLOWED_PRODUCTION_SCHEDULES = {"0 13 * * *", "45 13 * * *", "15 15 * * *"}
-SUPPORTED_TEMPORAL_CLASSES = {"stable", "date_sensitive", "current_events"}
-SUPPORTED_RIGHTS_STATUSES = {"official_derived_rewrite", "exact_source_wording"}
-SUPPORTED_REVIEW_STATUSES = {"verified_official"}
-PROVENANCE_TIER_RE = re.compile(r"^P[1-3]$")
-SOURCE_TEXT_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-SUPPORTED_CATEGORIES = {
-    "geography",
-    "history",
-    "culture",
-    "institutions",
-    "society",
-    "traditions",
-    "language",
-    "economy",
-    "environment",
-    "other",
-}
-QUESTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
-MAX_QUESTION_CHARS = 300
-MAX_OPTION_CHARS = 100
-MAX_EXPLANATION_CHARS = 200
-MAX_EXPLANATION_LINE_FEEDS = 2
-
+TZ_NAME="Asia/Nicosia"
+DEFAULT_BANK_PATH=Path("data/cyprus_culture/v2026-10-full/questions.jsonl")
+DEFAULT_QUIZ_RECEIPT_DIR=Path(".cache/cy_quiz_delivery")
+DEFAULT_WEATHER_TEXT_RECEIPT_DIR=Path(".cache/cy_text_delivery")
+DEFAULT_FX_DELIVERY_DIR=Path(".cache/cy_fx_delivery")
+QUIZ_SLOTS={"evening_general","fx_economy"}
+EVENING_SCHEDULES={"0 13 * * *","45 13 * * *","15 15 * * *"}
+FX_SCHEDULES={"0 7 * * *"}
+SUPPORTED_TEMPORAL_POLICIES={"stable","bounded","open_ended","snapshot"}
+QUESTION_ID_RE=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+FACT_KEY_RE=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
+HASH_RE=re.compile(r"^sha256:[0-9a-f]{64}$")
+MAX_QUESTION_CHARS=300;MAX_OPTION_CHARS=100;MAX_EXPLANATION_CHARS=200
 
 @dataclass(frozen=True)
 class QuizQuestion:
-    question_id: str
-    rotation_rank: int
-    category: str
-    question_el: str
-    question_ru: str
-    options_el: tuple[str, ...]
-    options_ru: tuple[str, ...]
-    correct_option_index: int
-    explanation_ru: str
-    source: str
-    verified: bool
-    provenance_tier: str
-    source_locator: str
-    answer_source: str
-    rights_status: str
-    publication_mode: str
-    source_text_hash: str
-    as_of: str
-    valid_from: str | None
-    valid_until: str | None
-    review_status: str
-    temporal_class: str
-
+    question_id:str;rotation_rank:int;fact_key:str;source_tier:str;quiz_slot:str;category:str
+    question_el:str;question_ru:str;options_el:tuple[str,...];options_ru:tuple[str,...];correct_option_index:int
+    explanation_ru:str;source:str;verified:bool;provenance_tier:str;source_locator:str;answer_source:str
+    answer_sources:tuple[str,...];rights_status:str;publication_mode:str;source_text_hash:str;review_status:str
+    temporal_policy:str;valid_from:str|None;valid_until:str|None;reference_date:str|None;reference_period:str|None
+    verified_as_of:str;revalidate_after:str|None
 
 @dataclass(frozen=True)
 class QuizPayload:
-    question: str
-    options: tuple[str, ...]
-    correct_option_index: int
-    explanation: str
+    question:str;options:tuple[str,...];correct_option_index:int;explanation:str
 
-
-def _env_on(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _normalize_option(value: str) -> str:
-    return " ".join(str(value or "").split()).casefold()
-
-
-def _valid_iso_date(value: str) -> bool:
-    try:
-        date.fromisoformat(value)
-    except ValueError:
-        return False
+def _env_on(name:str,default:bool=False)->bool:
+    raw=os.getenv(name);return default if raw is None else raw.strip().lower() in {"1","true","yes","on"}
+def _utc_now()->str:return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
+def _valid_date(v:object)->bool:
+    try:date.fromisoformat(str(v or ""))
+    except ValueError:return False
     return True
-
-
-def _positive_int_list(value: Any) -> list[int]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, int) and not isinstance(item, bool) and item > 0]
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", "utf-8")
-    tmp.replace(path)
-
-
-def _reserve_json_exclusive(path: Path, payload: dict[str, Any]) -> bool:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return False
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        raise
+def _norm(v:str)->str:return " ".join(str(v or "").split()).casefold()
+def _atomic(path:Path,payload:dict[str,Any])->None:
+    path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp")
+    tmp.write_text(json.dumps(payload,ensure_ascii=False,indent=2,sort_keys=True)+"\n","utf-8");tmp.replace(path)
+def _reserve(path:Path,payload:dict[str,Any])->bool:
+    path.parent.mkdir(parents=True,exist_ok=True)
+    try:fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    except FileExistsError:return False
+    with os.fdopen(fd,"w",encoding="utf-8") as h:
+        json.dump(payload,h,ensure_ascii=False,indent=2,sort_keys=True);h.write("\n");h.flush();os.fsync(h.fileno())
     return True
+def _opt_date(v:object)->str|None:
+    if v is None:return None
+    s=str(v).strip()
+    if not _valid_date(s):raise ValueError("invalid date")
+    return s
 
-
-def _parse_question_record(record: Any) -> QuizQuestion | None:
-    if not isinstance(record, dict) or record.get("verified") is not True:
-        return None
-
-    question_id = str(record.get("question_id") or "").strip()
-    rotation_rank = record.get("rotation_rank")
-    category = str(record.get("category") or "").strip()
-    question_el = str(record.get("question_el") or "").strip()
-    question_ru = str(record.get("question_ru") or "").strip()
-    options_el = record.get("options_el")
-    options_ru = record.get("options_ru")
-    correct = record.get("correct_option_index")
-    explanation = str(record.get("explanation_ru") or "").strip()
-    source = str(record.get("source") or "").strip()
-    provenance_tier = str(record.get("provenance_tier") or "").strip()
-    source_locator = str(record.get("source_locator") or "").strip()
-    answer_source = str(record.get("answer_source") or "").strip()
-    rights_status = str(record.get("rights_status") or "").strip()
-    publication_mode = str(record.get("publication_mode") or "").strip()
-    source_text_hash = str(record.get("source_text_hash") or "").strip()
-    as_of = str(record.get("as_of") or "").strip()
-    review_status = str(record.get("review_status") or "").strip()
-    temporal_class = str(record.get("temporal_class") or "").strip()
-
-    if "valid_from" not in record or "valid_until" not in record:
-        return None
-    valid_from_raw = record.get("valid_from")
-    valid_until_raw = record.get("valid_until")
-    valid_from = None if valid_from_raw is None else str(valid_from_raw).strip()
-    valid_until = None if valid_until_raw is None else str(valid_until_raw).strip()
-
-    if not QUESTION_ID_RE.fullmatch(question_id):
-        return None
-    if not isinstance(rotation_rank, int) or isinstance(rotation_rank, bool) or rotation_rank < 0:
-        return None
-    if category not in SUPPORTED_CATEGORIES:
-        return None
-    if not question_el or not question_ru or not source:
-        return None
-    if not isinstance(options_el, list) or not isinstance(options_ru, list):
-        return None
-    if len(options_el) not in {3, 4} or len(options_ru) != len(options_el):
-        return None
-
-    clean_el = tuple(str(value or "").strip() for value in options_el)
-    clean_ru = tuple(str(value or "").strip() for value in options_ru)
-    if any(not value for value in clean_el + clean_ru):
-        return None
-
-    normalized_el = {_normalize_option(value) for value in clean_el}
-    normalized_ru = {_normalize_option(value) for value in clean_ru}
-    normalized_pairs = {
-        (_normalize_option(el), _normalize_option(ru))
-        for el, ru in zip(clean_el, clean_ru)
-    }
-    if (
-        len(normalized_el) != len(clean_el)
-        or len(normalized_ru) != len(clean_ru)
-        or len(normalized_pairs) != len(clean_el)
-    ):
-        return None
-
-    if not isinstance(correct, int) or isinstance(correct, bool) or not 0 <= correct < len(clean_el):
-        return None
-    if not PROVENANCE_TIER_RE.fullmatch(provenance_tier):
-        return None
-    if not source_locator or not answer_source.startswith("https://"):
-        return None
-    if rights_status not in SUPPORTED_RIGHTS_STATUSES or publication_mode != rights_status:
-        return None
-    if not SOURCE_TEXT_HASH_RE.fullmatch(source_text_hash):
-        return None
-    if not _valid_iso_date(as_of):
-        return None
-    if review_status not in SUPPORTED_REVIEW_STATUSES:
-        return None
-    if temporal_class not in SUPPORTED_TEMPORAL_CLASSES:
-        return None
-    for value in (valid_from, valid_until):
-        if value is not None and (not value or not _valid_iso_date(value)):
-            return None
-    if valid_from is not None and valid_until is not None and valid_from > valid_until:
-        return None
-    if temporal_class in {"date_sensitive", "current_events"} and (
-        valid_from is None or valid_until is None
-    ):
-        return None
-
-    return QuizQuestion(
-        question_id=question_id,
-        rotation_rank=rotation_rank,
-        category=category,
-        question_el=question_el,
-        question_ru=question_ru,
-        options_el=clean_el,
-        options_ru=clean_ru,
-        correct_option_index=correct,
-        explanation_ru=explanation,
-        source=source,
-        verified=True,
-        provenance_tier=provenance_tier,
-        source_locator=source_locator,
-        answer_source=answer_source,
-        rights_status=rights_status,
-        publication_mode=publication_mode,
-        source_text_hash=source_text_hash,
-        as_of=as_of,
-        valid_from=valid_from,
-        valid_until=valid_until,
-        review_status=review_status,
-        temporal_class=temporal_class,
-    )
-
-def load_verified_questions(path: Path) -> list[QuizQuestion]:
-    if not path.is_file():
-        return []
-    parsed: list[QuizQuestion] = []
-    for raw_line in path.read_text("utf-8").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        question = _parse_question_record(record)
-        if question is not None:
-            parsed.append(question)
-
-    id_counts: dict[str, int] = {}
-    rank_counts: dict[int, int] = {}
-    for question in parsed:
-        id_counts[question.question_id] = id_counts.get(question.question_id, 0) + 1
-        rank_counts[question.rotation_rank] = rank_counts.get(question.rotation_rank, 0) + 1
-
-    return sorted(
-        (
-            question
-            for question in parsed
-            if id_counts[question.question_id] == 1 and rank_counts[question.rotation_rank] == 1
-        ),
-        key=lambda question: question.rotation_rank,
-    )
-
-
-def select_question(
-    questions: list[QuizQuestion],
-    *,
-    quiz_date: date,
-    anchor_date: date,
-) -> QuizQuestion | None:
-    if not questions or quiz_date < anchor_date:
-        return None
-    offset = (quiz_date - anchor_date).days
-    return questions[offset % len(questions)]
-
-
-def assemble_payload(question: QuizQuestion) -> QuizPayload | None:
-    assembled_question = (
-        "🇨🇾 Вопрос о Кипре\n"
-        f"{question.question_el}\n"
-        f"🇷🇺 {question.question_ru}"
-    )
-    options = tuple(
-        f"{el} — {ru}" for el, ru in zip(question.options_el, question.options_ru)
-    )
-    explanation = question.explanation_ru.strip()
-
-    if len(assembled_question) > MAX_QUESTION_CHARS:
-        return None
-    if any(len(option) > MAX_OPTION_CHARS for option in options):
-        return None
-    if len(explanation) > MAX_EXPLANATION_CHARS:
-        return None
-    if explanation.count("\n") > MAX_EXPLANATION_LINE_FEEDS:
-        return None
-
-    return QuizPayload(
-        question=assembled_question,
-        options=options,
-        correct_option_index=question.correct_option_index,
-        explanation=explanation,
-    )
-
-
-def weather_text_receipt_path(weather_target_date: date, directory: Path) -> Path:
-    return directory / f"{weather_target_date.isoformat()}-evening.json"
-
-
-def valid_weather_text_receipt(path: Path, weather_target_date: date) -> bool:
+def _parse_record(r:Any)->QuizQuestion|None:
+    if not isinstance(r,dict) or r.get("verified") is not True:return None
+    required=("question_id","rotation_rank","fact_key","source_tier","quiz_slot","category","question_el","question_ru","options_el","options_ru","correct_option_index","source","provenance_tier","source_locator","answer_source","answer_sources","rights_status","publication_mode","source_text_hash","review_status","temporal_policy","valid_from","valid_until","reference_date","reference_period","verified_as_of","revalidate_after")
+    if any(k not in r for k in required):return None
     try:
-        data = json.loads(path.read_text("utf-8"))
-    except Exception:
-        return False
-    if not isinstance(data, dict):
-        return False
-    if data.get("target_date") != weather_target_date.isoformat():
-        return False
-    if data.get("post_type") != "evening" or data.get("chat_type") != "production":
-        return False
-    chunk_count = data.get("text_chunk_count")
-    if not isinstance(chunk_count, int) or isinstance(chunk_count, bool) or chunk_count < 1:
-        return False
-    if len(_positive_int_list(data.get("telegram_message_ids"))) < chunk_count:
-        return False
-    return isinstance(data.get("sent_at_utc"), str) and bool(data["sent_at_utc"].strip())
+        qid=str(r["question_id"]).strip();fk=str(r["fact_key"]).strip();rank=r["rotation_rank"];slot=str(r["quiz_slot"]);tier=str(r["source_tier"])
+        qel=str(r["question_el"]).strip();qru=str(r["question_ru"]).strip();cat=str(r["category"]).strip()
+        els=tuple(str(x).strip() for x in r["options_el"]);rus=tuple(str(x).strip() for x in r["options_ru"]);correct=r["correct_option_index"]
+        vf=_opt_date(r["valid_from"]);vu=_opt_date(r["valid_until"]);rd=_opt_date(r["reference_date"]);ra=_opt_date(r["revalidate_after"])
+    except Exception:return None
+    if not QUESTION_ID_RE.fullmatch(qid) or not FACT_KEY_RE.fullmatch(fk) or not isinstance(rank,int) or isinstance(rank,bool) or rank<0:return None
+    if slot not in QUIZ_SLOTS or tier not in {"A","B"} or not cat or not qel or not qru:return None
+    if len(els) not in {3,4} or len(els)!=len(rus) or any(not x for x in els+rus):return None
+    if len({_norm(x) for x in els})!=len(els) or len({_norm(x) for x in rus})!=len(rus):return None
+    if not isinstance(correct,int) or isinstance(correct,bool) or not 0<=correct<len(els):return None
+    if r["rights_status"]!="official_derived_rewrite" or r["publication_mode"]!="official_derived_rewrite" or r["review_status"]!="verified_official":return None
+    if "libfile_" in str(r["source_locator"]) or not HASH_RE.fullmatch(str(r["source_text_hash"])):return None
+    sources=r["answer_sources"];ans=str(r["answer_source"])
+    if not ans.startswith("https://") or not isinstance(sources,list) or not sources or any(not str(x).startswith("https://") for x in sources):return None
+    if not re.fullmatch(r"P[1-3]",str(r["provenance_tier"])) or not _valid_date(r["verified_as_of"]):return None
+    p=str(r["temporal_policy"])
+    if p not in SUPPORTED_TEMPORAL_POLICIES:return None
+    if p=="stable" and (vf is not None or vu is not None or ra is not None):return None
+    if p=="bounded" and (vf is None or vu is None or ra is None or vf>vu):return None
+    if p=="open_ended" and (vu is not None or ra is None):return None
+    if p=="snapshot" and (vf is not None or vu is not None or ra is None):return None
+    rp=None if r["reference_period"] is None else str(r["reference_period"]).strip()
+    return QuizQuestion(qid,rank,fk,tier,slot,cat,qel,qru,els,rus,correct,str(r.get("explanation_ru") or ""),str(r["source"]),True,str(r["provenance_tier"]),str(r["source_locator"]),ans,tuple(map(str,sources)),str(r["rights_status"]),str(r["publication_mode"]),str(r["source_text_hash"]),str(r["review_status"]),p,vf,vu,rd,rp,str(r["verified_as_of"]),ra)
 
+def load_verified_questions(path:Path)->list[QuizQuestion]:
+    if not path.is_file():return []
+    parsed=[]
+    for line in path.read_text("utf-8").splitlines():
+        if not line.strip():continue
+        try:r=json.loads(line)
+        except json.JSONDecodeError:continue
+        q=_parse_record(r)
+        if q:parsed.append(q)
+    ids=Counter(q.question_id for q in parsed);ranks=Counter(q.rotation_rank for q in parsed);facts=Counter(q.fact_key for q in parsed)
+    return sorted((q for q in parsed if ids[q.question_id]==ranks[q.rotation_rank]==facts[q.fact_key]==1),key=lambda q:q.rotation_rank)
 
-def quiz_receipt_path(quiz_date: date, directory: Path) -> Path:
-    return directory / f"{quiz_date.isoformat()}.json"
-
-
-def is_natural_production_schedule(event_name: str, event_schedule: str) -> bool:
-    return event_name == "schedule" and event_schedule in ALLOWED_PRODUCTION_SCHEDULES
-
-
-async def _default_send_poll(
-    *,
-    token: str,
-    chat_id: str,
-    payload: QuizPayload,
-) -> Any:
+def temporally_eligible(q:QuizQuestion,quiz_date:date)->bool:
+    ds=quiz_date.isoformat()
+    if q.temporal_policy=="stable":return True
+    if q.temporal_policy=="bounded":return bool(q.valid_from<=ds<=q.valid_until and ds<=q.revalidate_after)
+    if q.temporal_policy=="open_ended":return (q.valid_from is None or q.valid_from<=ds) and ds<=q.revalidate_after
+    if q.temporal_policy=="snapshot":return ds<=q.revalidate_after
+    return False
+def quiz_receipt_path(slot:str,quiz_date:date,directory:Path)->Path:
+    if slot not in QUIZ_SLOTS:raise ValueError("unsupported quiz slot")
+    return directory/slot/f"{quiz_date.isoformat()}.json"
+def _sent_history(slot:str,directory:Path,before:date,eligible:set[str])->set[str]:
+    d=directory/slot
+    if not d.is_dir():return set()
+    used=[]
+    for path in sorted(d.glob("*.json"),reverse=True):
+        try:day=date.fromisoformat(path.stem)
+        except ValueError:continue
+        if day>=before:continue
+        try:o=json.loads(path.read_text("utf-8"))
+        except Exception:continue
+        if o.get("state")!="sent" or o.get("quiz_slot")!=slot:continue
+        qid=str(o.get("question_id") or "")
+        if qid not in eligible:continue
+        if qid in used:break
+        used.append(qid)
+        if len(used)>=len(eligible):break
+    return set() if len(used)>=len(eligible) else set(used)
+def select_question(questions:list[QuizQuestion],*,slot:str,quiz_date:date,bank_version:str,receipt_dir:Path)->QuizQuestion|None:
+    eligible=[q for q in questions if q.quiz_slot==slot and temporally_eligible(q,quiz_date)]
+    if not eligible:return None
+    ids={q.question_id for q in eligible};used=_sent_history(slot,receipt_dir,quiz_date,ids);remaining=[q for q in eligible if q.question_id not in used] or eligible
+    seed=int(hashlib.sha256(f"{bank_version}|{slot}|{quiz_date.isoformat()}".encode()).hexdigest()[:16],16)
+    return remaining[seed%len(remaining)]
+def assemble_payload(q:QuizQuestion)->QuizPayload|None:
+    question=f"🇨🇾 Ερώτηση για την Κύπρο\n{q.question_el}\n🇷🇺 {q.question_ru}";opts=tuple(f"{a} — {b}" for a,b in zip(q.options_el,q.options_ru))
+    if len(question)>MAX_QUESTION_CHARS or any(len(x)>MAX_OPTION_CHARS for x in opts) or len(q.explanation_ru)>MAX_EXPLANATION_CHARS:return None
+    return QuizPayload(question,opts,q.correct_option_index,q.explanation_ru)
+def _weather_path(target:date,d:Path)->Path:return d/f"{target.isoformat()}-evening.json"
+def valid_weather_text_receipt(path:Path,target:date)->bool:
+    try:o=json.loads(path.read_text("utf-8"))
+    except Exception:return False
+    ids=o.get("telegram_message_ids")
+    return isinstance(o,dict) and o.get("target_date")==target.isoformat() and o.get("post_type")=="evening" and o.get("chat_type")=="production" and isinstance(o.get("text_chunk_count"),int) and o["text_chunk_count"]>0 and isinstance(ids,list) and len([x for x in ids if isinstance(x,int) and x>0])>=o["text_chunk_count"] and bool(str(o.get("sent_at_utc") or ""))
+def _fx_path(day:date,d:Path)->Path:return d/f"{day.isoformat()}.json"
+def valid_fx_delivery_receipt(path:Path,day:date)->bool:
+    try:o=json.loads(path.read_text("utf-8"))
+    except Exception:return False
+    return isinstance(o,dict) and o.get("publication_date")==day.isoformat() and o.get("chat_type")=="production" and isinstance(o.get("telegram_message_id"),int) and o["telegram_message_id"]>0 and bool(str(o.get("sent_at_utc") or ""))
+def is_natural_production_schedule(slot:str,event_name:str,event_schedule:str)->bool:
+    allowed=EVENING_SCHEDULES if slot=="evening_general" else FX_SCHEDULES if slot=="fx_economy" else set()
+    return event_name=="schedule" and event_schedule in allowed
+async def _default_send_poll(*,token:str,chat_id:str,payload:QuizPayload)->Any:
     from telegram import Bot
+    return await Bot(token=token).send_poll(chat_id=chat_id,question=payload.question,options=list(payload.options),type="quiz",correct_option_id=payload.correct_option_index,is_anonymous=True,explanation=payload.explanation or None)
 
-    bot = Bot(token=token)
-    return await bot.send_poll(
-        chat_id=chat_id,
-        question=payload.question,
-        options=list(payload.options),
-        type="quiz",
-        correct_option_id=payload.correct_option_index,
-        is_anonymous=True,
-        explanation=payload.explanation or None,
-    )
-
-
-async def deliver_daily_quiz(
-    *,
-    enabled: bool,
-    event_name: str,
-    event_schedule: str,
-    chat_id: str,
-    token: str,
-    bank_path: Path,
-    bank_version: str,
-    anchor_date_text: str,
-    weather_receipt_dir: Path,
-    quiz_receipt_dir: Path,
-    now: datetime | None = None,
-    send_poll: Callable[..., Awaitable[Any]] = _default_send_poll,
-    run_id: str = "",
-    run_attempt: str = "",
-) -> dict[str, Any]:
-    if not enabled:
-        return {"result": "quiz_skipped_disabled"}
-
-    if not is_natural_production_schedule(event_name, event_schedule):
-        return {"result": "quiz_skipped_non_production"}
-
-    if not chat_id or not token:
-        return {"result": "quiz_failed_non_fatal", "reason": "telegram_config_missing"}
-
-    bank_version = str(bank_version or "").strip()
-    anchor_date_text = str(anchor_date_text or "").strip()
-    if not bank_version or not anchor_date_text:
-        return {"result": "quiz_skipped_invalid_question", "reason": "bank_release_unconfigured"}
-
+async def deliver_quiz(*,slot:str,enabled:bool,event_name:str,event_schedule:str,chat_id:str,token:str,bank_path:Path,bank_version:str,anchor_date_text:str,weather_receipt_dir:Path,fx_receipt_dir:Path,quiz_receipt_dir:Path,now:datetime|None=None,send_poll:Callable[...,Awaitable[Any]]=_default_send_poll,run_id:str="",run_attempt:str="")->dict[str,Any]:
+    if slot not in QUIZ_SLOTS:return {"result":"quiz_failed_non_fatal","reason":"unsupported_slot"}
+    if not enabled:return {"result":"quiz_skipped_disabled","quiz_slot":slot}
+    if not is_natural_production_schedule(slot,event_name,event_schedule):return {"result":"quiz_skipped_non_production","quiz_slot":slot}
+    if not chat_id or not token:return {"result":"quiz_failed_non_fatal","reason":"telegram_config_missing","quiz_slot":slot}
+    try:anchor=date.fromisoformat(str(anchor_date_text or ""))
+    except ValueError:return {"result":"quiz_skipped_invalid_question","reason":"invalid_anchor_date","quiz_slot":slot}
+    local=now or datetime.now(ZoneInfo(TZ_NAME));local=local.replace(tzinfo=ZoneInfo(TZ_NAME)) if local.tzinfo is None else local.astimezone(ZoneInfo(TZ_NAME));qdate=local.date()
+    if qdate<anchor:return {"result":"quiz_skipped_invalid_question","reason":"rotation_not_started","quiz_slot":slot}
+    if slot=="evening_general":
+        target=qdate+timedelta(days=1)
+        if not valid_weather_text_receipt(_weather_path(target,weather_receipt_dir),target):return {"result":"quiz_skipped_weather_not_delivered","quiz_slot":slot,"quiz_date":qdate.isoformat()}
+    elif not valid_fx_delivery_receipt(_fx_path(qdate,fx_receipt_dir),qdate):
+        return {"result":"quiz_skipped_fx_not_delivered","quiz_slot":slot,"quiz_date":qdate.isoformat()}
+    qs=load_verified_questions(bank_path);selected=select_question(qs,slot=slot,quiz_date=qdate,bank_version=bank_version,receipt_dir=quiz_receipt_dir)
+    if selected is None:return {"result":"quiz_skipped_no_eligible_questions","quiz_slot":slot,"quiz_date":qdate.isoformat()}
+    payload=assemble_payload(selected)
+    if payload is None:return {"result":"quiz_skipped_invalid_question","reason":"telegram_payload_limits","quiz_slot":slot,"question_id":selected.question_id}
+    path=quiz_receipt_path(slot,qdate,quiz_receipt_dir)
+    if path.exists():return {"result":"quiz_skipped_receipt_exists","quiz_slot":slot,"question_id":selected.question_id,"receipt_path":str(path)}
+    reservation={"quiz_slot":slot,"quiz_date":qdate.isoformat(),"chat_type":"production","question_id":selected.question_id,"bank_version":bank_version,"state":"reserved","run_id":str(run_id or ""),"run_attempt":str(run_attempt or ""),"reserved_at_utc":_utc_now()}
+    if slot=="evening_general":reservation["weather_target_date"]=(qdate+timedelta(days=1)).isoformat()
+    else:reservation["publication_date"]=qdate.isoformat()
+    if not _reserve(path,reservation):return {"result":"quiz_skipped_receipt_exists","quiz_slot":slot,"question_id":selected.question_id,"receipt_path":str(path)}
     try:
-        anchor_date = date.fromisoformat(anchor_date_text)
-    except ValueError:
-        return {"result": "quiz_skipped_invalid_question", "reason": "invalid_anchor_date"}
+        msg=await send_poll(token=token,chat_id=chat_id,payload=payload);mid=getattr(msg,"message_id",None);poll=getattr(msg,"poll",None);pid=str(getattr(poll,"id","") or "").strip()
+        if not isinstance(mid,int) or mid<=0 or not pid:raise RuntimeError("Telegram quiz response missing message_id/poll_id")
+        sent=dict(reservation);sent.update({"state":"sent","telegram_message_id":mid,"poll_id":pid,"sent_at_utc":_utc_now()});_atomic(path,sent)
+        return {"result":"quiz_sent","quiz_slot":slot,"question_id":selected.question_id,"telegram_message_id":mid,"poll_id":pid,"receipt_path":str(path)}
+    except Exception as exc:return {"result":"quiz_failed_non_fatal","reason":exc.__class__.__name__,"quiz_slot":slot,"question_id":selected.question_id,"receipt_path":str(path)}
 
-    local_now = now or datetime.now(ZoneInfo(TZ_NAME))
-    if local_now.tzinfo is None:
-        local_now = local_now.replace(tzinfo=ZoneInfo(TZ_NAME))
-    else:
-        local_now = local_now.astimezone(ZoneInfo(TZ_NAME))
-    quiz_date = local_now.date()
-    weather_target_date = quiz_date + timedelta(days=1)
-
-    weather_receipt = weather_text_receipt_path(weather_target_date, weather_receipt_dir)
-    if not valid_weather_text_receipt(weather_receipt, weather_target_date):
-        return {
-            "result": "quiz_skipped_weather_not_delivered",
-            "quiz_date": quiz_date.isoformat(),
-            "weather_target_date": weather_target_date.isoformat(),
-        }
-
-    if not bank_path.is_file():
-        return {
-            "result": "quiz_skipped_no_bank",
-            "quiz_date": quiz_date.isoformat(),
-            "weather_target_date": weather_target_date.isoformat(),
-        }
-
-    questions = load_verified_questions(bank_path)
-    if not questions:
-        return {
-            "result": "quiz_skipped_no_verified_questions",
-            "quiz_date": quiz_date.isoformat(),
-            "weather_target_date": weather_target_date.isoformat(),
-        }
-
-    selected = select_question(questions, quiz_date=quiz_date, anchor_date=anchor_date)
-    if selected is None:
-        return {
-            "result": "quiz_skipped_invalid_question",
-            "reason": "rotation_not_started",
-            "quiz_date": quiz_date.isoformat(),
-            "weather_target_date": weather_target_date.isoformat(),
-        }
-
-    payload = assemble_payload(selected)
-    if payload is None:
-        return {
-            "result": "quiz_skipped_invalid_question",
-            "reason": "telegram_payload_limits",
-            "question_id": selected.question_id,
-            "quiz_date": quiz_date.isoformat(),
-            "weather_target_date": weather_target_date.isoformat(),
-        }
-
-    receipt_path = quiz_receipt_path(quiz_date, quiz_receipt_dir)
-    if receipt_path.exists():
-        return {
-            "result": "quiz_skipped_receipt_exists",
-            "question_id": selected.question_id,
-            "quiz_date": quiz_date.isoformat(),
-            "weather_target_date": weather_target_date.isoformat(),
-            "receipt_path": str(receipt_path),
-        }
-
-    reservation = {
-        "quiz_date": quiz_date.isoformat(),
-        "weather_target_date": weather_target_date.isoformat(),
-        "chat_type": "production",
-        "question_id": selected.question_id,
-        "bank_version": bank_version,
-        "state": "reserved",
-        "run_id": str(run_id or ""),
-        "run_attempt": str(run_attempt or ""),
-        "reserved_at_utc": _utc_now(),
-    }
-    if not _reserve_json_exclusive(receipt_path, reservation):
-        return {
-            "result": "quiz_skipped_receipt_exists",
-            "question_id": selected.question_id,
-            "quiz_date": quiz_date.isoformat(),
-            "weather_target_date": weather_target_date.isoformat(),
-            "receipt_path": str(receipt_path),
-        }
-
-    try:
-        message = await send_poll(
-            token=token,
-            chat_id=chat_id,
-            payload=payload,
-        )
-        message_id = getattr(message, "message_id", None)
-        poll = getattr(message, "poll", None)
-        poll_id = str(getattr(poll, "id", "") or "").strip()
-        if not isinstance(message_id, int) or message_id <= 0 or not poll_id:
-            raise RuntimeError("Telegram quiz response missing message_id/poll_id")
-
-        sent_receipt = dict(reservation)
-        sent_receipt.update(
-            {
-                "state": "sent",
-                "telegram_message_id": message_id,
-                "poll_id": poll_id,
-                "sent_at_utc": _utc_now(),
-            }
-        )
-        _atomic_write_json(receipt_path, sent_receipt)
-        return {
-            "result": "quiz_sent",
-            "question_id": selected.question_id,
-            "quiz_date": quiz_date.isoformat(),
-            "weather_target_date": weather_target_date.isoformat(),
-            "telegram_message_id": message_id,
-            "poll_id": poll_id,
-            "receipt_path": str(receipt_path),
-        }
-    except Exception as exc:
-        return {
-            "result": "quiz_failed_non_fatal",
-            "reason": exc.__class__.__name__,
-            "question_id": selected.question_id,
-            "quiz_date": quiz_date.isoformat(),
-            "weather_target_date": weather_target_date.isoformat(),
-            "receipt_path": str(receipt_path),
-        }
-
-
-async def run_from_environment() -> dict[str, Any]:
-    return await deliver_daily_quiz(
-        enabled=_env_on("CY_CULTURE_QUIZ_ENABLED", False),
-        event_name=os.getenv("GITHUB_EVENT_NAME", ""),
-        event_schedule=os.getenv("GITHUB_EVENT_SCHEDULE", ""),
-        chat_id=(os.getenv("CHANNEL_ID") or "").strip(),
-        token=(os.getenv("TELEGRAM_TOKEN") or "").strip(),
-        bank_path=Path(os.getenv("CY_CULTURE_QUIZ_BANK_PATH", str(DEFAULT_BANK_PATH))),
-        bank_version=os.getenv("CY_CULTURE_QUIZ_BANK_VERSION", ""),
-        anchor_date_text=os.getenv("CY_CULTURE_QUIZ_ANCHOR_DATE", ""),
-        weather_receipt_dir=Path(
-            os.getenv("CY_TEXT_DELIVERY_DIR", str(DEFAULT_WEATHER_TEXT_RECEIPT_DIR))
-        ),
-        quiz_receipt_dir=Path(
-            os.getenv("CY_QUIZ_DELIVERY_DIR", str(DEFAULT_QUIZ_RECEIPT_DIR))
-        ),
-        run_id=os.getenv("GITHUB_RUN_ID", ""),
-        run_attempt=os.getenv("GITHUB_RUN_ATTEMPT", ""),
-    )
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Cyprus Culture daily Telegram quiz")
-    parser.parse_args()
-    try:
-        result = asyncio.run(run_from_environment())
-    except BaseException as exc:
-        result = {
-            "result": "quiz_failed_non_fatal",
-            "reason": exc.__class__.__name__,
-        }
-    print("CY_CULTURE_QUIZ_RESULT=" + json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+async def run_from_environment(slot:str)->dict[str,Any]:
+    flag="CY_CULTURE_QUIZ_EVENING_ENABLED" if slot=="evening_general" else "CY_CULTURE_QUIZ_FX_ENABLED"
+    return await deliver_quiz(slot=slot,enabled=_env_on(flag,False),event_name=os.getenv("GITHUB_EVENT_NAME",""),event_schedule=os.getenv("GITHUB_EVENT_SCHEDULE",""),chat_id=(os.getenv("CHANNEL_ID") or "").strip(),token=(os.getenv("TELEGRAM_TOKEN") or "").strip(),bank_path=Path(os.getenv("CY_CULTURE_QUIZ_BANK_PATH",str(DEFAULT_BANK_PATH))),bank_version=os.getenv("CY_CULTURE_QUIZ_BANK_VERSION",""),anchor_date_text=os.getenv("CY_CULTURE_QUIZ_ANCHOR_DATE",""),weather_receipt_dir=Path(os.getenv("CY_TEXT_DELIVERY_DIR",str(DEFAULT_WEATHER_TEXT_RECEIPT_DIR))),fx_receipt_dir=Path(os.getenv("CY_FX_DELIVERY_DIR",str(DEFAULT_FX_DELIVERY_DIR))),quiz_receipt_dir=Path(os.getenv("CY_QUIZ_DELIVERY_DIR",str(DEFAULT_QUIZ_RECEIPT_DIR))),run_id=os.getenv("GITHUB_RUN_ID",""),run_attempt=os.getenv("GITHUB_RUN_ATTEMPT",""))
+def main()->int:
+    ap=argparse.ArgumentParser(description="Cyprus Culture Telegram quiz");ap.add_argument("--slot",required=True,choices=sorted(QUIZ_SLOTS));args=ap.parse_args()
+    try:result=asyncio.run(run_from_environment(args.slot))
+    except BaseException as exc:result={"result":"quiz_failed_non_fatal","reason":exc.__class__.__name__,"quiz_slot":args.slot}
+    print("CY_CULTURE_QUIZ_RESULT="+json.dumps(result,ensure_ascii=False,sort_keys=True));return 0
+if __name__=="__main__":raise SystemExit(main())
