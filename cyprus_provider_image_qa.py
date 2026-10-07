@@ -27,6 +27,11 @@ QA_CHECK_KEYS = (
 )
 
 
+DEFAULT_QA_MODEL = "gemini-3.7-flash"
+DEFAULT_QA_AVAILABILITY_FALLBACK_MODEL = "gemini-2.5-flash"
+_RETRYABLE_QA_AVAILABILITY_STATUS_CODES = frozenset({502, 503, 504})
+
+
 @dataclass(frozen=True)
 class ProviderImageQAVerdict:
     status: str
@@ -147,7 +152,57 @@ def _structured_verdict(payload: object, *, model: str = "") -> ProviderImageQAV
     )
 
 
-def _gemini_structured_evaluator(image_path: Path, request: Mapping[str, Any]) -> Mapping[str, Any]:
+
+def _provider_image_qa_primary_model() -> str:
+    return (
+        (os.getenv("CY_PROVIDER_IMAGE_QA_MODEL") or "").strip()
+        or (os.getenv("GEMINI_MODEL") or "").strip()
+        or DEFAULT_QA_MODEL
+    )
+
+
+def _provider_image_qa_availability_fallback_model(primary_model: str) -> str:
+    """Fallback only for the canonical 3.7 primary; explicit non-default models stay single-model."""
+    return (
+        DEFAULT_QA_AVAILABILITY_FALLBACK_MODEL
+        if str(primary_model or "").strip() == DEFAULT_QA_MODEL
+        else ""
+    )
+
+
+def _exception_status_code(exc: Exception) -> int | None:
+    raw = getattr(exc, "status_code", None)
+    if raw is None:
+        raw = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_retryable_model_availability_failure(exc: Exception) -> bool:
+    status_code = _exception_status_code(exc)
+    if status_code in _RETRYABLE_QA_AVAILABILITY_STATUS_CODES:
+        return True
+    message = str(exc).casefold()
+    return any(
+        token in message
+        for token in (
+            "503",
+            "service unavailable",
+            "temporarily unavailable",
+            "high demand",
+            "overloaded",
+        )
+    )
+
+
+def _gemini_structured_evaluator(
+    image_path: Path,
+    request: Mapping[str, Any],
+    *,
+    model: str | None = None,
+) -> Mapping[str, Any]:
     api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
@@ -156,11 +211,7 @@ def _gemini_structured_evaluator(image_path: Path, request: Mapping[str, Any]) -
     except Exception as exc:
         raise RuntimeError("OpenAI SDK is unavailable") from exc
 
-    model = (
-        (os.getenv("CY_PROVIDER_IMAGE_QA_MODEL") or "").strip()
-        or (os.getenv("GEMINI_MODEL") or "").strip()
-        or "gemini-3.7-flash"
-    )
+    model = str(model or _provider_image_qa_primary_model()).strip()
     mime_type = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
     encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
     data_url = f"data:{mime_type};base64,{encoded}"
@@ -220,6 +271,38 @@ def _gemini_structured_evaluator(image_path: Path, request: Mapping[str, Any]) -
     return parsed
 
 
+
+def _evaluate_default_gemini_with_availability_fallback(
+    image_path: Path,
+    request: Mapping[str, Any],
+    *,
+    evaluator: Callable[..., object] | None = None,
+) -> ProviderImageQAVerdict:
+    """Evaluate with one 3.7→2.5 retry only for temporary model availability failures."""
+    call_evaluator = evaluator or _gemini_structured_evaluator
+    primary_model = _provider_image_qa_primary_model()
+    try:
+        payload = call_evaluator(image_path, request, model=primary_model)
+    except Exception as exc:
+        fallback_model = _provider_image_qa_availability_fallback_model(primary_model)
+        if not fallback_model or not _is_retryable_model_availability_failure(exc):
+            return _unavailable(
+                "qa_unavailable",
+                model=primary_model,
+                error_type=exc.__class__.__name__,
+            )
+        try:
+            fallback_payload = call_evaluator(image_path, request, model=fallback_model)
+        except Exception as fallback_exc:
+            return _unavailable(
+                "qa_unavailable",
+                model=fallback_model,
+                error_type=fallback_exc.__class__.__name__,
+            )
+        return _structured_verdict(fallback_payload, model=fallback_model)
+    return _structured_verdict(payload, model=primary_model)
+
+
 def evaluate_cyprus_provider_image_qa(
     image_path: str | Path,
     *,
@@ -228,32 +311,25 @@ def evaluate_cyprus_provider_image_qa(
     visual_context: object,
     structured_evaluator: Callable[[Path, Mapping[str, Any]], object] | None = None,
 ) -> ProviderImageQAVerdict:
-    """Return a strict deterministic verdict; any QA failure is unavailable/fail-closed."""
+    """Return a strict deterministic verdict; QA failure never accepts an image."""
     path = Path(image_path)
     request = build_provider_image_qa_request(
         selected_scene=selected_scene,
         composition=composition,
         visual_context=visual_context,
     )
-    evaluator = structured_evaluator or _gemini_structured_evaluator
-    model = (
-        "injected"
-        if structured_evaluator is not None
-        else (
-            (os.getenv("CY_PROVIDER_IMAGE_QA_MODEL") or "").strip()
-            or (os.getenv("GEMINI_MODEL") or "").strip()
-            or "gemini-3.7-flash"
-        )
-    )
+    if structured_evaluator is None:
+        return _evaluate_default_gemini_with_availability_fallback(path, request)
+
     try:
-        payload = evaluator(path, request)
+        payload = structured_evaluator(path, request)
     except Exception as exc:
         return _unavailable(
             "qa_unavailable",
-            model=model,
+            model="injected",
             error_type=exc.__class__.__name__,
         )
-    return _structured_verdict(payload, model=model)
+    return _structured_verdict(payload, model="injected")
 
 
 __all__ = [
