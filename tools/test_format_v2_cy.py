@@ -679,15 +679,26 @@ def cy_evening_single_green_city_does_not_claim_everywhere() -> None:
     assert "🏭 Воздух по городам: Никосия 🟢" in text
 
 
-def cy_evening_incomplete_five_city_air_does_not_claim_everywhere() -> None:
-    expected = "🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟢 · Паралимни 🟢 · Тродос 🟢"
+def cy_evening_one_missing_city_all_available_green_collapses_with_scope() -> None:
     source = ALL_GREEN_CITY_AIR_EVENING.replace(
         "🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Ларнака 🟢 · Пафос 🟢 · Паралимни 🟢",
-        expected,
+        "🏭 Воздух по городам: Никосия 🟢 · Лимассол 🟢 · Пафос 🟢 · Паралимни 🟢 · Тродос 🟢",
+    )
+    text = _safe_test_evening_pipeline(source)
+    assert "🏭 Воздух по доступным городам: везде 🟢" in text
+    assert "🏭 Воздух по городам: везде 🟢" not in text
+    assert "Ларнака 🟢" not in text
+
+
+def cy_evening_one_non_green_city_keeps_expanded_city_air() -> None:
+    source = ALL_GREEN_CITY_AIR_EVENING.replace(
+        "Ларнака 🟢",
+        "Ларнака 🟡 PM₂.₅ 18",
     )
     text = _safe_test_evening_pipeline(source)
     assert "🏭 Воздух по городам: везде 🟢" not in text
-    assert expected in text
+    assert "🏭 Воздух по доступным городам: везде 🟢" not in text
+    assert "Ларнака 🟡 (PM₂.₅ 18)" in text
 
 
 def cy_evening_city_air_line_is_compact_and_parenthesized() -> None:
@@ -1158,7 +1169,8 @@ def main() -> None:
         cy_evening_surf_with_valid_wave_is_cautiously_positive,
         cy_evening_all_green_city_air_collapses_to_summary,
         cy_evening_single_green_city_does_not_claim_everywhere,
-        cy_evening_incomplete_five_city_air_does_not_claim_everywhere,
+        cy_evening_one_missing_city_all_available_green_collapses_with_scope,
+        cy_evening_one_non_green_city_keeps_expanded_city_air,
         cy_evening_city_air_line_is_compact_and_parenthesized,
         cy_evening_integrated_guidance_is_not_repetitive,
         cy_evening_generic_warning_does_not_trigger_storm,
