@@ -2062,6 +2062,57 @@ def semantic_qa_unavailable_is_called_once_and_fails_closed_to_local_cover() -> 
     assert unavailable[0]["semantic_qa"]["status"] == "unavailable"
 
 
+def ai_primary_presentation_full_bleed_metadata_and_fact_counts_are_safe() -> None:
+    source_color = (61, 101, 141)
+    fact_sets = (
+        ["🔥 ДО 30° · ЛАРНАКА"],
+        ["🔥 ДО 30° · ЛАРНАКА", "💨 ПОРЫВЫ ДО 7.2 М/С У МОРЯ"],
+        ["🔥 ДО 30° · ЛАРНАКА", "💨 ПОРЫВЫ ДО 7.2 М/С У МОРЯ", "🌊 МОРЕ 25–26°"],
+    )
+    with tempfile.TemporaryDirectory() as tmp_name:
+        root = Path(tmp_name)
+        source = root / "raw.png"
+        Image.new("RGB", (1080, 1350), source_color).save(source)
+        source_sha = _sha256(source)
+
+        for index, facts in enumerate(fact_sets, start=1):
+            rendered = daily_ai_presentation.render_branded_ai_presentation(
+                source,
+                headline="КИПР ЗАВТРА",
+                date_value="2026-10-08",
+                facts=facts,
+                branding="VAYBOMETER · CYPRUS",
+                output_path=root / f"presentation_{index}.png",
+            )
+            output = Path(str(rendered["path"]))
+            assert rendered["width"] == 1080
+            assert rendered["height"] == 1350
+            assert rendered["presentation_version"] == "cy_ai_primary_branded_v2_full_bleed"
+            assert rendered["layout_mode"] == "full_bleed_glass"
+            assert rendered["source_sha256"] == source_sha
+            assert rendered["published_sha256"] == _sha256(output)
+            assert rendered["published_sha256"] != source_sha
+            assert rendered["facts"] == facts
+            assert len(rendered["fact_layout"]) == index
+            assert rendered["title_panel_bbox"] == [42, 84, 710, 230]
+            assert rendered["date_panel_bbox"] == [865, 84, 1034, 240]
+            assert rendered["facts_panel_bbox"] == [38, 828, 762, 1232]
+            with Image.open(output) as image:
+                assert image.size == (1080, 1350)
+                assert image.info["presentation_version"] == "cy_ai_primary_branded_v2_full_bleed"
+                assert image.info["layout_mode"] == "full_bleed_glass"
+                assert image.info["source_sha256"] == source_sha
+                # Outside all glass overlays, the publication remains the source image.
+                assert image.getpixel((20, 1300)) == source_color
+                assert image.getpixel((1040, 650)) == source_color
+                # Inside the title glass panel, the publication is deterministically overlaid.
+                assert image.getpixel((50, 100)) != source_color
+            for fact in rendered["fact_layout"]:
+                for bbox in fact["bboxes"]:
+                    assert 78 <= bbox[0] <= bbox[2] <= 724
+                    assert 865 <= bbox[1] <= bbox[3] <= 1198
+
+
 def ai_primary_presentation_keeps_raw_history_and_published_receipt_separate() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
         outcome = _run_stage_failure_case(Path(tmp_name))
@@ -2077,6 +2128,8 @@ def ai_primary_presentation_keeps_raw_history_and_published_receipt_separate() -
         with Image.open(published) as rendered:
             assert rendered.size == (1080, 1350)
             assert rendered.info["presentation_version"] == daily_ai_presentation.PRESENTATION_VERSION
+            assert rendered.info["layout_mode"] == "full_bleed_glass"
+            assert rendered.info["source_sha256"] == _sha256(source)
         assert receipt is not None
         assert history_entries
         assert receipt["sha256"] == _sha256(published)
@@ -2114,6 +2167,7 @@ def main() -> None:
         local_cover_exact_duplicate_contract_is_exact_only,
         semantic_qa_rejection_exhausts_provider_candidates_then_uses_local_cover,
         semantic_qa_unavailable_is_called_once_and_fails_closed_to_local_cover,
+        ai_primary_presentation_full_bleed_metadata_and_fact_counts_are_safe,
         ai_primary_presentation_keeps_raw_history_and_published_receipt_separate,
         ai_presentation_failure_falls_through_to_existing_local_cover,
         forecast_threshold_warning_copy_is_provenance_safe,
