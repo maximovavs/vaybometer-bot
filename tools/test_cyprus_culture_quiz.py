@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import asyncio,hashlib,json,tempfile,sys
+import asyncio,hashlib,json,re,tempfile,sys
 from collections import Counter
 from datetime import date,datetime,timedelta
 from pathlib import Path
@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 import cyprus_culture_quiz as quiz
 import cyprus_fx_delivery as fxdel
-BANK=ROOT/"data/cyprus_culture/v2026-10-full/questions.jsonl";MAN=ROOT/"data/cyprus_culture/v2026-10-full/manifest.json"
+BANK=ROOT/"data/cyprus_culture/v2026-10-exam-core-v2/questions.jsonl";MAN=ROOT/"data/cyprus_culture/v2026-10-exam-core-v2/manifest.json"
 def check(c,m):
     if not c:raise AssertionError(m)
 def write_json(p,o):p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(o,ensure_ascii=False)+"\n","utf-8")
@@ -17,37 +17,44 @@ def weather(p,d):write_json(p,{"target_date":d.isoformat(),"post_type":"evening"
 def fx(p,d):write_json(p,{"publication_date":d.isoformat(),"chat_type":"production","telegram_message_id":2,"sent_at_utc":"2026-10-07T07:01:00Z"})
 def test_bank_contract():
     raw=BANK.read_bytes();m=json.loads(MAN.read_text("utf-8"));qs=quiz.load_verified_questions(BANK)
-    check(len(qs)==213 and m["question_count"]==213,"count");check(m["bank_sha256"]=="sha256:"+hashlib.sha256(raw).hexdigest(),"sha")
-    check(Counter(q.source_tier for q in qs)=={"A":113,"B":100},"tiers");check(len({q.fact_key for q in qs})==213 and len({q.rotation_rank for q in qs})==213,"unique")
+    check(len(qs)==64 and m["question_count"]==64,"count");check(m["bank_sha256"]=="sha256:"+hashlib.sha256(raw).hexdigest(),"sha")
+    check(Counter(q.source_tier for q in qs)=={"A":54,"B":10},"tiers");check(len({q.fact_key for q in qs})==64 and len({q.rotation_rank for q in qs})==64,"unique")
     check({q.rights_status for q in qs}=={"official_derived_rewrite"} and {q.review_status for q in qs}=={"verified_official"},"rights/review")
-    check(all("libfile_" not in q.source_locator for q in qs) and m["source_contract"]["review_reject_imported"]==0,"private/review")
-    check(Counter(q.temporal_policy for q in qs)=={"stable":160,"open_ended":46,"bounded":4,"snapshot":3},"temporal")
-    a21=next(q for q in qs if q.question_id=="full-a-021");a97=next(q for q in qs if q.question_id=="full-a-097")
-    check(a21.temporal_policy=="stable" and a21.reference_date=="2026-05-24","A21");check(a97.reference_date=="2025-05-02" and a97.valid_from is None,"A97")
+    check(all("libfile_" not in q.source_locator for q in qs) and m["source_contract"]["official_answer_sources_required"] is True,"private/source")
+    check(Counter(q.temporal_policy for q in qs)=={"stable":44,"open_ended":15,"bounded":2,"snapshot":3},"temporal")
+    a21=next(q for q in qs if q.question_id=="full-a-021")
+    check(a21.temporal_policy=="stable" and a21.reference_date=="2026-05-24","A21")
+    cyr=re.compile(r"[А-Яа-яЁё]");greek=re.compile(r"[\u0370-\u03FF\u1F00-\u1FFF]")
+    check(all("VayboMeter" not in q.question_el and "VayboMeter" not in q.question_ru for q in qs),"no VayboMeter prefix")
+    check(all(not cyr.search(q.question_el) and all(not cyr.search(x) for x in q.options_el) for q in qs),"Greek purity")
+    check(all(all(not greek.search(x) for x in q.options_ru) for q in qs),"Russian option purity")
+    check(all(all("…" not in x for x in q.options_el+q.options_ru) for q in qs),"no truncated options")
+    check(all(q.quiz_slot=="fx_economy" for q in qs if q.category=="economy"),"economy only FX")
+    check(m["exam_reference_counts"]=={"hallouminati":39,"official_core":25},"exam refs")
 def test_temporal():
-    qs=quiz.load_verified_questions(BANK);b=next(q for q in qs if q.question_id=="full-b-eco-013")
-    check(not quiz.temporally_eligible(b,date(2026,9,30)) and quiz.temporally_eligible(b,date(2026,10,1)),"bounded start")
+    qs=quiz.load_verified_questions(BANK);b=next(q for q in qs if q.question_id=="full-b-eco-010")
+    check(not quiz.temporally_eligible(b,date(2026,4,30)) and quiz.temporally_eligible(b,date(2026,5,1)),"bounded start")
     check(not quiz.temporally_eligible(b,date(2026,11,6)),"bounded freshness")
     o=next(q for q in qs if q.temporal_policy=="open_ended" and q.revalidate_after=="2026-10-13")
     check(quiz.temporally_eligible(o,date(2026,10,13)) and not quiz.temporally_eligible(o,date(2026,10,14)),"open ttl")
     s=next(q for q in qs if q.temporal_policy=="snapshot");check(s.valid_from is None and s.valid_until is None and not quiz.temporally_eligible(s,date(2026,10,14)),"snapshot")
 def test_rotation_full_cycle_and_slots():
     qs=quiz.load_verified_questions(BANK);g={q.question_id for q in qs if q.quiz_slot=="evening_general"};f={q.question_id for q in qs if q.quiz_slot=="fx_economy"}
-    check(len(g)==181 and len(f)==32 and not(g&f),"slots")
+    check(len(g)==48 and len(f)==16 and not(g&f),"slots")
     with tempfile.TemporaryDirectory() as td:
         d=Path(td);day=date(2026,10,7);eligible=[q for q in qs if q.quiz_slot=="fx_economy" and quiz.temporally_eligible(q,day)]
         seen=[]
         for i in range(len(eligible)):
-            q=quiz.select_question(qs,slot="fx_economy",quiz_date=day,bank_version="v2026-10-full",receipt_dir=d);check(q and q.question_id not in seen,"repeat before pool exhausted");seen.append(q.question_id)
+            q=quiz.select_question(qs,slot="fx_economy",quiz_date=day,bank_version="v2026-10-exam-core-v2",receipt_dir=d);check(q and q.question_id not in seen,"repeat before pool exhausted");seen.append(q.question_id)
             pd=day-timedelta(days=i+1);write_json(quiz.quiz_receipt_path("fx_economy",pd,d),{"state":"sent","quiz_slot":"fx_economy","question_id":q.question_id})
         check(len(seen)==len(eligible),"full cycle")
-        e=Path(td)/"empty";q1=quiz.select_question(qs,slot="evening_general",quiz_date=day,bank_version="v2026-10-full",receipt_dir=e);q2=quiz.select_question(qs,slot="evening_general",quiz_date=day,bank_version="v2026-10-full",receipt_dir=e);check(q1.question_id==q2.question_id,"deterministic")
+        e=Path(td)/"empty";q1=quiz.select_question(qs,slot="evening_general",quiz_date=day,bank_version="v2026-10-exam-core-v2",receipt_dir=e);q2=quiz.select_question(qs,slot="evening_general",quiz_date=day,bank_version="v2026-10-exam-core-v2",receipt_dir=e);check(q1.question_id==q2.question_id,"deterministic")
 def test_receipts_dependencies_and_nonfatal():
     async def go():
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);qd=root/"q";wd=root/"w";fd=root/"fx";now=datetime(2026,10,7,16,0,tzinfo=ZoneInfo("Asia/Nicosia"));weather(wd/"2026-10-08-evening.json",date(2026,10,8));fx(fd/"2026-10-07.json",date(2026,10,7))
             async def send(**kw):return SimpleNamespace(message_id=77,poll=SimpleNamespace(id="p77"))
-            common=dict(chat_id="1",token="x",bank_path=BANK,bank_version="v2026-10-full",anchor_date_text="2026-10-07",weather_receipt_dir=wd,fx_receipt_dir=fd,now=now,send_poll=send)
+            common=dict(chat_id="1",token="x",bank_path=BANK,bank_version="v2026-10-exam-core-v2",anchor_date_text="2026-10-07",weather_receipt_dir=wd,fx_receipt_dir=fd,now=now,send_poll=send)
             r1=await quiz.deliver_quiz(slot="evening_general",enabled=True,event_name="schedule",event_schedule="0 13 * * *",quiz_receipt_dir=qd,**common);check(r1["result"]=="quiz_sent","evening")
             r2=await quiz.deliver_quiz(slot="fx_economy",enabled=True,event_name="schedule",event_schedule="0 7 * * *",quiz_receipt_dir=qd,**common);check(r2["result"]=="quiz_sent","fx")
             check(quiz.quiz_receipt_path("evening_general",date(2026,10,7),qd).exists() and quiz.quiz_receipt_path("fx_economy",date(2026,10,7),qd).exists(),"coexist")
