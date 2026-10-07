@@ -39,6 +39,7 @@ from PIL import Image, ImageDraw  # type: ignore  # noqa: E402
 import cyprus_visual_dedup  # noqa: E402
 import cyprus_image_recovery  # noqa: E402
 import daily_ai_presentation  # noqa: E402
+import cyprus_provider_image_qa  # noqa: E402
 from cyprus_provider_image_qa import evaluate_cyprus_provider_image_qa  # noqa: E402
 from cyprus_image_recovery import (  # noqa: E402
     LOCAL_INFORMATIVE_COVER_BRANDING,
@@ -1839,6 +1840,147 @@ def _semantic_qa_checks(**overrides: bool) -> dict[str, object]:
     return {"checks": checks}
 
 
+
+class _RetryableQA503(RuntimeError):
+    status_code = 503
+
+
+def _evaluate_default_semantic_qa_with(
+    evaluator,
+    *,
+    cy_provider_model: str | None = None,
+    gemini_model: str | None = None,
+):
+    old_cy = os.environ.get("CY_PROVIDER_IMAGE_QA_MODEL")
+    old_gemini = os.environ.get("GEMINI_MODEL")
+    try:
+        if cy_provider_model is None:
+            os.environ.pop("CY_PROVIDER_IMAGE_QA_MODEL", None)
+        else:
+            os.environ["CY_PROVIDER_IMAGE_QA_MODEL"] = cy_provider_model
+        if gemini_model is None:
+            os.environ.pop("GEMINI_MODEL", None)
+        else:
+            os.environ["GEMINI_MODEL"] = gemini_model
+
+        with tempfile.TemporaryDirectory() as tmp_name:
+            image_path = Path(tmp_name) / "candidate.jpg"
+            image_path.write_bytes(b"offline-fixture")
+            request = cyprus_provider_image_qa.build_provider_image_qa_request(
+                selected_scene="coastal_promenade",
+                composition="Linear seafront composition with the promenade as the main structure",
+                visual_context={"visibility_condition": "clear", "weather_main": "clear"},
+            )
+            return cyprus_provider_image_qa._evaluate_default_gemini_with_availability_fallback(
+                image_path,
+                request,
+                evaluator=evaluator,
+            )
+    finally:
+        if old_cy is None:
+            os.environ.pop("CY_PROVIDER_IMAGE_QA_MODEL", None)
+        else:
+            os.environ["CY_PROVIDER_IMAGE_QA_MODEL"] = old_cy
+        if old_gemini is None:
+            os.environ.pop("GEMINI_MODEL", None)
+        else:
+            os.environ["GEMINI_MODEL"] = old_gemini
+
+
+def provider_semantic_qa_503_falls_back_to_25_accept() -> None:
+    calls: list[str] = []
+
+    def evaluator(_path, _request, *, model):
+        calls.append(model)
+        if model == "gemini-3.7-flash":
+            raise _RetryableQA503("HTTP 503 Service Unavailable: high demand")
+        return _semantic_qa_checks()
+
+    verdict = _evaluate_default_semantic_qa_with(evaluator)
+    assert calls == ["gemini-3.7-flash", "gemini-2.5-flash"]
+    assert verdict.status == "accepted"
+    assert verdict.accepted is True
+    assert verdict.model == "gemini-2.5-flash"
+
+
+def provider_semantic_qa_503_falls_back_to_25_reject() -> None:
+    calls: list[str] = []
+
+    def evaluator(_path, _request, *, model):
+        calls.append(model)
+        if model == "gemini-3.7-flash":
+            raise _RetryableQA503("503 service unavailable")
+        return _semantic_qa_checks(weather_compatible=False)
+
+    verdict = _evaluate_default_semantic_qa_with(evaluator)
+    assert calls == ["gemini-3.7-flash", "gemini-2.5-flash"]
+    assert verdict.status == "rejected"
+    assert verdict.accepted is False
+    assert verdict.reason == "weather_mismatch"
+    assert verdict.model == "gemini-2.5-flash"
+
+
+def provider_semantic_qa_primary_and_fallback_unavailable_fail_closed() -> None:
+    calls: list[str] = []
+
+    def evaluator(_path, _request, *, model):
+        calls.append(model)
+        raise _RetryableQA503(f"{model}: HTTP 503 Service Unavailable")
+
+    verdict = _evaluate_default_semantic_qa_with(evaluator)
+    assert calls == ["gemini-3.7-flash", "gemini-2.5-flash"]
+    assert verdict.status == "unavailable"
+    assert verdict.accepted is False
+    assert verdict.reason == "qa_unavailable"
+    assert verdict.model == "gemini-2.5-flash"
+
+
+def provider_semantic_qa_valid_primary_does_not_call_fallback() -> None:
+    calls: list[str] = []
+
+    def evaluator(_path, _request, *, model):
+        calls.append(model)
+        return _semantic_qa_checks()
+
+    verdict = _evaluate_default_semantic_qa_with(evaluator)
+    assert calls == ["gemini-3.7-flash"]
+    assert verdict.status == "accepted"
+    assert verdict.model == "gemini-3.7-flash"
+
+
+def provider_semantic_qa_malformed_primary_does_not_call_fallback() -> None:
+    calls: list[str] = []
+
+    def evaluator(_path, _request, *, model):
+        calls.append(model)
+        return {"checks": {"scene_family_present_and_dominant": True}}
+
+    verdict = _evaluate_default_semantic_qa_with(evaluator)
+    assert calls == ["gemini-3.7-flash"]
+    assert verdict.status == "unavailable"
+    assert verdict.accepted is False
+    assert verdict.reason == "invalid_structured_response"
+
+
+def provider_semantic_qa_explicit_nondefault_primary_is_not_overridden() -> None:
+    calls: list[str] = []
+
+    def evaluator(_path, _request, *, model):
+        calls.append(model)
+        raise _RetryableQA503("HTTP 503 Service Unavailable")
+
+    verdict = _evaluate_default_semantic_qa_with(
+        evaluator,
+        cy_provider_model="gemini-explicit-custom",
+    )
+    assert calls == ["gemini-explicit-custom"]
+    assert verdict.status == "unavailable"
+    assert verdict.accepted is False
+    assert verdict.reason == "qa_unavailable"
+    assert verdict.model == "gemini-explicit-custom"
+
+
+
 def provider_semantic_qa_structured_verdicts_are_deterministic() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
         image_path = Path(tmp_name) / "candidate.jpg"
@@ -1961,6 +2103,12 @@ def ai_presentation_failure_falls_through_to_existing_local_cover() -> None:
 def main() -> None:
     checks = (
         provider_semantic_qa_structured_verdicts_are_deterministic,
+        provider_semantic_qa_503_falls_back_to_25_accept,
+        provider_semantic_qa_503_falls_back_to_25_reject,
+        provider_semantic_qa_primary_and_fallback_unavailable_fail_closed,
+        provider_semantic_qa_valid_primary_does_not_call_fallback,
+        provider_semantic_qa_malformed_primary_does_not_call_fallback,
+        provider_semantic_qa_explicit_nondefault_primary_is_not_overridden,
         drizzle_and_thunderstorm_cover_copy_preserves_factual_intensity,
         image_delivery_receipt_survives_history_and_enrichment_failures,
         local_cover_exact_duplicate_contract_is_exact_only,
