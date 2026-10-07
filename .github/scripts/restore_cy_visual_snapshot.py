@@ -161,31 +161,29 @@ def _valid_image_receipt(data: Any, *, target_date: str | None = None, post_type
 
 
 def _valid_quiz_receipt(data: Any) -> bool:
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or data.get("chat_type") != "production":
         return False
-    if data.get("chat_type") != "production":
+    slot = str(data.get("quiz_slot") or "")
+    if slot not in {"evening_general", "fx_economy"}:
         return False
     if data.get("state") not in {"reserved", "sent"}:
         return False
     if not str(data.get("quiz_date") or "").strip():
         return False
-    if not str(data.get("weather_target_date") or "").strip():
+    if slot == "evening_general" and not str(data.get("weather_target_date") or "").strip():
         return False
-    if not str(data.get("question_id") or "").strip():
+    if slot == "fx_economy" and not str(data.get("publication_date") or "").strip():
         return False
-    if not str(data.get("bank_version") or "").strip():
+    if not str(data.get("question_id") or "").strip() or not str(data.get("bank_version") or "").strip():
         return False
     if not str(data.get("reserved_at_utc") or "").strip():
         return False
     if data.get("state") == "sent":
         if not isinstance(data.get("telegram_message_id"), int) or data.get("telegram_message_id") <= 0:
             return False
-        if not str(data.get("poll_id") or "").strip():
-            return False
-        if not str(data.get("sent_at_utc") or "").strip():
+        if not str(data.get("poll_id") or "").strip() or not str(data.get("sent_at_utc") or "").strip():
             return False
     return True
-
 
 def _valid_provider_health(
     data: Any,
@@ -377,38 +375,35 @@ def _restore_quiz_receipts(source_root: Path, destination_cache: Path) -> tuple[
     source_dir = _receipt_source_dir(source_root, "cy_quiz_delivery")
     if not source_dir.is_dir():
         return 0, "missing"
-
     restored = 0
     status = "missing"
     destination_dir = destination_cache / "cy_quiz_delivery"
-    for source in sorted(source_dir.glob("*.json")):
+    for source in sorted(source_dir.rglob("*.json")):
         if not source.is_file():
+            continue
+        relative = source.relative_to(source_dir)
+        if len(relative.parts) != 2 or relative.parts[0] not in {"evening_general", "fx_economy"}:
+            status = "invalid"
             continue
         try:
             snapshot_data = _load_json(source)
         except Exception:
             status = "invalid"
             continue
-        if not _valid_quiz_receipt(snapshot_data):
+        if not _valid_quiz_receipt(snapshot_data) or snapshot_data.get("quiz_slot") != relative.parts[0]:
             status = "invalid"
             continue
-
-        destination = destination_dir / source.name
-        # At-most-once safety: any local receipt/reservation wins. Never overwrite
-        # an ambiguous local state from an older artifact.
+        destination = destination_dir / relative
         if destination.exists():
             status = "already_present"
             continue
-
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         restored += 1
         status = "restored"
-
     if restored:
         status = "bulk_restored"
     return restored, status
-
 
 def _local_receipt_valid(
     destination_cache: Path,
