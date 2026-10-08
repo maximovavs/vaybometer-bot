@@ -940,12 +940,132 @@ def _polish_surf_lines(text: str) -> str:
     return "\n".join(out)
 
 
+def _split_combined_kite_surf_lines(text: str) -> str:
+    """Preserve existing kite and surf signals as separate display lines."""
+    out: list[str] = []
+    pattern = re.compile(
+        r"^(?P<indent>\s*)🧜‍♂️\s*Отлично:\s*Кайт/Винг/Винд\s*;\s*С[её]рф(?P<suffix>.*)$",
+        flags=re.IGNORECASE,
+    )
+    for line in str(text or "").splitlines():
+        match = pattern.match(line)
+        if not match:
+            out.append(line)
+            continue
+        indent = match.group("indent")
+        suffix = match.group("suffix")
+        out.append(f"{indent}🧜‍♂️ Отлично: Кайт/Винг/Винд{suffix}")
+        out.append(f"{indent}🧜‍♂️ Отлично: Сёрф{suffix}")
+    return "\n".join(out)
+
+
+def _cyprus_coastal_city_label(line: str) -> str:
+    plain = _plain(line).strip()
+    if "°C" not in plain or ":" not in plain:
+        return ""
+    label = plain.split(":", 1)[0]
+    label = re.sub(r"^[^A-Za-zА-Яа-яЁё]+", "", label).strip()
+    return label
+
+
+def _cyprus_water_sport_kind(line: str) -> str:
+    plain = _plain(line).strip()
+    if "SUP" in plain.upper():
+        return "sup"
+    if re.search(r"Кайт/Винг/Винд|Кайт/винг|Kite", plain, flags=re.IGNORECASE):
+        return "kite"
+    if re.search(r"\b(?:Серф|Сёрф|Surf)\b", plain, flags=re.IGNORECASE):
+        return "surf"
+    return ""
+
+
+def _group_cyprus_evening_water_sports(text: str) -> str:
+    """Move existing Cyprus evening water-sport lines into one grouped block.
+
+    This is presentation-only: sport guidance text is moved verbatim after the
+    existing SUP/surf safety polish, so thresholds and STOP/caution semantics
+    are not recalculated or weakened.
+    """
+    source = str(text or "")
+    if not re.search(r"<b>🌅\s*Кипр\s+завтра\b", source):
+        return source
+    if "🏄 <b>Вода и спорт</b>" in source:
+        return source
+
+    lines = source.splitlines()
+    out: list[str] = []
+    grouped: dict[str, list[tuple[str, str]]] = {"sup": [], "kite": [], "surf": []}
+    in_coast = False
+    current_city = ""
+    inserted = False
+
+    def render_group() -> list[str]:
+        rows: list[str] = []
+        if not any(grouped.values()):
+            return rows
+        rows.append("🏄 <b>Вода и спорт</b>")
+        headings = (
+            ("sup", "🧜‍♂️ <b>SUP</b>"),
+            ("kite", "🪁 <b>Кайт / винг / винд</b>"),
+            ("surf", "🏄 <b>Серф</b>"),
+        )
+        for kind, heading in headings:
+            if not grouped[kind]:
+                continue
+            rows.append(heading)
+            for city, guidance in grouped[kind]:
+                rows.append(f"• {city} — {guidance.strip()}")
+        return rows
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(("🌊 <b>Побережье", "🏖 <b>Морские города")):
+            in_coast = True
+            current_city = ""
+            out.append(line)
+            continue
+
+        if in_coast and stripped.startswith(
+            ("———", "🏙 <b>Центр", "🏞 <b>Континентальные", "🏭", "🌫", "☀️", "🌅", "🌇", "🌙", "#")
+        ):
+            block = render_group()
+            if block:
+                out.extend(block)
+                inserted = True
+            in_coast = False
+            current_city = ""
+            out.append(line)
+            continue
+
+        if in_coast:
+            city = _cyprus_coastal_city_label(line)
+            if city:
+                current_city = city
+                out.append(line)
+                continue
+            kind = _cyprus_water_sport_kind(line)
+            if kind and current_city:
+                grouped[kind].append((current_city, stripped))
+                continue
+
+        out.append(line)
+
+    if in_coast and not inserted:
+        block = render_group()
+        if block:
+            out.extend(block)
+
+    return "\n".join(out)
+
+
 def _apply_format_v2_test_polish(v2_text: str) -> str:
     if not _env_any("FORMAT_V2_POLISH", "FORMAT_V2_TEST_POLISH"):
         return v2_text
     text = _translate_shore_notes(v2_text)
     text = _downgrade_sup_lines(text)
+    text = _split_combined_kite_surf_lines(text)
     text = _polish_surf_lines(text)
+    text = _group_cyprus_evening_water_sports(text)
     text = re.sub(r"\s+,", ",", text)
     text = re.sub(r"🌙\s+🌙", "🌙", text)
     return text

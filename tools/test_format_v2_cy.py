@@ -287,6 +287,25 @@ SURF_WITH_WAVE_EVENING = """<b>🌅 Кипр: погода на завтра (27
 """
 
 
+GROUPED_WATER_SPORTS_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.2/10 — обычный день.
+🏖 <b>Морские города</b>
+Ларнака: 30/22 °C • ясно • 💨 4 м/с • 🌊 27 • 0.3 м
+🧜‍♂️ SUP: только опытным и короткая сессия • порывы до 12 м/с (южный ветер, к берегу).
+Пафос: 28/21 °C • ясно • 💨 5 м/с • 🌊 26 • 1.2 м
+🧜‍♂️ Отлично: Кайт/Винг/Винд; Сёрф (западный ветер, вдоль берега)
+🧜‍♂️ SUP лучше отложить: порывы до 15 м/с (западный ветер, вдоль берега).
+———
+🏞 <b>Континентальные города</b>
+Никосия: 33/20 °C • ясно
+———
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
 INTEGRATED_LOCAL_RAIN_GUSTS_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
 ✨ VayboMeter завтра: 8.1/10 — хорошо для обычных дел.
 🏖 <b>Морские города</b>
@@ -658,6 +677,39 @@ def cy_evening_surf_with_valid_wave_is_cautiously_positive() -> None:
     text = _safe_test_evening_pipeline(SURF_WITH_WAVE_EVENING)
     assert "Отлично: Серф" not in text
     assert "🏄 Серф: есть рабочие окна по волне; проверить конкретный спот." in text
+
+
+def cy_evening_groups_existing_water_sports_after_coast() -> None:
+    text = _safe_test_evening_pipeline(GROUPED_WATER_SPORTS_EVENING)
+    assert "🏄 <b>Вода и спорт</b>" in text
+    assert "🧜‍♂️ <b>SUP</b>" in text
+    assert "🪁 <b>Кайт / винг / винд</b>" in text
+    assert "🏄 <b>Серф</b>" in text
+    assert text.index("Пафос: 28/21 °C") < text.index("🏄 <b>Вода и спорт</b>")
+    assert text.index("🏄 <b>Вода и спорт</b>") < text.index("🏙 <b>Центр и горы</b>")
+    assert "• Ларнака — 🧜‍♂️ SUP: только опытным и короткая сессия • порывы до 12 м/с" in text
+    assert "• Пафос — 🧜‍♂️ SUP лучше отложить: порывы до 15 м/с" in text
+    assert "• Пафос — 🧜‍♂️ Отлично: Кайт/Винг/Винд" in text
+    assert "• Пафос — 🏄 Серф: есть рабочие окна по волне; проверить конкретный спот." in text
+    coast = text.split("🌊 <b>Побережье</b>", 1)[1].split("🏄 <b>Вода и спорт</b>", 1)[0]
+    assert "SUP" not in coast
+    assert "Кайт/Винг/Винд" not in coast
+    assert "Серф" not in coast and "Сёрф" not in coast
+
+
+def cy_evening_water_sport_grouping_is_idempotent() -> None:
+    first = _safe_test_evening_pipeline(GROUPED_WATER_SPORTS_EVENING)
+    old = os.environ.get("FORMAT_V2_TEST_POLISH")
+    try:
+        os.environ["FORMAT_V2_TEST_POLISH"] = "1"
+        second = _apply_format_v2_test_polish(first)
+    finally:
+        if old is None:
+            os.environ.pop("FORMAT_V2_TEST_POLISH", None)
+        else:
+            os.environ["FORMAT_V2_TEST_POLISH"] = old
+    assert second == first
+    assert second.count("🏄 <b>Вода и спорт</b>") == 1
 
 
 def cy_evening_all_green_city_air_collapses_to_summary() -> None:
