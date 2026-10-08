@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 TZ_NAME="Asia/Nicosia"
-DEFAULT_BANK_PATH=Path("data/cyprus_culture/v2026-10-exam-core-v3/questions.jsonl")
+DEFAULT_BANK_PATH=Path("data/cyprus_culture/v2026-10-exam-core-v4/questions.jsonl")
 DEFAULT_QUIZ_RECEIPT_DIR=Path(".cache/cy_quiz_delivery")
 DEFAULT_WEATHER_TEXT_RECEIPT_DIR=Path(".cache/cy_text_delivery")
 DEFAULT_FX_DELIVERY_DIR=Path(".cache/cy_fx_delivery")
@@ -136,7 +136,7 @@ def select_question(questions:list[QuizQuestion],*,slot:str,quiz_date:date,bank_
     seed=int(hashlib.sha256(f"{bank_version}|{slot}|{quiz_date.isoformat()}".encode()).hexdigest()[:16],16)
     return remaining[seed%len(remaining)]
 def assemble_payload(q:QuizQuestion)->QuizPayload|None:
-    question=f"🇨🇾 Ερώτηση για την Κύπρο\n{q.question_el}\n🇷🇺 {q.question_ru}";opts=tuple(f"{a} — {b}" for a,b in zip(q.options_el,q.options_ru))
+    question=f"{q.question_el}\n🇷🇺 {q.question_ru}";opts=tuple(f"{a} — {b}" for a,b in zip(q.options_el,q.options_ru))
     if len(question)>MAX_QUESTION_CHARS or any(len(x)>MAX_OPTION_CHARS for x in opts) or len(q.explanation_ru)>MAX_EXPLANATION_CHARS:return None
     return QuizPayload(question,opts,q.correct_option_index,q.explanation_ru)
 def _weather_path(target:date,d:Path)->Path:return d/f"{target.isoformat()}-evening.json"

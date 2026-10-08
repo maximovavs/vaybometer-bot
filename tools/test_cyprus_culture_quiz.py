@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 import cyprus_culture_quiz as quiz
 import cyprus_fx_delivery as fxdel
-BANK=ROOT/"data/cyprus_culture/v2026-10-exam-core-v3/questions.jsonl";MAN=ROOT/"data/cyprus_culture/v2026-10-exam-core-v3/manifest.json"
+BANK=ROOT/"data/cyprus_culture/v2026-10-exam-core-v4/questions.jsonl";MAN=ROOT/"data/cyprus_culture/v2026-10-exam-core-v4/manifest.json";V3_BANK=ROOT/"data/cyprus_culture/v2026-10-exam-core-v3/questions.jsonl";V3_MAN=ROOT/"data/cyprus_culture/v2026-10-exam-core-v3/manifest.json"
 def check(c,m):
     if not c:raise AssertionError(m)
 def write_json(p,o):p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(o,ensure_ascii=False)+"\n","utf-8")
@@ -33,6 +33,19 @@ def test_bank_contract():
     check(m["exam_reference_counts"]=={"hallouminati":47,"official_core":25},"exam refs")
     new_ids={"exam-v3-hall-a05","exam-v3-hall-a17","exam-v3-hall-a18","exam-v3-hall-b01","exam-v3-hall-b15","exam-v3-hall-b17","exam-v3-hall-b21","exam-v3-hall-b22"}
     check(new_ids<={x.question_id for x in qs},"v3 Hallouminati expansion")
+def test_v4_editorial_identity_and_payload():
+    v3=[json.loads(x) for x in V3_BANK.read_text("utf-8").splitlines() if x.strip()];v4=[json.loads(x) for x in BANK.read_text("utf-8").splitlines() if x.strip()]
+    check([x["question_id"] for x in v4]==[x["question_id"] for x in v3],"rotation order preserved")
+    changed={"full-a-002","full-a-020","full-a-026","full-a-034","exam-v3-hall-a17","full-b-eco-001","full-b-ins-020"}
+    by3={x["question_id"]:x for x in v3};by4={x["question_id"]:x for x in v4};actual=set()
+    for qid in by4:
+        a=dict(by3[qid]);b=dict(by4[qid]);ae=a.pop("question_el");ar=a.pop("question_ru");be=b.pop("question_el");br=b.pop("question_ru")
+        check(a==b,f"non-editorial drift: {qid}")
+        if (ae,ar)!=(be,br):actual.add(qid)
+    check(actual==changed,"exact editorial question scope")
+    m=json.loads(MAN.read_text("utf-8"));check(m["bank_version"]=="v2026-10-exam-core-v4","v4 version");check(m["source_contract"]["parent_bank_version"]=="v2026-10-exam-core-v3","v3 parent")
+    qs=quiz.load_verified_questions(BANK);check(all(quiz.assemble_payload(q) is not None for q in qs),"payload limits")
+    q=next(x for x in qs if x.question_id=="full-a-020");p=quiz.assemble_payload(q);check(p.question.splitlines()[0]==q.question_el,"question starts directly");check("Ερώτηση για την Κύπρο" not in p.question,"generic Greek header removed")
 def test_temporal():
     qs=quiz.load_verified_questions(BANK);b=next(q for q in qs if q.question_id=="full-b-eco-010")
     check(not quiz.temporally_eligible(b,date(2026,4,30)) and quiz.temporally_eligible(b,date(2026,5,1)),"bounded start")
@@ -47,16 +60,16 @@ def test_rotation_full_cycle_and_slots():
         d=Path(td);day=date(2026,10,7);eligible=[q for q in qs if q.quiz_slot=="fx_economy" and quiz.temporally_eligible(q,day)]
         seen=[]
         for i in range(len(eligible)):
-            q=quiz.select_question(qs,slot="fx_economy",quiz_date=day,bank_version="v2026-10-exam-core-v3",receipt_dir=d);check(q and q.question_id not in seen,"repeat before pool exhausted");seen.append(q.question_id)
+            q=quiz.select_question(qs,slot="fx_economy",quiz_date=day,bank_version="v2026-10-exam-core-v4",receipt_dir=d);check(q and q.question_id not in seen,"repeat before pool exhausted");seen.append(q.question_id)
             pd=day-timedelta(days=i+1);write_json(quiz.quiz_receipt_path("fx_economy",pd,d),{"state":"sent","quiz_slot":"fx_economy","question_id":q.question_id})
         check(len(seen)==len(eligible),"full cycle")
-        e=Path(td)/"empty";q1=quiz.select_question(qs,slot="evening_general",quiz_date=day,bank_version="v2026-10-exam-core-v3",receipt_dir=e);q2=quiz.select_question(qs,slot="evening_general",quiz_date=day,bank_version="v2026-10-exam-core-v3",receipt_dir=e);check(q1.question_id==q2.question_id,"deterministic")
+        e=Path(td)/"empty";q1=quiz.select_question(qs,slot="evening_general",quiz_date=day,bank_version="v2026-10-exam-core-v4",receipt_dir=e);q2=quiz.select_question(qs,slot="evening_general",quiz_date=day,bank_version="v2026-10-exam-core-v4",receipt_dir=e);check(q1.question_id==q2.question_id,"deterministic")
 def test_receipts_dependencies_and_nonfatal():
     async def go():
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);qd=root/"q";wd=root/"w";fd=root/"fx";now=datetime(2026,10,7,16,0,tzinfo=ZoneInfo("Asia/Nicosia"));weather(wd/"2026-10-08-evening.json",date(2026,10,8));fx(fd/"2026-10-07.json",date(2026,10,7))
             async def send(**kw):return SimpleNamespace(message_id=77,poll=SimpleNamespace(id="p77"))
-            common=dict(chat_id="1",token="x",bank_path=BANK,bank_version="v2026-10-exam-core-v3",anchor_date_text="2026-10-07",weather_receipt_dir=wd,fx_receipt_dir=fd,now=now,send_poll=send)
+            common=dict(chat_id="1",token="x",bank_path=BANK,bank_version="v2026-10-exam-core-v4",anchor_date_text="2026-10-07",weather_receipt_dir=wd,fx_receipt_dir=fd,now=now,send_poll=send)
             r1=await quiz.deliver_quiz(slot="evening_general",enabled=True,event_name="schedule",event_schedule="0 13 * * *",quiz_receipt_dir=qd,**common);check(r1["result"]=="quiz_sent","evening")
             r2=await quiz.deliver_quiz(slot="fx_economy",enabled=True,event_name="schedule",event_schedule="0 7 * * *",quiz_receipt_dir=qd,**common);check(r2["result"]=="quiz_sent","fx")
             check(quiz.quiz_receipt_path("evening_general",date(2026,10,7),qd).exists() and quiz.quiz_receipt_path("fx_economy",date(2026,10,7),qd).exists(),"coexist")
@@ -83,6 +96,6 @@ def test_fx_authoritative_receipt():
             check(not fxdel.fx_delivery_receipt_path(date(2026,10,7),d3).exists(),"failed receipt")
     asyncio.run(go())
 def main():
-    for f in [test_bank_contract,test_temporal,test_rotation_full_cycle_and_slots,test_receipts_dependencies_and_nonfatal,test_fx_authoritative_receipt]:f()
-    print("OK: 5 Cyprus Culture/FX dual-slot offline checks passed")
+    for f in [test_bank_contract,test_v4_editorial_identity_and_payload,test_temporal,test_rotation_full_cycle_and_slots,test_receipts_dependencies_and_nonfatal,test_fx_authoritative_receipt]:f()
+    print("OK: 6 Cyprus Culture/FX dual-slot offline checks passed")
 if __name__=="__main__":main()
