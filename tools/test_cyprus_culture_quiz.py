@@ -56,7 +56,7 @@ def test_v5_learning_explanations_identity_and_payload():
         check(bool(eb.strip()) and len(eb)<=quiz.MAX_EXPLANATION_CHARS,f"bounded explanation: {qid}")
         check(not eb.startswith("Правильный ответ:"),f"learning phrase replaces answer-only copy: {qid}")
     check(changed==set(by5),"all 72 explanations changed")
-    m=json.loads(MAN.read_text("utf-8"));check(m["bank_version"]=="v2026-10-exam-core-v5","v5 version");check(m["source_contract"]["parent_bank_version"]=="v2026-10-exam-core-v5","v4 parent");check(m["learning_contract"]["explanation_count"]==72,"learning count")
+    m=json.loads(MAN.read_text("utf-8"));check(m["bank_version"]=="v2026-10-exam-core-v5","v5 version");check(m["source_contract"]["parent_bank_version"]=="v2026-10-exam-core-v4","v4 parent");check(m["learning_contract"]["explanation_count"]==72,"learning count")
     qs=quiz.load_verified_questions(BANK);check(all(quiz.assemble_payload(q) is not None for q in qs),"v5 payload limits")
     for qid in ("full-a-001","full-a-031","full-a-035","exam-v3-hall-a18"):
         q=next(x for x in qs if x.question_id==qid);check("Правильный ответ:" not in q.explanation_ru,f"negative question factual reinforcement: {qid}")
