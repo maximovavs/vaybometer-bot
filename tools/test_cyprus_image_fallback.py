@@ -1887,6 +1887,62 @@ def _evaluate_default_semantic_qa_with(
             os.environ["GEMINI_MODEL"] = old_gemini
 
 
+def provider_semantic_qa_json_decode_diagnostics_are_bounded_and_classified() -> None:
+    cases = (
+        ("```json\n{\"checks\": {}}\n```", "code_fenced_json"),
+        ("Gemini returned prose instead of the required object.", "non_json_prose"),
+        ('{"checks":{"scene_family_present_and_dominant":true', "truncated_or_incomplete_json"),
+        ('{"checks":,}', "syntax_invalid_json"),
+    )
+    expected_keys = {
+        "response_shape",
+        "response_content_length",
+        "response_content_sha256",
+        "json_error_msg",
+        "json_error_pos",
+        "json_error_lineno",
+        "json_error_colno",
+    }
+    for content, expected_shape in cases:
+        try:
+            json.loads(content)
+        except json.JSONDecodeError as exc:
+            diagnostics = cyprus_provider_image_qa._json_decode_diagnostics(content, exc)
+        else:
+            raise AssertionError(f"fixture unexpectedly parsed: {content!r}")
+        assert set(diagnostics) == expected_keys
+        assert diagnostics["response_shape"] == expected_shape
+        assert diagnostics["response_content_length"] == len(content)
+        assert diagnostics["response_content_sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
+        serialized = json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        assert content not in serialized
+
+
+def provider_semantic_qa_json_decode_diagnostics_do_not_expand_fallback() -> None:
+    calls: list[str] = []
+    content = "```json\nSECRET_SENTINEL\n```"
+
+    def evaluator(_path, _request, *, model):
+        calls.append(model)
+        try:
+            json.loads(content)
+        except json.JSONDecodeError as exc:
+            exc.qa_diagnostics = cyprus_provider_image_qa._json_decode_diagnostics(content, exc)
+            raise
+        raise AssertionError("fixture unexpectedly parsed")
+
+    verdict = _evaluate_default_semantic_qa_with(evaluator)
+    assert calls == ["gemini-3.7-flash"]
+    assert verdict.status == "unavailable"
+    assert verdict.accepted is False
+    assert verdict.reason == "qa_unavailable"
+    assert verdict.model == "gemini-3.7-flash"
+    assert verdict.error_type == "JSONDecodeError"
+    assert verdict.diagnostics["response_shape"] == "code_fenced_json"
+    assert verdict.to_dict()["diagnostics"] == verdict.diagnostics
+    assert "SECRET_SENTINEL" not in json.dumps(verdict.to_dict(), ensure_ascii=False, sort_keys=True)
+
+
 def provider_semantic_qa_503_falls_back_to_25_accept() -> None:
     calls: list[str] = []
 
@@ -2156,6 +2212,8 @@ def ai_presentation_failure_falls_through_to_existing_local_cover() -> None:
 def main() -> None:
     checks = (
         provider_semantic_qa_structured_verdicts_are_deterministic,
+        provider_semantic_qa_json_decode_diagnostics_are_bounded_and_classified,
+        provider_semantic_qa_json_decode_diagnostics_do_not_expand_fallback,
         provider_semantic_qa_503_falls_back_to_25_accept,
         provider_semantic_qa_503_falls_back_to_25_reject,
         provider_semantic_qa_primary_and_fallback_unavailable_fail_closed,
