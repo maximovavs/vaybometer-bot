@@ -726,8 +726,12 @@ def _clean_city_air_line(line: str) -> str:
                 pollutant = f"{pollutant} {value.replace(',', '.')}"
         chunks.append(f"{city} {marker}" + (f" ({pollutant})" if pollutant else ""))
     if chunks:
-        if required_all_green_cities.issubset(parsed_cities) and markers and all(marker == "🟢" for marker in markers):
+        all_available_green = bool(markers) and all(marker == "🟢" for marker in markers)
+        available_required_cities = required_all_green_cities.intersection(parsed_cities)
+        if required_all_green_cities.issubset(parsed_cities) and all_available_green:
             return "🏭 Воздух по городам: везде 🟢"
+        if len(available_required_cities) == len(required_all_green_cities) - 1 and all_available_green:
+            return "🏭 Воздух по доступным городам: везде 🟢"
         return "🏭 Воздух по городам: " + " · ".join(chunks[:6])
     return "🏭 Воздух по городам: " + body
 
