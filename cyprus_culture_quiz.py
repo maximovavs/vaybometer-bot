@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 TZ_NAME="Asia/Nicosia"
-DEFAULT_BANK_PATH=Path("data/cyprus_culture/v2026-10-exam-core-v4/questions.jsonl")
+DEFAULT_BANK_PATH=Path("data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl")
 DEFAULT_QUIZ_RECEIPT_DIR=Path(".cache/cy_quiz_delivery")
 DEFAULT_WEATHER_TEXT_RECEIPT_DIR=Path(".cache/cy_text_delivery")
 DEFAULT_FX_DELIVERY_DIR=Path(".cache/cy_fx_delivery")
