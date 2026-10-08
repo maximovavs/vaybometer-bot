@@ -1127,8 +1127,8 @@ def test_culture_quiz_workflow_contract() -> None:
     _assert("quiz_legacy_flag_removed", 'CY_CULTURE_QUIZ_ENABLED:' not in text)
     _assert("quiz_evening_default_off", 'CY_CULTURE_QUIZ_EVENING_ENABLED: "1"' in text)
     _assert("quiz_fx_default_off", 'CY_CULTURE_QUIZ_FX_ENABLED: "1"' in text)
-    _assert("quiz_full_bank", 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-exam-core-v3/questions.jsonl"' in text)
-    _assert("quiz_full_version", 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-exam-core-v3"' in text)
+    _assert("quiz_full_bank", 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-exam-core-v4/questions.jsonl"' in text)
+    _assert("quiz_full_version", 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-exam-core-v4"' in text)
     _assert("quiz_anchor", 'CY_CULTURE_QUIZ_ANCHOR_DATE: "2026-10-07"' in text)
     _assert("fx_receipt_dir", 'CY_FX_DELIVERY_DIR: ".cache/cy_fx_delivery"' in text)
 
