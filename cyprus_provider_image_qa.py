@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import mimetypes
 import os
@@ -40,6 +41,7 @@ class ProviderImageQAVerdict:
     checks: dict[str, bool]
     model: str = ""
     error_type: str = ""
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +51,7 @@ class ProviderImageQAVerdict:
             "checks": dict(self.checks),
             "model": self.model,
             "error_type": self.error_type,
+            "diagnostics": dict(self.diagnostics),
         }
 
 
@@ -86,7 +89,57 @@ def build_provider_image_qa_request(
     }
 
 
-def _unavailable(reason: str, *, model: str = "", error_type: str = "") -> ProviderImageQAVerdict:
+_QA_EXCEPTION_DIAGNOSTIC_KEYS = (
+    "response_shape",
+    "response_content_length",
+    "response_content_sha256",
+    "json_error_msg",
+    "json_error_pos",
+    "json_error_lineno",
+    "json_error_colno",
+)
+
+
+def _json_decode_diagnostics(content: str, exc: json.JSONDecodeError) -> dict[str, Any]:
+    stripped = str(content).strip()
+    if stripped.startswith("```"):
+        response_shape = "code_fenced_json"
+    elif not stripped.startswith("{"):
+        response_shape = "non_json_prose"
+    elif not stripped.endswith("}"):
+        response_shape = "truncated_or_incomplete_json"
+    else:
+        response_shape = "syntax_invalid_json"
+    return {
+        "response_shape": response_shape,
+        "response_content_length": len(content),
+        "response_content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "json_error_msg": str(exc.msg),
+        "json_error_pos": int(exc.pos),
+        "json_error_lineno": int(exc.lineno),
+        "json_error_colno": int(exc.colno),
+    }
+
+
+def _exception_diagnostics(exc: Exception) -> dict[str, Any]:
+    raw = getattr(exc, "qa_diagnostics", None)
+    if not isinstance(raw, Mapping):
+        return {}
+    diagnostics: dict[str, Any] = {}
+    for key in _QA_EXCEPTION_DIAGNOSTIC_KEYS:
+        value = raw.get(key)
+        if isinstance(value, (str, int, bool)):
+            diagnostics[key] = value
+    return diagnostics
+
+
+def _unavailable(
+    reason: str,
+    *,
+    model: str = "",
+    error_type: str = "",
+    diagnostics: Mapping[str, Any] | None = None,
+) -> ProviderImageQAVerdict:
     return ProviderImageQAVerdict(
         status="unavailable",
         accepted=False,
@@ -94,6 +147,7 @@ def _unavailable(reason: str, *, model: str = "", error_type: str = "") -> Provi
         checks={},
         model=model,
         error_type=error_type,
+        diagnostics=dict(diagnostics or {}),
     )
 
 
@@ -265,7 +319,11 @@ def _gemini_structured_evaluator(
     content = response.choices[0].message.content
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("Gemini semantic QA returned empty content")
-    parsed = json.loads(content)
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        exc.qa_diagnostics = _json_decode_diagnostics(content, exc)
+        raise
     if not isinstance(parsed, Mapping):
         raise RuntimeError("Gemini semantic QA returned non-object JSON")
     return parsed
@@ -290,6 +348,7 @@ def _evaluate_default_gemini_with_availability_fallback(
                 "qa_unavailable",
                 model=primary_model,
                 error_type=exc.__class__.__name__,
+                diagnostics=_exception_diagnostics(exc),
             )
         try:
             fallback_payload = call_evaluator(image_path, request, model=fallback_model)
@@ -298,6 +357,7 @@ def _evaluate_default_gemini_with_availability_fallback(
                 "qa_unavailable",
                 model=fallback_model,
                 error_type=fallback_exc.__class__.__name__,
+                diagnostics=_exception_diagnostics(fallback_exc),
             )
         return _structured_verdict(fallback_payload, model=fallback_model)
     return _structured_verdict(payload, model=primary_model)
