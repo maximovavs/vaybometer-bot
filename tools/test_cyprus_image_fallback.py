@@ -2150,8 +2150,8 @@ def ai_primary_presentation_full_bleed_metadata_and_fact_counts_are_safe() -> No
             assert rendered["published_sha256"] != source_sha
             assert rendered["facts"] == facts
             assert len(rendered["fact_layout"]) == index
-            assert rendered["title_panel_bbox"] == [42, 84, 710, 230]
-            assert rendered["date_panel_bbox"] == [865, 84, 1034, 240]
+            assert rendered["title_panel_bbox"] == [42, 150, 710, 296]
+            assert rendered["date_panel_bbox"] == [865, 150, 1034, 306]
             assert rendered["facts_panel_bbox"] == [38, 828, 762, 1232]
             with Image.open(output) as image:
                 assert image.size == (1080, 1350)
@@ -2162,11 +2162,103 @@ def ai_primary_presentation_full_bleed_metadata_and_fact_counts_are_safe() -> No
                 assert image.getpixel((20, 1300)) == source_color
                 assert image.getpixel((1040, 650)) == source_color
                 # Inside the title glass panel, the publication is deterministically overlaid.
-                assert image.getpixel((50, 100)) != source_color
+                assert image.getpixel((50, 170)) != source_color
             for fact in rendered["fact_layout"]:
                 for bbox in fact["bboxes"]:
                     assert 78 <= bbox[0] <= bbox[2] <= 724
                     assert 865 <= bbox[1] <= bbox[3] <= 1198
+
+
+def ai_primary_presentation_header_respects_telegram_safe_top() -> None:
+    """Telegram crops the top of tall photos in chat preview; the header must sit below that band."""
+    safe_top = daily_ai_presentation._TELEGRAM_SAFE_TOP
+    assert daily_ai_presentation.CANVAS_SIZE == (1080, 1350)
+    assert safe_top == 135 == daily_ai_presentation.CANVAS_SIZE[1] // 10
+    source_color = (61, 101, 141)
+    branding = "VAYBOMETER · CYPRUS"
+    # Ordinary non-storm cards: today with three facts, tomorrow with one.
+    cases = (
+        ("КИПР СЕГОДНЯ", "2026-10-09", ["🔥 ДО 30° · ЛАРНАКА", "💨 ПОРЫВЫ ДО 7.2 М/С У МОРЯ", "🌊 МОРЕ 25–26°"]),
+        ("КИПР ЗАВТРА", "09.10.2026", ["🌤 ДО 27° · НИКОСИЯ"]),
+    )
+    with tempfile.TemporaryDirectory() as tmp_name:
+        root = Path(tmp_name)
+        source = root / "raw.png"
+        Image.new("RGB", (1080, 1350), source_color).save(source)
+        for index, (headline, date_value, facts) in enumerate(cases):
+            rendered = daily_ai_presentation.render_branded_ai_presentation(
+                source,
+                headline=headline,
+                date_value=date_value,
+                facts=facts,
+                branding=branding,
+                output_path=root / f"safe_top_{index}.png",
+            )
+            title_panel = rendered["title_panel_bbox"]
+            date_panel = rendered["date_panel_bbox"]
+            title_bbox = rendered["title_layout"]["bbox"]
+            date_bbox = rendered["date_layout"]["bbox"]
+
+            # A/B: both header panels start below the unsafe top 10%, at y >= 150.
+            assert title_panel[1] >= 150 and title_panel[1] >= safe_top
+            assert date_panel[1] >= 150 and date_panel[1] >= safe_top
+            # Panel heights are the pre-shift heights: the block moved, it did not resize.
+            assert title_panel[3] - title_panel[1] == 146
+            assert date_panel[3] - date_panel[1] == 156
+
+            # C: title text is safe and inside the title panel.
+            assert title_bbox[1] >= safe_top
+            assert title_panel[0] <= title_bbox[0] <= title_bbox[2] <= title_panel[2]
+            assert title_panel[1] <= title_bbox[1] <= title_bbox[3] <= title_panel[3]
+
+            with Image.open(str(rendered["path"])) as image:
+                # G: canvas size is unchanged.
+                assert image.size == (1080, 1350)
+                # Nothing at all is drawn into the unsafe band: it is pure source image.
+                band = image.convert("RGB").crop((0, 0, 1080, safe_top))
+                assert band.getcolors() == [(1080 * safe_top, source_color)]
+                draw = ImageDraw.Draw(image)
+                brand_bbox = draw.textbbox(
+                    daily_ai_presentation._BRAND_ORIGIN,
+                    branding,
+                    font=daily_ai_presentation._font(22),
+                )
+
+            # D: branding is safe, inside the title panel, and still below the headline.
+            assert brand_bbox[1] >= safe_top
+            assert title_panel[0] <= brand_bbox[0] <= brand_bbox[2] <= title_panel[2]
+            assert title_panel[1] <= brand_bbox[1] <= brand_bbox[3] <= title_panel[3]
+            assert brand_bbox[1] >= title_bbox[3]
+
+            # E: date text is safe and inside the date panel.
+            assert date_bbox[1] >= safe_top
+            assert date_panel[0] <= date_bbox[0] <= date_bbox[2] <= date_panel[2]
+            assert date_panel[1] <= date_bbox[1] <= date_bbox[3] <= date_panel[3]
+
+            # F: the lower facts panel did not move, and the header stays clear of it.
+            assert rendered["facts_panel_bbox"] == [38, 828, 762, 1232]
+            assert max(title_panel[3], date_panel[3]) < rendered["facts_panel_bbox"][1]
+            # H: an ordinary non-storm card renders every fact.
+            assert len(rendered["fact_layout"]) == len(facts)
+
+        # The renderer refuses a header that drifts back into the unsafe band.
+        original_date_panel = daily_ai_presentation._DATE_PANEL
+        daily_ai_presentation._DATE_PANEL = (865, 84, 1034, 240)
+        try:
+            daily_ai_presentation.render_branded_ai_presentation(
+                source,
+                headline=cases[0][0],
+                date_value=cases[0][1],
+                facts=cases[0][2],
+                branding=branding,
+                output_path=root / "unsafe.png",
+            )
+        except RuntimeError as exc:
+            assert "Telegram preview unsafe zone" in str(exc)
+        else:
+            raise AssertionError("header inside the Telegram unsafe zone was rendered")
+        finally:
+            daily_ai_presentation._DATE_PANEL = original_date_panel
 
 
 def ai_primary_presentation_keeps_raw_history_and_published_receipt_separate() -> None:
@@ -2226,6 +2318,7 @@ def main() -> None:
         semantic_qa_rejection_exhausts_provider_candidates_then_uses_local_cover,
         semantic_qa_unavailable_is_called_once_and_fails_closed_to_local_cover,
         ai_primary_presentation_full_bleed_metadata_and_fact_counts_are_safe,
+        ai_primary_presentation_header_respects_telegram_safe_top,
         ai_primary_presentation_keeps_raw_history_and_published_receipt_separate,
         ai_presentation_failure_falls_through_to_existing_local_cover,
         forecast_threshold_warning_copy_is_provenance_safe,
