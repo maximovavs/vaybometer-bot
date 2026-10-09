@@ -15,9 +15,13 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, PngImagePlugin
 
 PRESENTATION_VERSION = "cy_ai_primary_branded_v2_full_bleed"
 CANVAS_SIZE = (1080, 1350)
-_TITLE_PANEL = (42, 84, 710, 230)
-_TITLE_SAFE = (70, 100, 682, 158)
-_DATE_PANEL = (865, 84, 1034, 240)
+# Telegram crops the top of tall photos in the chat preview, so the top 10% of
+# the canvas carries no header panel or text. Header geometry starts below it.
+_TELEGRAM_SAFE_TOP = 135
+_TITLE_PANEL = (42, 150, 710, 296)
+_TITLE_SAFE = (70, 166, 682, 224)
+_BRAND_ORIGIN = (72, 232)
+_DATE_PANEL = (865, 150, 1034, 306)
 _FACT_PANEL = (38, 828, 762, 1232)
 _FACT_SAFE = (78, 865, 724, 1198)
 _GLASS_FILL = (226, 236, 240, 158)
@@ -135,6 +139,14 @@ def _fit_fact_layout(
     raise RuntimeError("Cyprus AI presentation facts do not fit full-bleed safe-zone")
 
 
+def _require_telegram_safe(label: str, box: Iterable[int]) -> None:
+    top = list(box)[1]
+    if top < _TELEGRAM_SAFE_TOP:
+        raise RuntimeError(
+            f"Cyprus AI presentation {label} enters Telegram preview unsafe zone: top={top}"
+        )
+
+
 def _glass_panel(
     overlay: Image.Image,
     box: tuple[int, int, int, int],
@@ -205,7 +217,7 @@ def render_branded_ai_presentation(
 
     brand_font = _font(22)
     brand_text = str(branding).strip()
-    brand_origin = (72, 166)
+    brand_origin = _BRAND_ORIGIN
     draw.text(brand_origin, brand_text, font=brand_font, fill=_TEXT_DARK)
     brand_bbox = draw.textbbox(brand_origin, brand_text, font=brand_font)
     if brand_bbox[2] > _TITLE_PANEL[2] - 18 or brand_bbox[3] > _TITLE_PANEL[3] - 14:
@@ -226,6 +238,15 @@ def render_branded_ai_presentation(
         stroke_fill=_TEXT_STROKE,
     )
     date_bbox = draw.textbbox(date_origin, date_text, font=date_font, stroke_width=1)
+
+    for label, box in (
+        ("title panel", _TITLE_PANEL),
+        ("date panel", _DATE_PANEL),
+        ("title", title_bbox),
+        ("branding", brand_bbox),
+        ("date", date_bbox),
+    ):
+        _require_telegram_safe(label, box)
 
     fact_layout: list[dict[str, object]] = []
     fact_font_size = 0
