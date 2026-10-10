@@ -234,7 +234,20 @@ def _exception_status_code(exc: Exception) -> int | None:
         return None
 
 
+def _is_openai_request_timeout(exc: Exception) -> bool:
+    """True only for the OpenAI SDK's own request timeout, not other connection errors."""
+    try:
+        from openai import APITimeoutError  # type: ignore
+    except Exception:
+        return False
+    return isinstance(exc, APITimeoutError)
+
+
 def _is_retryable_model_availability_failure(exc: Exception) -> bool:
+    # A timed-out primary call is a temporary availability failure: the SDK runs
+    # with max_retries=0, so the single 2.5 fallback is the only retry.
+    if _is_openai_request_timeout(exc):
+        return True
     status_code = _exception_status_code(exc)
     if status_code in _RETRYABLE_QA_AVAILABILITY_STATUS_CODES:
         return True
@@ -336,7 +349,11 @@ def _evaluate_default_gemini_with_availability_fallback(
     *,
     evaluator: Callable[..., object] | None = None,
 ) -> ProviderImageQAVerdict:
-    """Evaluate with one 3.7→2.5 retry only for temporary model availability failures."""
+    """Evaluate with one 3.7→2.5 retry only for temporary model availability failures.
+
+    Availability failures are 502/503/504-style overload responses and the SDK's
+    own request timeout. Auth, quota, JSON and schema failures never fall back.
+    """
     call_evaluator = evaluator or _gemini_structured_evaluator
     primary_model = _provider_image_qa_primary_model()
     try:

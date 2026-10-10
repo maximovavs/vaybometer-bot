@@ -2036,6 +2036,332 @@ def provider_semantic_qa_explicit_nondefault_primary_is_not_overridden() -> None
     assert verdict.model == "gemini-explicit-custom"
 
 
+_QA_SDK_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+_OFFLINE_OPENAI_STUB: types.ModuleType | None = None
+
+
+def _offline_openai_stub() -> types.ModuleType:
+    """Exception-only stand-in for the openai SDK, mirroring the 1.x class hierarchy.
+
+    The PR-checks job installs only the offline essentials, not openai. The real SDK
+    is always preferred when installed; this keeps the timeout regressions running
+    (not skipped) without it. provider_semantic_qa_offline_sdk_stub_mirrors_real_sdk
+    pins the stub to the real hierarchy wherever the SDK is available.
+    """
+    global _OFFLINE_OPENAI_STUB
+    if _OFFLINE_OPENAI_STUB is not None:
+        return _OFFLINE_OPENAI_STUB
+    stub = types.ModuleType("openai")
+
+    class OpenAIError(Exception):
+        pass
+
+    class APIError(OpenAIError):
+        def __init__(self, message, request, *, body=None):
+            super().__init__(message)
+            self.message = message
+            self.request = request
+            self.body = body
+
+    class APIConnectionError(APIError):
+        def __init__(self, *, message="Connection error.", request):
+            super().__init__(message, request, body=None)
+
+    class APITimeoutError(APIConnectionError):
+        def __init__(self, request):
+            super().__init__(message="Request timed out.", request=request)
+
+    class APIStatusError(APIError):
+        def __init__(self, message, *, response, body):
+            super().__init__(message, response.request, body=body)
+            self.response = response
+            self.status_code = response.status_code
+
+    class AuthenticationError(APIStatusError):
+        pass
+
+    class PermissionDeniedError(APIStatusError):
+        pass
+
+    class RateLimitError(APIStatusError):
+        pass
+
+    for cls in (
+        OpenAIError,
+        APIError,
+        APIConnectionError,
+        APITimeoutError,
+        APIStatusError,
+        AuthenticationError,
+        PermissionDeniedError,
+        RateLimitError,
+    ):
+        cls.__module__ = "openai"
+        setattr(stub, cls.__name__, cls)
+    stub.OpenAI = None
+    _OFFLINE_OPENAI_STUB = stub
+    return stub
+
+
+def _openai_sdk_module() -> types.ModuleType:
+    try:
+        import openai  # type: ignore
+    except ImportError:
+        return _offline_openai_stub()
+    return openai
+
+
+def _sdk_timeout():
+    import httpx
+
+    return _openai_sdk_module().APITimeoutError(request=httpx.Request("POST", _QA_SDK_URL))
+
+
+def _sdk_status_error(status_code: int):
+    import httpx
+
+    sdk = _openai_sdk_module()
+    error_class = {
+        401: sdk.AuthenticationError,
+        403: sdk.PermissionDeniedError,
+        429: sdk.RateLimitError,
+    }[status_code]
+    response = httpx.Response(status_code, request=httpx.Request("POST", _QA_SDK_URL))
+    return error_class(f"Error code: {status_code}", response=response, body=None)
+
+
+def _sdk_connection_error():
+    import httpx
+
+    return _openai_sdk_module().APIConnectionError(request=httpx.Request("POST", _QA_SDK_URL))
+
+
+def _sdk_message(content: str):
+    return types.SimpleNamespace(
+        choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=content))]
+    )
+
+
+class _FakeOpenAISDK:
+    """Stand-in for openai.OpenAI: records every client and call, never touches the network.
+
+    `behaviours` maps a model name to an exception to raise or a JSON string to return.
+    """
+
+    def __init__(self, behaviours: dict[str, object]) -> None:
+        self.behaviours = behaviours
+        self.client_kwargs: list[dict[str, object]] = []
+        self.models: list[str] = []
+
+    def __call__(self, **kwargs):
+        self.client_kwargs.append(dict(kwargs))
+        completions = types.SimpleNamespace(create=self._create)
+        return types.SimpleNamespace(chat=types.SimpleNamespace(completions=completions))
+
+    def _create(self, **call):
+        model = str(call["model"])
+        self.models.append(model)
+        outcome = self.behaviours[model]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return _sdk_message(str(outcome))
+
+
+class _patched_openai_sdk:
+    """Swap openai.OpenAI for a fake and provide a dummy key; restore everything after.
+
+    Without an installed SDK the exception-only stub is registered as `openai` for the
+    duration of the test only, so production imports see the same classes the test raises.
+    """
+
+    def __init__(self, fake: _FakeOpenAISDK) -> None:
+        self.fake = fake
+
+    def __enter__(self) -> _FakeOpenAISDK:
+        self._openai = _openai_sdk_module()
+        self._injected = sys.modules.get("openai") is not self._openai
+        if self._injected:
+            sys.modules["openai"] = self._openai
+        self._old_client = self._openai.OpenAI
+        self._old_key = os.environ.get("GEMINI_API_KEY")
+        self._openai.OpenAI = self.fake
+        os.environ["GEMINI_API_KEY"] = "offline-test-key"
+        return self.fake
+
+    def __exit__(self, *_exc) -> None:
+        self._openai.OpenAI = self._old_client
+        if self._injected:
+            sys.modules.pop("openai", None)
+        if self._old_key is None:
+            os.environ.pop("GEMINI_API_KEY", None)
+        else:
+            os.environ["GEMINI_API_KEY"] = self._old_key
+
+
+def _assert_single_attempt_clients(fake: _FakeOpenAISDK) -> None:
+    # One client per model call, and the SDK itself never retries.
+    assert len(fake.client_kwargs) == len(fake.models)
+    for kwargs in fake.client_kwargs:
+        assert kwargs["max_retries"] == 0
+        assert kwargs["timeout"] == 25.0
+
+
+def provider_semantic_qa_offline_sdk_stub_mirrors_real_sdk() -> None:
+    stub = _offline_openai_stub()
+    names = (
+        "APIConnectionError",
+        "APITimeoutError",
+        "AuthenticationError",
+        "PermissionDeniedError",
+        "RateLimitError",
+    )
+
+    def lineage(module, name):
+        return [cls.__name__ for cls in getattr(module, name).__mro__ if cls.__module__.startswith("openai")]
+
+    # The timeout is a connection error, so the classifier must match the class itself.
+    assert issubclass(stub.APITimeoutError, stub.APIConnectionError)
+    assert str(_sdk_timeout()) == "Request timed out."
+    assert _sdk_status_error(429).status_code == 429
+    try:
+        import openai  # type: ignore
+    except ImportError:
+        print("INFO: openai SDK not installed; stub hierarchy checked on its own")
+        return
+    if openai is stub:
+        return
+    for name in names:
+        assert lineage(stub, name) == lineage(openai, name), name
+
+
+def provider_semantic_qa_sdk_timeout_falls_back_to_25_accept() -> None:
+    fake = _FakeOpenAISDK({
+        "gemini-3.7-flash": _sdk_timeout(),
+        "gemini-2.5-flash": json.dumps(_semantic_qa_checks()),
+    })
+    with _patched_openai_sdk(fake):
+        verdict = _evaluate_default_semantic_qa_with(None)
+    assert fake.models == ["gemini-3.7-flash", "gemini-2.5-flash"]
+    _assert_single_attempt_clients(fake)
+    assert verdict.status == "accepted"
+    assert verdict.accepted is True
+    assert verdict.model == "gemini-2.5-flash"
+
+
+def provider_semantic_qa_sdk_timeout_falls_back_to_25_reject() -> None:
+    fake = _FakeOpenAISDK({
+        "gemini-3.7-flash": _sdk_timeout(),
+        "gemini-2.5-flash": json.dumps(_semantic_qa_checks(weather_compatible=False)),
+    })
+    with _patched_openai_sdk(fake):
+        verdict = _evaluate_default_semantic_qa_with(None)
+    assert fake.models == ["gemini-3.7-flash", "gemini-2.5-flash"]
+    _assert_single_attempt_clients(fake)
+    assert verdict.status == "rejected"
+    assert verdict.accepted is False
+    assert verdict.reason == "weather_mismatch"
+    assert verdict.model == "gemini-2.5-flash"
+
+
+def provider_semantic_qa_double_sdk_timeout_fails_closed() -> None:
+    fake = _FakeOpenAISDK({
+        "gemini-3.7-flash": _sdk_timeout(),
+        "gemini-2.5-flash": _sdk_timeout(),
+    })
+    with _patched_openai_sdk(fake):
+        verdict = _evaluate_default_semantic_qa_with(None)
+    # Exactly one fallback: the 2.5 timeout is not retried again.
+    assert fake.models == ["gemini-3.7-flash", "gemini-2.5-flash"]
+    _assert_single_attempt_clients(fake)
+    assert verdict.status == "unavailable"
+    assert verdict.accepted is False
+    assert verdict.reason == "qa_unavailable"
+    assert verdict.model == "gemini-2.5-flash"
+    assert verdict.error_type == "APITimeoutError"
+
+
+def provider_semantic_qa_double_sdk_timeout_publishes_local_informative_cover() -> None:
+    fake = _FakeOpenAISDK({
+        "gemini-3.7-flash": _sdk_timeout(),
+        "gemini-2.5-flash": _sdk_timeout(),
+    })
+    old_models = {name: os.environ.pop(name, None) for name in ("CY_PROVIDER_IMAGE_QA_MODEL", "GEMINI_MODEL")}
+    try:
+        with _patched_openai_sdk(fake), tempfile.TemporaryDirectory() as tmp_name:
+            # None selects the production default evaluator, as the publication path does.
+            outcome = _run_stage_failure_case(Path(tmp_name), semantic_qa_evaluator=None)
+    finally:
+        for name, value in old_models.items():
+            if value is not None:
+                os.environ[name] = value
+    assert fake.models == ["gemini-3.7-flash", "gemini-2.5-flash"]
+    _assert_single_attempt_clients(fake)
+    assert outcome["result"]["result"] == "sent"
+    assert outcome["result"]["backend"] == "local_informative_cover"
+    assert outcome["diagnostics"]["provider_semantic_qa_unavailable"] is True
+    attempts = outcome["diagnostics"]["selected_scene_attempts"]
+    unavailable = [item for item in attempts if item.get("dedup_reason") == "semantic_qa_unavailable"]
+    assert len(unavailable) == 1
+    assert unavailable[0]["semantic_qa"]["status"] == "unavailable"
+    assert unavailable[0]["semantic_qa"]["error_type"] == "APITimeoutError"
+
+
+def provider_semantic_qa_non_availability_failures_do_not_fall_back() -> None:
+    cases = (
+        ("builtin TimeoutError", TimeoutError("Request timed out."), "TimeoutError"),
+        ("arbitrary RuntimeError", RuntimeError("Request timed out."), "RuntimeError"),
+        ("non-timeout connection error", _sdk_connection_error(), "APIConnectionError"),
+        ("401", _sdk_status_error(401), "AuthenticationError"),
+        ("403", _sdk_status_error(403), "PermissionDeniedError"),
+        ("429", _sdk_status_error(429), "RateLimitError"),
+        ("JSON decode", "not json at all", "JSONDecodeError"),
+    )
+    for label, primary_outcome, error_type in cases:
+        fake = _FakeOpenAISDK({
+            "gemini-3.7-flash": primary_outcome,
+            "gemini-2.5-flash": json.dumps(_semantic_qa_checks()),
+        })
+        with _patched_openai_sdk(fake):
+            verdict = _evaluate_default_semantic_qa_with(None)
+        assert fake.models == ["gemini-3.7-flash"], label
+        _assert_single_attempt_clients(fake)
+        assert verdict.status == "unavailable", label
+        assert verdict.accepted is False, label
+        assert verdict.reason == "qa_unavailable", label
+        assert verdict.model == "gemini-3.7-flash", label
+        assert verdict.error_type == error_type, label
+
+    schema_fake = _FakeOpenAISDK({
+        "gemini-3.7-flash": json.dumps({"checks": {"scene_family_present_and_dominant": True}}),
+        "gemini-2.5-flash": json.dumps(_semantic_qa_checks()),
+    })
+    with _patched_openai_sdk(schema_fake):
+        verdict = _evaluate_default_semantic_qa_with(None)
+    assert schema_fake.models == ["gemini-3.7-flash"]
+    assert verdict.status == "unavailable"
+    assert verdict.reason == "invalid_structured_response"
+
+
+def provider_semantic_qa_sdk_timeout_on_explicit_nondefault_primary_does_not_fall_back() -> None:
+    explicit_model_overrides = (
+        ("CY_PROVIDER_IMAGE_QA_MODEL", {"cy_provider_model": "gemini-explicit-custom"}),
+        ("GEMINI_MODEL", {"gemini_model": "gemini-explicit-custom"}),
+    )
+    for env_name, override in explicit_model_overrides:
+        fake = _FakeOpenAISDK({
+            "gemini-explicit-custom": _sdk_timeout(),
+            "gemini-2.5-flash": json.dumps(_semantic_qa_checks()),
+        })
+        with _patched_openai_sdk(fake):
+            verdict = _evaluate_default_semantic_qa_with(None, **override)
+        assert fake.models == ["gemini-explicit-custom"], env_name
+        _assert_single_attempt_clients(fake)
+        assert verdict.status == "unavailable", env_name
+        assert verdict.accepted is False, env_name
+        assert verdict.model == "gemini-explicit-custom", env_name
+        assert verdict.error_type == "APITimeoutError", env_name
+
+
 
 def provider_semantic_qa_structured_verdicts_are_deterministic() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
@@ -2312,6 +2638,13 @@ def main() -> None:
         provider_semantic_qa_valid_primary_does_not_call_fallback,
         provider_semantic_qa_malformed_primary_does_not_call_fallback,
         provider_semantic_qa_explicit_nondefault_primary_is_not_overridden,
+        provider_semantic_qa_offline_sdk_stub_mirrors_real_sdk,
+        provider_semantic_qa_sdk_timeout_falls_back_to_25_accept,
+        provider_semantic_qa_sdk_timeout_falls_back_to_25_reject,
+        provider_semantic_qa_double_sdk_timeout_fails_closed,
+        provider_semantic_qa_double_sdk_timeout_publishes_local_informative_cover,
+        provider_semantic_qa_non_availability_failures_do_not_fall_back,
+        provider_semantic_qa_sdk_timeout_on_explicit_nondefault_primary_does_not_fall_back,
         drizzle_and_thunderstorm_cover_copy_preserves_factual_intensity,
         image_delivery_receipt_survives_history_and_enrichment_failures,
         local_cover_exact_duplicate_contract_is_exact_only,
