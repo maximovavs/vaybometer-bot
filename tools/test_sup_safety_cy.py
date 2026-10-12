@@ -638,6 +638,138 @@ def sup_safety_level_public_signature_is_unchanged() -> None:
     assert list(params) == ["wind_ms", "gust_ms", "wave_h", "shore", "samples_aligned", "thunder"]
     assert params["thunder"].default is False
 
+
+_INVALID_SHORE_OVERRIDES = (
+    "NaN", "nan", "Infinity", "-Infinity", "inf", "-40", "-0.5", "360", "360.0", "580", "abc", "12deg",
+)
+
+
+class _shore_env:
+    """Set SHORE_FACE_LIMASSOL (None = unset) with SPOT/ACTIVE overrides cleared; restore after."""
+
+    _KEYS = ("SHORE_FACE_LIMASSOL", "SPOT_LIMASSOL", "ACTIVE_SPOT")
+
+    def __init__(self, shore_face):
+        self.shore_face = shore_face
+
+    def __enter__(self):
+        self._saved = {key: os.environ.get(key) for key in self._KEYS}
+        for key in self._KEYS:
+            os.environ.pop(key, None)
+        if self.shore_face is not None:
+            os.environ["SHORE_FACE_LIMASSOL"] = self.shore_face
+        return self
+
+    def __exit__(self, *_exc):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _sup_with_shore_face(shore_face, **weather) -> str:
+    code = weather.pop("code", 0)
+    wave_h = weather.pop("wave_h", 0.3)
+    with _shore_env(shore_face):
+        return _water_line(_payload_with_code(code, **weather), wave_h=wave_h)
+
+
+_BENIGN_EAST = {"wind_kmh": [10.8], "gust_kmh": [28.8], "wind_dir": [80.0]}
+_BENIGN_NORTH = {"wind_kmh": [10.8], "gust_kmh": [28.8], "wind_dir": [0.0]}
+_GUSTY_CAUTION = {"wind_kmh": [10.8], "gust_kmh": [46.8], "wind_dir": [80.0]}
+_GUST_STOP = {"wind_kmh": [10.8], "gust_kmh": [57.6], "wind_dir": [80.0]}
+_OFFSHORE_STOP = {"wind_kmh": [18.0], "gust_kmh": [28.8], "wind_dir": [0.0]}
+
+
+def sup_shore_override_validity_matrix() -> None:
+    invalid = post_common_module._sup_shore_override_invalid
+    for raw in _INVALID_SHORE_OVERRIDES:
+        with _shore_env(raw):
+            assert invalid("Limassol") is True, raw
+    for raw in (None, "", "   ", "0", "0.0", "180", "259.5", "359.999"):
+        with _shore_env(raw):
+            assert invalid("Limassol") is False, raw
+
+
+def invalid_shore_override_blocks_positive_sup() -> None:
+    # Without an override these are positive: east wind -> excellent (city 180 deg,
+    # cross), north wind -> offshore caution, gusts 13 m/s -> caution.
+    assert "Отлично: SUP" in _sup_part(_sup_with_shore_face(None, **_BENIGN_EAST))
+    assert "только опытным" in _sup_part(_sup_with_shore_face(None, **_BENIGN_NORTH))
+    assert "только опытным" in _sup_part(_sup_with_shore_face(None, **_GUSTY_CAUTION))
+    for raw in _INVALID_SHORE_OVERRIDES:
+        for weather in (_BENIGN_EAST, _BENIGN_NORTH, _GUSTY_CAUTION):
+            line = _sup_part(_sup_with_shore_face(raw, **weather))
+            assert line == "", (raw, weather, line)
+
+
+def invalid_shore_override_keeps_independent_delay_without_orientation_claims() -> None:
+    for raw in _INVALID_SHORE_OVERRIDES:
+        gust = _sup_part(_sup_with_shore_face(raw, **_GUST_STOP))
+        assert gust.startswith("🧜‍♂️ SUP лучше отложить • ") and "порывы до 16 м/с" in gust, (raw, gust)
+        for code in (95, 96, 99):
+            thunder = _sup_part(_sup_with_shore_face(raw, code=code, **_BENIGN_EAST))
+            assert thunder.startswith("🧜‍♂️ SUP лучше отложить: гроза"), (raw, code, thunder)
+        for line in (gust, thunder):
+            for claim in ("/onshore", "/offshore", "/cross", "(ENV)", "@"):
+                assert claim not in line, (raw, claim, line)
+        # Offshore is never manufactured from an untrusted orientation: the
+        # city-fallback offshore STOP is not re-derived for an invalid override.
+        assert _sup_part(_sup_with_shore_face(raw, **_OFFSHORE_STOP)) == "", raw
+    assert "SUP лучше отложить" in _sup_part(_sup_with_shore_face(None, **_OFFSHORE_STOP))
+
+
+def missing_or_blank_shore_override_keeps_current_behaviour() -> None:
+    for weather in (_BENIGN_EAST, _BENIGN_NORTH, _GUSTY_CAUTION, _GUST_STOP, _OFFSHORE_STOP):
+        baseline = _sup_with_shore_face(None, **weather)
+        for raw in ("", "   "):
+            assert _sup_with_shore_face(raw, **weather) == baseline, (raw, weather)
+
+
+def valid_shore_override_keeps_current_behaviour() -> None:
+    expected = {
+        "180": "🧜‍♂️ Отлично: SUP (ENV) • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м (E/cross)",
+        "0": "🧜‍♂️ Отлично: SUP (ENV) • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м (E/cross)",
+        "359.9": "🧜‍♂️ Отлично: SUP (ENV) • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м (E/cross)",
+        "260": "🧜‍♂️ SUP: только опытным и короткая сессия • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м (E/offshore).",
+    }
+    for raw, line in expected.items():
+        sup = _sup_part(_sup_with_shore_face(raw, **_BENIGN_EAST))
+        assert sup.startswith(line), (raw, sup)
+
+
+def invalid_shore_override_guard_is_sup_only() -> None:
+    """Kite/surf output is identical to the same run with the SUP guard disabled."""
+    kite = {"wind_kmh": [28.8], "gust_kmh": [32.4], "wind_dir": [180.0]}
+    surf = {"wind_kmh": [10.8], "gust_kmh": [21.6], "wind_dir": [80.0], "wave_h": 1.2}
+    non_sup = lambda text: [part for part in text.splitlines() if "SUP" not in part]
+    for raw in _INVALID_SHORE_OVERRIDES:
+        for weather in (kite, surf):
+            guarded = _sup_with_shore_face(raw, **dict(weather))
+            unguarded = _replace_attrs(
+                post_common_module,
+                {"_sup_shore_override_invalid": lambda _city: False},
+                lambda: _sup_with_shore_face(raw, **dict(weather)),
+            )
+            assert non_sup(guarded) == non_sup(unguarded), (raw, weather, guarded, unguarded)
+    with _shore_env(None):
+        assert "Отлично: Кайт/Винг/Винд" in _water_line(_payload_with_code(0, **kite))
+
+
+def invalid_shore_override_keeps_d5_unknown_thunder_fail_closed() -> None:
+    for raw in (None, "180", "NaN", "abc", "580"):
+        assert _sup_part(_sup_with_shore_face(raw, code="missing", **_BENIGN_EAST)) == "", raw
+        delay = _sup_part(_sup_with_shore_face(raw, code="missing", **_GUST_STOP))
+        assert "SUP лучше отложить" in delay and "гроза" not in delay, (raw, delay)
+
+
+def invalid_shore_override_never_reaches_final_evening_text() -> None:
+    for raw in ("NaN", "Infinity", "-40", "abc"):
+        with _shore_env(raw):
+            final = _final_evening_text(_payload_with_code(0, **_BENIGN_EAST))
+        assert "Отлично: SUP" not in final and "только опытным" not in final, (raw, final)
+
 def water_highlight_uses_same_city_daily_thunder_code() -> None:
     thunder_payload = _tomorrow_weather(
         wind_kmh=[10.8],
@@ -806,6 +938,14 @@ CHECKS = [
     unknown_thunder_evidence_never_reaches_final_evening_text,
     weather_code_parser_treats_non_finite_codes_as_unknown,
     sup_safety_level_public_signature_is_unchanged,
+    sup_shore_override_validity_matrix,
+    invalid_shore_override_blocks_positive_sup,
+    invalid_shore_override_keeps_independent_delay_without_orientation_claims,
+    missing_or_blank_shore_override_keeps_current_behaviour,
+    valid_shore_override_keeps_current_behaviour,
+    invalid_shore_override_guard_is_sup_only,
+    invalid_shore_override_keeps_d5_unknown_thunder_fail_closed,
+    invalid_shore_override_never_reaches_final_evening_text,
 ]
 
 
