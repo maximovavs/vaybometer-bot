@@ -1,0 +1,237 @@
+{
+  "schema_version": "1.0",
+  "project": "VayboMeter Cyprus",
+  "suite": "SUP temporal-and-semantic golden evaluation set",
+  "mode": "synthetic_fixture_offline_only",
+  "source_repo": "maximovavs/vaybometer-bot",
+  "read_only_reference_main": "7a87d206d5a5698c0d0d33c182387e83888f66fe",
+  "source_contract": "post_common.py:sup_safety_level, _sup_samples_are_aligned, _sup_guidance_line",
+  "warning": "These are synthetic input/output pairs and manually specified expected judgments, NOT actual predictions, not natural-production evidence, and not execution results.",
+  "timezone": "Asia/Nicosia",
+  "target_hour_local": "12:00",
+  "sample_max_offset_minutes": 90,
+  "thresholds": {
+    "sup_gust_caution_min_ms": 12.0,
+    "sup_gust_stop_min_ms": 15.0,
+    "offshore_sup_wind_min_ms": 5.0,
+    "sup_wind_good_max_default_ms": 4.0,
+    "sup_wave_good_max_default_m": 0.6
+  },
+  "eval_policy": {
+    "PASS": "Requested claim is supported by source-aligned evidence and respects all critical safety rules.",
+    "FAIL": "Verified contradiction of critical contract or unsupported confident SUP advice with known missing mandatory inputs.",
+    "REVIEW": "Evidence is insufficient to adjudicate the proposed tentative text; do not authorize publication until missing inputs are resolved.",
+    "critical_fail_can_be_offset_by_style_score": false,
+    "review_allows_publication": false,
+    "scope": "Assess public wording against verified input facts; not a substitute for in-situ marine safety judgement."
+  },
+  "cases": [
+    {
+      "id": "CY-SUP-01",
+      "scenario": "Complete benign noon profile",
+      "input": {
+        "date_local": "2026-10-14",
+        "location": "synthetic Cyprus coastal spot",
+        "weather_observation_at": "2026-10-14T12:00:00+03:00",
+        "marine_sample_at": "2026-10-14T12:00:00+03:00",
+        "wind_ms": 2.5,
+        "gust_ms": 8.0,
+        "wave_h_m": 0.3,
+        "shore": "onshore",
+        "samples_aligned": true,
+        "thunder": false,
+        "evening_gust_ms": null,
+        "missing_or_unverified": []
+      },
+      "candidate_output": "К полудню условия по текущему прогнозу могут подходить для SUP; перед выходом проверьте фактическую обстановку.",
+      "expected": {
+        "sup_safety_level": "excellent",
+        "editorial_eval_verdict": "PASS",
+        "release_gate": "PASS",
+        "reason": "Same-location noon weather/wave, known onshore, low wind/wave/gust, no thunder; wording is conditional rather than guaranteed-safe."
+      }
+    },
+    {
+      "id": "CY-SUP-02",
+      "scenario": "Gust stop threshold exact boundary",
+      "input": {
+        "date_local": "2026-10-14",
+        "location": "synthetic Cyprus coastal spot",
+        "weather_observation_at": "2026-10-14T12:00:00+03:00",
+        "marine_sample_at": "2026-10-14T12:00:00+03:00",
+        "wind_ms": 2.5,
+        "gust_ms": 15.0,
+        "wave_h_m": 0.3,
+        "shore": "onshore",
+        "samples_aligned": true,
+        "thunder": false,
+        "evening_gust_ms": null,
+        "missing_or_unverified": []
+      },
+      "candidate_output": "Отлично для SUP в полдень.",
+      "expected": {
+        "sup_safety_level": "delay",
+        "editorial_eval_verdict": "FAIL",
+        "release_gate": "STOP",
+        "reason": "At gust >=15 m/s, contract requires delay; excellent advice contradicts known gust."
+      }
+    },
+    {
+      "id": "CY-SUP-03",
+      "scenario": "Gust caution threshold exact boundary",
+      "input": {
+        "date_local": "2026-10-14",
+        "location": "synthetic Cyprus coastal spot",
+        "weather_observation_at": "2026-10-14T12:00:00+03:00",
+        "marine_sample_at": "2026-10-14T12:00:00+03:00",
+        "wind_ms": 2.5,
+        "gust_ms": 12.0,
+        "wave_h_m": 0.3,
+        "shore": "cross",
+        "samples_aligned": true,
+        "thunder": false,
+        "evening_gust_ms": null,
+        "missing_or_unverified": []
+      },
+      "candidate_output": "Отлично для SUP, ограничений нет.",
+      "expected": {
+        "sup_safety_level": "caution",
+        "editorial_eval_verdict": "FAIL",
+        "release_gate": "STOP",
+        "reason": "At gust >=12 and below 15 m/s, contract requires caution, not excellent."
+      }
+    },
+    {
+      "id": "CY-SUP-04",
+      "scenario": "Offshore wind stop boundary",
+      "input": {
+        "date_local": "2026-10-14",
+        "location": "synthetic Cyprus coastal spot",
+        "weather_observation_at": "2026-10-14T12:00:00+03:00",
+        "marine_sample_at": "2026-10-14T12:00:00+03:00",
+        "wind_ms": 5.0,
+        "gust_ms": 8.0,
+        "wave_h_m": 0.3,
+        "shore": "offshore",
+        "samples_aligned": true,
+        "thunder": false,
+        "evening_gust_ms": null,
+        "missing_or_unverified": []
+      },
+      "candidate_output": "SUP лучше отложить: ветер от берега.",
+      "expected": {
+        "sup_safety_level": "delay",
+        "editorial_eval_verdict": "PASS",
+        "release_gate": "PASS",
+        "reason": "Offshore wind >=5 m/s requires delay even though gust and wave are modest."
+      }
+    },
+    {
+      "id": "CY-SUP-05",
+      "scenario": "Weather/marine timestamps unaligned",
+      "input": {
+        "date_local": "2026-10-14",
+        "location": "synthetic Cyprus coastal spot",
+        "weather_observation_at": "2026-10-14T12:00:00+03:00",
+        "marine_sample_at": "2026-10-14T14:00:00+03:00",
+        "wind_ms": 2.5,
+        "gust_ms": 8.0,
+        "wave_h_m": 0.3,
+        "shore": "onshore",
+        "samples_aligned": false,
+        "thunder": false,
+        "evening_gust_ms": null,
+        "missing_or_unverified": []
+      },
+      "candidate_output": "Отлично для SUP в полдень.",
+      "expected": {
+        "sup_safety_level": "none",
+        "editorial_eval_verdict": "FAIL",
+        "release_gate": "STOP",
+        "reason": "Weather and marine samples are 120 min apart, exceeding the 90-minute alignment limit; code cannot give confident advice."
+      }
+    },
+    {
+      "id": "CY-SUP-06",
+      "scenario": "Missing mandatory wave evidence",
+      "input": {
+        "date_local": "2026-10-14",
+        "location": "synthetic Cyprus coastal spot",
+        "weather_observation_at": "2026-10-14T12:00:00+03:00",
+        "marine_sample_at": null,
+        "wind_ms": 2.5,
+        "gust_ms": 8.0,
+        "wave_h_m": null,
+        "shore": "cross",
+        "samples_aligned": false,
+        "thunder": false,
+        "evening_gust_ms": null,
+        "missing_or_unverified": [
+          "wave_h_m",
+          "marine_sample_at"
+        ]
+      },
+      "candidate_output": "Для уверенной рекомендации SUP не хватает данных о волне; проверьте условия у спота.",
+      "expected": {
+        "sup_safety_level": "none",
+        "editorial_eval_verdict": "PASS",
+        "release_gate": "PASS",
+        "reason": "No confident SUP recommendation is made with incomplete mandatory inputs."
+      }
+    },
+    {
+      "id": "CY-SUP-07",
+      "scenario": "Thunder hazard overrides benign numbers",
+      "input": {
+        "date_local": "2026-10-14",
+        "location": "synthetic Cyprus coastal spot",
+        "weather_observation_at": "2026-10-14T12:00:00+03:00",
+        "marine_sample_at": "2026-10-14T12:00:00+03:00",
+        "wind_ms": 2.0,
+        "gust_ms": 8.0,
+        "wave_h_m": 0.3,
+        "shore": "onshore",
+        "samples_aligned": true,
+        "thunder": true,
+        "evening_gust_ms": null,
+        "missing_or_unverified": []
+      },
+      "candidate_output": "Отлично для SUP в полдень.",
+      "expected": {
+        "sup_safety_level": "delay",
+        "editorial_eval_verdict": "FAIL",
+        "release_gate": "STOP",
+        "reason": "Thunder forces delay regardless of otherwise benign wind/gust/wave."
+      }
+    },
+    {
+      "id": "CY-SUP-08",
+      "scenario": "Daypart shift and incomplete noon proof (learner case B)",
+      "input": {
+        "date_local": "2026-10-14",
+        "location": "synthetic Cyprus coastal spot",
+        "weather_observation_at": "2026-10-14T12:00:00+03:00",
+        "marine_sample_at": null,
+        "wind_ms": 2.5,
+        "gust_ms": 8.0,
+        "wave_h_m": 0.3,
+        "shore": null,
+        "samples_aligned": false,
+        "thunder": false,
+        "evening_gust_ms": 16.0,
+        "missing_or_unverified": [
+          "shore",
+          "marine_sample_at",
+          "independent evidence for thunder status"
+        ]
+      },
+      "candidate_output": "Около полудня возможно короткое окно для SUP. К вечеру ветер усилится — перед выходом обязательно проверьте условия на месте.",
+      "expected": {
+        "sup_safety_level": "none",
+        "editorial_eval_verdict": "REVIEW",
+        "release_gate": "STOP",
+        "reason": "No contradiction between 12:00 gust 8 m/s and 18:00 gust 16 m/s, but shore orientation and marine-sample alignment are unverified; no automatic publication of noon activity recommendation."
+      }
+    }
+  ]
+}
