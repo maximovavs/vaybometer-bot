@@ -241,6 +241,23 @@ def _shore_face_for_city(city: str) -> Tuple[Optional[float], Optional[str]]:
     return None, None
 
 
+def _sup_shore_override_invalid(city: str) -> bool:
+    """True when SHORE_FACE_<CITY> is set but is not a finite angle in [0, 360).
+
+    SUP-only: an explicit override that cannot be trusted must not silently fall
+    back to another orientation (malformed) or classify as "cross" (NaN/inf).
+    An absent or blank override is not an explicit override.
+    """
+    raw = os.getenv(f"SHORE_FACE_{_env_city_key(city)}")
+    if raw is None or not str(raw).strip():
+        return False
+    try:
+        angle = float(str(raw).strip())
+    except ValueError:
+        return True
+    return not (math.isfinite(angle) and 0.0 <= angle < 360.0)
+
+
 # ───────────── утилиты ─────────────
 def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
     return pendulum.timezone(tz) if isinstance(tz, str) else tz
@@ -2461,6 +2478,11 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         city,
         float(sup_dir) if isinstance(sup_dir, (int, float)) else None,
     )
+    sup_orientation_invalid = _sup_shore_override_invalid(city)
+    if sup_orientation_invalid:
+        # An invalid explicit orientation is no orientation evidence for SUP:
+        # no onshore/cross/offshore claim reaches the SUP decision or text.
+        sup_shore, sup_shore_src = None, None
     sup_level = sup_safety_level(
         wind_ms=sup_wind,
         gust_ms=sup_gust,
@@ -2477,6 +2499,10 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     if thunder_unknown and sup_level in ("excellent", "caution"):
         # No confident positive SUP advice without thunder evidence; an
         # independently supported "delay" (gusts/offshore) is kept.
+        sup_level = None
+    if sup_orientation_invalid and sup_level in ("excellent", "caution"):
+        # Invalid explicit orientation: no positive SUP advice; a "delay" from
+        # gusts or confirmed thunder (orientation-independent) is kept.
         sup_level = None
 
     kite_good = False
