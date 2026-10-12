@@ -3660,6 +3660,175 @@ def cy_astro_absent_voc_cannot_be_invented_by_llm() -> None:
     )
 
 
+
+# ───────────── NOAA SWPC observed 3-hour Kp: morning source contract (offline) ─────────────
+import air as air_module  # noqa: E402
+import send_weekly_forecast as weekly_module  # noqa: E402
+
+CY_KP_NOW = dt.datetime(2026, 10, 10, 12, 0, tzinfo=dt.timezone.utc)
+CY_KP_NOW_TS = int(CY_KP_NOW.timestamp())
+
+
+def _cy_kp_tag(hours_ago: float, *, minutes: int = 0) -> str:
+    moment = CY_KP_NOW - dt.timedelta(hours=hours_ago) + dt.timedelta(minutes=minutes)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _cy_kp_rows(*pairs) -> list:
+    return [{"time_tag": tag, "Kp": kp, "a_running": 7, "station_count": 8} for tag, kp in pairs]
+
+
+class _CyKpResponse:
+    def __init__(self, status_code: int = 200, payload=None, raw_json_error: bool = False):
+        self.status_code = status_code
+        self._payload = payload
+        self._raw_json_error = raw_json_error
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            requests_module = post_common_module.requests
+            raise requests_module.HTTPError(f"{self.status_code} Client Error", response=self)
+
+    def json(self):
+        if self._raw_json_error:
+            raise post_common_module.requests.exceptions.JSONDecodeError("Expecting value", "<html>", 0)
+        return self._payload
+
+
+class _CyKpWorld:
+    """Fixed clock, temp cache, scripted requests.get and air HTTP. No network, no real cache."""
+
+    def __init__(self, outcome=None, *, air_responses=None, now_ts: int = CY_KP_NOW_TS):
+        self.outcome = outcome
+        self.air_responses = dict(air_responses or {})
+        self.now_ts = now_ts
+        self.get_calls: list = []
+        self.air_urls: list = []
+
+    def __enter__(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        requests_module = post_common_module.requests
+        self._saved = (air_module._now_ts, air_module._fetch_kp_data, air_module.KP_CACHE, requests_module.get)
+        air_module._now_ts = lambda: self.now_ts
+        air_module.KP_CACHE = Path(self._tmp.name) / "kp.json"
+
+        def fake_air_fetch(url, *args, **kwargs):
+            self.air_urls.append(url)
+            return self.air_responses.get(url)
+
+        def fake_get(url, *args, **kwargs):
+            self.get_calls.append((url, kwargs.get("timeout")))
+            if isinstance(self.outcome, BaseException):
+                raise self.outcome
+            if isinstance(self.outcome, _CyKpResponse):
+                return self.outcome
+            return _CyKpResponse(200, self.outcome)
+
+        air_module._fetch_kp_data = fake_air_fetch
+        requests_module.get = fake_get
+        return self
+
+    def __exit__(self, *_exc):
+        requests_module = post_common_module.requests
+        air_module._now_ts, air_module._fetch_kp_data, air_module.KP_CACHE, requests_module.get = self._saved
+        self._tmp.cleanup()
+
+
+def cy_kp_primary_parses_current_noaa_schema_with_exact_values() -> None:
+    for value, label in ((0.0, "спокойно"), (6.67, "буря"), (7.0, "буря"), (8.67, "буря")):
+        with _CyKpWorld(_cy_kp_rows((_cy_kp_tag(6), 2.0), (_cy_kp_tag(3), value))) as world:
+            assert post_common_module._fetch_world_kp_observation() == (value, 180, "swpc_observed_3h"), value
+            assert post_common_module._fetch_world_kp() == (value, 180)
+            assert post_common_module._kp_status_label(value) == label
+            assert world.get_calls[0] == (air_module.KP_OBSERVED_3H_URL, 15)
+            assert world.air_urls == []  # primary success needs no fallback fetch
+
+
+def cy_kp_success_is_cached_and_reused_after_noaa_failure() -> None:
+    import requests as requests_lib
+
+    world = _CyKpWorld(_cy_kp_rows((_cy_kp_tag(6), 2.0), (_cy_kp_tag(3), 7.0)))
+    with world:
+        assert post_common_module._fetch_world_kp_observation() == (7.0, 180, "swpc_observed_3h")
+        cached = json.loads(air_module.KP_CACHE.read_text(encoding="utf-8"))
+        assert cached == {"schema": 2, "swpc_observed_3h": {"kp": 7.0, "ts": CY_KP_NOW_TS - 3 * 3600}}
+
+        # A later NOAA failure of each kind reuses the persisted confirmed record with
+        # its true age and explicit cache provenance, without a second live request.
+        world.now_ts = CY_KP_NOW_TS + 3600
+        for failure in (
+            _CyKpResponse(404),
+            requests_lib.Timeout("read timed out"),
+            requests_lib.ConnectionError("refused"),
+            _CyKpResponse(200, raw_json_error=True),
+            _CyKpResponse(200, {"error": "unexpected"}),
+        ):
+            world.outcome = failure
+            assert post_common_module._fetch_world_kp_observation() == (
+                7.0, 240, "air.cache:swpc_observed_3h"
+            ), failure
+        assert world.air_urls == []
+
+        # Past the observed freshness bound the record is rejected: fail closed.
+        world.now_ts = CY_KP_NOW_TS - 3 * 3600 + air_module.KP_OBSERVED_MAX_AGE_SEC + 60
+        expected = {
+            "404": (_CyKpResponse(404), "kp:nodata(swpc/http-404)"),
+            "timeout": (requests_lib.Timeout("read timed out"), "kp:nodata(swpc/timeout)"),
+            "malformed": (_CyKpResponse(200, raw_json_error=True), "kp:nodata(swpc/malformed-json)"),
+            "schema": (_CyKpResponse(200, {"error": "x"}), "kp:nodata(swpc/invalid-or-stale)"),
+            "stale": (_CyKpResponse(200, _cy_kp_rows((_cy_kp_tag(7), 7.0))), "kp:nodata(swpc/invalid-or-stale)"),
+            "connection": (requests_lib.ConnectionError("refused"), "kp:nodata(swpc/http-fail)"),
+        }
+        for name, (failure, src) in expected.items():
+            world.outcome = failure
+            assert post_common_module._fetch_world_kp_observation() == (None, None, src), name
+            assert post_common_module._fetch_world_kp() == (None, None), name
+
+
+def cy_kp_estimated_1m_is_never_promoted_to_observed() -> None:
+    estimate = [{"time_tag": _cy_kp_tag(0, minutes=-1), "estimated_kp": 7.33, "kp_index": 7}]
+    with _CyKpWorld(_CyKpResponse(404), air_responses={air_module.KP_ESTIMATED_1M_URL: estimate}):
+        # The public get_kp() tuple keeps returning a clearly labelled estimate...
+        assert air_module.get_kp()[3] == "swpc_estimated_1m"
+        cached = json.loads(air_module.KP_CACHE.read_text(encoding="utf-8"))
+        assert "swpc_observed_3h" not in cached and "swpc_estimated_1m" in cached
+        # ...but the morning never shows it as the observed 3-hour Kp.
+        assert post_common_module._fetch_world_kp_observation() == (None, None, "kp:nodata(swpc/http-404)")
+
+
+def cy_kp_missing_is_never_rendered_as_calm() -> None:
+    assert post_common_module._kp_status_label(None) == "н/д"
+    original = "🧲 Космопогода: Kp 2.0 (спокойно) • 🌬️ v 420 км/с"
+    assert original in MORNING_WITH_SEA
+    missing = MORNING_WITH_SEA.replace(original, "🧲 Космопогода: Kp н/д • 🌬️ v 420 км/с")
+    text = build_morning_format_v2("Кипр", missing)
+    assert "🧲" not in text and "Kp" not in text
+    assert "Космопогода: спокойно" not in text
+
+
+def cy_kp_morning_and_weekly_formatting_stay_compatible() -> None:
+    original = "Kp 2.0 (спокойно)"
+    storm = build_morning_format_v2("Кипр", MORNING_WITH_SEA.replace(original, "Kp 7.0 (буря, 180 мин назад)"))
+    assert "🧲 Космопогода: Kp 7.0 • 🌬️ v 420 км/с" in storm
+    calm = build_morning_format_v2("Кипр", MORNING_WITH_SEA.replace(original, "Kp 0.0 (спокойно, 180 мин назад)"))
+    assert "🧲 Космопогода: Kp 0.0 • 🌬️ v 420 км/с" in calm
+    # Weekly consumes get_kp(): an observed value, a labelled estimate and n/d stay compatible.
+    line, elevated = weekly_module._space_line((7.0, "буря", CY_KP_NOW_TS - 3 * 3600, "swpc_observed_3h"))
+    assert line.startswith("Сейчас Kp 7.0: фон повышен") and elevated is True
+    line, elevated = weekly_module._space_line((None, "н/д", None, "n/d"))
+    assert "данных пока нет" in line and "спокойн" not in line and elevated is False
+
+
+def cy_kp_public_signatures_are_unchanged() -> None:
+    import inspect
+
+    for function in (air_module.get_kp, post_common_module._fetch_world_kp, post_common_module._kp_status_label):
+        params = list(inspect.signature(function).parameters)
+        assert params in ([], ["kp"]), (function.__name__, params)
+    assert "Tuple" in str(inspect.signature(post_common_module._fetch_world_kp).return_annotation)
+    assert "tuple" in str(inspect.signature(air_module.get_kp).return_annotation).lower()
+
+
 def main() -> None:
     checks = (
         cy_weather_attempts_request_only_sea_level_pressure,
@@ -3755,6 +3924,12 @@ def main() -> None:
         cy_astro_quarter_phases_are_distinct,
         cy_astro_voc_interval_requires_exact_match,
         cy_astro_absent_voc_cannot_be_invented_by_llm,
+        cy_kp_primary_parses_current_noaa_schema_with_exact_values,
+        cy_kp_success_is_cached_and_reused_after_noaa_failure,
+        cy_kp_estimated_1m_is_never_promoted_to_observed,
+        cy_kp_missing_is_never_rendered_as_calm,
+        cy_kp_morning_and_weekly_formatting_stay_compatible,
+        cy_kp_public_signatures_are_unchanged,
     )
     for check in checks:
         check()
