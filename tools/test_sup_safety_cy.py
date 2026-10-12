@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import os
 import sys
 import types
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 os.environ.setdefault("VAYBOMETER_CACHE_DIR", "/tmp/vaybometer-sup-safety-test-cache")
 
@@ -571,6 +574,113 @@ def water_highlight_uses_same_city_daily_thunder_code() -> None:
     assert "SUP лучше отложить: гроза" not in calm_line
 
 
+def cy_sup_golden_v1_offline_regression() -> None:
+    """Exercise production SUP decisions on immutable synthetic cases; no publication."""
+    fixture_path = ROOT / "tools" / "fixtures" / "cy_sup_golden_v1.json"
+    raw = fixture_path.read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == (
+        "f76067d7a47eacab9e67232a0efdcb833231183d75ed9897c2807d9d5208d2e3"
+    ), "SUP golden fixture integrity drift"
+    data = json.loads(raw.decode("utf-8"))
+    assert data["schema_version"] == "1.0"
+    assert data["mode"] == "synthetic_fixture_offline_only"
+    assert data["source_repo"] == "maximovavs/vaybometer-bot"
+    assert data["read_only_reference_main"] == "7a87d206d5a5698c0d0d33c182387e83888f66fe"
+    assert data["timezone"] == "Asia/Nicosia"
+    assert data["sample_max_offset_minutes"] == 90
+
+    # Manually authored editorial labels are immutable reference data, NOT an
+    # automated text evaluator or authorization to publish anything.
+    expected_by_id = {
+        "CY-SUP-01": ("excellent", "PASS", "PASS"),
+        "CY-SUP-02": ("delay", "FAIL", "STOP"),
+        "CY-SUP-03": ("caution", "FAIL", "STOP"),
+        "CY-SUP-04": ("delay", "PASS", "PASS"),
+        "CY-SUP-05": ("none", "FAIL", "STOP"),
+        "CY-SUP-06": ("none", "PASS", "PASS"),
+        "CY-SUP-07": ("delay", "FAIL", "STOP"),
+        "CY-SUP-08": ("none", "REVIEW", "STOP"),
+    }
+    cases = data["cases"]
+    assert len(cases) == 8
+    assert [case["id"] for case in cases] == list(expected_by_id)
+    local_zone = ZoneInfo(data["timezone"])
+    max_offset = dt.timedelta(minutes=data["sample_max_offset_minutes"])
+
+    for case in cases:
+        case_id = case["id"]
+        sample = case["input"]
+        expected = case["expected"]
+        expected_level, editorial_reference, release_reference = expected_by_id[case_id]
+        assert (
+            expected["sup_safety_level"],
+            expected["editorial_eval_verdict"],
+            expected["release_gate"],
+        ) == (expected_level, editorial_reference, release_reference), case_id
+
+        weather_iso = sample["weather_observation_at"]
+        marine_iso = sample["marine_sample_at"]
+        target_day = dt.date.fromisoformat(sample["date_local"])
+
+        # Independent standard-library oracle, not the fixture's own aligned flag.
+        if weather_iso is None or marine_iso is None:
+            independently_aligned = False
+        else:
+            weather_datetime = dt.datetime.fromisoformat(weather_iso)
+            marine_datetime = dt.datetime.fromisoformat(marine_iso)
+            assert weather_datetime.tzinfo is not None, case_id
+            assert marine_datetime.tzinfo is not None, case_id
+            weather_local = weather_datetime.astimezone(local_zone)
+            marine_local = marine_datetime.astimezone(local_zone)
+            independently_aligned = (
+                weather_local.date() == target_day
+                and marine_local.date() == target_day
+                and abs(weather_datetime - marine_datetime) <= max_offset
+            )
+
+        actual_aligned = _sup_samples_are_aligned(
+            pendulum.parse(weather_iso) if weather_iso else None,
+            pendulum.parse(marine_iso) if marine_iso else None,
+            pendulum.date(target_day.year, target_day.month, target_day.day),
+            TZ,
+        )
+        assert actual_aligned == independently_aligned == sample["samples_aligned"], case_id
+
+        level = sup_safety_level(
+            wind_ms=sample["wind_ms"],
+            gust_ms=sample["gust_ms"],
+            wave_h=sample["wave_h_m"],
+            shore=sample["shore"],
+            samples_aligned=actual_aligned,
+            thunder=sample["thunder"],
+        )
+        assert (level if level is not None else "none") == expected_level, case_id
+        guidance = _sup_guidance_line(
+            level,
+            city="synthetic Cyprus coastal spot",
+            wind_ms=sample["wind_ms"],
+            gust_ms=sample["gust_ms"],
+            wave_h=sample["wave_h_m"],
+            card=None,
+            shore=sample["shore"],
+            shore_src=None,
+            sst=None,
+            thunder=sample["thunder"],
+        )
+        if level is None:
+            assert guidance is None, case_id
+        elif level == "excellent":
+            assert guidance and "Отлично: SUP" in guidance, case_id
+        elif level == "caution":
+            assert guidance and "только опытным" in guidance, case_id
+        else:
+            assert guidance and "SUP лучше отложить" in guidance, case_id
+            if sample["thunder"]:
+                assert "гроза" in guidance, case_id
+        # Editorial verdicts deliberately remain reference metadata; they are
+        # not inferred from candidate_output or used to release a post.
+        assert (editorial_reference == "PASS") == (release_reference == "PASS"), case_id
+
 CHECKS = [
     calm_onshore_is_excellent,
     calm_cross_shore_is_excellent,
@@ -599,6 +709,7 @@ CHECKS = [
     thunder_patch_preserves_gust_thresholds,
     thunder_patch_preserves_offshore_rules,
     water_highlight_uses_same_city_daily_thunder_code,
+    cy_sup_golden_v1_offline_regression,
 ]
 
 
