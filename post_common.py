@@ -32,6 +32,14 @@ from weather      import (
     save_cyprus_visibility_diagnostics,
 )
 from air          import get_air, get_air_for_cities, get_sst, get_solar_wind
+from air          import (
+    KP_OBSERVED_3H_URL,
+    KP_SRC_OBSERVED_3H,
+    get_kp_observed_3h,
+    kp_g_scale,
+    parse_noaa_kp_observed_3h,
+    remember_kp_observed_3h,
+)
 from pollen       import get_pollen
 from radiation    import get_radiation
 from earthquakes  import build_cyprus_quake_line, get_recent_earthquakes_cyprus
@@ -556,38 +564,76 @@ def sun_line_for_mode(mode: str, tz: pendulum.tz.timezone.Timezone, lat: float, 
 
 
 # ───────────── NOAA Kp (для утра) ─────────────
-def _fetch_world_kp() -> Tuple[Optional[float], Optional[int]]:
-    if not requests:
-        return None, None
+def _fetch_world_kp_observation() -> Tuple[Optional[float], Optional[int], str]:
+    """
+    Confirmed NOAA observed 3-hour Kp for the morning: (kp, age_min, src).
+
+    The live request comes first, and a valid observation is persisted to the
+    provenance-aware air cache. On any failure only a cached *observed* value
+    within its freshness bound is used (src "air.cache:swpc_observed_3h"); the
+    1-minute estimate never is. Without one: (None, None, "kp:nodata(<reason>)").
+    """
+    reason = "swpc/requests-unavailable"
+    if requests:
+        try:
+            r = requests.get(
+                KP_OBSERVED_3H_URL,
+                timeout=15,
+                headers={
+                    "User-Agent": "VayboMeter/1.0",
+                    "Accept": "application/json",
+                    "Cache-Control": "no-cache",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if isinstance(status, int):
+                reason = f"swpc/http-{status}"
+            elif isinstance(e, requests.Timeout):
+                reason = "swpc/timeout"
+            elif isinstance(e, ValueError):
+                reason = "swpc/malformed-json"
+            else:
+                reason = "swpc/http-fail"
+            logging.warning("SWPC observed-3h Kp request failed (%s): %s", reason, e)
+        else:
+            obs = parse_noaa_kp_observed_3h(data)
+            if obs is not None:
+                # Keep the confirmed observation for a later NOAA outage.
+                try:
+                    remember_kp_observed_3h(obs)
+                except Exception as e:
+                    logging.warning("Kp observed-3h cache write skipped: %s", e)
+                logging.info(
+                    "Kp SWPC used: %.2f (%s), age=%s min, src=%s",
+                    obs["kp"], kp_g_scale(obs["kp"]) or "below G1", obs["age_min"], KP_SRC_OBSERVED_3H,
+                )
+                return obs["kp"], obs["age_min"], KP_SRC_OBSERVED_3H
+            reason = "swpc/invalid-or-stale"
+            logging.warning("SWPC observed-3h Kp: no valid fresh observation in response")
+
     try:
-        url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
-        r = requests.get(
-            url,
-            timeout=15,
-            headers={
-                "User-Agent": "VayboMeter/1.0",
-                "Accept": "application/json",
-                "Cache-Control": "no-cache",
-            },
+        cached = get_kp_observed_3h(live=False)
+    except Exception as e:
+        logging.warning("Kp cached observed-3h lookup failed: %s", e)
+        cached = None
+    if cached is not None:
+        src = f"air.{cached['src']}"
+        logging.info(
+            "Kp fallback used: %.2f (%s), age=%s min, src=%s (primary=%s)",
+            cached["kp"], kp_g_scale(cached["kp"]) or "below G1", cached["age_min"], src, reason,
         )
-        r.raise_for_status()
-        data = r.json()
-        rows = [row for row in data if isinstance(row, list) and len(row) >= 2][1:]
-        if not rows:
-            return None, None
-        last = rows[-1]
-        val = float(last[1]) if last[1] not in (None, "null", "") else None
-        ts_iso = str(last[0]) if last[0] else None
-        age_min = None
-        if ts_iso:
-            try:
-                dt_utc = pendulum.parse(ts_iso).in_tz("UTC")
-                age_min = int((pendulum.now("UTC") - dt_utc).total_minutes())
-            except Exception:
-                age_min = None
-        return val, age_min
-    except Exception:
-        return None, None
+        return float(cached["kp"]), int(cached["age_min"]), src
+
+    logging.warning("Kp: no confirmed NOAA observed 3-hour value (primary=%s); shown as н/д, not calm", reason)
+    return None, None, f"kp:nodata({reason})"
+
+
+def _fetch_world_kp() -> Tuple[Optional[float], Optional[int]]:
+    kp, age_min, _src = _fetch_world_kp_observation()
+    return kp, age_min
 
 
 def _kp_status_label(kp: Optional[float]) -> str:

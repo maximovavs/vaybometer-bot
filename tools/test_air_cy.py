@@ -308,6 +308,153 @@ def test_format_v2_keeps_city_air_line() -> None:
     print("PASS format_v2_keeps_city_air_line")
 
 
+
+# ───────────── NOAA SWPC observed 3-hour Kp source contract (offline) ─────────────
+import json  # noqa: E402
+import math  # noqa: E402
+import tempfile  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+KP_NOW = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
+KP_NOW_TS = int(KP_NOW.timestamp())
+
+
+def _kp_tag(hours_ago: float, *, minutes: int = 0) -> str:
+    return (KP_NOW - timedelta(hours=hours_ago) + timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _kp_rows(*pairs) -> list:
+    """Current NOAA schema: objects with time_tag (3-hour interval start, UTC) and Kp."""
+    return [{"time_tag": tag, "Kp": kp, "a_running": 7, "station_count": 8} for tag, kp in pairs]
+
+
+class KpAirWorld:
+    """Fixed clock, temp cache file and scripted air HTTP. No network, no real cache."""
+
+    def __init__(self, responses=None, now_ts: int = KP_NOW_TS):
+        self.responses = dict(responses or {})
+        self.now_ts = now_ts
+        self.urls: list = []
+
+    def __enter__(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._saved = (air._now_ts, air._fetch_kp_data, air.KP_CACHE)
+        air._now_ts = lambda: self.now_ts
+        air.KP_CACHE = Path(self._tmp.name) / "kp.json"
+
+        def fake_fetch(url, *args, **kwargs):
+            self.urls.append(url)
+            return self.responses.get(url)
+
+        air._fetch_kp_data = fake_fetch
+        return self
+
+    def __exit__(self, *_exc):
+        air._now_ts, air._fetch_kp_data, air.KP_CACHE = self._saved
+        self._tmp.cleanup()
+
+
+def test_kp_observed_values_are_exact_and_unrounded() -> None:
+    for value, g_scale in ((0.0, None), (6.67, "G2"), (7.0, "G3"), (8.67, "G4")):
+        obs = air.parse_noaa_kp_observed_3h(_kp_rows((_kp_tag(6), 2.0), (_kp_tag(3), value)), now_ts=KP_NOW_TS)
+        assert_true("kp_exact", obs is not None and obs["kp"] == value, str(obs))
+        assert_true("kp_src", obs["src"] == "swpc_observed_3h" and obs["age_min"] == 180, str(obs))
+        assert_true("kp_g_scale", obs["g_scale"] == g_scale, str(obs))
+    for value, g_scale in {4.99: None, 5.0: "G1", 6.0: "G2", 6.99: "G2", 8.0: "G4", 8.99: "G4", 9.0: "G5"}.items():
+        assert_true("kp_g_boundary", air.kp_g_scale(value) == g_scale, f"{value} -> {air.kp_g_scale(value)}")
+    print("PASS kp_observed_values_are_exact_and_unrounded")
+
+
+def test_kp_invalid_values_and_timestamps_are_rejected() -> None:
+    for bad in (float("nan"), "NaN", float("inf"), "Infinity", -0.1, 9.01, True, None, "", "abc", [7]):
+        assert_true("kp_bad_value", air.parse_noaa_kp_observed_3h(_kp_rows((_kp_tag(3), bad)), now_ts=KP_NOW_TS) is None, repr(bad))
+    newer_bad = _kp_rows((_kp_tag(3), 2.33), (_kp_tag(0), 12.0), (_kp_tag(0, minutes=-1), float("nan")))
+    obs = air.parse_noaa_kp_observed_3h(newer_bad, now_ts=KP_NOW_TS)
+    assert_true("kp_bad_never_clamped", obs is not None and obs["kp"] == 2.33, str(obs))
+    for tag in (None, "", "   ", "not-a-date", 12345, "2026-13-40T99:00:00"):
+        rows = [{"time_tag": tag, "Kp": 7.0}]
+        assert_true("kp_bad_time", air._parse_noaa_time_tag(tag) is None, repr(tag))
+        assert_true("kp_bad_time_fixed_clock", air.parse_noaa_kp_observed_3h(rows, now_ts=KP_NOW_TS) is None, repr(tag))
+        # Against the real wall clock too: substituting "now" would make this row look fresh.
+        assert_true("kp_bad_time_real_clock", air.parse_noaa_kp_observed_3h(rows) is None, repr(tag))
+    for raw in ("2026-10-10T09:00:00", "2026-10-10 09:00:00.000", "2026-10-10T09:00:00Z", "2026-10-10T12:00:00+03:00"):
+        assert_true("kp_time_utc", air._parse_noaa_time_tag(raw) == KP_NOW_TS - 3 * 3600, raw)
+    assert_true("kp_zero_is_value", air._finite_kp(0) == 0.0 and not math.isnan(air._finite_kp("0.0")))
+    print("PASS kp_invalid_values_and_timestamps_are_rejected")
+
+
+def test_kp_future_stale_and_unsorted_rows() -> None:
+    assert_true("kp_skew", air.KP_FUTURE_SKEW_SEC == 600)
+    assert_true("kp_future", air.parse_noaa_kp_observed_3h(_kp_rows((_kp_tag(0, minutes=11), 7.0)), now_ts=KP_NOW_TS) is None)
+    skewed = air.parse_noaa_kp_observed_3h(_kp_rows((_kp_tag(0, minutes=5), 7.0)), now_ts=KP_NOW_TS)
+    assert_true("kp_skew_age_zero", skewed is not None and skewed["age_min"] == 0, str(skewed))
+    assert_true("kp_max_age", air.KP_OBSERVED_MAX_AGE_SEC == 6 * 3600 + 30 * 60)
+    assert_true("kp_stale", air.parse_noaa_kp_observed_3h(_kp_rows((_kp_tag(6, minutes=-31), 7.0)), now_ts=KP_NOW_TS) is None)
+    fresh = air.parse_noaa_kp_observed_3h(_kp_rows((_kp_tag(6, minutes=-29), 7.0)), now_ts=KP_NOW_TS)
+    assert_true("kp_fresh_edge", fresh is not None and fresh["age_min"] == 389, str(fresh))
+    unsorted = _kp_rows((_kp_tag(3), 7.0), (_kp_tag(9), 2.0), (_kp_tag(6), 4.33))
+    obs = air.parse_noaa_kp_observed_3h(unsorted, now_ts=KP_NOW_TS)
+    assert_true("kp_newest_by_time", obs is not None and obs["kp"] == 7.0, str(obs))
+    # Legacy table schema is read by header name, never by the last column (station_count).
+    table = [["time_tag", "Kp", "a_running", "station_count"], [_kp_tag(3).replace("T", " "), "6.67", "80", "8"]]
+    legacy = air.parse_noaa_kp_observed_3h(table, now_ts=KP_NOW_TS)
+    assert_true("kp_legacy_header", legacy is not None and legacy["kp"] == 6.67, str(legacy))
+    for data in (None, "text", 7, {"Kp": 7}, [1, 2], [], [{"time_tag": _kp_tag(3), "kp_index": 7}], [["time_tag", "a_running"], [_kp_tag(3), "7"]]):
+        assert_true("kp_wrong_schema", air.parse_noaa_kp_observed_3h(data, now_ts=KP_NOW_TS) is None, repr(data))
+    print("PASS kp_future_stale_and_unsorted_rows")
+
+
+def test_kp_estimated_1m_keeps_its_own_provenance() -> None:
+    estimate = [
+        {"time_tag": _kp_tag(0, minutes=-2), "kp_index": 0, "estimated_kp": 0.0},
+        {"time_tag": _kp_tag(0, minutes=-1), "kp_index": 7, "estimated_kp": 7.33},
+    ]
+    obs = air.parse_noaa_kp_estimated_1m(estimate, now_ts=KP_NOW_TS)
+    assert_true("kp_est", obs is not None and obs["kp"] == 7.33 and obs["src"] == "swpc_estimated_1m", str(obs))
+    zero = air.parse_noaa_kp_estimated_1m(estimate[:1], now_ts=KP_NOW_TS)
+    assert_true("kp_est_zero", zero is not None and zero["kp"] == 0.0, str(zero))
+    with KpAirWorld({air.KP_ESTIMATED_1M_URL: estimate}):
+        result = air.get_kp()
+        assert_true("kp_est_public_tuple", result == (7.33, "буря", KP_NOW_TS - 60, "swpc_estimated_1m"), str(result))
+        assert_true("kp_est_not_observed", air.get_kp_observed_3h() is None)
+        assert_true("kp_est_not_observed_cache", air.get_kp_observed_3h(live=False) is None)
+    print("PASS kp_estimated_1m_keeps_its_own_provenance")
+
+
+def test_kp_cache_provenance_newest_and_freshness() -> None:
+    with KpAirWorld({air.KP_OBSERVED_3H_URL: _kp_rows((_kp_tag(3), 7.0))}) as world:
+        assert_true("kp_get", air.get_kp() == (7.0, "буря", KP_NOW_TS - 3 * 3600, "swpc_observed_3h"))
+        cached = json.loads(air.KP_CACHE.read_text(encoding="utf-8"))
+        assert_true("kp_cache_shape", cached == {"schema": 2, "swpc_observed_3h": {"kp": 7.0, "ts": KP_NOW_TS - 3 * 3600}}, str(cached))
+        world.responses = {}
+        world.urls.clear()
+        world.now_ts = KP_NOW_TS + 3600
+        obs = air.get_kp_observed_3h(live=False)
+        assert_true("kp_cache_only_no_fetch", world.urls == [], str(world.urls))
+        assert_true("kp_cache_reuse", obs is not None and obs["src"] == "cache:swpc_observed_3h" and obs["age_min"] == 240, str(obs))
+        # Newest observation wins; an older record never replaces it.
+        older = {"kp": 2.0, "ts": KP_NOW_TS - 6 * 3600, "src": "swpc_observed_3h"}
+        assert_true("kp_remember_older", air.remember_kp_observed_3h(older) is True)
+        assert_true("kp_newest_kept", json.loads(air.KP_CACHE.read_text(encoding="utf-8"))["swpc_observed_3h"]["kp"] == 7.0)
+        world.now_ts = KP_NOW_TS - 3 * 3600 + air.KP_OBSERVED_MAX_AGE_SEC + 60
+        assert_true("kp_cache_expired", air.get_kp_observed_3h(live=False) is None)
+        assert_true("kp_cache_expired_get", air.get_kp() == (None, "н/д", None, "n/d"))
+    for refused in (
+        None,
+        {"kp": 7.0, "ts": KP_NOW_TS, "src": "swpc_estimated_1m"},
+        {"kp": 7.0, "ts": KP_NOW_TS, "src": "cache:swpc_observed_3h"},
+        {"kp": float("nan"), "ts": KP_NOW_TS, "src": "swpc_observed_3h"},
+        {"kp": 7.0, "ts": True, "src": "swpc_observed_3h"},
+    ):
+        with KpAirWorld():
+            assert_true("kp_remember_refused", air.remember_kp_observed_3h(refused) is False, repr(refused))
+            assert_true("kp_remember_no_file", not air.KP_CACHE.exists(), repr(refused))
+    with KpAirWorld():
+        air.KP_CACHE.write_text(json.dumps({"kp": 1.0, "ts": KP_NOW_TS - 60, "src": "swpc_table"}), encoding="utf-8")
+        assert_true("kp_legacy_cache_ignored", air.get_kp() == (None, "н/д", None, "n/d"))
+    print("PASS kp_cache_provenance_newest_and_freshness")
+
+
 def main() -> None:
     test_official_parse()
     test_official_levels_are_not_fabricated_aqi()
@@ -319,6 +466,11 @@ def main() -> None:
     test_format_v2_keeps_city_air_line()
     test_current_air_does_not_become_tomorrow_guidance()
     test_forecast_air_and_dust_evidence_are_separate()
+    test_kp_observed_values_are_exact_and_unrounded()
+    test_kp_invalid_values_and_timestamps_are_rejected()
+    test_kp_future_stale_and_unsorted_rows()
+    test_kp_estimated_1m_keeps_its_own_provenance()
+    test_kp_cache_provenance_newest_and_freshness()
     print("OK: Cyprus air-quality offline checks passed")
 
 
