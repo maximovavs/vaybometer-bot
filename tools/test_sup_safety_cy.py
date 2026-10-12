@@ -493,7 +493,9 @@ def safe_surf_and_sup_recommendations_preserve_existing_behavior() -> None:
     assert "Отлично: SUP" not in surf
 
     sup = _water_line(safe_weather, wave_h=0.3)
-    assert "Отлично: SUP" in sup
+    # D4-b: the city orientation is approximate, so no beach-specific "Отлично".
+    assert post_common_module._SUP_CITY_FORECAST_NOTE in sup
+    assert "Отлично: SUP" not in sup and "только опытным" not in sup
     assert "Кайт/Винг/Винд" not in sup
     assert "Сёрф" not in sup
 
@@ -570,7 +572,8 @@ def unknown_thunder_evidence_blocks_positive_sup() -> None:
     # Benign onshore noon (3 m/s, gusts 7 m/s, wave 0.3 m) is excellent with a
     # verified non-thunder code, but unknown thunder evidence gives no SUP advice.
     benign = {"wind_kmh": [10.8], "gust_kmh": [25.2], "wind_dir": [180.0]}
-    assert "Отлично: SUP" in _water_line(_payload_with_code(0, **benign))
+    known = _sup_part(_water_line(_payload_with_code(0, **benign)))
+    assert known.startswith(post_common_module._SUP_CITY_FORECAST_NOTE) and "Отлично" not in known, known
     for code in _UNKNOWN_WMO_CODES:
         line = _water_line(_payload_with_code(code, **benign))
         assert _sup_part(line) == "", (code, line)
@@ -579,7 +582,8 @@ def unknown_thunder_evidence_blocks_positive_sup() -> None:
     gusty = {"wind_kmh": [9.0], "gust_kmh": [46.8], "wind_dir": [180.0]}
     offshore_light = {"wind_kmh": [9.0], "gust_kmh": [21.6], "wind_dir": [0.0]}
     for weather in (gusty, offshore_light):
-        assert "только опытным" in _water_line(_payload_with_code(2, **weather)), weather
+        known = _sup_part(_water_line(_payload_with_code(2, **weather)))
+        assert known.startswith(post_common_module._SUP_CITY_FORECAST_NOTE) and "только опытным" not in known, (weather, known)
         for code in _UNKNOWN_WMO_CODES:
             line = _water_line(_payload_with_code(code, **weather))
             assert _sup_part(line) == "", (code, weather, line)
@@ -593,14 +597,15 @@ def unknown_thunder_evidence_keeps_independent_delay() -> None:
         assert "SUP лучше отложить" in gust_line and "порывы до 16 м/с" in gust_line, (code, gust_line)
         assert "гроза" not in gust_line, (code, gust_line)
         offshore_line = _sup_part(_water_line(_payload_with_code(code, **offshore_stop)))
-        assert "SUP лучше отложить" in offshore_line and "N/offshore" in offshore_line, (code, offshore_line)
+        assert "SUP лучше отложить" in offshore_line and post_common_module._SUP_APPROX_OFFSHORE_NOTE in offshore_line, (code, offshore_line)
+        assert "/offshore" not in offshore_line, (code, offshore_line)
 
 
 def valid_wmo_codes_keep_existing_sup_behaviour() -> None:
     benign = {"wind_kmh": [10.8], "gust_kmh": [25.2], "wind_dir": [180.0]}
     for code in (0, 1, 2, 3, 61, "0", 3.0):
         line = _sup_part(_water_line(_payload_with_code(code, **benign)))
-        assert line.startswith("🧜‍♂️ Отлично: SUP • ветер 3 м/с • порывы до 7 м/с • волна 0.3 м"), (code, line)
+        assert line == post_common_module._SUP_CITY_FORECAST_NOTE + " • ветер 3 м/с • порывы до 7 м/с • волна 0.3 м.", (code, line)
     for code in (95, 96, 99, "95"):
         line = _sup_part(_water_line(_payload_with_code(code, **benign)))
         assert line.startswith("🧜‍♂️ SUP лучше отложить: гроза"), (code, line)
@@ -618,7 +623,8 @@ def unknown_thunder_evidence_does_not_touch_other_water_sports() -> None:
 
 def unknown_thunder_evidence_never_reaches_final_evening_text() -> None:
     benign = {"wind_kmh": [10.8], "gust_kmh": [25.2], "wind_dir": [180.0]}
-    assert "Отлично: SUP" in _final_evening_text(_payload_with_code(0, **benign))
+    known_final = _final_evening_text(_payload_with_code(0, **benign))
+    assert post_common_module._SUP_CITY_FORECAST_NOTE in known_final and "Отлично: SUP" not in known_final
     for code in _UNKNOWN_WMO_CODES:
         final = _final_evening_text(_payload_with_code(code, **benign))
         assert "Отлично: SUP" not in final and "только опытным" not in final, (code, final)
@@ -695,9 +701,11 @@ def sup_shore_override_validity_matrix() -> None:
 def invalid_shore_override_blocks_positive_sup() -> None:
     # Without an override these are positive: east wind -> excellent (city 180 deg,
     # cross), north wind -> offshore caution, gusts 13 m/s -> caution.
-    assert "Отлично: SUP" in _sup_part(_sup_with_shore_face(None, **_BENIGN_EAST))
-    assert "только опытным" in _sup_part(_sup_with_shore_face(None, **_BENIGN_NORTH))
-    assert "только опытным" in _sup_part(_sup_with_shore_face(None, **_GUSTY_CAUTION))
+    # With the city fallback (D4-b) these are neutral notes, never permission.
+    for weather in (_BENIGN_EAST, _BENIGN_NORTH, _GUSTY_CAUTION):
+        baseline = _sup_part(_sup_with_shore_face(None, **weather))
+        assert baseline.startswith(post_common_module._SUP_CITY_FORECAST_NOTE), (weather, baseline)
+        assert "Отлично" not in baseline and "только опытным" not in baseline, (weather, baseline)
     for raw in _INVALID_SHORE_OVERRIDES:
         for weather in (_BENIGN_EAST, _BENIGN_NORTH, _GUSTY_CAUTION):
             line = _sup_part(_sup_with_shore_face(raw, **weather))
@@ -727,16 +735,19 @@ def missing_or_blank_shore_override_keeps_current_behaviour() -> None:
             assert _sup_with_shore_face(raw, **weather) == baseline, (raw, weather)
 
 
-def valid_shore_override_keeps_current_behaviour() -> None:
+def valid_shore_override_is_approximate_orientation() -> None:
+    """A valid SHORE_FACE_<CITY> has no verified spot provenance: approximate (T1)."""
+    facts = " • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м"
     expected = {
-        "180": "🧜‍♂️ Отлично: SUP (ENV) • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м (E/cross)",
-        "0": "🧜‍♂️ Отлично: SUP (ENV) • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м (E/cross)",
-        "359.9": "🧜‍♂️ Отлично: SUP (ENV) • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м (E/cross)",
-        "260": "🧜‍♂️ SUP: только опытным и короткая сессия • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м (E/offshore).",
+        "180": post_common_module._SUP_CITY_FORECAST_NOTE + facts + ".",
+        "0": post_common_module._SUP_CITY_FORECAST_NOTE + facts + ".",
+        "359.9": post_common_module._SUP_CITY_FORECAST_NOTE + facts + ".",
+        "260": post_common_module._SUP_CITY_FORECAST_NOTE + facts + " • " + post_common_module._SUP_APPROX_OFFSHORE_NOTE + ".",
     }
     for raw, line in expected.items():
         sup = _sup_part(_sup_with_shore_face(raw, **_BENIGN_EAST))
-        assert sup.startswith(line), (raw, sup)
+        assert sup == line, (raw, sup)
+        assert "(ENV)" not in sup and "/cross" not in sup and "/offshore" not in sup, (raw, sup)
 
 
 def invalid_shore_override_guard_is_sup_only() -> None:
@@ -770,6 +781,269 @@ def invalid_shore_override_never_reaches_final_evening_text() -> None:
             final = _final_evening_text(_payload_with_code(0, **_BENIGN_EAST))
         assert "Отлично: SUP" not in final and "только опытным" not in final, (raw, final)
 
+
+# ───────────── D4-b: city-level orientation is approximate ─────────────
+_CY_SEA_CITIES = {
+    "Limassol": (34.707, 33.022),
+    "Pafos": (34.776, 32.424),
+    "Paralimni": (35.039, 33.982),
+    "Larnaca": (34.916, 33.624),
+}
+_PROFILED_CITIES = ("Limassol", "Pafos", "Larnaca")
+
+
+class _orientation_env:
+    """Clear every SHORE_FACE_*/SPOT_*/ACTIVE_SPOT override, then apply ``overrides``."""
+
+    def __init__(self, **overrides):
+        self.overrides = overrides
+
+    def __enter__(self):
+        self._saved = {
+            key: value
+            for key, value in os.environ.items()
+            if key.startswith(("SHORE_FACE_", "SPOT_")) or key == "ACTIVE_SPOT"
+        }
+        for key in self._saved:
+            os.environ.pop(key)
+        for key, value in self.overrides.items():
+            os.environ[key] = value
+        return self
+
+    def __exit__(self, *_exc):
+        for key in [k for k in os.environ if k.startswith(("SHORE_FACE_", "SPOT_")) or k == "ACTIVE_SPOT"]:
+            os.environ.pop(key)
+        os.environ.update(self._saved)
+
+
+def _water_line_for(city: str, payload: dict, *, wave_h=0.3, wave_at=None, calls=None) -> str:
+    la, lo = _CY_SEA_CITIES[city]
+    marine_at = wave_at or pendulum.datetime(2026, 8, 10, 12, 0, tz=TZ)
+
+    def fake_weather(lat, lon, *_args, **_kwargs):
+        if calls is not None:
+            calls.append((lat, lon))
+        return payload
+
+    def build() -> str:
+        return _replace_attrs(
+            post_common_module,
+            {
+                "get_weather": fake_weather,
+                "_fetch_wave_for_tomorrow": lambda *_args, **_kwargs: (wave_h, None, marine_at),
+                "get_sst_cached": lambda *_args, **_kwargs: 27.0,
+            },
+            lambda: _water_highlights(city, la, lo, TZ) or "",
+        )
+
+    return _with_forecast_clock(build)
+
+
+def _city_sup(city: str, *, code=0, wave_h=0.3, wave_at=None, **weather) -> str:
+    return _sup_part(_water_line_for(city, _payload_with_code(code, **weather), wave_h=wave_h, wave_at=wave_at))
+
+
+_D4B_EAST = {"wind_kmh": [10.8], "gust_kmh": [28.8], "wind_dir": [80.0]}  # 3 m/s, gusts 8, from 80 deg
+_D4B_NOTE_FACTS = " • ветер 3 м/с • порывы до 8 м/с • волна 0.3 м."
+
+
+def d4b_orientation_provenance_matrix() -> None:
+    provenance = post_common_module._sup_orientation_provenance
+    with _orientation_env():
+        for city in _PROFILED_CITIES:
+            assert provenance(city) == "approximate", city
+        assert provenance("Paralimni") == "none"
+    cases = (
+        ({"SHORE_FACE_LIMASSOL": "200"}, "Limassol", "approximate"),
+        ({"SHORE_FACE_LIMASSOL": "NaN"}, "Limassol", "invalid"),
+        ({"SPOT_LIMASSOL": "Pissouri"}, "Limassol", "unverified_spot"),
+        ({"SPOT_LIMASSOL": "Coral Bay"}, "Limassol", "unverified_spot"),
+        ({"SPOT_LIMASSOL": "Atlantis"}, "Limassol", "approximate"),  # unknown name: city fallback
+        ({"ACTIVE_SPOT": "Latchi"}, "Larnaca", "unverified_spot"),
+        ({"ACTIVE_SPOT": "Latchi"}, "Paralimni", "unverified_spot"),
+    )
+    for env, city, expected in cases:
+        with _orientation_env(**env):
+            assert provenance(city) == expected, (env, city, provenance(city))
+
+
+def d4b_city_fallback_gives_neutral_note_not_permission() -> None:
+    # Mandatory cases 1, 3, 4: Limassol 180, Pafos 210, Larnaca 180 city fallback.
+    with _orientation_env():
+        for city in _PROFILED_CITIES:
+            line = _city_sup(city, **_D4B_EAST)
+            assert line == post_common_module._SUP_CITY_FORECAST_NOTE + _D4B_NOTE_FACTS, (city, line)
+            for claim in ("Отлично", "только опытным", "/cross", "/onshore", "/offshore", "@", "(ENV)"):
+                assert claim not in line, (city, claim, line)
+
+
+def d4b_unverified_spot_profiles_never_authorise_positive_sup() -> None:
+    # Mandatory cases 2, 7, 8: a SPOT/ACTIVE_SPOT name is not verified spot geometry.
+    calls: list = []
+    with _orientation_env(SPOT_LIMASSOL="Pissouri"):
+        assert post_common_module._shore_face_for_city("Limassol") == (220.0, "Pissouri")
+        line = _sup_part(_water_line_for("Limassol", _payload_with_code(0, **_D4B_EAST), calls=calls))
+        assert line == "", line
+    # The selected orientation never changes the forecast coordinates: still the city.
+    assert calls and set(calls) == {_CY_SEA_CITIES["Limassol"]}, calls
+    for env, city in (
+        ({"ACTIVE_SPOT": "Latchi"}, "Larnaca"),
+        ({"ACTIVE_SPOT": "Pissouri"}, "Pafos"),
+        ({"ACTIVE_SPOT": "Pissouri"}, "Paralimni"),
+        ({"SPOT_LIMASSOL": "Coral Bay"}, "Limassol"),
+    ):
+        with _orientation_env(**env):
+            for weather in (_D4B_EAST, _GUSTY_CAUTION):
+                line = _city_sup(city, **weather)
+                assert line == "", (env, city, weather, line)
+            stop = _city_sup(city, **_GUST_STOP)
+            assert stop.startswith("🧜‍♂️ SUP лучше отложить • "), (env, city, stop)
+            for claim in ("@", "/cross", "/onshore", "/offshore", "(ENV)"):
+                assert claim not in stop, (env, city, claim, stop)
+
+
+def d4b_paralimni_without_profile_stays_fail_closed() -> None:
+    # Mandatory case 5.
+    with _orientation_env():
+        assert _city_sup("Paralimni", **_D4B_EAST) == ""
+        gusty = _city_sup("Paralimni", **_GUSTY_CAUTION)
+        assert gusty.startswith(post_common_module._SUP_CITY_FORECAST_NOTE) and "порывы сильные для SUP" in gusty, gusty
+        assert "только опытным" not in gusty and post_common_module._SUP_APPROX_OFFSHORE_NOTE not in gusty
+
+
+def d4b_gusts_12_to_14_9_are_never_permission() -> None:
+    # Mandatory case 9.
+    with _orientation_env():
+        for city in _CY_SEA_CITIES:
+            for gust_kmh in (43.2, 50.4, 53.64):  # 12.0, 14.0, 14.9 m/s
+                line = _city_sup(city, wind_kmh=[10.8], gust_kmh=[gust_kmh], wind_dir=[80.0])
+                assert line.startswith(post_common_module._SUP_CITY_FORECAST_NOTE), (city, gust_kmh, line)
+                assert "порывы сильные для SUP" in line and "только опытным" not in line, (city, gust_kmh, line)
+
+
+def d4b_independent_stops_are_preserved_without_geometry_claims() -> None:
+    # Mandatory cases 10, 11.
+    with _orientation_env():
+        for city in _CY_SEA_CITIES:
+            gust = _city_sup(city, **_GUST_STOP)
+            assert gust.startswith("🧜‍♂️ SUP лучше отложить • ") and "порывы до 16 м/с" in gust, (city, gust)
+            for code in (95, 96, 99):
+                thunder = _city_sup(city, code=code, **_D4B_EAST)
+                assert thunder.startswith("🧜‍♂️ SUP лучше отложить: гроза"), (city, code, thunder)
+            for line in (gust, thunder):
+                for claim in ("/cross", "/onshore", "/offshore", "@", "(ENV)", "Отлично", "только опытным"):
+                    assert claim not in line, (city, claim, line)
+
+
+def d4b_city_offshore_stop_is_kept_and_marked_approximate() -> None:
+    with _orientation_env():
+        line = _city_sup("Limassol", **_OFFSHORE_STOP)
+        assert line == (
+            "🧜‍♂️ SUP лучше отложить • ветер 5 м/с • порывы до 8 м/с • волна 0.3 м • "
+            + post_common_module._SUP_APPROX_OFFSHORE_NOTE + "."
+        ), line
+        light = _city_sup("Limassol", **_BENIGN_NORTH)  # light offshore: caution before D4-b
+        assert light.startswith(post_common_module._SUP_CITY_FORECAST_NOTE), light
+        assert light.endswith(post_common_module._SUP_APPROX_OFFSHORE_NOTE + "."), light
+
+
+def d4b_unknown_wmo_and_missing_evidence_stay_fail_closed() -> None:
+    # Mandatory cases 12, 13: D5 and incomplete/misaligned evidence give no SUP line,
+    # and no value is invented.
+    with _orientation_env():
+        for city in _CY_SEA_CITIES:
+            for code in _UNKNOWN_WMO_CODES:
+                assert _city_sup(city, code=code, **_D4B_EAST) == "", (city, code)
+        city = "Limassol"
+        missing = (
+            {"wind_kmh": [None], "gust_kmh": [28.8], "wind_dir": [80.0]},
+            {"wind_kmh": [10.8], "gust_kmh": [None], "wind_dir": [80.0]},
+            {"wind_kmh": [10.8], "gust_kmh": [28.8], "wind_dir": [None]},
+        )
+        for weather in missing:
+            assert _city_sup(city, **weather) == "", weather
+        assert _city_sup(city, wave_h=None, **_D4B_EAST) == ""
+        late = pendulum.datetime(2026, 8, 10, 14, 0, tz=TZ)  # 120 min after the weather sample
+        assert _city_sup(city, wave_at=late, **_D4B_EAST) == ""
+        # Gust-only evidence: the note shows what exists and nothing else.
+        gust_only = _city_sup(city, wind_kmh=[None], gust_kmh=[46.8], wind_dir=[80.0])
+        assert gust_only.startswith(post_common_module._SUP_CITY_FORECAST_NOTE), gust_only
+        assert "ветер" not in gust_only.split("—", 1)[1] and "порывы до 13 м/с" in gust_only, gust_only
+
+
+def d4b_invalid_angles_keep_d4a_protection_in_every_profiled_city() -> None:
+    # Mandatory case 14.
+    for city in _PROFILED_CITIES:
+        key = f"SHORE_FACE_{city.upper()}"
+        for raw in _INVALID_SHORE_OVERRIDES:
+            with _orientation_env(**{key: raw}):
+                assert _city_sup(city, **_D4B_EAST) == "", (city, raw)
+                assert _city_sup(city, **_GUSTY_CAUTION) == "", (city, raw)
+                assert _city_sup(city, **_GUST_STOP).startswith("🧜‍♂️ SUP лучше отложить • "), (city, raw)
+
+
+def d4b_final_evening_text_with_and_without_polish() -> None:
+    # Mandatory case 15: later formatting can neither upgrade nor drop the note.
+    from safe_test_post import _apply_format_v2_test_polish
+
+    note = post_common_module._SUP_CITY_FORECAST_NOTE
+    saved = {key: os.environ.get(key) for key in ("FORMAT_V2_POLISH", "FORMAT_V2_TEST_POLISH")}
+    try:
+        with _orientation_env():
+            final = _final_evening_text(_payload_with_code(0, **_BENIGN_EAST))
+            stop_final = _final_evening_text(_payload_with_code(0, **_GUST_STOP))
+            for flag in (None, "1"):
+                for key in saved:
+                    os.environ.pop(key, None)
+                if flag:
+                    os.environ["FORMAT_V2_POLISH"] = flag
+                polished = _apply_format_v2_test_polish(final)
+                assert polished.count(note) == 1, (flag, polished)
+                assert "Отлично: SUP" not in polished and "только опытным" not in polished, (flag, polished)
+                sup_rows = [row for row in polished.splitlines() if "SUP" in row and "<b>SUP</b>" not in row]
+                assert len(sup_rows) == 1, (flag, sup_rows)
+                if "🧜‍♂️ <b>SUP</b>" in polished:
+                    heading = polished.splitlines().index("🧜‍♂️ <b>SUP</b>")
+                    assert note in polished.splitlines()[heading + 1], (flag, polished)
+                polished_stop = _apply_format_v2_test_polish(stop_final)
+                # FORMAT_V2 already repeats a SUP STOP in its warning block on main
+                # (2 copies); D4-b keeps that count and only drops geometry claims.
+                stops = [row for row in polished_stop.splitlines() if "SUP лучше отложить" in row]
+                assert len(stops) == 2, (flag, stops)
+                for row in stops:
+                    assert "порывы до 16 м/с" in row and "/cross" not in row and "/offshore" not in row, (flag, row)
+                assert note not in polished_stop and "Отлично: SUP" not in polished_stop, (flag, polished_stop)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def d4b_kite_and_surf_output_is_unchanged() -> None:
+    """Non-SUP output equals the same run with the D4-b provenance tiers bypassed."""
+    kite = {"wind_kmh": [28.8], "gust_kmh": [32.4], "wind_dir": [180.0]}
+    surf = {"wind_kmh": [10.8], "gust_kmh": [21.6], "wind_dir": [80.0]}
+    non_sup = lambda text: [part for part in text.splitlines() if "SUP" not in part]
+    for env in ({}, {"SPOT_LIMASSOL": "Pissouri"}, {"ACTIVE_SPOT": "Latchi"}, {"SHORE_FACE_LIMASSOL": "NaN"}):
+        with _orientation_env(**env):
+            for city in _CY_SEA_CITIES:
+                for weather, wave_h in ((kite, 0.3), (surf, 1.2), (_D4B_EAST, 0.3)):
+                    guarded = _water_line_for(city, _payload_with_code(0, **dict(weather)), wave_h=wave_h)
+                    bypassed = _replace_attrs(
+                        post_common_module,
+                        {
+                            "_sup_orientation_provenance": lambda _city: "verified",
+                            "_sup_shore_override_invalid": lambda _city: False,
+                        },
+                        lambda: _water_line_for(city, _payload_with_code(0, **dict(weather)), wave_h=wave_h),
+                    )
+                    assert non_sup(guarded) == non_sup(bypassed), (env, city, weather)
+    with _orientation_env():
+        assert "Отлично: Кайт/Винг/Винд" in _water_line_for("Limassol", _payload_with_code(0, **kite))
+        assert "Отлично: Сёрф" in _water_line_for("Limassol", _payload_with_code(0, **surf), wave_h=1.2)
+
 def water_highlight_uses_same_city_daily_thunder_code() -> None:
     thunder_payload = _tomorrow_weather(
         wind_kmh=[10.8],
@@ -791,7 +1065,8 @@ def water_highlight_uses_same_city_daily_thunder_code() -> None:
         daily_weather_code=3,
     )
     calm_line = _water_line(calm_payload, wave_h=0.3)
-    assert "Отлично: SUP" in calm_line
+    assert post_common_module._SUP_CITY_FORECAST_NOTE in calm_line
+    assert "Отлично: SUP" not in calm_line
     assert "SUP лучше отложить: гроза" not in calm_line
 
 
@@ -942,10 +1217,21 @@ CHECKS = [
     invalid_shore_override_blocks_positive_sup,
     invalid_shore_override_keeps_independent_delay_without_orientation_claims,
     missing_or_blank_shore_override_keeps_current_behaviour,
-    valid_shore_override_keeps_current_behaviour,
+    valid_shore_override_is_approximate_orientation,
     invalid_shore_override_guard_is_sup_only,
     invalid_shore_override_keeps_d5_unknown_thunder_fail_closed,
     invalid_shore_override_never_reaches_final_evening_text,
+    d4b_orientation_provenance_matrix,
+    d4b_city_fallback_gives_neutral_note_not_permission,
+    d4b_unverified_spot_profiles_never_authorise_positive_sup,
+    d4b_paralimni_without_profile_stays_fail_closed,
+    d4b_gusts_12_to_14_9_are_never_permission,
+    d4b_independent_stops_are_preserved_without_geometry_claims,
+    d4b_city_offshore_stop_is_kept_and_marked_approximate,
+    d4b_unknown_wmo_and_missing_evidence_stay_fail_closed,
+    d4b_invalid_angles_keep_d4a_protection_in_every_profiled_city,
+    d4b_final_evening_text_with_and_without_polish,
+    d4b_kite_and_surf_output_is_unchanged,
 ]
 
 
