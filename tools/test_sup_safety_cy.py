@@ -549,6 +549,95 @@ def thunder_patch_preserves_offshore_rules() -> None:
     assert _decision(wind_ms=5.0, gust_ms=7.0, wind_dir=0.0, thunder=False) == "delay"
 
 
+
+_UNKNOWN_WMO_CODES = ("missing", None, "", "abc", float("nan"), float("inf"))
+
+
+def _payload_with_code(code, **weather) -> dict:
+    payload = _tomorrow_weather(**weather)
+    if code == "missing":
+        del payload["daily"]["weathercode"]
+    else:
+        payload["daily"]["weathercode"] = [code]
+    return payload
+
+
+def _sup_part(line: str) -> str:
+    return "\n".join(part for part in line.splitlines() if "SUP" in part)
+
+
+def unknown_thunder_evidence_blocks_positive_sup() -> None:
+    # Benign onshore noon (3 m/s, gusts 7 m/s, wave 0.3 m) is excellent with a
+    # verified non-thunder code, but unknown thunder evidence gives no SUP advice.
+    benign = {"wind_kmh": [10.8], "gust_kmh": [25.2], "wind_dir": [180.0]}
+    assert "Отлично: SUP" in _water_line(_payload_with_code(0, **benign))
+    for code in _UNKNOWN_WMO_CODES:
+        line = _water_line(_payload_with_code(code, **benign))
+        assert _sup_part(line) == "", (code, line)
+
+    # Caution (gusts 12-14.9 m/s, or light offshore wind) is positive guidance too.
+    gusty = {"wind_kmh": [9.0], "gust_kmh": [46.8], "wind_dir": [180.0]}
+    offshore_light = {"wind_kmh": [9.0], "gust_kmh": [21.6], "wind_dir": [0.0]}
+    for weather in (gusty, offshore_light):
+        assert "только опытным" in _water_line(_payload_with_code(2, **weather)), weather
+        for code in _UNKNOWN_WMO_CODES:
+            line = _water_line(_payload_with_code(code, **weather))
+            assert _sup_part(line) == "", (code, weather, line)
+
+
+def unknown_thunder_evidence_keeps_independent_delay() -> None:
+    gust_stop = {"wind_kmh": [9.0], "gust_kmh": [57.6], "wind_dir": [180.0]}
+    offshore_stop = {"wind_kmh": [18.0], "gust_kmh": [25.2], "wind_dir": [0.0]}
+    for code in _UNKNOWN_WMO_CODES:
+        gust_line = _sup_part(_water_line(_payload_with_code(code, **gust_stop)))
+        assert "SUP лучше отложить" in gust_line and "порывы до 16 м/с" in gust_line, (code, gust_line)
+        assert "гроза" not in gust_line, (code, gust_line)
+        offshore_line = _sup_part(_water_line(_payload_with_code(code, **offshore_stop)))
+        assert "SUP лучше отложить" in offshore_line and "N/offshore" in offshore_line, (code, offshore_line)
+
+
+def valid_wmo_codes_keep_existing_sup_behaviour() -> None:
+    benign = {"wind_kmh": [10.8], "gust_kmh": [25.2], "wind_dir": [180.0]}
+    for code in (0, 1, 2, 3, 61, "0", 3.0):
+        line = _sup_part(_water_line(_payload_with_code(code, **benign)))
+        assert line.startswith("🧜‍♂️ Отлично: SUP • ветер 3 м/с • порывы до 7 м/с • волна 0.3 м"), (code, line)
+    for code in (95, 96, 99, "95"):
+        line = _sup_part(_water_line(_payload_with_code(code, **benign)))
+        assert line.startswith("🧜‍♂️ SUP лучше отложить: гроза"), (code, line)
+
+
+def unknown_thunder_evidence_does_not_touch_other_water_sports() -> None:
+    kite = {"wind_kmh": [28.8], "gust_kmh": [32.4], "wind_dir": [180.0]}
+    known = _water_line(_payload_with_code(0, **kite))
+    assert "Отлично: Кайт/Винг/Винд" in known
+    for code in _UNKNOWN_WMO_CODES:
+        unknown = _water_line(_payload_with_code(code, **kite))
+        non_sup = lambda text: [part for part in text.splitlines() if "SUP" not in part]
+        assert non_sup(unknown) == non_sup(known), (code, unknown)
+
+
+def unknown_thunder_evidence_never_reaches_final_evening_text() -> None:
+    benign = {"wind_kmh": [10.8], "gust_kmh": [25.2], "wind_dir": [180.0]}
+    assert "Отлично: SUP" in _final_evening_text(_payload_with_code(0, **benign))
+    for code in _UNKNOWN_WMO_CODES:
+        final = _final_evening_text(_payload_with_code(code, **benign))
+        assert "Отлично: SUP" not in final and "только опытным" not in final, (code, final)
+
+
+def weather_code_parser_treats_non_finite_codes_as_unknown() -> None:
+    parse = post_common_module._weather_code_int
+    for raw in (None, "", "abc", float("nan"), float("inf"), float("-inf")):
+        assert parse(raw) is None, raw
+    assert parse(0) == 0 and parse("95") == 95 and parse(96.0) == 96
+
+
+def sup_safety_level_public_signature_is_unchanged() -> None:
+    import inspect
+
+    params = inspect.signature(sup_safety_level).parameters
+    assert list(params) == ["wind_ms", "gust_ms", "wave_h", "shore", "samples_aligned", "thunder"]
+    assert params["thunder"].default is False
+
 def water_highlight_uses_same_city_daily_thunder_code() -> None:
     thunder_payload = _tomorrow_weather(
         wind_kmh=[10.8],
@@ -710,6 +799,13 @@ CHECKS = [
     thunder_patch_preserves_offshore_rules,
     water_highlight_uses_same_city_daily_thunder_code,
     cy_sup_golden_v1_offline_regression,
+    unknown_thunder_evidence_blocks_positive_sup,
+    unknown_thunder_evidence_keeps_independent_delay,
+    valid_wmo_codes_keep_existing_sup_behaviour,
+    unknown_thunder_evidence_does_not_touch_other_water_sports,
+    unknown_thunder_evidence_never_reaches_final_evening_text,
+    weather_code_parser_treats_non_finite_codes_as_unknown,
+    sup_safety_level_public_signature_is_unchanged,
 ]
 
 

@@ -1962,7 +1962,7 @@ _CY_THUNDER_WMO_CODES = {95, 96, 99}
 def _weather_code_int(value: Any) -> Optional[int]:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -2430,7 +2430,11 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     wm = get_weather(la, lo) or {}
     target_date = pendulum.today(tz_obj).add(days=1).date()
     _, _, local_daily_weather_code = _city_daily_metrics_for_date(wm, tz_obj, target_date)
-    local_thunder = _weather_code_int(local_daily_weather_code) in _CY_THUNDER_WMO_CODES
+    local_weather_code = _weather_code_int(local_daily_weather_code)
+    local_thunder = local_weather_code in _CY_THUNDER_WMO_CODES
+    # A missing/null/unparseable daily WMO code is unknown thunder evidence, not
+    # verified absence of thunder.
+    thunder_unknown = local_weather_code is None
     wave_h, _, wave_at = _fetch_wave_for_tomorrow(
         la,
         lo,
@@ -2470,6 +2474,10 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         ),
         thunder=local_thunder,
     )
+    if thunder_unknown and sup_level in ("excellent", "caution"):
+        # No confident positive SUP advice without thunder evidence; an
+        # independently supported "delay" (gusts/offshore) is kept.
+        sup_level = None
 
     kite_good = False
     kite_evidence_complete = all(
