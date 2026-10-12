@@ -135,8 +135,32 @@ def select_question(questions:list[QuizQuestion],*,slot:str,quiz_date:date,bank_
     ids={q.question_id for q in eligible};used=_sent_history(slot,receipt_dir,quiz_date,ids);remaining=[q for q in eligible if q.question_id not in used] or eligible
     seed=int(hashlib.sha256(f"{bank_version}|{slot}|{quiz_date.isoformat()}".encode()).hexdigest()[:16],16)
     return remaining[seed%len(remaining)]
+def _shared_numeric_option(a:str,b:str)->str|None:
+    # Collapse only identical integer/currency/percentage values; fail closed on other formats.
+    def parse(s:str)->tuple[str,int,str]|None:
+        s=s.replace("\u00a0"," ").replace("\u202f"," ")
+        m=re.fullmatch(r"(€)?(\d{1,3}(?:[. ]\d{3})+|\d+)(%)?",s)
+        if m is None:return None
+        return m.group(1) or "",int(m.group(2).replace(".","").replace(" ","")),m.group(3) or ""
+    left=parse(a);right=parse(b)
+    if left is None or left!=right:return None
+    prefix,amount,suffix=left
+    return f"{prefix}{amount:,}".replace(","," ")+suffix
+
+def _display_option(q:QuizQuestion,index:int)->str:
+    a=q.options_el[index];b=q.options_ru[index]
+    # For this verified minimum-threshold question, "or more" is implicit in both stems.
+    # Limit this editorial shortening to the exact known bank text.
+    if q.fact_key=="entry.cash_10000_declaration" and index==q.correct_option_index and a=="€10.000 ή περισσότερο" and b=="€10 000 или больше":
+        a="€10.000";b="€10 000"
+    shared=_shared_numeric_option(a,b)
+    if shared is not None:return shared
+    if _norm(a)==_norm(b):return a
+    return f"{a} — {b}"
+
 def assemble_payload(q:QuizQuestion)->QuizPayload|None:
-    question=f"{q.question_el}\n🇷🇺 {q.question_ru}";opts=tuple(f"{a} — {b}" for a,b in zip(q.options_el,q.options_ru))
+    question=f"🇨🇾 {q.question_el}\n🇷🇺 {q.question_ru}"
+    opts=tuple(_display_option(q,i) for i in range(len(q.options_el)))
     if len(question)>MAX_QUESTION_CHARS or any(len(x)>MAX_OPTION_CHARS for x in opts) or len(q.explanation_ru)>MAX_EXPLANATION_CHARS:return None
     return QuizPayload(question,opts,q.correct_option_index,q.explanation_ru)
 def _weather_path(target:date,d:Path)->Path:return d/f"{target.isoformat()}-evening.json"

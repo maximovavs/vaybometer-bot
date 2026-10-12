@@ -45,7 +45,7 @@ def test_v4_editorial_identity_and_payload():
     check(actual==changed,"exact editorial question scope")
     m=json.loads(V4_MAN.read_text("utf-8"));check(m["bank_version"]=="v2026-10-exam-core-v4","v4 version");check(m["source_contract"]["parent_bank_version"]=="v2026-10-exam-core-v3","v3 parent")
     qs=quiz.load_verified_questions(V4_BANK);check(all(quiz.assemble_payload(q) is not None for q in qs),"payload limits")
-    q=next(x for x in qs if x.question_id=="full-a-020");p=quiz.assemble_payload(q);check(p.question.splitlines()[0]==q.question_el,"question starts directly");check("Ερώτηση για την Κύπρο" not in p.question,"generic Greek header removed")
+    q=next(x for x in qs if x.question_id=="full-a-020");p=quiz.assemble_payload(q);check(p.question.splitlines()[0]=="🇨🇾 "+q.question_el,"question starts with Cyprus flag");check("Ερώτηση για την Κύπρο" not in p.question,"generic Greek header removed")
 def test_v5_learning_explanations_identity_and_payload():
     v4=[json.loads(x) for x in V4_BANK.read_text("utf-8").splitlines() if x.strip()];v5=[json.loads(x) for x in BANK.read_text("utf-8").splitlines() if x.strip()]
     check([x["question_id"] for x in v5]==[x["question_id"] for x in v4],"v5 rotation order preserved")
@@ -60,6 +60,25 @@ def test_v5_learning_explanations_identity_and_payload():
     qs=quiz.load_verified_questions(BANK);check(all(quiz.assemble_payload(q) is not None for q in qs),"v5 payload limits")
     for qid in ("full-a-001","full-a-031","full-a-035","exam-v3-hall-a18"):
         q=next(x for x in qs if x.question_id==qid);check("Правильный ответ:" not in q.explanation_ru,f"negative question factual reinforcement: {qid}")
+def test_bilingual_quiz_presentation():
+    qs=quiz.load_verified_questions(BANK);by_id={q.question_id:q for q in qs}
+    cash=by_id["full-a-088"];p=quiz.assemble_payload(cash)
+    check(p.options==("€5 000","€10 000","€15 000","€20 000"),"cash threshold presentation")
+    check(p.correct_option_index==cash.correct_option_index==1,"cash answer identity")
+    check(quiz.assemble_payload(by_id["full-b-eco-007"]).options==("€879","€979","€1 088","€1 250"),"amount grouping")
+    check(quiz.assemble_payload(by_id["full-b-eco-010"]).options==("0%","5%","9%","19%"),"percentage collapse")
+    check(quiz.assemble_payload(by_id["full-a-044"]).options[0]=="1960–1974–2004–2008","identical nonnumeric collapse")
+    check(" — " in quiz.assemble_payload(by_id["full-a-001"]).options[0],"semantic bilingual retained")
+    check(quiz._shared_numeric_option("€1.5","€1 5") is None,"ambiguous decimal fail closed")
+    changed=set()
+    for q in qs:
+        payload=quiz.assemble_payload(q)
+        check(payload is not None,f"valid Telegram payload: {q.question_id}")
+        check(payload.question==f"🇨🇾 {q.question_el}\n🇷🇺 {q.question_ru}",f"two flags: {q.question_id}")
+        check(payload.correct_option_index==q.correct_option_index,f"answer index unchanged: {q.question_id}")
+        old=tuple(f"{a} — {b}" for a,b in zip(q.options_el,q.options_ru))
+        if payload.options!=old:changed.add(q.question_id)
+    check(changed=={"full-a-044","full-a-088","full-b-eco-001","full-b-eco-007","full-b-eco-008","full-b-eco-010","full-b-eco-011"},"bounded 7-question presentation scope")
 def test_temporal():
     qs=quiz.load_verified_questions(BANK);b=next(q for q in qs if q.question_id=="full-b-eco-010")
     check(not quiz.temporally_eligible(b,date(2026,4,30)) and quiz.temporally_eligible(b,date(2026,5,1)),"bounded start")
@@ -110,6 +129,6 @@ def test_fx_authoritative_receipt():
             check(not fxdel.fx_delivery_receipt_path(date(2026,10,7),d3).exists(),"failed receipt")
     asyncio.run(go())
 def main():
-    for f in [test_bank_contract,test_v4_editorial_identity_and_payload,test_v5_learning_explanations_identity_and_payload,test_temporal,test_rotation_full_cycle_and_slots,test_receipts_dependencies_and_nonfatal,test_fx_authoritative_receipt]:f()
-    print("OK: 7 Cyprus Culture/FX dual-slot offline checks passed")
+    for f in [test_bank_contract,test_v4_editorial_identity_and_payload,test_v5_learning_explanations_identity_and_payload,test_bilingual_quiz_presentation,test_temporal,test_rotation_full_cycle_and_slots,test_receipts_dependencies_and_nonfatal,test_fx_authoritative_receipt]:f()
+    print("OK: 8 Cyprus Culture/FX dual-slot offline checks passed")
 if __name__=="__main__":main()
