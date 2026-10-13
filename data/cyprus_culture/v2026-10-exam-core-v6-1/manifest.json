@@ -177,7 +177,7 @@
     "cur.tourism_deputy_koumis",
     "inst.shipping_deputy_ministry_established_2018"
   ],
-  "bank_sha256": "sha256:3529066e975a44e60ced52b2ff5a67f5ec27344ca27bf997fb7ab0a433ced879",
+  "bank_sha256": "sha256:2574297b91f10341f9e173661913867aeeb8b12d33aa1fa2591774340f28ef99",
   "verification_as_of": "2026-10-08",
   "source_contract": {
     "parent_bank": "data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl",

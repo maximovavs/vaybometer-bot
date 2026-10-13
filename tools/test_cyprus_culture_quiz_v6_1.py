@@ -19,6 +19,7 @@ WORKFLOW = ROOT / ".github/workflows/daily_post.yml"
 REFRESH_IDS = frozenset({
     "full-a-005",
     "full-a-014",
+    "full-a-024",
     "full-a-035",
     "full-a-038",
     "full-a-107",
@@ -66,7 +67,7 @@ def test_inactive_explanation_only_contract() -> None:
     iban = next(q for q in proposed if q["question_id"] == "full-a-024")
     assert iban["question_ru"] == "Что из перечисленного не выдают в Центрах обслуживания граждан?"
     assert iban["options_ru"][iban["correct_option_index"]] == "Справку IBAN"
-    assert (iban["verified_as_of"], iban["revalidate_after"]) == ("2026-10-06", "2026-10-13")
+    assert (iban["verified_as_of"], iban["revalidate_after"]) == ("2026-10-13", "2026-10-20")
     assert len(set(explanations)) == 72
     assert greek_cues == manifest["learning_contract"]["greek_root_cues"] == 30
     questions = quiz.load_verified_questions(V6)
