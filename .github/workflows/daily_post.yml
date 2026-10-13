@@ -9,7 +9,7 @@ on:
     - cron: '15 8 * * *'
       timezone: 'Asia/Nicosia'
     # Final recovery: ещё одна попытка дослать только утреннюю картинку
-    - cron: '0 12 * * *'
+    - cron: '5 12 * * *'
       timezone: 'Asia/Nicosia'
     # Recovery утреннего поста, если primary schedule/job не стартовал на runner
     - cron: '45 9 * * *'
@@ -20,8 +20,9 @@ on:
     - cron: '45 13 * * *'
     # Late recovery for delayed evening text posts
     - cron: '15 15 * * *'
-    # Курсы валют: 07:00 UTC
-    - cron: '0 7 * * *'
+    # Курсы валют: 12:00 по времени Кипра
+    - cron: '0 12 * * *'
+      timezone: 'Asia/Nicosia'
   workflow_dispatch:
     inputs:
       run_morning:
@@ -653,7 +654,7 @@ jobs:
   morning_image_recovery:
     name: Morning image recovery only
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' && (github.event.schedule == '15 8 * * *' || github.event.schedule == '0 12 * * *')
+    if: github.event_name == 'schedule' && (github.event.schedule == '15 8 * * *' || github.event.schedule == '5 12 * * *')
     steps:
       - uses: actions/checkout@v4
 
@@ -857,10 +858,10 @@ jobs:
           retention-days: 30
 
   noon_fx:
-    name: Noon FX only (12:00 MSK)
+    name: Noon FX only (12:00 local)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 7 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 12 * * *') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_noon_fx == 'true')
     env:
       FX_FORCE: "1"
@@ -906,7 +907,7 @@ jobs:
           pip install -r requirements.txt
           pip install "aiogram>=3,<4"
 
-      - name: Post FX Market Pulse only (12:00 MSK)
+      - name: Post FX Market Pulse only (12:00 local)
         shell: bash
         run: |
           python <<'PY'
@@ -938,6 +939,6 @@ jobs:
       - name: Post Cyprus Culture FX economy quiz
         if: >
           github.event_name == 'schedule' &&
-          github.event.schedule == '0 7 * * *'
+          github.event.schedule == '0 12 * * *'
         continue-on-error: true
         run: python cyprus_culture_quiz.py --slot fx_economy
