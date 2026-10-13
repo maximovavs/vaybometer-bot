@@ -25,6 +25,7 @@ try:  # python-telegram-bot exposes retryable exceptions here in CI/prod.
 except Exception:  # pragma: no cover - local lightweight telegram module fallback
     NetworkError = RetryAfter = ServerError = TimedOut = None  # type: ignore[assignment]
 
+import cy_cycle_date
 from editorial_voice import build_evening_human_line, build_morning_human_line
 from post_common import build_message, sup_safety_level
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
@@ -68,6 +69,103 @@ _CY_MORNING_TARGET_DATE = ""
 _CY_MORNING_FINAL_TEXT = ""
 _CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS: list[int] = []
 _CY_MORNING_PHASE_LOG: list[dict[str, object]] = []
+
+# Scheduled evening date contract (cy_cycle_date). None outside scheduled evening runs.
+_CY_EVENING_CYCLE: cy_cycle_date.EveningCycle | None = None
+
+
+def _cy_evening_clock() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def _cy_evening_send_gate(stage: str, target_date: str) -> str:
+    """Return "" when a scheduled evening send may proceed, else a fail-closed reason code.
+
+    Checked immediately before every externally visible evening send: the slot
+    window is re-evaluated on the live clock and the payload date must equal the
+    cycle's expected forecast/image date.
+    """
+    cycle = _CY_EVENING_CYCLE
+    if cycle is None:
+        return ""
+    current = cycle.at(_cy_evening_clock())
+    expected = current.expected_forecast_date.isoformat() if current.expected_forecast_date else ""
+    if not current.is_valid:
+        reason = "slot_expired" if current.status == cy_cycle_date.STATUS_EXPIRED else "cycle_ambiguous"
+    elif str(target_date or "") != expected:
+        reason = "target_date_mismatch"
+    else:
+        return ""
+    record = current.as_record()
+    record.update({"stage": stage, "block_reason": reason, "payload_target_date": str(target_date or "")})
+    print("CY_EVENING_SEND_BLOCKED: " + json.dumps(record, ensure_ascii=False, sort_keys=True))
+    return reason
+
+
+_CY_EVENING_EXIT_EXPIRED = 3
+_CY_EVENING_EXIT_AMBIGUOUS = 4
+
+
+def _cy_evening_stop(
+    cycle: cy_cycle_date.EveningCycle,
+    *,
+    recovery: bool,
+    reason: str,
+    extra: dict[str, object] | None = None,
+) -> None:
+    """Stop a scheduled evening run that may not publish; never returns.
+
+    Recovery runs end successfully with a machine-readable skip reason. A primary
+    run that cannot publish its cycle exits non-zero so the missed publication is
+    visible instead of being reported as an ordinary success.
+    """
+    record: dict[str, object] = dict(cycle.as_record())
+    record.update({"stop_reason": reason, "recovery": recovery})
+    record.update(extra or {})
+    payload = json.dumps(record, ensure_ascii=False, sort_keys=True)
+    if recovery:
+        print(f"CY_EVENING_RECOVERY_SKIPPED: {payload}")
+        raise SystemExit(0)
+    print(f"CY_EVENING_PRIMARY_NOT_PUBLISHED: {payload}")
+    print(
+        "::error title=Cyprus evening cycle not published::"
+        f"reason={reason} slot={record.get('slot_local_datetime') or 'unknown'} "
+        f"execution={record.get('execution_local_datetime') or 'unknown'}"
+    )
+    summary_path = (os.getenv("GITHUB_STEP_SUMMARY") or "").strip()
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write(f"### Cyprus evening cycle not published\n\n`{payload}`\n")
+        except OSError:
+            pass
+    expired = cycle.status == cy_cycle_date.STATUS_EXPIRED or reason == "slot_expired"
+    raise SystemExit(_CY_EVENING_EXIT_EXPIRED if expired else _CY_EVENING_EXIT_AMBIGUOUS)
+
+
+def _cy_enforce_evening_cycle(mode: str, args: argparse.Namespace) -> cy_cycle_date.EveningCycle | None:
+    """Resolve the scheduled evening cycle once; fail closed before any work if unpublishable."""
+    if mode != "evening":
+        return None
+    cycle = cy_cycle_date.evening_cycle_from_environment(now=_cy_evening_clock())
+    if not cycle.is_guarded:
+        return None
+    if cycle.is_valid and (args.date or args.for_tomorrow):
+        cycle = cy_cycle_date.EveningCycle(
+            cy_cycle_date.STATUS_AMBIGUOUS,
+            "explicit_date_on_scheduled_run",
+            cycle.event_name,
+            cycle.event_schedule,
+            cycle.execution_local_datetime,
+            cycle.slot_local_datetime,
+        )
+    print(cycle.marker())
+    if cycle.is_valid:
+        return cycle
+    reason = "slot_expired" if cycle.status == cy_cycle_date.STATUS_EXPIRED else "cycle_ambiguous"
+    _cy_evening_stop(cycle, recovery=bool(args.image_only_recovery), reason=reason)
+    return None
+
 
 _DIR_RU = {
     "N": "северный ветер",
@@ -354,6 +452,7 @@ def cy_morning_image_phase_for_result(image_result: str) -> str:
         "skipped_duplicate_before_send": "image_skipped",
         "skipped_duplicate_local_weather_card": "image_skipped",
         "skipped_duplicate_local_informative_cover": "image_skipped",
+        "skipped_slot_expired": "image_skipped",
     }.get(str(image_result or "unknown"), "image_result")
 
 
@@ -3317,6 +3416,27 @@ async def _build_safe_test_image(
                         selected_backend,
                     ),
                 }
+            cycle_block = _cy_evening_send_gate("image_send", str(metadata["forecast_date"]))
+            if cycle_block:
+                _cy_write_image_diagnostics(
+                    mode=mode,
+                    target_date=metadata["forecast_date"],
+                    result="skipped_slot_expired",
+                    prompt_metadata=metadata,
+                    attempts=attempts,
+                    telegram_attempts=telegram_attempts,
+                    write_history_path=write_history_path,
+                    reference_history_paths=reference_history_paths,
+                    history_count_before=before_history_count,
+                    generation_summary=_generation_summary("skipped_slot_expired", selected_backend),
+                )
+                return {
+                    "result": "skipped_slot_expired",
+                    "reason": cycle_block,
+                    "message_ids": [],
+                    "backend": selected_backend,
+                    **_generation_summary("skipped_slot_expired", selected_backend),
+                }
             image_bot = Bot(token=TOKEN)
             image_caption = _cy_image_caption(
                 mode,
@@ -3575,6 +3695,7 @@ class _TodayPatch:
 
 async def main() -> None:
     global _CY_MORNING_ACTIVE, _CY_MORNING_FINAL_TEXT, _CY_MORNING_TARGET_DATE, _CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS
+    global _CY_EVENING_CYCLE
     parser = argparse.ArgumentParser(description="Safe post builder for Cyprus VayboMeter")
     parser.add_argument("--mode", choices=["morning", "evening"], default=os.getenv("POST_MODE", "evening"))
     parser.add_argument("--date", default=os.getenv("WORK_DATE", ""))
@@ -3614,7 +3735,14 @@ async def main() -> None:
     os.environ["FORMAT_V2"] = "1" if use_format_v2 else "0"
 
     tz = pendulum.timezone(TZ_STR)
-    base_date = pendulum.parse(args.date).in_tz(tz) if args.date else pendulum.now(tz)
+    _CY_EVENING_CYCLE = None
+    evening_cycle = _cy_enforce_evening_cycle(mode, args)
+    _CY_EVENING_CYCLE = evening_cycle
+    if evening_cycle is not None:
+        # Anchor the build to the instant the cycle was resolved, not a second clock read.
+        base_date = pendulum.instance(evening_cycle.execution_local_datetime).in_tz(tz)
+    else:
+        base_date = pendulum.parse(args.date).in_tz(tz) if args.date else pendulum.now(tz)
     if args.for_tomorrow:
         base_date = base_date.add(days=1)
     _CY_MORNING_TARGET_DATE = base_date.to_date_string()
@@ -3732,6 +3860,12 @@ async def main() -> None:
 
     if args.image_only_recovery:
         logging.info("CY IMAGE RECOVERY: text send skipped by design")
+        if evening_cycle is not None and image_status == "skipped_slot_expired":
+            _cy_evening_stop(
+                evening_cycle.at(_cy_evening_clock()),
+                recovery=True,
+                reason=str(image_result.get("reason") or "slot_expired"),
+            )
         return
 
     if not args.send:
@@ -3771,6 +3905,24 @@ async def main() -> None:
         )
         return
 
+    text_block = _cy_evening_send_gate("text_send", text_target_date)
+    if text_block and evening_cycle is not None:
+        image_ids = [mid for mid in (image_result.get("message_ids") or []) if isinstance(mid, int)]
+        partial = {
+            "image_result": str(image_result.get("result") or ""),
+            "image_message_ids": image_ids,
+            "image_sent": bool(image_ids),
+            "text_sent": False,
+            "text_target_date": text_target_date,
+        }
+        if image_ids:
+            print("CY_EVENING_PARTIAL_DELIVERY: " + json.dumps(partial, ensure_ascii=False, sort_keys=True))
+        _cy_evening_stop(
+            evening_cycle.at(_cy_evening_clock()),
+            recovery=False,
+            reason=text_block,
+            extra=partial,
+        )
 
     bot = Bot(token=TOKEN)
     _cy_morning_phase(
@@ -3844,7 +3996,18 @@ async def main() -> None:
         image_result=image_result.get("result"),
         receipt_path=receipt_path,
     )
-    if _cy_is_production_text_send(chat_id) and len(sent_message_ids) >= len(chunks):
+    expected_text_date = (
+        evening_cycle.expected_forecast_date.isoformat()
+        if evening_cycle is not None and evening_cycle.expected_forecast_date
+        else text_target_date
+    )
+    if _cy_is_production_text_send(chat_id) and text_target_date != expected_text_date:
+        # Unreachable while the pre-send gate holds; never record a receipt for another cycle.
+        print(
+            "CY_TEXT_RECEIPT_NOT_WRITTEN: cycle_identity_mismatch "
+            f"target={text_target_date} expected={expected_text_date}"
+        )
+    elif _cy_is_production_text_send(chat_id) and len(sent_message_ids) >= len(chunks):
         target_date = text_target_date
         receipt = {
             "target_date": target_date,
