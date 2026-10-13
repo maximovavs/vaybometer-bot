@@ -34,7 +34,14 @@ def test_exact_72_and_no_production_activation():
     assert quiz.load_verified_questions(V5)
     assert 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-exam-core-v5"' in WF.read_text('utf-8')
     assert 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl"' in WF.read_text('utf-8')
-    assert not (ROOT/'cyprus_culture_quiz.py').read_text('utf-8').find('cyprus_culture_review_policy_v1')>=0
+    runtime=(ROOT/'cyprus_culture_quiz.py').read_text('utf-8')
+    # v6.1 may import the new policy only in its explicitly selected branch.
+    # The active v5 bank stays on the original selector; no production switch.
+    assert 'V6_1_BANK_VERSION="v2026-10-exam-core-v6-1"' in runtime
+    assert 'if bank_version==V6_1_BANK_VERSION or bank_path.parent.name==V6_1_BANK_VERSION:' in runtime
+    assert 'qs=load_verified_questions(bank_path);selected=select_question(qs,' in runtime
+    assert 'culture_review_policy_invalid' in runtime
+    assert 'culture_bank_version_mismatch' in runtime
     assert not (ROOT/'data/cyprus_culture/v2026-10-exam-core-v5/review_policy_v1.json').exists()
 
 
