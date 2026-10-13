@@ -2,14 +2,18 @@ name: Daily VayboMeter (Cyprus)
 
 on:
   schedule:
-    # Утренний пост: 01:00 UTC ≈ 04:00 на Кипре летом / 03:00 зимой
-    - cron: '0 1 * * *'
+    # Утренний пост: 07:30 по времени Кипра, с автоматическим переходом лето/зима
+    - cron: '30 7 * * *'
+      timezone: 'Asia/Nicosia'
     # Recovery: дослать только утреннюю картинку, если текст уже ушёл
-    - cron: '45 1 * * *'
+    - cron: '15 8 * * *'
+      timezone: 'Asia/Nicosia'
     # Final recovery: ещё одна попытка дослать только утреннюю картинку
-    - cron: '30 5 * * *'
+    - cron: '0 12 * * *'
+      timezone: 'Asia/Nicosia'
     # Recovery утреннего поста, если primary schedule/job не стартовал на runner
-    - cron: '15 3 * * *'
+    - cron: '45 9 * * *'
+      timezone: 'Asia/Nicosia'
     # Вечерний пост: 13:00 UTC ≈ 16:00 на Кипре летом / 15:00 зимой
     - cron: '0 13 * * *'
     # Recovery: дослать только вечернюю картинку, если текст уже ушёл
@@ -137,7 +141,7 @@ jobs:
     if: >
       (
         github.event_name == 'schedule' &&
-        (github.event.schedule == '0 1 * * *' || github.event.schedule == '15 3 * * *')
+        (github.event.schedule == '30 7 * * *' || github.event.schedule == '45 9 * * *')
       ) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_morning == 'true')
     steps:
@@ -372,7 +376,7 @@ jobs:
 
           event_schedule = (os.getenv("GITHUB_EVENT_SCHEDULE") or "").strip()
           target_date = cy_morning_target_date(wd, os.getenv("TZ", "Asia/Nicosia"))
-          if scheduled_run and event_schedule in ("0 1 * * *", "15 3 * * *"):
+          if scheduled_run and event_schedule in ("30 7 * * *", "45 9 * * *"):
               receipt_path = cy_morning_delivery_path(target_date)
               print(f"CY_MORNING_DELIVERY_TARGET_DATE: {target_date}")
               print(f"CY_MORNING_DELIVERY_RECEIPT_PATH: {receipt_path}")
@@ -381,7 +385,7 @@ jobs:
               if text_delivered and image_delivered:
                   print(f"CY_MORNING_DELIVERY_SKIP: text and image already delivered for {target_date}")
                   raise SystemExit(0)
-              if event_schedule == "15 3 * * *" and text_delivered and not image_delivered:
+              if event_schedule == "45 9 * * *" and text_delivered and not image_delivered:
                   if not production_chat:
                       raise SystemExit("CHANNEL_ID is missing; cannot run morning image recovery.")
                   print(f"CY_MORNING_IMAGE_ONLY_RECOVERY: text delivered but image missing for {target_date}")
@@ -649,7 +653,7 @@ jobs:
   morning_image_recovery:
     name: Morning image recovery only
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' && (github.event.schedule == '45 1 * * *' || github.event.schedule == '30 5 * * *')
+    if: github.event_name == 'schedule' && (github.event.schedule == '15 8 * * *' || github.event.schedule == '0 12 * * *')
     steps:
       - uses: actions/checkout@v4
 
