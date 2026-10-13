@@ -258,6 +258,27 @@ def _sup_shore_override_invalid(city: str) -> bool:
     return not (math.isfinite(angle) and 0.0 <= angle < 360.0)
 
 
+def _sup_orientation_provenance(city: str) -> str:
+    """How far SUP may trust the shoreline orientation selected for ``city``.
+
+    "invalid"         explicit SHORE_FACE_<CITY> that is not a finite [0, 360) angle (D4-a);
+    "unverified_spot" a SPOT_<CITY>/ACTIVE_SPOT profile: no verified spot-to-city binding exists;
+    "approximate"     the generic city SHORE_PROFILE or a valid SHORE_FACE_<CITY> override;
+    "none"            no orientation at all.
+
+    None of these is verified geometry for a specific beach: city forecast
+    coordinates never measure conditions on one beach.
+    """
+    if _sup_shore_override_invalid(city):
+        return "invalid"
+    face, src = _shore_face_for_city(city)
+    if face is None:
+        return "none"
+    if src == city or str(src or "").startswith("ENV:SHORE_FACE_"):
+        return "approximate"
+    return "unverified_spot"
+
+
 # ───────────── утилиты ─────────────
 def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
     return pendulum.timezone(tz) if isinstance(tz, str) else tz
@@ -2238,6 +2259,44 @@ def _activity_number(value: float) -> str:
     return str(int(round(value))) if abs(value - round(value)) < 0.05 else f"{value:.1f}"
 
 
+def _sup_evidence_facts(
+    wind_ms: Optional[float],
+    gust_ms: Optional[float],
+    wave_h: Optional[float],
+) -> List[str]:
+    """Only values that were actually forecast; nothing is filled in."""
+    facts: List[str] = []
+    if isinstance(wind_ms, (int, float)):
+        facts.append(f"ветер {_activity_number(float(wind_ms))} м/с")
+    if isinstance(gust_ms, (int, float)):
+        facts.append(f"порывы до {_activity_number(float(gust_ms))} м/с")
+    if isinstance(wave_h, (int, float)):
+        facts.append(f"волна {_activity_number(float(wave_h))} м")
+    return facts
+
+
+_SUP_CITY_FORECAST_NOTE = (
+    "🧜‍♂️ SUP: оценка по прогнозу для города — условия на конкретном пляже не подтверждены"
+)
+_SUP_APPROX_OFFSHORE_NOTE = "по примерной ориентации берега для города ветер может дуть с берега"
+
+
+def _sup_city_forecast_note(
+    *,
+    wind_ms: Optional[float],
+    gust_ms: Optional[float],
+    wave_h: Optional[float],
+    approx_offshore: bool,
+) -> str:
+    """Neutral, factual SUP note: no permission and no beach-specific safety claim."""
+    parts = [_SUP_CITY_FORECAST_NOTE, *_sup_evidence_facts(wind_ms, gust_ms, wave_h)]
+    if isinstance(gust_ms, (int, float)) and float(gust_ms) >= SUP_GUST_CAUTION_MIN:
+        parts.append("порывы сильные для SUP")
+    if approx_offshore:
+        parts.append(_SUP_APPROX_OFFSHORE_NOTE)
+    return " • ".join(parts) + "."
+
+
 def _sup_guidance_line(
     level: Optional[str],
     *,
@@ -2254,13 +2313,7 @@ def _sup_guidance_line(
     if level is None:
         return None
 
-    facts: List[str] = []
-    if isinstance(wind_ms, (int, float)):
-        facts.append(f"ветер {_activity_number(float(wind_ms))} м/с")
-    if isinstance(gust_ms, (int, float)):
-        facts.append(f"порывы до {_activity_number(float(gust_ms))} м/с")
-    if isinstance(wave_h, (int, float)):
-        facts.append(f"волна {_activity_number(float(wave_h))} м")
+    facts = _sup_evidence_facts(wind_ms, gust_ms, wave_h)
 
     spot_part = (
         f" @{shore_src}"
@@ -2478,22 +2531,34 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         city,
         float(sup_dir) if isinstance(sup_dir, (int, float)) else None,
     )
-    sup_orientation_invalid = _sup_shore_override_invalid(city)
+    sup_orientation = _sup_orientation_provenance(city)
+    # T0: an invalid override (D4-a) or an unverified spot profile is no
+    # orientation evidence for SUP: no onshore/cross/offshore claim at all.
+    sup_orientation_invalid = sup_orientation in ("invalid", "unverified_spot")
     if sup_orientation_invalid:
-        # An invalid explicit orientation is no orientation evidence for SUP:
-        # no onshore/cross/offshore claim reaches the SUP decision or text.
         sup_shore, sup_shore_src = None, None
+    sup_samples_aligned = _sup_samples_are_aligned(
+        sup_sample.get("sample_at"),
+        wave_at,
+        target_date,
+        tz_obj,
+    )
     sup_level = sup_safety_level(
         wind_ms=sup_wind,
         gust_ms=sup_gust,
         wave_h=wave_h,
         shore=sup_shore,
-        samples_aligned=_sup_samples_are_aligned(
-            sup_sample.get("sample_at"),
-            wave_at,
-            target_date,
-            tz_obj,
-        ),
+        samples_aligned=sup_samples_aligned,
+        thunder=local_thunder,
+    )
+    # The same decision without orientation tells a gust/thunder STOP apart
+    # from one that only the (approximate) shoreline geometry produced.
+    sup_level_without_shore = sup_safety_level(
+        wind_ms=sup_wind,
+        gust_ms=sup_gust,
+        wave_h=wave_h,
+        shore=None,
+        samples_aligned=sup_samples_aligned,
         thunder=local_thunder,
     )
     if thunder_unknown and sup_level in ("excellent", "caution"):
@@ -2546,18 +2611,33 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     if goods:
         highlights.append("🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part)
 
-    sup_line = _sup_guidance_line(
-        sup_level,
-        city=city,
-        wind_ms=sup_wind,
-        gust_ms=sup_gust,
-        wave_h=wave_h,
-        card=sup_card,
-        shore=sup_shore,
-        shore_src=sup_shore_src,
-        sst=sst,
-        thunder=local_thunder,
-    )
+    # T1: a generic city orientation (or no orientation) never authorises
+    # beach-specific positive SUP advice. Positive outcomes become a neutral
+    # factual note; STOPs are kept without verified-geometry claims.
+    sup_approximate = sup_orientation in ("approximate", "none")
+    if sup_approximate and sup_level in ("excellent", "caution"):
+        sup_line: Optional[str] = _sup_city_forecast_note(
+            wind_ms=sup_wind,
+            gust_ms=sup_gust,
+            wave_h=wave_h,
+            approx_offshore=sup_shore == "offshore",
+        )
+    else:
+        sup_line = _sup_guidance_line(
+            sup_level,
+            city=city,
+            wind_ms=sup_wind,
+            gust_ms=sup_gust,
+            wave_h=wave_h,
+            card=None if sup_approximate else sup_card,
+            shore=None if sup_approximate else sup_shore,
+            shore_src=None if sup_approximate else sup_shore_src,
+            sst=sst,
+            thunder=local_thunder,
+        )
+        if sup_line and sup_approximate and sup_level == "delay" and sup_level_without_shore != "delay":
+            # STOP produced only by the city orientation: keep it, say it is approximate.
+            sup_line = sup_line.rstrip(".") + f" • {_SUP_APPROX_OFFSHORE_NOTE}."
     if sup_line:
         highlights.append(sup_line)
     return "\n   ".join(highlights) if highlights else None
