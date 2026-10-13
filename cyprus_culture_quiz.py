@@ -7,8 +7,10 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 from zoneinfo import ZoneInfo
+
+import cy_cycle_date
 
 TZ_NAME="Asia/Nicosia"
 DEFAULT_BANK_PATH=Path("data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl")
@@ -181,17 +183,32 @@ async def _default_send_poll(*,token:str,chat_id:str,payload:QuizPayload)->Any:
     from telegram import Bot
     return await Bot(token=token).send_poll(chat_id=chat_id,question=payload.question,options=list(payload.options),type="quiz",correct_option_id=payload.correct_option_index,is_anonymous=True,explanation=payload.explanation or None)
 
-async def deliver_quiz(*,slot:str,enabled:bool,event_name:str,event_schedule:str,chat_id:str,token:str,bank_path:Path,bank_version:str,anchor_date_text:str,weather_receipt_dir:Path,fx_receipt_dir:Path,quiz_receipt_dir:Path,now:datetime|None=None,send_poll:Callable[...,Awaitable[Any]]=_default_send_poll,run_id:str="",run_attempt:str="")->dict[str,Any]:
+def _evening_cycle_block(cycle:cy_cycle_date.EveningCycle,stage:str)->dict[str,Any]|None:
+    # Evening quiz is published only inside its scheduled cycle; never re-dated after midnight.
+    if cycle.is_valid:return None
+    code="quiz_skipped_slot_expired" if cycle.status==cy_cycle_date.STATUS_EXPIRED else "quiz_skipped_cycle_ambiguous"
+    out:dict[str,Any]={"result":code,"quiz_slot":"evening_general","stage":stage,"reason":cycle.reason}
+    out.update({f"cycle_{k}":v for k,v in cycle.as_record().items()})
+    return out
+async def deliver_quiz(*,slot:str,enabled:bool,event_name:str,event_schedule:str,chat_id:str,token:str,bank_path:Path,bank_version:str,anchor_date_text:str,weather_receipt_dir:Path,fx_receipt_dir:Path,quiz_receipt_dir:Path,now:datetime|None=None,send_poll:Callable[...,Awaitable[Any]]=_default_send_poll,run_id:str="",run_attempt:str="",clock:Callable[[],datetime]|None=None,cycle_env:Mapping[str,str]|None=None)->dict[str,Any]:
     if slot not in QUIZ_SLOTS:return {"result":"quiz_failed_non_fatal","reason":"unsupported_slot"}
     if not enabled:return {"result":"quiz_skipped_disabled","quiz_slot":slot}
     if not is_natural_production_schedule(slot,event_name,event_schedule):return {"result":"quiz_skipped_non_production","quiz_slot":slot}
     if not chat_id or not token:return {"result":"quiz_failed_non_fatal","reason":"telegram_config_missing","quiz_slot":slot}
     try:anchor=date.fromisoformat(str(anchor_date_text or ""))
     except ValueError:return {"result":"quiz_skipped_invalid_question","reason":"invalid_anchor_date","quiz_slot":slot}
-    local=now or datetime.now(ZoneInfo(TZ_NAME));local=local.replace(tzinfo=ZoneInfo(TZ_NAME)) if local.tzinfo is None else local.astimezone(ZoneInfo(TZ_NAME));qdate=local.date()
+    def _local_now()->datetime:
+        v=clock() if clock is not None else (now or datetime.now(ZoneInfo(TZ_NAME)))
+        return v.replace(tzinfo=ZoneInfo(TZ_NAME)) if v.tzinfo is None else v.astimezone(ZoneInfo(TZ_NAME))
+    local=_local_now();qdate=local.date();cycle=None
+    if slot=="evening_general":
+        cycle=cy_cycle_date.resolve_evening_cycle(event_name=event_name,event_schedule=event_schedule,now=local,anchor=cycle_env)
+        blocked=_evening_cycle_block(cycle,"start")
+        if blocked:return blocked
+        qdate=cycle.expected_quiz_date
     if qdate<anchor:return {"result":"quiz_skipped_invalid_question","reason":"rotation_not_started","quiz_slot":slot}
     if slot=="evening_general":
-        target=qdate+timedelta(days=1)
+        target=cycle.expected_forecast_date
         if not valid_weather_text_receipt(_weather_path(target,weather_receipt_dir),target):return {"result":"quiz_skipped_weather_not_delivered","quiz_slot":slot,"quiz_date":qdate.isoformat()}
     elif not valid_fx_delivery_receipt(_fx_path(qdate,fx_receipt_dir),qdate):
         return {"result":"quiz_skipped_fx_not_delivered","quiz_slot":slot,"quiz_date":qdate.isoformat()}
@@ -202,9 +219,18 @@ async def deliver_quiz(*,slot:str,enabled:bool,event_name:str,event_schedule:str
     path=quiz_receipt_path(slot,qdate,quiz_receipt_dir)
     if path.exists():return {"result":"quiz_skipped_receipt_exists","quiz_slot":slot,"question_id":selected.question_id,"receipt_path":str(path)}
     reservation={"quiz_slot":slot,"quiz_date":qdate.isoformat(),"chat_type":"production","question_id":selected.question_id,"bank_version":bank_version,"state":"reserved","run_id":str(run_id or ""),"run_attempt":str(run_attempt or ""),"reserved_at_utc":_utc_now()}
-    if slot=="evening_general":reservation["weather_target_date"]=(qdate+timedelta(days=1)).isoformat()
+    if slot=="evening_general":
+        reservation["weather_target_date"]=cycle.expected_forecast_date.isoformat();reservation["cycle_slot_local_datetime"]=cycle.slot_local_datetime.isoformat()
+        blocked=_evening_cycle_block(cycle.at(_local_now()),"before_reservation")
+        if blocked:return blocked
     else:reservation["publication_date"]=qdate.isoformat()
     if not _reserve(path,reservation):return {"result":"quiz_skipped_receipt_exists","quiz_slot":slot,"question_id":selected.question_id,"receipt_path":str(path)}
+    if cycle is not None:
+        blocked=_evening_cycle_block(cycle.at(_local_now()),"before_send")
+        if blocked:
+            # Truthful record of an unsent reservation; never restored or counted as sent.
+            aborted=dict(reservation);aborted.update({"state":"aborted_slot_expired","aborted_at_utc":_utc_now(),"abort_reason":blocked["reason"]});_atomic(path,aborted)
+            blocked["receipt_path"]=str(path);return blocked
     try:
         msg=await send_poll(token=token,chat_id=chat_id,payload=payload);mid=getattr(msg,"message_id",None);poll=getattr(msg,"poll",None);pid=str(getattr(poll,"id","") or "").strip()
         if not isinstance(mid,int) or mid<=0 or not pid:raise RuntimeError("Telegram quiz response missing message_id/poll_id")
@@ -214,7 +240,7 @@ async def deliver_quiz(*,slot:str,enabled:bool,event_name:str,event_schedule:str
 
 async def run_from_environment(slot:str)->dict[str,Any]:
     flag="CY_CULTURE_QUIZ_EVENING_ENABLED" if slot=="evening_general" else "CY_CULTURE_QUIZ_FX_ENABLED"
-    return await deliver_quiz(slot=slot,enabled=_env_on(flag,False),event_name=os.getenv("GITHUB_EVENT_NAME",""),event_schedule=os.getenv("GITHUB_EVENT_SCHEDULE",""),chat_id=(os.getenv("CHANNEL_ID") or "").strip(),token=(os.getenv("TELEGRAM_TOKEN") or "").strip(),bank_path=Path(os.getenv("CY_CULTURE_QUIZ_BANK_PATH",str(DEFAULT_BANK_PATH))),bank_version=os.getenv("CY_CULTURE_QUIZ_BANK_VERSION",""),anchor_date_text=os.getenv("CY_CULTURE_QUIZ_ANCHOR_DATE",""),weather_receipt_dir=Path(os.getenv("CY_TEXT_DELIVERY_DIR",str(DEFAULT_WEATHER_TEXT_RECEIPT_DIR))),fx_receipt_dir=Path(os.getenv("CY_FX_DELIVERY_DIR",str(DEFAULT_FX_DELIVERY_DIR))),quiz_receipt_dir=Path(os.getenv("CY_QUIZ_DELIVERY_DIR",str(DEFAULT_QUIZ_RECEIPT_DIR))),run_id=os.getenv("GITHUB_RUN_ID",""),run_attempt=os.getenv("GITHUB_RUN_ATTEMPT",""))
+    return await deliver_quiz(slot=slot,enabled=_env_on(flag,False),event_name=os.getenv("GITHUB_EVENT_NAME",""),event_schedule=os.getenv("GITHUB_EVENT_SCHEDULE",""),chat_id=(os.getenv("CHANNEL_ID") or "").strip(),token=(os.getenv("TELEGRAM_TOKEN") or "").strip(),bank_path=Path(os.getenv("CY_CULTURE_QUIZ_BANK_PATH",str(DEFAULT_BANK_PATH))),bank_version=os.getenv("CY_CULTURE_QUIZ_BANK_VERSION",""),anchor_date_text=os.getenv("CY_CULTURE_QUIZ_ANCHOR_DATE",""),weather_receipt_dir=Path(os.getenv("CY_TEXT_DELIVERY_DIR",str(DEFAULT_WEATHER_TEXT_RECEIPT_DIR))),fx_receipt_dir=Path(os.getenv("CY_FX_DELIVERY_DIR",str(DEFAULT_FX_DELIVERY_DIR))),quiz_receipt_dir=Path(os.getenv("CY_QUIZ_DELIVERY_DIR",str(DEFAULT_QUIZ_RECEIPT_DIR))),run_id=os.getenv("GITHUB_RUN_ID",""),run_attempt=os.getenv("GITHUB_RUN_ATTEMPT",""),cycle_env={k:os.getenv(k,"") for k in cy_cycle_date.ENV_KEYS})
 def main()->int:
     ap=argparse.ArgumentParser(description="Cyprus Culture Telegram quiz");ap.add_argument("--slot",required=True,choices=sorted(QUIZ_SLOTS));args=ap.parse_args()
     try:result=asyncio.run(run_from_environment(args.slot))

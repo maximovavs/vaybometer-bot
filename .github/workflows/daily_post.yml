@@ -486,6 +486,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve Cyprus evening cycle identity
+        # Anchors slot D / forecast D+1 / quiz D once per job; publishing steps re-check it.
+        if: github.event_name == 'schedule'
+        run: python3 cy_cycle_date.py --github-env "$GITHUB_ENV"
+
       - name: Restore .cache (FX + intermarket deltas)
         uses: actions/cache@v4
         with:
@@ -760,6 +765,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve Cyprus evening cycle identity
+        # Anchors slot D / forecast D+1 / quiz D once per job; publishing steps re-check it.
+        if: github.event_name == 'schedule'
+        run: python3 cy_cycle_date.py --github-env "$GITHUB_ENV"
+
       - name: Restore .cache (delivery receipts)
         uses: actions/cache@v4
         with:
@@ -797,8 +807,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          export CY_RECOVERY_TARGET_DATE="$(TZ="${TZ:-Asia/Nicosia}" date -d tomorrow +%F)"
-          export CY_RECOVERY_POST_TYPE="evening"
+          # Restore receipts of the anchored cycle (slot D -> forecast D+1), never "tomorrow" after midnight.
+          if [ -n "${CY_CYCLE_EXPECTED_FORECAST_DATE:-}" ]; then
+            export CY_RECOVERY_TARGET_DATE="$CY_CYCLE_EXPECTED_FORECAST_DATE"
+            export CY_RECOVERY_POST_TYPE="evening"
+          else
+            echo "CY_EVENING_RECOVERY_RESTORE_UNTARGETED: cycle identity unresolved (${CY_CYCLE_REASON:-unknown})"
+          fi
           python .github/scripts/restore_cy_visual_snapshot.py
 
       - name: Time debug

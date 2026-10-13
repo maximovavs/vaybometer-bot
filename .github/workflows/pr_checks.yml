@@ -47,6 +47,7 @@ jobs:
             world_en/image_content_guard.py \
             world_en/imagegen.py \
             tools/test_air_cy.py \
+            tools/test_cy_cycle_date.py \
             tools/test_cyprus_image_content_guard.py \
             tools/test_cyprus_image_fallback.py \
             tools/test_cyprus_visual_dedup.py \
@@ -113,6 +114,7 @@ jobs:
           python tools/test_cyprus_image_content_guard.py
           python tools/test_cyprus_visual_dedup.py
           python tools/test_cyprus_image_fallback.py
+          python tools/test_cy_cycle_date.py
           python tools/test_cyprus_visual_workflow.py
           python tools/test_format_v2_cy.py
           python tools/test_format_v2_morning_cy.py
