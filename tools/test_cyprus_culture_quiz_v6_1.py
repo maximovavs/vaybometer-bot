@@ -16,6 +16,18 @@ V5 = ROOT / "data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl"
 V6 = ROOT / "data/cyprus_culture/v2026-10-exam-core-v6-1/questions.jsonl"
 MANIFEST = V6.with_name("manifest.json")
 WORKFLOW = ROOT / ".github/workflows/daily_post.yml"
+REFRESH_IDS = frozenset({
+    "full-a-005",
+    "full-a-014",
+    "full-a-035",
+    "full-a-038",
+    "full-a-107",
+    "full-b-cur-001",
+    "full-b-cur-005",
+    "full-b-cur-007",
+    "full-b-cur-012",
+})
+
 
 
 def test_inactive_explanation_only_contract() -> None:
@@ -33,15 +45,28 @@ def test_inactive_explanation_only_contract() -> None:
     assert Counter(q["quiz_slot"] for q in proposed) == {"evening_general": 56, "fx_economy": 16}
     explanations = []
     greek_cues = 0
+    refreshed = set()
     for before, after in zip(original, proposed):
         assert before["question_id"] == after["question_id"]
         assert before["explanation_ru"] != after["explanation_ru"]
         assert 20 <= len(after["explanation_ru"]) <= quiz.MAX_EXPLANATION_CHARS
-        assert {k: v for k, v in before.items() if k != "explanation_ru"} == {
-            k: v for k, v in after.items() if k != "explanation_ru"
-        }, f"Non-explanation drift: {before['question_id']}"
+        if after["question_id"] in REFRESH_IDS:
+            assert (before["verified_as_of"], before["revalidate_after"]) == ("2026-10-06", "2026-10-13")
+            assert (after["verified_as_of"], after["revalidate_after"]) == ("2026-10-13", "2026-10-20")
+            refreshed.add(after["question_id"])
+            excluded = {"explanation_ru", "verified_as_of", "revalidate_after"}
+        else:
+            excluded = {"explanation_ru"}
+        assert {k: v for k, v in before.items() if k not in excluded} == {
+            k: v for k, v in after.items() if k not in excluded
+        }, f"Unauthorized drift: {before['question_id']}"
         greek_cues += any("\u0370" <= c <= "\u03ff" or "\u1f00" <= c <= "\u1fff" for c in after["explanation_ru"])
         explanations.append(after["explanation_ru"])
+    assert refreshed == REFRESH_IDS
+    iban = next(q for q in proposed if q["question_id"] == "full-a-024")
+    assert iban["question_ru"] == "Что из перечисленного не выдают в Центрах обслуживания граждан?"
+    assert iban["options_ru"][iban["correct_option_index"]] == "Справку IBAN"
+    assert (iban["verified_as_of"], iban["revalidate_after"]) == ("2026-10-06", "2026-10-13")
     assert len(set(explanations)) == 72
     assert greek_cues == manifest["learning_contract"]["greek_root_cues"] == 30
     questions = quiz.load_verified_questions(V6)
