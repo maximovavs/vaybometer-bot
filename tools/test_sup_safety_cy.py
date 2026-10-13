@@ -1044,6 +1044,88 @@ def d4b_kite_and_surf_output_is_unchanged() -> None:
         assert "Отлично: Кайт/Винг/Винд" in _water_line_for("Limassol", _payload_with_code(0, **kite))
         assert "Отлично: Сёрф" in _water_line_for("Limassol", _payload_with_code(0, **surf), wave_h=1.2)
 
+
+def w1_wave_boundary_and_missing_evidence() -> None:
+    assert _decision(wave_h=0.60) == "excellent"
+    for wave in (0.601, 0.61, 0.64, 1.2, 2.0, None, float("nan")):
+        assert _decision(wave_h=wave) is None, wave
+    for wave in (None, float("nan"), 0.601, 0.61, 0.64, 1.2, 2.0):
+        assert _decision(wave_h=wave, gust_ms=13.0) is None, wave
+    assert _decision(wave_h=0.60, gust_ms=13.0) == "caution"
+    assert _decision(wave_h=1.2, wave_time="2026-08-10T14:00") is None
+
+
+def w1_wave_neutral_note_and_independent_stops() -> None:
+    with _orientation_env():
+        boundary = _city_sup("Limassol", wave_h=0.60, **_D4B_EAST)
+        assert "волна 0.6 м" in boundary and "волна 0.60 м" not in boundary, boundary
+        for wave in (0.601, 0.61, 0.64, 1.2, 2.0):
+            note = _city_sup("Limassol", wave_h=wave, **_D4B_EAST)
+            assert note.lstrip().startswith(post_common_module._SUP_CITY_FORECAST_NOTE), note
+            assert f"волна {wave:g} м" in note, note
+            assert "волна 0.6 м" not in note, note
+            assert "Отлично" not in note and "только опытным" not in note
+            gust = _city_sup("Limassol", wave_h=wave, **_GUSTY_CAUTION)
+            assert gust.lstrip().startswith(post_common_module._SUP_CITY_FORECAST_NOTE), gust
+            assert "порывы до 13 м/с" in gust and "порывы сильные для SUP" in gust
+            assert "только опытным" not in gust
+            assert "SUP лучше отложить" in _city_sup("Limassol", wave_h=wave, **_GUST_STOP)
+            assert "SUP лучше отложить" in _city_sup("Limassol", wave_h=wave, **_OFFSHORE_STOP)
+            for code in (95, 96, 99):
+                assert "SUP лучше отложить: гроза" in _city_sup("Limassol", code=code, wave_h=wave, **_D4B_EAST)
+        assert _city_sup("Limassol", wave_h=None, **_D4B_EAST) == ""
+        assert _city_sup("Limassol", wave_h=float("nan"), **_D4B_EAST) == ""
+        late = pendulum.datetime(2026, 8, 10, 14, 0, tz=TZ)
+        assert _city_sup("Limassol", wave_h=1.2, wave_at=late, **_D4B_EAST) == ""
+
+
+def w1_formatter_and_final_evening_polish() -> None:
+    from safe_test_post import _apply_format_v2_test_polish
+
+    for level in ("excellent", "caution"):
+        line = _sup_guidance_line(level, city="Limassol", wind_ms=3, gust_ms=13,
+                                  wave_h=1.2, card="В", shore="cross", shore_src=None, sst=27)
+        assert line and line.startswith(post_common_module._SUP_CITY_FORECAST_NOTE), line
+        assert _sup_guidance_line(level, city="Limassol", wind_ms=3, gust_ms=13,
+                                  wave_h=None, card="В", shore="cross", shore_src=None, sst=27) is None
+    saved = {key: os.environ.get(key) for key in ("FORMAT_V2_POLISH", "FORMAT_V2_TEST_POLISH")}
+    try:
+        with _orientation_env():
+            payload = _payload_with_code(0, **_D4B_EAST)
+            raw = _water_line_for("Limassol", payload, wave_h=1.2)
+            safe = sanitize_post_text("\n".join((
+                "<b>Кипр: погода на завтра (10.08.2026)</b>",
+                "🏖 <b>Морские города</b>",
+                "😎 <b>Лимассол</b>: 30/24 °C • 💨 3.0 м/с (В) • порывы 8",
+                "   " + raw, "———", "#Кипр #погода #здоровье",
+            ))).text
+            final = sanitize_post_text(build_evening_format_v2("Кипр", safe)).text
+            for flag in (None, "1"):
+                for key in saved:
+                    os.environ.pop(key, None)
+                if flag:
+                    os.environ["FORMAT_V2_POLISH"] = flag
+                polished = _apply_format_v2_test_polish(final)
+                assert polished.count(post_common_module._SUP_CITY_FORECAST_NOTE) == 1, (flag, polished)
+                assert "волна 1.2 м" in polished and "Отлично: SUP" not in polished, (flag, polished)
+                assert "только опытным" not in polished, (flag, polished)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def w1_kite_surf_invariants() -> None:
+    with _orientation_env():
+        weather = _payload_with_code(0, **_D4B_EAST)
+        before = _water_line_for("Limassol", weather, wave_h=1.2)
+        assert "Отлично: Сёрф" in before
+        assert "Отлично: Сёрф" in _water_line_for("Limassol", weather, wave_h=2.0)
+        kite = _payload_with_code(0, wind_kmh=[28.8], gust_kmh=[32.4], wind_dir=[180.0])
+        assert "Отлично: Кайт/Винг/Винд" in _water_line_for("Limassol", kite, wave_h=0.61)
+
 def water_highlight_uses_same_city_daily_thunder_code() -> None:
     thunder_payload = _tomorrow_weather(
         wind_kmh=[10.8],
@@ -1232,6 +1314,10 @@ CHECKS = [
     d4b_invalid_angles_keep_d4a_protection_in_every_profiled_city,
     d4b_final_evening_text_with_and_without_polish,
     d4b_kite_and_surf_output_is_unchanged,
+    w1_wave_boundary_and_missing_evidence,
+    w1_wave_neutral_note_and_independent_stops,
+    w1_formatter_and_final_evening_polish,
+    w1_kite_surf_invariants,
 ]
 
 
