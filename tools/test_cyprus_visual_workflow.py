@@ -383,16 +383,16 @@ def test_daily_visual_history_cache() -> None:
     evening_post = text.index("Post evening (announce tomorrow)", evening_job)
     _assert("daily_evening_restore_before_generation", evening_restore < evening_test_restore < evening_post)
 
-    _assert("daily_schedule_morning_unchanged", "cron: '0 1 * * *'" in text)
-    _assert("daily_schedule_morning_recovery", "cron: '15 3 * * *'" in text)
-    _assert("daily_recovery_guard", "github.event.schedule == '15 3 * * *'" in text)
+    _assert("daily_schedule_morning_unchanged", "cron: '0 6 * * *'" in text)
+    _assert("daily_schedule_morning_recovery", "cron: '45 9 * * *'" in text)
+    _assert("daily_recovery_guard", "github.event.schedule == '45 9 * * *'" in text)
     _assert("daily_delivery_skip_log", "CY_MORNING_DELIVERY_SKIP" in text)
     _assert("daily_morning_failure_artifact", "Upload Cyprus morning diagnostics" in text)
-    _assert("daily_schedule_evening_unchanged", "cron: '0 13 * * *'" in text)
-    _assert("daily_schedule_fx_unchanged", "cron: '0 7 * * *'" in text)
-    _assert("daily_schedule_morning_image_recovery", "cron: '45 1 * * *'" in text)
-    _assert("daily_schedule_evening_image_recovery", "cron: '45 13 * * *'" in text)
-    _assert("daily_schedule_evening_late_image_recovery", "cron: '15 15 * * *'" in text)
+    _assert("daily_schedule_evening_unchanged", "cron: '0 16 * * *'" in text)
+    _assert("daily_schedule_fx_unchanged", "cron: '0 12 * * *'" in text)
+    _assert("daily_schedule_morning_image_recovery", "cron: '15 8 * * *'" in text)
+    _assert("daily_schedule_evening_image_recovery", "cron: '45 16 * * *'" in text)
+    _assert("daily_schedule_evening_late_image_recovery", "cron: '15 18 * * *'" in text)
     _assert("daily_morning_0315_image_only_branch", "CY_MORNING_IMAGE_ONLY_RECOVERY" in text)
     _assert("daily_morning_uses_unified_text_delivery", "has_valid_cy_text_delivery(target_date, \"morning\")" in text)
     _assert("daily_morning_uses_image_delivery_validation", "is_valid_cy_image_receipt(target_date, \"morning\")" in text)
@@ -414,8 +414,8 @@ def test_daily_production_text_idempotency_guard_is_trigger_agnostic() -> None:
     _assert("workflow_dispatch_preserved", "workflow_dispatch:" in daily)
     _assert("workflow_dispatch_morning_preserved", "run_morning:" in daily)
     _assert("workflow_dispatch_evening_preserved", "run_evening:" in daily)
-    _assert("native_morning_cron_preserved", "cron: '0 1 * * *'" in daily)
-    _assert("native_evening_cron_preserved", "cron: '0 13 * * *'" in daily)
+    _assert("native_morning_cron_preserved", "cron: '0 6 * * *'" in daily)
+    _assert("native_evening_cron_preserved", "cron: '0 16 * * *'" in daily)
     print("PASS daily_production_text_idempotency_guard_is_trigger_agnostic")
 
 def test_safe_test_visual_history_cache() -> None:
@@ -460,7 +460,7 @@ def test_evening_waits_for_morning_without_losing_dispatch_paths() -> None:
     evening = _block(text, "  evening:", "  noon_fx:")
     _assert("evening_needs_morning", "needs: morning" in evening)
     _assert("evening_always_condition", "always() &&" in evening)
-    _assert("evening_schedule_still_allowed", "github.event.schedule == '0 13 * * *'" in evening)
+    _assert("evening_schedule_still_allowed", "github.event.schedule == '0 16 * * *'" in evening)
     _assert("evening_manual_still_allowed", "github.event.inputs.run_evening == 'true'" in evening)
     _assert("evening_no_morning_gate", "github.event.inputs.run_morning" not in evening)
     print("PASS evening_waits_for_morning_without_losing_dispatch_paths")
@@ -471,8 +471,8 @@ def test_image_recovery_jobs_are_production_only() -> None:
     morning = _block(text, "  morning_image_recovery:", "  evening_image_recovery:")
     evening = _block(text, "  evening_image_recovery:", "  noon_fx:")
     for name, block, cron in (
-        ("morning", morning, "45 1 * * *"),
-        ("evening", evening, "45 13 * * *"),
+        ("morning", morning, "15 8 * * *"),
+        ("evening", evening, "45 16 * * *"),
     ):
         _assert(f"{name}_recovery_schedule_guard", f"github.event.schedule == '{cron}'" in block)
         _assert(f"{name}_recovery_image_only", "--image-only-recovery" in block)
@@ -483,9 +483,9 @@ def test_image_recovery_jobs_are_production_only() -> None:
         _assert(f"{name}_recovery_restores_snapshot", "restore_cy_visual_snapshot.py" in block)
         _assert(f"{name}_recovery_passes_target_date", "CY_RECOVERY_TARGET_DATE" in block)
         _assert(f"{name}_recovery_passes_post_type", f'CY_RECOVERY_POST_TYPE="{name}"' in block)
-    _assert("morning_final_recovery_cron_present", "cron: '30 5 * * *'" in text)
-    _assert("morning_final_recovery_same_job", "github.event.schedule == '30 5 * * *'" in morning)
-    _assert("evening_late_recovery_schedule_guard", "github.event.schedule == '15 15 * * *'" in evening)
+    _assert("morning_final_recovery_cron_present", "cron: '5 12 * * *'" in text)
+    _assert("morning_final_recovery_same_job", "github.event.schedule == '5 12 * * *'" in morning)
+    _assert("evening_late_recovery_schedule_guard", "github.event.schedule == '15 18 * * *'" in evening)
     print("PASS image_recovery_jobs_are_production_only")
 
 
@@ -1135,20 +1135,20 @@ def test_culture_quiz_workflow_contract() -> None:
     evening = _block(text, "  evening:", "  morning_image_recovery:")
     evening_quiz = _block(evening, "Post Cyprus Culture quiz", "Upload Cyprus image diagnostics")
     _assert("quiz_after_evening_weather", evening.index("Post evening (announce tomorrow)") < evening.index("Post Cyprus Culture quiz"))
-    _assert("quiz_evening_natural", "github.event.schedule == '0 13 * * *'" in evening_quiz)
+    _assert("quiz_evening_natural", "github.event.schedule == '0 16 * * *'" in evening_quiz)
     _assert("quiz_evening_non_blocking", "continue-on-error: true" in evening_quiz)
     _assert("quiz_evening_slot", "python cyprus_culture_quiz.py --slot evening_general" in evening_quiz)
 
     recovery = _block(text, "  evening_image_recovery:", "  noon_fx:")
     recovery_quiz = _block(recovery, "Recover Cyprus Culture quiz if weather delivered", "Upload Cyprus image diagnostics")
-    _assert("quiz_recovery_schedules", "45 13 * * *" in recovery_quiz and "15 15 * * *" in recovery_quiz)
+    _assert("quiz_recovery_schedules", "45 16 * * *" in recovery_quiz and "15 18 * * *" in recovery_quiz)
     _assert("quiz_recovery_slot", "python cyprus_culture_quiz.py --slot evening_general" in recovery_quiz)
     _assert("quiz_recovery_non_blocking", "continue-on-error: true" in recovery_quiz)
 
     noon = text[text.index("  noon_fx:"):]
     _assert("fx_quiz_after_fx", noon.index("Post FX Market Pulse only") < noon.index("Post Cyprus Culture FX economy quiz"))
     fx_quiz = noon[noon.index("Post Cyprus Culture FX economy quiz"):]
-    _assert("fx_quiz_natural_only", "github.event_name == 'schedule'" in fx_quiz and "github.event.schedule == '0 7 * * *'" in fx_quiz)
+    _assert("fx_quiz_natural_only", "github.event_name == 'schedule'" in fx_quiz and "github.event.schedule == '0 12 * * *'" in fx_quiz)
     _assert("fx_quiz_non_blocking", "continue-on-error: true" in fx_quiz)
     _assert("fx_quiz_slot", "python cyprus_culture_quiz.py --slot fx_economy" in fx_quiz)
     _assert("fx_quiz_cache", ".cache/cy_quiz_delivery/fx_economy" in noon)
