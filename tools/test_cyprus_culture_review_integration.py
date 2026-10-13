@@ -6,7 +6,7 @@ import json
 import shutil
 import sys
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -49,7 +49,8 @@ async def simulate(slot:str, bank:Path, version:str, root:Path, day:date, *, eve
         chat_id='test-not-a-channel',token='test-not-a-real-token',
         bank_path=bank,bank_version=version,anchor_date_text='2026-10-07',
         weather_receipt_dir=wd,fx_receipt_dir=fd,quiz_receipt_dir=qd,
-        now=datetime.combine(day,datetime.min.time(),tzinfo=ZoneInfo('Asia/Nicosia')),
+        # Inside each natural slot's local publication window (evening 16:00, FX 12:00).
+        now=datetime.combine(day,time(16,1) if slot=='evening_general' else time(12,1),tzinfo=ZoneInfo('Asia/Nicosia')),
         send_poll=stub,run_id='offline',run_attempt='1')
 
 
