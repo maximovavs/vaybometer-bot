@@ -1,7 +1,7 @@
 """Inactive v6.1 candidate: separate editorial review dates from claim validity.
 
-No production runtime imports this module. Active v5 selection remains unchanged.
-To activate this policy requires a distinct, guarded runtime integration review.
+The explicitly selected v6.1 bank uses this pinned review policy.
+Active v5 selection remains unchanged; switching production bank requires separate approval.
 """
 from __future__ import annotations
 

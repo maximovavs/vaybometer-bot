@@ -14,6 +14,7 @@ import cy_cycle_date
 
 TZ_NAME="Asia/Nicosia"
 DEFAULT_BANK_PATH=Path("data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl")
+V6_1_BANK_VERSION="v2026-10-exam-core-v6-1"
 DEFAULT_QUIZ_RECEIPT_DIR=Path(".cache/cy_quiz_delivery")
 DEFAULT_WEATHER_TEXT_RECEIPT_DIR=Path(".cache/cy_text_delivery")
 DEFAULT_FX_DELIVERY_DIR=Path(".cache/cy_fx_delivery")
@@ -212,7 +213,20 @@ async def deliver_quiz(*,slot:str,enabled:bool,event_name:str,event_schedule:str
         if not valid_weather_text_receipt(_weather_path(target,weather_receipt_dir),target):return {"result":"quiz_skipped_weather_not_delivered","quiz_slot":slot,"quiz_date":qdate.isoformat()}
     elif not valid_fx_delivery_receipt(_fx_path(qdate,fx_receipt_dir),qdate):
         return {"result":"quiz_skipped_fx_not_delivered","quiz_slot":slot,"quiz_date":qdate.isoformat()}
-    qs=load_verified_questions(bank_path);selected=select_question(qs,slot=slot,quiz_date=qdate,bank_version=bank_version,receipt_dir=quiz_receipt_dir)
+    # v5 and older banks retain the exact original selection path. For v6.1,
+    # mandatory pinned review policy replaces short editorial revalidation TTLs.
+    # Do not fall back to the legacy selector if v6.1 policy validation fails.
+    if bank_version==V6_1_BANK_VERSION or bank_path.parent.name==V6_1_BANK_VERSION:
+        if bank_version!=V6_1_BANK_VERSION:
+            return {"result":"quiz_skipped_invalid_question","reason":"culture_bank_version_mismatch","quiz_slot":slot,"quiz_date":qdate.isoformat()}
+        try:
+            from cyprus_culture_review_policy_v1 import load_candidate,candidate_select
+            qs,entries,suspended=load_candidate(bank_path,bank_path.with_name("review_policy_v1.json"))
+            selected=candidate_select(qs,entries,suspended,slot=slot,quiz_date=qdate,bank_version=bank_version,receipt_dir=quiz_receipt_dir)
+        except Exception:
+            return {"result":"quiz_skipped_invalid_question","reason":"culture_review_policy_invalid","quiz_slot":slot,"quiz_date":qdate.isoformat()}
+    else:
+        qs=load_verified_questions(bank_path);selected=select_question(qs,slot=slot,quiz_date=qdate,bank_version=bank_version,receipt_dir=quiz_receipt_dir)
     if selected is None:return {"result":"quiz_skipped_no_eligible_questions","quiz_slot":slot,"quiz_date":qdate.isoformat()}
     payload=assemble_payload(selected)
     if payload is None:return {"result":"quiz_skipped_invalid_question","reason":"telegram_payload_limits","quiz_slot":slot,"question_id":selected.question_id}
