@@ -1031,15 +1031,15 @@ def cy_evening_calm_scenario_does_not_echo_score_reason() -> None:
 
 def cy_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post.yml").read_text(encoding="utf-8")
-    assert "cron: '0 1 * * *'" in workflow
-    assert "cron: '15 3 * * *'" in workflow
-    assert "github.event.schedule == '0 1 * * *'" in workflow
-    assert "github.event.schedule == '15 3 * * *'" in workflow
+    assert "cron: '0 6 * * *'" in workflow
+    assert "cron: '45 9 * * *'" in workflow
+    assert "github.event.schedule == '0 6 * * *'" in workflow
+    assert "github.event.schedule == '45 9 * * *'" in workflow
     assert "CY_MORNING_DELIVERY_SKIP" in workflow
     assert "Upload Cyprus morning diagnostics" in workflow
-    assert "01:00 UTC ≈ 04:00 на Кипре летом / 03:00 зимой" in workflow
-    assert "cron: '0 13 * * *'" in workflow
-    assert "cron: '0 7 * * *'" in workflow
+    assert "06:00 по времени Кипра" in workflow
+    assert "cron: '0 16 * * *'" in workflow
+    assert "cron: '0 12 * * *'" in workflow
     assert "github.event.schedule == '30 2 * * *'" not in workflow
 
 
