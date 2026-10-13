@@ -2242,6 +2242,10 @@ def sup_safety_level(
         or (gust is not None and gust >= SUP_GUST_CAUTION_MIN)
     ):
         return "delay"
+    # The good-wave boundary is not a STOP threshold. Without trustworthy,
+    # aligned wave evidence at or below it, neither positive tier is safe.
+    if not samples_aligned or wave is None or wave > SUP_WAVE_GOOD_MAX:
+        return None
     if gust is not None and gust >= SUP_GUST_CAUTION_MIN:
         return "caution"
     if shore_kind == "offshore":
@@ -2271,7 +2275,9 @@ def _sup_evidence_facts(
     if isinstance(gust_ms, (int, float)):
         facts.append(f"порывы до {_activity_number(float(gust_ms))} м/с")
     if isinstance(wave_h, (int, float)):
-        facts.append(f"волна {_activity_number(float(wave_h))} м")
+        # Preserve the measured wave boundary in SUP evidence: 0.61 must not
+        # display as 0.6, which is the upper edge of the favorable tier.
+        facts.append(f"волна {float(wave_h):.15g} м")
     return facts
 
 
@@ -2312,6 +2318,13 @@ def _sup_guidance_line(
 ) -> Optional[str]:
     if level is None:
         return None
+    if level in ("excellent", "caution"):
+        if not isinstance(wave_h, (int, float)) or not math.isfinite(float(wave_h)):
+            return None
+        if float(wave_h) > SUP_WAVE_GOOD_MAX:
+            return _sup_city_forecast_note(
+                wind_ms=wind_ms, gust_ms=gust_ms, wave_h=wave_h, approx_offshore=False,
+            )
 
     facts = _sup_evidence_facts(wind_ms, gust_ms, wave_h)
 
@@ -2615,12 +2628,18 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     # beach-specific positive SUP advice. Positive outcomes become a neutral
     # factual note; STOPs are kept without verified-geometry claims.
     sup_approximate = sup_orientation in ("approximate", "none")
-    if sup_approximate and sup_level in ("excellent", "caution"):
+    elevated_wave = (
+        isinstance(wave_h, (int, float))
+        and math.isfinite(float(wave_h))
+        and float(wave_h) > SUP_WAVE_GOOD_MAX
+        and sup_samples_aligned
+    )
+    if (sup_approximate and sup_level in ("excellent", "caution")) or (sup_level is None and elevated_wave):
         sup_line: Optional[str] = _sup_city_forecast_note(
             wind_ms=sup_wind,
             gust_ms=sup_gust,
             wave_h=wave_h,
-            approx_offshore=sup_shore == "offshore",
+            approx_offshore=sup_approximate and sup_shore == "offshore",
         )
     else:
         sup_line = _sup_guidance_line(
