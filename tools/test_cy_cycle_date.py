@@ -413,7 +413,7 @@ def workflow_and_module_schedules_agree() -> None:
     text = (ROOT / ".github" / "workflows" / "daily_post.yml").read_text("utf-8")
     crons = re.findall(r"- cron: '([^']+)'\n\s+timezone: '([^']+)'", text)
     assert crons == [
-        ("30 7 * * *", "Asia/Nicosia"), ("15 8 * * *", "Asia/Nicosia"), ("5 12 * * *", "Asia/Nicosia"),
+        ("0 6 * * *", "Asia/Nicosia"), ("15 8 * * *", "Asia/Nicosia"), ("5 12 * * *", "Asia/Nicosia"),
         ("45 9 * * *", "Asia/Nicosia"), ("0 16 * * *", "Asia/Nicosia"), ("45 16 * * *", "Asia/Nicosia"),
         ("15 18 * * *", "Asia/Nicosia"), ("0 12 * * *", "Asia/Nicosia"),
     ], crons
@@ -761,7 +761,7 @@ def manual_dispatch_morning_and_fx_are_unchanged() -> None:
             cy_cycle_date.evening_cycle_from_environment = tracking
             try:
                 morning = h.run(["safe_test_post.py", "--mode", "morning", "--chat-id", "777", "--send",
-                                 "--no-test-label", "--date", "2026-10-13"], schedule="30 7 * * *", anchor=False)
+                                 "--no-test-label", "--date", "2026-10-13"], schedule="0 6 * * *", anchor=False)
             finally:
                 cy_cycle_date.evening_cycle_from_environment = real_from_env
             assert morning["code"] == 0, morning["stdout"][-2000:]
