@@ -543,6 +543,12 @@ def _has_actual_cyprus_storm_signal(text: str, gust_max: float | None = None) ->
             continue
         if _CY_STORM_POSITIVE_RE.search(line):
             return True
+        # Structured forecast alerts can specify thunderstorms without "шторм".
+        if re.search(
+            r"^⚠️\s*(?:По прогнозу|Официальное предупреждение):.*(?:гроз|сильн\w*\s+дожд|порыв)",
+            _plain(line), flags=re.I,
+        ):
+            return True
     return False
 
 
@@ -756,9 +762,17 @@ def _cyprus_score_line(v2_text: str) -> str:
         reasons.append("утренний туман")
     elif visibility_condition != "clear":
         reasons.append("видимость снижена")
-    if precipitation_kind == "storm":
-        score -= 1.0
-        reasons.append("локальная гроза")
+    # Only factual weather lines qualify; astrological language must not cap the score.
+    weather_lines = [
+        line for line in str(v2_text or "").splitlines()
+        if _plain(line).startswith(("⚠️ По прогнозу:", "⚠️ Официальное предупреждение:",
+                                    "⚠️ Шторм", "🌦", "💨", "🔎", "⚠️ 🔎"))
+    ]
+    storm_signal = _has_actual_cyprus_storm_signal("\n".join(weather_lines), gust)
+    if precipitation_kind == "storm" or storm_signal:
+        # An active thunder/storm forecast cannot yield "отлично" on a 10-point scale.
+        score = min(score - (1.0 if precipitation_kind == "storm" else 0.0), 5.4)
+        reasons.append("локальная гроза" if precipitation_kind == "storm" else "опасная погода по прогнозу")
     elif precipitation_kind:
         score -= 0.7
         reasons.append("локальные осадки")

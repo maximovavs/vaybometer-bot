@@ -2815,6 +2815,25 @@ def _build_cy_image_moods_for_evening(
 
 
 # ───────────── сообщение ─────────────
+def _cyprus_city_thunder_signal(city_line: Optional[str]) -> bool:
+    """Positive city forecast only; negated thunder language is not evidence."""
+    line = re.sub(r"<[^>]+>", "", str(city_line or ""))
+    if "⛈" in line:
+        return True
+    if re.search(r"(?:без|нет)\s+гроз\w*|гроз\w*\s+не\s+ожида", line, flags=re.I):
+        return False
+    return bool(re.search(r"\bгроз(?:а|ы)\b", line, flags=re.I))
+
+
+def _cyprus_morning_weather_status(storm_region: Dict[str, Any], city_thunder: bool) -> str:
+    if city_thunder:
+        return "локальные грозы по прогнозу"
+    if storm_region.get("warning"):
+        return "риск опасной погоды по прогнозу"
+    # No authoritative alert input is collected here: never claim "без шторма".
+    return "официальные предупреждения не проверены"
+
+
 def build_message(
     region_name: str,
     sea_label: str,
@@ -2856,6 +2875,8 @@ def build_message(
 
     # === УТРО ===
     if is_morning:
+        thunder_cities: List[str] = []
+
         def _collect_city_tmax_list(spairs, opairs):
             all_pairs = list(spairs) + list(opairs)
             out: List[Tuple[str, float]] = []
@@ -2870,9 +2891,16 @@ def build_message(
                 )
                 if isinstance(tmax, (int, float)):
                     out.append((_ru_city(city), float(tmax)))
+                    if _cyprus_city_thunder_signal(_line):
+                        thunder_cities.append(_ru_city(city))
             return out
 
         rows = _collect_city_tmax_list(sea_pairs, other_pairs)
+        if thunder_cities and not storm_region.get("warning"):
+            storm_region = {
+                **storm_region, "warning": True,
+                "warning_text": "⚠️ <b>По прогнозу</b>: локальные грозы — " + ", ".join(thunder_cities[:3]),
+            }
         warm = max(rows, key=lambda x: x[1]) if rows else None
         cool = min(rows, key=lambda x: x[1]) if rows else None
 
@@ -2976,7 +3004,7 @@ def build_message(
         air_icon = "⚪" if air_status not in (None, "fresh") else ("🟢" if not bad_air else "🟡")
         air_scope = _air_observation_city(air_now)
         air_summary = f"воздух в {air_scope} {air_icon}" if air_scope else f"воздух по текущему замеру {air_icon}"
-        storm = "без шторма" if not storm_region.get("warning") else "штормово"
+        storm = _cyprus_morning_weather_status(storm_region, bool(thunder_cities))
         kp_status = _kp_status_label(kp_val)
         P.append(f"🔎 Итого: {air_summary} • {storm} • Kp {kp_status}")
 

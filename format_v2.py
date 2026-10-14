@@ -123,7 +123,11 @@ def _weather_only_lines(lines: list[str]) -> list[str]:
 
 def _storm_line(lines: list[str]) -> str:
     for line in lines:
-        if "Шторм" in line or "шторм" in line:
+        if _line_has_actual_storm_signal(line):
+            return line.strip()
+        # The regional forecast may say "гроза" without the word "шторм".
+        plain = _plain(line).strip()
+        if re.search(r"^⚠️\s*По прогнозу:.*(?:гроз|сильн\w*\s+дожд|порыв)", plain, flags=re.I):
             return line.strip()
     return ""
 
@@ -1146,7 +1150,11 @@ def _morning_local_precipitation_line(lines: list[str]) -> str:
             label = "осадки"
         probability = re.search(r"риск\s+осад\w*\s+до\s+(\d{1,3})\s*%", low, flags=re.I)
         if probability:
-            label += f" до {int(probability.group(1))}%"
+            # These are precipitation probabilities, not thunderstorm probabilities.
+            if "гроз" in low:
+                label += f" (риск осадков до {int(probability.group(1))}%)"
+            else:
+                label += f" до {int(probability.group(1))}%"
         fact = f"{city} — {label}"
         if fact not in facts:
             facts.append(fact)
