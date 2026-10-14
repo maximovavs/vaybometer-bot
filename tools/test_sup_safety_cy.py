@@ -136,6 +136,19 @@ def _with_forecast_clock(callback):
     )
 
 
+# T2-R4: synthetic "verified spot evidence" used ONLY to exercise the positive
+# non-SUP path offline; production never has verified spot evidence.
+_VERIFIED_WATER_EVIDENCE = {"orientation": "verified", "forecast": "verified", "break_swell": "verified"}
+
+
+def _with_verified_water_evidence(callback):
+    return _replace_attrs(
+        post_common_module,
+        {"_water_sport_evidence_provenance": lambda _city: dict(_VERIFIED_WATER_EVIDENCE)},
+        callback,
+    )
+
+
 def _water_line(payload: dict, *, wave_h: float = 0.3) -> str:
     wave_at = pendulum.datetime(2026, 8, 10, 12, 0, tz=TZ)
 
@@ -385,9 +398,13 @@ def tomorrow_hourly_builds_existing_kite_recommendation() -> None:
     metrics = _with_forecast_clock(lambda: pick_tomorrow_header_metrics(payload, TZ))
     assert round(metrics[0], 1) == 8.0
     assert metrics[1:] == (180, 1012, "↑")
-    line = _water_line(payload)
-    assert "Отлично: Кайт/Винг/Винд" in line
+    # T2-R4: city-level evidence never authorises kite; the tomorrow-hourly
+    # sample still drives the decision once spot evidence is verified.
+    assert "Отлично" not in _water_line(payload)
+    line = _with_verified_water_evidence(lambda: _water_line(payload))
+    assert "Отлично: Кайт" in line
     assert "S/onshore" in line
+    assert "Винг" not in line and "Винд" not in line
 
 
 def current_only_never_builds_positive_water_recommendation() -> None:
@@ -450,8 +467,9 @@ def malformed_timestamp_keeps_weather_arrays_at_original_indices() -> None:
     assert round(metrics[0], 1) == 8.0
     assert metrics[1] == 180
     assert metrics[2] == 1012
-    line = _water_line(payload)
-    assert "Отлично: Кайт/Винг/Винд" in line
+    assert "Отлично" not in _water_line(payload)
+    line = _with_verified_water_evidence(lambda: _water_line(payload))
+    assert "Отлично: Кайт" in line
     assert "S/onshore" in line
     assert "N/offshore" not in line
 
@@ -488,7 +506,9 @@ def safe_surf_and_sup_recommendations_preserve_existing_behavior() -> None:
         wind_dir=[180.0],
     )
     surf = _water_line(safe_weather, wave_h=1.2)
-    assert "Отлично: Сёрф" in surf
+    # T2-R4: no surf positive without verified break/swell and spot evidence.
+    assert "Отлично: Сёрф" not in surf
+    assert "Отлично: Сёрф" in _with_verified_water_evidence(lambda: _water_line(safe_weather, wave_h=1.2))
     assert "Кайт/Винг/Винд" not in surf
     assert "Отлично: SUP" not in surf
 
@@ -611,14 +631,18 @@ def valid_wmo_codes_keep_existing_sup_behaviour() -> None:
         assert line.startswith("🧜‍♂️ SUP лучше отложить: гроза"), (code, line)
 
 
-def unknown_thunder_evidence_does_not_touch_other_water_sports() -> None:
+def unknown_thunder_evidence_blocks_other_water_sports_positive() -> None:
+    # T2-R4: unknown thunder evidence now also blocks non-SUP positives.
     kite = {"wind_kmh": [28.8], "gust_kmh": [32.4], "wind_dir": [180.0]}
     known = _water_line(_payload_with_code(0, **kite))
-    assert "Отлично: Кайт/Винг/Винд" in known
+    assert "Отлично" not in known
+    assert "Отлично: Кайт" in _with_verified_water_evidence(lambda: _water_line(_payload_with_code(0, **kite)))
     for code in _UNKNOWN_WMO_CODES:
         unknown = _water_line(_payload_with_code(code, **kite))
         non_sup = lambda text: [part for part in text.splitlines() if "SUP" not in part]
         assert non_sup(unknown) == non_sup(known), (code, unknown)
+        verified = _with_verified_water_evidence(lambda: _water_line(_payload_with_code(code, **kite)))
+        assert "Отлично" not in verified, (code, verified)
 
 
 def unknown_thunder_evidence_never_reaches_final_evening_text() -> None:
@@ -765,7 +789,7 @@ def invalid_shore_override_guard_is_sup_only() -> None:
             )
             assert non_sup(guarded) == non_sup(unguarded), (raw, weather, guarded, unguarded)
     with _shore_env(None):
-        assert "Отлично: Кайт/Винг/Винд" in _water_line(_payload_with_code(0, **kite))
+        assert "Отлично" not in _water_line(_payload_with_code(0, **kite))
 
 
 def invalid_shore_override_keeps_d5_unknown_thunder_fail_closed() -> None:
@@ -1041,8 +1065,9 @@ def d4b_kite_and_surf_output_is_unchanged() -> None:
                     )
                     assert non_sup(guarded) == non_sup(bypassed), (env, city, weather)
     with _orientation_env():
-        assert "Отлично: Кайт/Винг/Винд" in _water_line_for("Limassol", _payload_with_code(0, **kite))
-        assert "Отлично: Сёрф" in _water_line_for("Limassol", _payload_with_code(0, **surf), wave_h=1.2)
+        # T2-R4: city-level evidence never yields a kite/surf positive.
+        assert "Отлично" not in _water_line_for("Limassol", _payload_with_code(0, **kite))
+        assert "Отлично" not in _water_line_for("Limassol", _payload_with_code(0, **surf), wave_h=1.2)
 
 
 def w1_wave_boundary_and_missing_evidence() -> None:
@@ -1120,11 +1145,16 @@ def w1_formatter_and_final_evening_polish() -> None:
 def w1_kite_surf_invariants() -> None:
     with _orientation_env():
         weather = _payload_with_code(0, **_D4B_EAST)
-        before = _water_line_for("Limassol", weather, wave_h=1.2)
-        assert "Отлично: Сёрф" in before
-        assert "Отлично: Сёрф" in _water_line_for("Limassol", weather, wave_h=2.0)
+        # The SUP W1 wave threshold never changes kite/surf decisions (T2-R4:
+        # positives only with verified spot evidence).
+        for wave in (1.2, 2.0):
+            assert "Отлично" not in _water_line_for("Limassol", weather, wave_h=wave)
+            assert "Отлично: Сёрф" in _with_verified_water_evidence(
+                lambda: _water_line_for("Limassol", weather, wave_h=wave))
         kite = _payload_with_code(0, wind_kmh=[28.8], gust_kmh=[32.4], wind_dir=[180.0])
-        assert "Отлично: Кайт/Винг/Винд" in _water_line_for("Limassol", kite, wave_h=0.61)
+        assert "Отлично" not in _water_line_for("Limassol", kite, wave_h=0.61)
+        assert "Отлично: Кайт" in _with_verified_water_evidence(
+            lambda: _water_line_for("Limassol", kite, wave_h=0.61))
 
 def water_highlight_uses_same_city_daily_thunder_code() -> None:
     thunder_payload = _tomorrow_weather(
@@ -1259,6 +1289,183 @@ def cy_sup_golden_v1_offline_regression() -> None:
         # not inferred from candidate_output or used to release a post.
         assert (editorial_reference == "PASS") == (release_reference == "PASS"), case_id
 
+# ───────────── T2-R4: kite / windsurf / wing / wave-surf fail closed ─────────────
+_WATER_GOLDEN_PATH = ROOT / "tools" / "fixtures" / "cy_water_sports_golden_v1.json"
+_WATER_GOLDEN = json.loads(_WATER_GOLDEN_PATH.read_text("utf-8"))
+_WATER_GOLDEN_REASONS = {
+    "K1": "thunder", "K2": "unknown_thunder", "K3": "missing_wave", "K4": "time_mismatch",
+    "K5": "unverified_orientation", "K6": "unverified_orientation",
+    "W1": "no_independent_policy", "W2": "no_independent_policy",
+    "S1": "missing_break_swell_evidence", "S2": "missing_wave", "S3": "unknown_thunder",
+}
+_THUNDER_WMO = {95, 96, 99}
+
+
+def _golden_decision(case: dict, *, sport: str | None = None, provenance: dict | None = None,
+                     shore: str | None = None) -> tuple[str, str]:
+    code = case["daily_wmo"]
+    return post_common_module.water_sport_decision(
+        sport or case["sport"],
+        wind_ms=case["wind_ms"],
+        gust_ms=case["gust_ms"],
+        wind_dir=180.0,
+        wave_h=case["wave_m"],
+        thunder=code in _THUNDER_WMO,
+        thunder_known=code is not None,
+        samples_aligned=case["aligned"],
+        shore=shore or ("offshore" if str(case["orientation"]).startswith("offshore") else "onshore"),
+        provenance=provenance or {
+            "orientation": case["orientation"],
+            "forecast": case["forecast"],
+            "break_swell": "verified" if case.get("swell") else "unavailable",
+        },
+    )
+
+
+def t2r4_golden_fixture_contract() -> None:
+    assert _WATER_GOLDEN["schema_version"] == "cy_water_sports_golden_v1"
+    assert _WATER_GOLDEN["source_main"] == "be9efe419d7bfd0f855593dbde4dd4c5a97b70d1"
+    ids = [case["id"] for case in _WATER_GOLDEN["cases"]]
+    assert ids == ["K1", "K2", "K3", "K4", "K5", "K6", "W1", "W2", "S1", "S2", "S3", "F1"], ids
+    assert all(case["expected"].startswith("no_positive") for case in _WATER_GOLDEN["cases"])
+
+
+def t2r4_golden_decisions_never_positive() -> None:
+    """K1-K6, W1, W2, S1-S3: production-function decisions with the exact reason."""
+    for case in _WATER_GOLDEN["cases"]:
+        if case["id"] == "F1":
+            continue
+        status, reason = _golden_decision(case)
+        assert (status, reason) == ("neutral", _WATER_GOLDEN_REASONS[case["id"]]), (case["id"], status, reason)
+
+
+def t2r4_positive_path_needs_every_verified_criterion() -> None:
+    """Non-vacuity: only fully verified synthetic evidence can produce a positive."""
+    k = dict(next(c for c in _WATER_GOLDEN["cases"] if c["id"] == "K5"), orientation="verified", forecast="verified")
+    assert _golden_decision(k) == ("positive", "kite_conditions_met")
+    for field, value, reason in (
+        ("orientation", "approximate", "unverified_orientation"),
+        ("orientation", "unverified_spot", "unverified_orientation"),
+        ("forecast", "city", "unverified_forecast_location"),
+    ):
+        assert _golden_decision(dict(k, **{field: value})) == ("neutral", reason), (field, value)
+    # K6 with verified evidence: the existing gust-ratio and offshore rules still block.
+    assert _golden_decision(dict(k, gust_ms=14)) == ("neutral", "gusty")
+    assert _golden_decision(k, shore="offshore") == ("neutral", "offshore")
+    assert _golden_decision(dict(k, wave_m=post_common_module.KITE_WAVE_WARN)) == ("neutral", "wave_too_high")
+    # W1/W2: windsurf and wing never inherit a kite positive.
+    for sport in ("windsurf", "wing"):
+        assert _golden_decision(k, sport=sport) == ("neutral", "no_independent_policy"), sport
+    s = dict(next(c for c in _WATER_GOLDEN["cases"] if c["id"] == "S1"), orientation="verified",
+             forecast="verified", swell="verified")
+    assert _golden_decision(s) == ("positive", "surf_conditions_met")
+    assert _golden_decision(dict(s, swell=None)) == ("neutral", "missing_break_swell_evidence")
+    assert _golden_decision(dict(s, wind_ms=None)) == ("neutral", "missing_wind")
+    assert _golden_decision(dict(s, daily_wmo=None)) == ("neutral", "unknown_thunder")
+    assert _golden_decision(dict(s, daily_wmo=95)) == ("neutral", "thunder")
+    assert _golden_decision(dict(s, aligned=False)) == ("neutral", "time_mismatch")
+    assert post_common_module.water_sport_decision(
+        "parasail", wind_ms=8, gust_ms=9, wind_dir=180, wave_h=0.8, thunder=False, thunder_known=True,
+        samples_aligned=True, shore="onshore", provenance=_VERIFIED_WATER_EVIDENCE,
+    ) == ("neutral", "unsupported_sport")
+
+
+def t2r4_city_evidence_is_never_verified_spot_evidence() -> None:
+    """K5: Paramali / any candidate spot or city angle is not verified beach geometry."""
+    for env in ({}, {"SPOT_LIMASSOL": "Paramali"}, {"ACTIVE_SPOT": "Paramali"}, {"SHORE_FACE_LIMASSOL": "210"}):
+        with _orientation_env(**env):
+            for city in _CY_SEA_CITIES:
+                prov = post_common_module._water_sport_evidence_provenance(city)
+                assert prov["orientation"] != "verified" and prov["forecast"] != "verified", (env, city, prov)
+                assert prov["break_swell"] != "verified", (env, city, prov)
+    with _orientation_env(SPOT_LIMASSOL="Paramali"):
+        assert post_common_module._water_sport_evidence_provenance("Limassol")["orientation"] == "unverified_spot"
+
+
+def t2r4_production_water_lines_have_no_non_sup_positive() -> None:
+    """K1-K6/S1-S3 through _water_highlights for every sea city: no non-SUP 'Отлично'."""
+    good_kite = {"wind_kmh": [28.8], "gust_kmh": [32.4], "wind_dir": [180.0]}
+    gusty = {"wind_kmh": [28.8], "gust_kmh": [50.4], "wind_dir": [180.0]}
+    calm_surf = {"wind_kmh": [10.8], "gust_kmh": [18.0], "wind_dir": [80.0]}
+    late = pendulum.datetime(2026, 8, 10, 18, 0, tz=TZ)
+    for env in ({}, {"SPOT_LIMASSOL": "Paramali"}):
+        with _orientation_env(**env):
+            for city in _CY_SEA_CITIES:
+                for code in (0, 95, 96, 99, "missing", None):
+                    for weather, wave_h, wave_at in (
+                        (good_kite, 0.8, None), (good_kite, None, None), (good_kite, 0.8, late),
+                        (gusty, 0.8, None), (calm_surf, 1.2, None), (calm_surf, None, None),
+                    ):
+                        line = _water_line_for(city, _payload_with_code(code, **weather), wave_h=wave_h, wave_at=wave_at)
+                        non_sup = [part for part in line.splitlines() if "SUP" not in part]
+                        assert not any("Отлично" in part for part in non_sup), (env, city, code, weather, line)
+
+
+def t2r4_sup_output_is_independent_of_non_sup_policy() -> None:
+    """SUP W1 is untouched: SUP lines are identical with or without verified non-SUP evidence."""
+    cases = (({"wind_kmh": [10.8], "gust_kmh": [25.2], "wind_dir": [180.0]}, 0.3),
+             (_D4B_EAST, 0.3), (_D4B_EAST, 0.61), (_D4B_EAST, 1.2),
+             ({"wind_kmh": [10.8], "gust_kmh": [54.0], "wind_dir": [180.0]}, 0.3))
+    with _orientation_env():
+        for city in _CY_SEA_CITIES:
+            for code in (0, 95, "missing"):
+                for weather, wave_h in cases:
+                    payload = _payload_with_code(code, **weather)
+                    # Highlights are joined with an indent, so compare the SUP text itself.
+                    plain = [x.strip() for x in _sup_part(_water_line_for(city, payload, wave_h=wave_h)).splitlines()]
+                    verified = [x.strip() for x in _sup_part(_with_verified_water_evidence(
+                        lambda: _water_line_for(city, payload, wave_h=wave_h))).splitlines()]
+                    assert plain == verified, (city, code, weather, wave_h)
+
+
+def t2r4_f1_full_evening_format_v2_keeps_stop_and_adds_no_positive() -> None:
+    """F1: final FORMAT_V2 (polish on/off) preserves SUP STOP and never upgrades other sports."""
+    from safe_test_post import _apply_format_v2_test_polish
+
+    saved = {key: os.environ.get(key) for key in ("FORMAT_V2_POLISH", "FORMAT_V2_TEST_POLISH")}
+    f1 = {"wind_kmh": [28.8], "gust_kmh": [32.4], "wind_dir": [180.0]}  # 8 m/s, gusts 9
+    try:
+        with _orientation_env():
+            for code in (0, 95):
+                payload = _payload_with_code(code, **f1)
+                raw = _water_line_for("Limassol", payload, wave_h=1.2)
+                sup_raw = _sup_part(raw)
+                safe = sanitize_post_text("\n".join((
+                    "<b>Кипр: погода на завтра (10.08.2026)</b>",
+                    "🏖 <b>Морские города</b>",
+                    "😎 <b>Лимассол</b>: 30/24 °C • 💨 8.0 м/с (Ю) • порывы 9 • 🌊 27 • 1.2 м",
+                    "   " + raw, "———", "#Кипр #погода #здоровье",
+                ))).text
+                final = sanitize_post_text(build_evening_format_v2("Кипр", safe)).text
+                for flag in (None, "1"):
+                    for key in saved:
+                        os.environ.pop(key, None)
+                    if flag:
+                        os.environ["FORMAT_V2_POLISH"] = flag
+                    polished = _apply_format_v2_test_polish(final)
+                    assert "Отлично" not in polished, (code, flag, polished)
+                    assert "рабочие окна" not in polished, (code, flag, polished)
+                    assert not any(word in polished for word in ("Кайт", "Винг", "Винд", "Сёрф", "Серф")), (code, flag, polished)
+                    if code == 95:
+                        assert "SUP лучше отложить: гроза" in polished, (flag, polished)
+                    if sup_raw:
+                        assert sup_raw.strip().split(" • ")[0] in polished, (code, flag, sup_raw, polished)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def t2r4_sup_thresholds_and_golden_v1_unchanged() -> None:
+    assert (post_common_module.SUP_WIND_GOOD_MAX, post_common_module.OFFSHORE_SUP_WIND_MIN,
+            post_common_module.SUP_WAVE_GOOD_MAX, post_common_module.SUP_GUST_CAUTION_MIN,
+            post_common_module.SUP_GUST_STOP_MIN) == (4.0, 5.0, 0.6, 12.0, 15.0)
+    golden = (ROOT / "tools" / "fixtures" / "cy_sup_golden_v1.json").read_bytes()
+    assert hashlib.sha1(b"blob %d\0" % len(golden) + golden).hexdigest() == "455ec7cfe8e9bb954f7ba17a2714266dbda99fa7"
+
+
 CHECKS = [
     calm_onshore_is_excellent,
     calm_cross_shore_is_excellent,
@@ -1291,7 +1498,7 @@ CHECKS = [
     unknown_thunder_evidence_blocks_positive_sup,
     unknown_thunder_evidence_keeps_independent_delay,
     valid_wmo_codes_keep_existing_sup_behaviour,
-    unknown_thunder_evidence_does_not_touch_other_water_sports,
+    unknown_thunder_evidence_blocks_other_water_sports_positive,
     unknown_thunder_evidence_never_reaches_final_evening_text,
     weather_code_parser_treats_non_finite_codes_as_unknown,
     sup_safety_level_public_signature_is_unchanged,
@@ -1318,6 +1525,14 @@ CHECKS = [
     w1_wave_neutral_note_and_independent_stops,
     w1_formatter_and_final_evening_polish,
     w1_kite_surf_invariants,
+    t2r4_golden_fixture_contract,
+    t2r4_golden_decisions_never_positive,
+    t2r4_positive_path_needs_every_verified_criterion,
+    t2r4_city_evidence_is_never_verified_spot_evidence,
+    t2r4_production_water_lines_have_no_non_sup_positive,
+    t2r4_sup_output_is_independent_of_non_sup_policy,
+    t2r4_f1_full_evening_format_v2_keeps_stop_and_adds_no_positive,
+    t2r4_sup_thresholds_and_golden_v1_unchanged,
 ]
 
 

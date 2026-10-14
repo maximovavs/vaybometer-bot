@@ -1031,20 +1031,30 @@ def _polish_surf_lines(text: str) -> str:
     out: list[str] = []
     last_wave: float | None = None
     last_wind: float | None = None
+    last_thunder = False
     good_min, good_max, wind_max = _surf_thresholds()
     for line in lines:
+        if _cyprus_coastal_city_label(line) or line.strip().startswith("———"):
+            # A new city row or section: never judge this city's surf line by
+            # the previous city's wave, wind or thunder evidence.
+            last_wave = None
+            last_wind = None
+            last_thunder = False
         wave = _wave_from_city_line(line)
         wind = _wind_from_city_line(line)
         if wave is not None:
             last_wave = wave
         if wind is not None:
             last_wind = wind
+        if _cyprus_coastal_city_label(line) and ("⛈" in line or "гроз" in line.lower()):
+            last_thunder = True
 
         if "Отлично:" in line and re.search(r"\b(?:Серф|Сёрф|Surf)\b", line, flags=re.I):
-            if last_wave is None:
+            # Same-city wave and wind are both required; thunder never softens to windows.
+            if last_wave is None or last_wind is None or last_thunder:
                 out.append("🏄 Серф: данных для уверенной оценки недостаточно; проверить спот перед выездом.")
                 continue
-            if good_min <= last_wave <= good_max and (last_wind is None or last_wind <= wind_max):
+            if good_min <= last_wave <= good_max and last_wind <= wind_max:
                 out.append("🏄 Серф: есть рабочие окна по волне; проверить конкретный спот.")
                 continue
             out.append("🏄 Серф: отдельные окна возможны, но решение — по фактической волне и ветру на споте.")
@@ -1085,7 +1095,7 @@ def _cyprus_water_sport_kind(line: str) -> str:
     plain = _plain(line).strip()
     if "SUP" in plain.upper():
         return "sup"
-    if re.search(r"Кайт/Винг/Винд|Кайт/винг|Kite", plain, flags=re.IGNORECASE):
+    if re.search(r"Кайт/Винг/Винд|Кайт/винг|Kite|\b(?:Кайт|Винг|Винд)\b", plain, flags=re.IGNORECASE):
         return "kite"
     if re.search(r"\b(?:Серф|Сёрф|Surf)\b", plain, flags=re.IGNORECASE):
         return "surf"
