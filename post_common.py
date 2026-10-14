@@ -17,7 +17,7 @@ post_common.py — VayboMeter (Кипр/универсальный).
 from __future__ import annotations
 import os, re, json, html, asyncio, logging, math, datetime as dt, random, imghdr, hashlib
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Tuple, Optional, Sequence, Union
 
 import pendulum
 from telegram import Bot, constants
@@ -2509,6 +2509,92 @@ def _morning_sea_city_lines(
     return rows
 
 
+# T2-R4: kite / windsurf / wing / wave-surf are decided independently of SUP
+# and of each other. A positive recommendation needs verified spot evidence;
+# city-level forecasts, a city shoreline angle or a candidate spot profile are
+# never treated as verified beach geometry. Without proof the result is neutral.
+_WATER_SPORT_LABELS = {"kite": "Кайт", "windsurf": "Винд", "wing": "Винг", "wave_surf": "Сёрф"}
+
+
+def _water_sport_evidence_provenance(city: str) -> Dict[str, str]:
+    """Provenance of the non-SUP spot evidence available for ``city``.
+
+    Forecasts are fetched for the city's coordinates, the shoreline angle is at
+    best an approximate city profile, and no break/swell data is collected, so
+    none of the three can be "verified" here.
+    """
+    return {
+        "orientation": _sup_orientation_provenance(city),
+        "forecast": "city",
+        "break_swell": "unavailable",
+    }
+
+
+def _finite_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def water_sport_decision(
+    sport: str,
+    *,
+    wind_ms: Any,
+    gust_ms: Any,
+    wind_dir: Any,
+    wave_h: Any,
+    thunder: bool,
+    thunder_known: bool,
+    samples_aligned: bool,
+    shore: Optional[str],
+    provenance: Mapping[str, str],
+) -> Tuple[str, str]:
+    """Fail-closed (status, reason) for one non-SUP sport; status is "positive" or "neutral".
+
+    Only existing thresholds are used; no new safety limits are introduced.
+    """
+    if sport not in _WATER_SPORT_LABELS:
+        return "neutral", "unsupported_sport"
+    if not thunder_known:
+        return "neutral", "unknown_thunder"
+    if thunder:
+        return "neutral", "thunder"
+    if sport in ("windsurf", "wing"):
+        # No independent windsurf/wing policy exists; never inherit kite.
+        return "neutral", "no_independent_policy"
+    wind = _finite_number(wind_ms)
+    gust = _finite_number(gust_ms)
+    wave = _finite_number(wave_h)
+    if wind is None:
+        return "neutral", "missing_wind"
+    if sport == "kite" and (gust is None or _finite_number(wind_dir) is None):
+        return "neutral", "missing_wind"
+    if wave is None:
+        return "neutral", "missing_wave"
+    if samples_aligned is not True:
+        return "neutral", "time_mismatch"
+    if sport == "wave_surf" and provenance.get("break_swell") != "verified":
+        return "neutral", "missing_break_swell_evidence"
+    if provenance.get("orientation") != "verified" or shore not in ("onshore", "cross", "offshore"):
+        return "neutral", "unverified_orientation"
+    if provenance.get("forecast") != "verified":
+        return "neutral", "unverified_forecast_location"
+    if sport == "kite":
+        if not (KITE_WIND_GOOD_MIN <= wind <= KITE_WIND_GOOD_MAX):
+            return "neutral", "kite_wind_out_of_range"
+        if shore == "offshore":
+            return "neutral", "offshore"
+        if gust / max(wind, 0.1) > KITE_GUST_RATIO_BAD:
+            return "neutral", "gusty"
+        if wave >= KITE_WAVE_WARN:
+            return "neutral", "wave_too_high"
+        return "positive", "kite_conditions_met"
+    if SURF_WAVE_GOOD_MIN <= wave <= SURF_WAVE_GOOD_MAX and wind <= SURF_WIND_MAX:
+        return "positive", "surf_conditions_met"
+    return "neutral", "surf_conditions_not_met"
+
+
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
     wm = get_weather(la, lo) or {}
     target_date = pendulum.today(tz_obj).add(days=1).date()
@@ -2583,32 +2669,23 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         # gusts or confirmed thunder (orientation-independent) is kept.
         sup_level = None
 
-    kite_good = False
-    kite_evidence_complete = all(
-        value is not None for value in (wind_val, gust_val, wind_dir, shore)
-    )
-    if kite_evidence_complete:
-        if KITE_WIND_GOOD_MIN <= wind_val <= KITE_WIND_GOOD_MAX:
-            kite_good = True
-        if shore == "offshore":
-            kite_good = False
-        if gust_val and wind_val and (gust_val / max(wind_val, 0.1) > KITE_GUST_RATIO_BAD):
-            kite_good = False
-        if wave_h is not None and wave_h >= KITE_WAVE_WARN:
-            kite_good = False
-
-    surf_good = False
-    if wave_h is not None:
-        if SURF_WAVE_GOOD_MIN <= wave_h <= SURF_WAVE_GOOD_MAX and (
-            wind_val is not None and wind_val <= SURF_WIND_MAX
-        ):
-            surf_good = True
-
+    provenance = _water_sport_evidence_provenance(city)
     goods: List[str] = []
-    if kite_good:
-        goods.append("Кайт/Винг/Винд")
-    if surf_good:
-        goods.append("Сёрф")
+    for sport, label in _WATER_SPORT_LABELS.items():
+        status, _reason = water_sport_decision(
+            sport,
+            wind_ms=wind_val,
+            gust_ms=gust_val,
+            wind_dir=wind_dir,
+            wave_h=wave_h,
+            thunder=local_thunder,
+            thunder_known=not thunder_unknown,
+            samples_aligned=sup_samples_aligned,
+            shore=shore,
+            provenance=provenance,
+        )
+        if status == "positive":
+            goods.append(label)
 
     dir_part = f" ({card}/{shore})" if card or shore else ""
     spot_part = (
@@ -2621,8 +2698,9 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     suit_txt = _wetsuit_hint(sst)
     suit_part = f" • {suit_txt}" if suit_txt else ""
     highlights: List[str] = []
-    if goods:
-        highlights.append("🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part)
+    for label in goods:
+        # One line per sport: a positive for one sport never covers another.
+        highlights.append("🧜‍♂️ Отлично: " + label + spot_part + env_mark + dir_part + suit_part)
 
     # T1: a generic city orientation (or no orientation) never authorises
     # beach-specific positive SUP advice. Positive outcomes become a neutral

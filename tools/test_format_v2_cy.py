@@ -287,6 +287,26 @@ SURF_WITH_WAVE_EVENING = """<b>🌅 Кипр: погода на завтра (27
 """
 
 
+# T2-R4 S2: city A carries wave + wind; city B has a legacy surf line but no
+# wave of its own; city C has wave but unknown wind; city D has thunder.
+SURF_CARRY_OVER_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
+✨ VayboMeter завтра: 7.1/10 — обычный день.
+🏖 <b>Морские города</b>
+Лимассол: 29/23 °C • ясно • 💨 5 м/с (W/cross) • 🌊 27 • 1.2 м
+Пафос: 28/22 °C • ясно • 🌊 26
+🧜‍♂️ Отлично: Серф (западный ветер, вдоль берега)
+Ларнака: 29/23 °C • ясно • 🌊 27 • 1.3 м
+🧜‍♂️ Отлично: Серф (западный ветер, вдоль берега)
+Паралимни: 28/22 °C • ⛈ гроза • 💨 4 м/с • 🌊 26 • 1.1 м
+🧜‍♂️ Отлично: Серф (западный ветер, вдоль берега)
+———
+🌅 Рассвет завтра: 05:37
+🌕 Полнолуние в ♐ — 96% освещённости.
+💚 В плюсе: планы.
+#Кипр #погода #здоровье #Никосия #Тродос
+"""
+
+
 GROUPED_WATER_SPORTS_EVENING = """<b>🌅 Кипр: погода на завтра (27.06.2026)</b>
 ✨ VayboMeter завтра: 7.2/10 — обычный день.
 🏖 <b>Морские города</b>
@@ -677,6 +697,19 @@ def cy_evening_surf_with_valid_wave_is_cautiously_positive() -> None:
     text = _safe_test_evening_pipeline(SURF_WITH_WAVE_EVENING)
     assert "Отлично: Серф" not in text
     assert "🏄 Серф: есть рабочие окна по волне; проверить конкретный спот." in text
+
+
+def cy_evening_surf_polish_never_carries_previous_city_wave_or_wind() -> None:
+    """T2-R4 S2/S3: each city's surf line is judged only by its own wave, wind and thunder."""
+    text = _safe_test_evening_pipeline(SURF_CARRY_OVER_EVENING)
+    assert "Отлично" not in text
+    assert "есть рабочие окна" not in text
+    assert "отдельные окна возможны" not in text
+    insufficient = "🏄 Серф: данных для уверенной оценки недостаточно; проверить спот перед выездом."
+    for city in ("Пафос", "Ларнака", "Паралимни"):
+        assert f"• {city} — {insufficient}" in text, (city, text)
+    assert text.count(insufficient) == 3
+    assert "🏄 <b>Вода и спорт</b>" in text and text.count("🏄 <b>Вода и спорт</b>") == 1
 
 
 def cy_evening_groups_existing_water_sports_after_coast() -> None:
@@ -1219,6 +1252,7 @@ def main() -> None:
         cy_evening_unstructured_dust_text_does_not_create_air_warning,
         cy_evening_surf_without_wave_is_not_excellent,
         cy_evening_surf_with_valid_wave_is_cautiously_positive,
+        cy_evening_surf_polish_never_carries_previous_city_wave_or_wind,
         cy_evening_all_green_city_air_collapses_to_summary,
         cy_evening_single_green_city_does_not_claim_everywhere,
         cy_evening_one_missing_city_all_available_green_collapses_with_scope,

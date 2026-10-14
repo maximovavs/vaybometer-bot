@@ -1,0 +1,20 @@
+{
+  "schema_version": "cy_water_sports_golden_v1",
+  "purpose": "T2-R4 fail-closed design; do not treat as production evidence or threshold policy",
+  "source_main": "be9efe419d7bfd0f855593dbde4dd4c5a97b70d1",
+  "data_provenance": "Synthetic offline cases from T2-R3 RCA and T2-R2 site evidence",
+  "cases": [
+    {"id":"K1","sport":"kite","wind_ms":8,"gust_ms":9,"wave_m":0.8,"daily_wmo":95,"orientation":"unverified","forecast":"unverified","aligned":true,"expected":"no_positive","reason":"thunder"},
+    {"id":"K2","sport":"kite","wind_ms":8,"gust_ms":9,"wave_m":0.8,"daily_wmo":null,"orientation":"unverified","forecast":"unverified","aligned":true,"expected":"no_positive","reason":"unknown_thunder"},
+    {"id":"K3","sport":"kite","wind_ms":8,"gust_ms":9,"wave_m":null,"daily_wmo":0,"orientation":"unverified","forecast":"unverified","aligned":false,"expected":"no_positive","reason":"missing_wave"},
+    {"id":"K4","sport":"kite","wind_ms":8,"gust_ms":9,"wave_m":0.8,"daily_wmo":0,"orientation":"unverified","forecast":"unverified","aligned":false,"expected":"no_positive","reason":"wave_wind_time_skew"},
+    {"id":"K5","sport":"kite","wind_ms":8,"gust_ms":9,"wave_m":0.8,"daily_wmo":0,"orientation":"unverified_spot","forecast":"unverified","aligned":true,"expected":"no_positive","reason":"Paramali_unverified_shore"},
+    {"id":"K6","sport":"kite","wind_ms":8,"gust_ms":14,"wave_m":0.8,"daily_wmo":0,"orientation":"offshore_unverified","forecast":"unverified","aligned":true,"expected":"no_positive","reason":"gust_or_offshore_uncertainty"},
+    {"id":"W1","sport":"windsurf","wind_ms":8,"gust_ms":9,"wave_m":0.8,"daily_wmo":0,"orientation":"unverified","forecast":"unverified","aligned":true,"expected":"no_positive","reason":"independent_windsurf_policy_missing"},
+    {"id":"W2","sport":"wing","wind_ms":8,"gust_ms":9,"wave_m":0.8,"daily_wmo":0,"orientation":"unverified","forecast":"unverified","aligned":true,"expected":"no_positive","reason":"must_not_inherit_kite"},
+    {"id":"S1","sport":"wave_surf","wind_ms":3,"gust_ms":5,"wave_m":1.2,"daily_wmo":0,"orientation":"unverified","forecast":"unverified","aligned":true,"swell":null,"expected":"no_positive","reason":"missing_break_and_swell_evidence"},
+    {"id":"S2","sport":"wave_surf","wind_ms":3,"gust_ms":5,"wave_m":null,"daily_wmo":0,"orientation":"unverified","forecast":"unverified","aligned":false,"expected":"no_positive","reason":"previous_city_wave_must_not_carry"},
+    {"id":"S3","sport":"wave_surf","wind_ms":null,"gust_ms":null,"wave_m":1.2,"daily_wmo":null,"orientation":"unverified","forecast":"unverified","aligned":false,"expected":"no_positive","reason":"missing_wind_and_thunder"},
+    {"id":"F1","sport":"all","wind_ms":8,"gust_ms":9,"wave_m":1.2,"daily_wmo":0,"orientation":"unverified","forecast":"unverified","aligned":true,"expected":"no_positive_except_existing_sup_stop","reason":"formatter_no_upgrade_other_sports_preserve_SUP_W1"}
+  ]
+}
