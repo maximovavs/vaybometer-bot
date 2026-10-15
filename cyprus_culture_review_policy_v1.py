@@ -16,6 +16,7 @@ import cyprus_culture_quiz as quiz
 
 VERSION = "cy-culture-v6-1-review-v1"
 V6_3_VERSION = "cy-culture-v6-3-review-v1"
+V6_4_VERSION = "cy-culture-v6-4-review-v1"
 # Exact immutable byte pins (bank, review policy, manifest) for every review-policy release.
 # All three are verified before any policy or manifest content is used.
 PINNED_REVIEW_BANKS = {
@@ -30,6 +31,12 @@ PINNED_REVIEW_BANKS = {
         "bank_sha256": "sha256:67f931b910e77fb4fdd631538a71f3bed2670ccb69718193c4f336f43edc3346",
         "policy_sha256": "sha256:0b20d4b617f8f5a6797eb7e6ed18bfaa748400a43fb250ec234b40a403e887fa",
         "manifest_sha256": "sha256:59c013a5046f47555fe6d9ffe319bca78939703e6c4b50ba9a2f98055927a8a5",
+    },
+    quiz.V6_4_BANK_VERSION: {
+        "policy_version": V6_4_VERSION,
+        "bank_sha256": "sha256:7c5d32f456a2074cf9fe4e093b53018a2b1115143200da3545426b4f7c49b954",
+        "policy_sha256": "sha256:c696a98cab22b1d5851d4a8f7034467a7a89bda319d2dd316f1f34afd959884f",
+        "manifest_sha256": "sha256:03988f26fa672b9dba33a809bb5f9f1752b2aee3893bacea3b0ab08cac61fba5",
     },
 }
 EXPECTED_SLOT_COUNTS = {"evening_general": 56, "fx_economy": 16}

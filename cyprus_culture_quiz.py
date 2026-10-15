@@ -16,9 +16,10 @@ TZ_NAME="Asia/Nicosia"
 DEFAULT_BANK_PATH=Path("data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl")
 V6_1_BANK_VERSION="v2026-10-exam-core-v6-1"
 V6_3_BANK_VERSION="v2026-10-exam-core-v6-3"
+V6_4_BANK_VERSION="v2026-10-exam-core-v6-4"
 # Banks served only through their pinned review policy; exact policy/SHA-256 pins
 # live in cyprus_culture_review_policy_v1.PINNED_REVIEW_BANKS.
-REVIEW_POLICY_BANK_VERSIONS=frozenset({V6_1_BANK_VERSION,V6_3_BANK_VERSION})
+REVIEW_POLICY_BANK_VERSIONS=frozenset({V6_1_BANK_VERSION,V6_3_BANK_VERSION,V6_4_BANK_VERSION})
 # Only these existing pre-v6 release identities may use the unpinned legacy selector.
 # Unknown or malformed version labels must not silently bypass pinned review policy.
 LEGACY_BANK_VERSIONS=frozenset({

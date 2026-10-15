@@ -192,9 +192,9 @@ def test_fail_closed_cases_send_nothing_and_reserve_nothing():
         cases=[]
         def case(label,version,make,reason):
             cases.append((label,version,make,reason))
-        case('unknown-v6-4',  'v2026-10-exam-core-v6-4',lambda d:copy_bank(d/'v2026-10-exam-core-v6-4'),'culture_bank_version_unsupported')
+        case('v6-4-with-v6-3-bytes',  'v2026-10-exam-core-v6-4',lambda d:copy_bank(d/'v2026-10-exam-core-v6-4'),'culture_review_policy_invalid')
         case('bare-v6',       'v2026-10-exam-core-v6',  lambda d:copy_bank(d/'v2026-10-exam-core-v6'),'culture_bank_version_unsupported')
-        case('unknown-v6-on-v5-path','v2026-10-exam-core-v6-4',lambda d:V5,'culture_bank_version_unsupported')
+        case('v6-4-on-v5-path','v2026-10-exam-core-v6-4',lambda d:V5,'culture_review_policy_invalid')
         def superseded_v62(d):
             b=copy_bank(d/V62_VERSION);rows=b.read_text('utf-8').splitlines(keepends=True)
             first=next(i for i,l in enumerate(rows) if json.loads(l)['question_id']=='full-a-001');r=json.loads(rows[first])
