@@ -128,3 +128,5 @@ jobs:
           python -B tools/test_cyprus_culture_quiz_v6_1.py
           python -B tools/test_cyprus_culture_review_policy_v1.py
           python -B tools/test_cyprus_culture_review_integration.py
+          python -B tools/test_cyprus_culture_v6_3_runtime.py
+          python -B tools/test_cyprus_culture_v6_4_editorial.py

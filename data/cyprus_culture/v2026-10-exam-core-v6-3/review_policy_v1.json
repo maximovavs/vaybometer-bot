@@ -1,0 +1,449 @@
+{
+  "schema_version": 1,
+  "policy_version": "cy-culture-v6-3-review-v1",
+  "source_bank_version": "v2026-10-exam-core-v6-3",
+  "source_bank_sha256": "sha256:67f931b910e77fb4fdd631538a71f3bed2670ccb69718193c4f336f43edc3346",
+  "status": "candidate_inactive",
+  "semantics": {
+    "review_after": "Soft editorial review target. Passing this date alone does not invalidate an answer.",
+    "max_unverified_until": "Fail-closed upper limit for relying on the most recently verified claim. Not a legal term.",
+    "official_valid_from_until": "Original source effective dates always remain mandatory; bounded measures never outlive valid_until.",
+    "suspended_ids": "Emergency/manual fail-closed removal of officially contradicted questions.",
+    "change_trigger": "Confirmed election, appointment, resignation, legislation, or new official service policy requires immediate source revalidation, regardless of review date."
+  },
+  "suspended_ids": [],
+  "entries": [
+    {
+      "question_id": "full-a-001",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-044",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-002",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-003",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-005",
+      "review_group": "elected_office",
+      "review_after": "2027-10-13",
+      "max_unverified_until": "2028-10-13"
+    },
+    {
+      "question_id": "full-a-006",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-007",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-008",
+      "review_group": "stable_monitor",
+      "review_after": "2027-10-06",
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-009",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-010",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-011",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-012",
+      "review_group": "stable_monitor",
+      "review_after": "2028-10-06",
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-013",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-014",
+      "review_group": "party_leadership",
+      "review_after": "2027-10-13",
+      "max_unverified_until": "2028-10-13"
+    },
+    {
+      "question_id": "full-a-015",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-017",
+      "review_group": "stable_monitor",
+      "review_after": "2028-10-06",
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-018",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-019",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-020",
+      "review_group": "stable_monitor",
+      "review_after": "2028-10-06",
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-021",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-022",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-023",
+      "review_group": "stable_monitor",
+      "review_after": "2028-10-06",
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-024",
+      "review_group": "civic_service",
+      "review_after": "2027-10-13",
+      "max_unverified_until": "2028-10-13"
+    },
+    {
+      "question_id": "full-a-025",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-026",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-027",
+      "review_group": "administrative_rules",
+      "review_after": "2027-10-06",
+      "max_unverified_until": "2028-10-06"
+    },
+    {
+      "question_id": "full-a-028",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-029",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-030",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-031",
+      "review_group": "administrative_rules",
+      "review_after": "2027-04-06",
+      "max_unverified_until": "2027-10-06"
+    },
+    {
+      "question_id": "full-a-032",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-033",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-034",
+      "review_group": "stable_monitor",
+      "review_after": "2028-10-06",
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-035",
+      "review_group": "public_safety_rules",
+      "review_after": "2027-04-13",
+      "max_unverified_until": "2027-10-13"
+    },
+    {
+      "question_id": "full-a-036",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-037",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-038",
+      "review_group": "religious_office",
+      "review_after": "2027-10-13",
+      "max_unverified_until": "2028-10-13"
+    },
+    {
+      "question_id": "full-a-039",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-040",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-041",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-042",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-043",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-048",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-055",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-056",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-060",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-074",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-083",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "exam-v3-hall-a05",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "exam-v3-hall-a17",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "exam-v3-hall-a18",
+      "review_group": "administrative_rules",
+      "review_after": "2027-10-08",
+      "max_unverified_until": "2028-10-08"
+    },
+    {
+      "question_id": "exam-v3-hall-b01",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "exam-v3-hall-b15",
+      "review_group": "appointed_office",
+      "review_after": "2027-01-08",
+      "max_unverified_until": "2027-04-08"
+    },
+    {
+      "question_id": "exam-v3-hall-b17",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "exam-v3-hall-b22",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "exam-v3-hall-b21",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-004",
+      "review_group": "administrative_rules",
+      "review_after": "2027-10-06",
+      "max_unverified_until": "2028-10-06"
+    },
+    {
+      "question_id": "full-a-016",
+      "review_group": "stable_monitor",
+      "review_after": "2027-10-06",
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-061",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    },
+    {
+      "question_id": "full-a-088",
+      "review_group": "regulatory_threshold",
+      "review_after": "2027-04-06",
+      "max_unverified_until": "2027-10-06"
+    },
+    {
+      "question_id": "full-a-100",
+      "review_group": "administrative_rules",
+      "review_after": "2027-10-06",
+      "max_unverified_until": "2028-10-06"
+    },
+    {
+      "question_id": "full-a-107",
+      "review_group": "economic_snapshot",
+      "review_after": "2027-10-13",
+      "max_unverified_until": "2028-04-13"
+    },
+    {
+      "question_id": "full-b-eco-001",
+      "review_group": "annual_finance",
+      "review_after": "2027-01-06",
+      "max_unverified_until": "2027-04-06"
+    },
+    {
+      "question_id": "full-b-eco-007",
+      "review_group": "annual_finance",
+      "review_after": "2027-01-06",
+      "max_unverified_until": "2027-04-06"
+    },
+    {
+      "question_id": "full-b-eco-008",
+      "review_group": "annual_finance",
+      "review_after": "2027-01-06",
+      "max_unverified_until": "2027-04-06"
+    },
+    {
+      "question_id": "full-b-eco-010",
+      "review_group": "bounded_statutory_measure",
+      "review_after": "2027-01-06",
+      "max_unverified_until": "2027-03-31"
+    },
+    {
+      "question_id": "full-b-eco-011",
+      "review_group": "bounded_statutory_measure",
+      "review_after": "2027-01-06",
+      "max_unverified_until": "2027-05-31"
+    },
+    {
+      "question_id": "full-b-cur-001",
+      "review_group": "appointed_office",
+      "review_after": "2027-01-13",
+      "max_unverified_until": "2027-04-13"
+    },
+    {
+      "question_id": "full-b-cur-005",
+      "review_group": "appointed_office",
+      "review_after": "2027-01-13",
+      "max_unverified_until": "2027-04-13"
+    },
+    {
+      "question_id": "full-b-cur-007",
+      "review_group": "appointed_office",
+      "review_after": "2027-01-13",
+      "max_unverified_until": "2027-04-13"
+    },
+    {
+      "question_id": "full-b-cur-012",
+      "review_group": "appointed_office",
+      "review_after": "2027-01-13",
+      "max_unverified_until": "2027-04-13"
+    },
+    {
+      "question_id": "full-b-ins-020",
+      "review_group": "historical_stable",
+      "review_after": null,
+      "max_unverified_until": null
+    }
+  ]
+}

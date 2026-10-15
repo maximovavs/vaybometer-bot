@@ -15,6 +15,21 @@ import cy_cycle_date
 TZ_NAME="Asia/Nicosia"
 DEFAULT_BANK_PATH=Path("data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl")
 V6_1_BANK_VERSION="v2026-10-exam-core-v6-1"
+V6_3_BANK_VERSION="v2026-10-exam-core-v6-3"
+V6_4_BANK_VERSION="v2026-10-exam-core-v6-4"
+# Banks served only through their pinned review policy; exact policy/SHA-256 pins
+# live in cyprus_culture_review_policy_v1.PINNED_REVIEW_BANKS.
+REVIEW_POLICY_BANK_VERSIONS=frozenset({V6_1_BANK_VERSION,V6_3_BANK_VERSION,V6_4_BANK_VERSION})
+# Only these existing pre-v6 release identities may use the unpinned legacy selector.
+# Unknown or malformed version labels must not silently bypass pinned review policy.
+LEGACY_BANK_VERSIONS=frozenset({
+    "v2026-10-full", "v2026-10-pilot",
+    "v2026-10-exam-core-v2", "v2026-10-exam-core-v3",
+    "v2026-10-exam-core-v4", "v2026-10-exam-core-v5",
+})
+# Release date prefix ("v2026-10-") is not a bank major; any later v<digits> marker is.
+_BANK_DATE_PREFIX_RE=re.compile(r"^\s*v\d{4}-\d{2}(?=-)",re.I)
+_BANK_MAJOR_RE=re.compile(r"v(\d+)",re.I)
 DEFAULT_QUIZ_RECEIPT_DIR=Path(".cache/cy_quiz_delivery")
 DEFAULT_WEATHER_TEXT_RECEIPT_DIR=Path(".cache/cy_text_delivery")
 DEFAULT_FX_DELIVERY_DIR=Path(".cache/cy_fx_delivery")
@@ -63,6 +78,11 @@ def _opt_date(v:object)->str|None:
     s=str(v).strip()
     if not _valid_date(s):raise ValueError("invalid date")
     return s
+
+def is_review_policy_bank_name(name:str)->bool:
+    """Any v6+ marker (full, short, unknown, any case/spacing) is excluded from the legacy selector."""
+    text=_BANK_DATE_PREFIX_RE.sub("",str(name or ""))
+    return any(int(m)>=6 for m in _BANK_MAJOR_RE.findall(text))
 
 def _parse_record(r:Any)->QuizQuestion|None:
     if not isinstance(r,dict) or r.get("verified") is not True:return None
@@ -213,19 +233,24 @@ async def deliver_quiz(*,slot:str,enabled:bool,event_name:str,event_schedule:str
         if not valid_weather_text_receipt(_weather_path(target,weather_receipt_dir),target):return {"result":"quiz_skipped_weather_not_delivered","quiz_slot":slot,"quiz_date":qdate.isoformat()}
     elif not valid_fx_delivery_receipt(_fx_path(qdate,fx_receipt_dir),qdate):
         return {"result":"quiz_skipped_fx_not_delivered","quiz_slot":slot,"quiz_date":qdate.isoformat()}
-    # v5 and older banks retain the exact original selection path. For v6.1,
+    # v5 and older banks retain the exact original selection path. For v6.x,
     # mandatory pinned review policy replaces short editorial revalidation TTLs.
-    # Do not fall back to the legacy selector if v6.1 policy validation fails.
-    if bank_version==V6_1_BANK_VERSION or bank_path.parent.name==V6_1_BANK_VERSION:
-        if bank_version!=V6_1_BANK_VERSION:
+    # Unknown v6.x versions, path/version mismatches and invalid policies are
+    # skipped; never fall back to the legacy selector for a v6.x bank.
+    if is_review_policy_bank_name(bank_version) or is_review_policy_bank_name(bank_path.parent.name):
+        if bank_path.parent.name in REVIEW_POLICY_BANK_VERSIONS and bank_version!=bank_path.parent.name:
             return {"result":"quiz_skipped_invalid_question","reason":"culture_bank_version_mismatch","quiz_slot":slot,"quiz_date":qdate.isoformat()}
+        if bank_version not in REVIEW_POLICY_BANK_VERSIONS:
+            return {"result":"quiz_skipped_invalid_question","reason":"culture_bank_version_unsupported","quiz_slot":slot,"quiz_date":qdate.isoformat()}
         try:
             from cyprus_culture_review_policy_v1 import load_candidate,candidate_select
-            qs,entries,suspended=load_candidate(bank_path,bank_path.with_name("review_policy_v1.json"))
+            qs,entries,suspended=load_candidate(bank_path,bank_path.with_name("review_policy_v1.json"),bank_version=bank_version)
             selected=candidate_select(qs,entries,suspended,slot=slot,quiz_date=qdate,bank_version=bank_version,receipt_dir=quiz_receipt_dir)
         except Exception:
             return {"result":"quiz_skipped_invalid_question","reason":"culture_review_policy_invalid","quiz_slot":slot,"quiz_date":qdate.isoformat()}
     else:
+        if bank_version not in LEGACY_BANK_VERSIONS or bank_path.parent.name!=bank_version:
+            return {"result":"quiz_skipped_invalid_question","reason":"culture_bank_version_unsupported","quiz_slot":slot,"quiz_date":qdate.isoformat()}
         qs=load_verified_questions(bank_path);selected=select_question(qs,slot=slot,quiz_date=qdate,bank_version=bank_version,receipt_dir=quiz_receipt_dir)
     if selected is None:return {"result":"quiz_skipped_no_eligible_questions","quiz_slot":slot,"quiz_date":qdate.isoformat()}
     payload=assemble_payload(selected)
