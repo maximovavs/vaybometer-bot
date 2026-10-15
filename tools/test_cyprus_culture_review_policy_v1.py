@@ -38,7 +38,7 @@ def test_exact_72_and_no_production_activation():
     # v6.1 may import the new policy only in its explicitly selected branch.
     # The active v5 bank stays on the original selector; no production switch.
     assert 'V6_1_BANK_VERSION="v2026-10-exam-core-v6-1"' in runtime
-    assert 'if bank_version==V6_1_BANK_VERSION or bank_path.parent.name==V6_1_BANK_VERSION:' in runtime
+    assert 'if is_review_policy_bank_name(bank_version) or is_review_policy_bank_name(bank_path.parent.name):' in runtime
     assert 'qs=load_verified_questions(bank_path);selected=select_question(qs,' in runtime
     assert 'culture_review_policy_invalid' in runtime
     assert 'culture_bank_version_mismatch' in runtime
