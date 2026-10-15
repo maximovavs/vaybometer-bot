@@ -32,8 +32,8 @@ def test_exact_72_and_no_production_activation():
     assert all(quiz.assemble_payload(q) is not None for q in qs)
     assert str(quiz.DEFAULT_BANK_PATH).endswith('v2026-10-exam-core-v5/questions.jsonl')
     assert quiz.load_verified_questions(V5)
-    assert 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-exam-core-v5"' in WF.read_text('utf-8')
-    assert 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl"' in WF.read_text('utf-8')
+    assert 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-exam-core-v6-4"' in WF.read_text('utf-8')
+    assert 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-exam-core-v6-4/questions.jsonl"' in WF.read_text('utf-8')
     runtime=(ROOT/'cyprus_culture_quiz.py').read_text('utf-8')
     # v6.1 may import the new policy only in its explicitly selected branch.
     # The active v5 bank stays on the original selector; no production switch.

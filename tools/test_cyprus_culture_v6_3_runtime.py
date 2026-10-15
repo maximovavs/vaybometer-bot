@@ -416,7 +416,7 @@ def test_v5_and_v61_paths_are_unchanged():
                 assert bool(legacy)==(not via_policy)
     assert str(quiz.DEFAULT_BANK_PATH).endswith('v2026-10-exam-core-v5/questions.jsonl')
     workflow=(ROOT/'.github/workflows/daily_post.yml').read_text('utf-8')
-    assert 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-exam-core-v5"' in workflow and 'v6-2' not in workflow and 'v6-3' not in workflow
+    assert 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-exam-core-v6-4"' in workflow and 'v6-2' not in workflow and 'v6-3' not in workflow
 
 
 def main():
