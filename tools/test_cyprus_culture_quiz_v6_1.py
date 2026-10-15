@@ -79,8 +79,8 @@ def test_inactive_explanation_only_contract() -> None:
         assert payload.question == f"🇨🇾 {q.question_el}\n🇷🇺 {q.question_ru}"
     assert str(quiz.DEFAULT_BANK_PATH).endswith("v2026-10-exam-core-v5/questions.jsonl")
     workflow = WORKFLOW.read_text("utf-8")
-    assert 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-exam-core-v5/questions.jsonl"' in workflow
-    assert 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-exam-core-v5"' in workflow
+    assert 'CY_CULTURE_QUIZ_BANK_PATH: "data/cyprus_culture/v2026-10-exam-core-v6-4/questions.jsonl"' in workflow
+    assert 'CY_CULTURE_QUIZ_BANK_VERSION: "v2026-10-exam-core-v6-4"' in workflow
 
 
 if __name__ == "__main__":
