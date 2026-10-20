@@ -36,6 +36,11 @@ def _plain(text: str) -> str:
     return re.sub(r"</?b>", "", str(text or "")).strip()
 
 
+def _num(pattern: str, text: str) -> Optional[float]:
+    m = re.search(pattern, _plain(text), flags=re.I)
+    return float(m.group(1).replace(",", ".")) if m else None
+
+
 class WeatherSafetyR1(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -57,6 +62,7 @@ class WeatherSafetyR1(unittest.TestCase):
         cls.score_ns = {
             're': re,
             '_plain': _plain,
+            '_num': _num,
             '_CY_STORM_NEGATION_RE': cls.format_ns['_STORM_NEGATION_RE'],
             '_CY_STORM_POSITIVE_RE': cls.format_ns['_STORM_POSITIVE_RE'],
             'visibility_air_penalty': lambda visibility, air: air,
@@ -94,6 +100,70 @@ class WeatherSafetyR1(unittest.TestCase):
 
     def test_clear_day_still_has_normal_score(self):
         self.assertIn('10.0/10 — отлично', self.score('Нет локального сигнала непогоды'))
+
+    def test_r3_fails_closed_on_unknown_wmo(self):
+        good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
+                    gust_known=True, air_known=True, weather_source='live', weather_age_sec=0,
+                    official_warnings_checked=True, city_expected_checks=1, city_checks=[{'complete': True}])
+        bad = dict(good, region_wmo_known=False)
+        self.assertIn('VayboMeter: н/д', self.score('Нет локального сигнала непогоды', bad))
+        self.assertIn('10.0/10', self.score('Нет локального сигнала непогоды', good))
+
+    def test_r3_fails_closed_on_stale_or_missing_observations(self):
+        good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
+                    gust_known=True, air_known=True, weather_source='live', weather_age_sec=0,
+                    official_warnings_checked=True, city_expected_checks=1, city_checks=[{'complete': True}])
+        for changes in ({'weather_source': 'cache_stale'}, {'air_known': False},
+                        {'uv_known': False}, {'wind_known': False}, {'gust_known': False}):
+            with self.subTest(changes=changes):
+                self.assertIn('VayboMeter: н/д', self.score('Нет локального сигнала непогоды', dict(good, **changes)))
+
+    def test_r3_confirmed_thunder_cap_survives_missing_data(self):
+        text = '🌦 Локально: Лимассол — гроза'
+        self.assertIn('5.4/10', self.score(text, {}))
+
+    def test_r3_rendered_uv_and_gust_values(self):
+        # Real parser, not the existing R1 stub for _cyprus_conditions.
+        score_source = (ROOT / 'safe_test_post.py').read_text(encoding='utf-8')
+        self.assertIn('УФ(?:-индекс)?', score_source)
+        self.assertIn('порывы\\s+(?:до', score_source)
+        real_ns = {'re': re, '_plain': _plain, '_num': _num}
+        real_conditions = _extract('safe_test_post.py', '_cyprus_conditions', real_ns)
+        parsed = real_conditions('☀️ <b>УФ-индекс 8 (Very High)</b>\n💨 Ветер: 13 м/с, порывы 14 м/с')
+        self.assertEqual(8.0, parsed['uv'])
+        self.assertEqual(13.0, parsed['wind'])
+        self.assertEqual(14.0, parsed['gust'])
+
+    def test_r4_official_warnings_unverified_never_perfect(self):
+        good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
+                    gust_known=True, air_known=True, weather_source='live', weather_age_sec=0,
+                    official_warnings_checked=True, city_expected_checks=1, city_checks=[{'complete': True}])
+        calm = 'Нет локального сигнала непогоды'
+        self.assertIn('10.0/10', self.score(calm, good))
+        for unchecked in (False, None, 'true', 0):
+            with self.subTest(unchecked=unchecked):
+                evidence = dict(good, official_warnings_checked=unchecked)
+                result = self.score(calm, evidence)
+                self.assertIn('VayboMeter: н/д', result)
+                self.assertIn('официальные предупреждения не проверены', result)
+                self.assertNotIn('10.0/10', result)
+        missing_flag = dict(good)
+        del missing_flag['official_warnings_checked']
+        self.assertIn('официальные предупреждения не проверены', self.score(calm, missing_flag))
+
+    def test_r4_uncertain_weather_outweighs_official_check(self):
+        good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
+                    gust_known=True, air_known=True, weather_source='live', weather_age_sec=0,
+                    official_warnings_checked=True, city_expected_checks=1, city_checks=[{'complete': True}])
+        result = self.score('Нет локального сигнала непогоды', dict(good, air_known=False))
+        self.assertIn('погодные данные неполные или устарели', result)
+        self.assertNotIn('10.0/10', result)
+
+    def test_r4_thunder_and_gust_cap_even_with_unverified_official(self):
+        unverified = dict(official_warnings_checked=False)
+        self.assertIn('5.4/10', self.score('🌦 Локально: Лимассол — гроза', unverified))
+        self.assertIn('5.4/10', self.score('⚠️ <b>По прогнозу</b>: гроза', unverified))
+        self.assertIn('5.4/10', self.score('GUST_16', unverified))
 
     def test_astro_metaphor_is_not_storm_evidence(self):
         self.assertIn('10.0/10 — отлично', self.score('🌙 Эмоциональный шторм без фактической грозы'))
@@ -140,9 +210,115 @@ class WeatherSafetyR1(unittest.TestCase):
 
     def test_city_signal_wired_into_message(self):
         source = (ROOT / 'post_common.py').read_text('utf-8')
-        self.assertIn('if _cyprus_city_thunder_signal(_line):', source)
+        self.assertIn('or _cyprus_city_thunder_signal(_line)', source)
+        self.assertIn('if has_thunder and _ru_city(city) not in thunder_cities:', source)
         self.assertIn('if thunder_cities and not storm_region.get("warning"):', source)
         self.assertIn('storm = _cyprus_morning_weather_status(storm_region, bool(thunder_cities))', source)
+
+
+
+
+class WeatherSafetyR6(unittest.TestCase):
+    """AST extraction tests run without Open-Meteo, Telegram or cached provider calls."""
+
+    @classmethod
+    def setUpClass(cls):
+        from datetime import date
+        cls.date = date(2026, 10, 19)
+        if not hasattr(WeatherSafetyR1, "score"):
+            WeatherSafetyR1.setUpClass()
+        cls.city_ns = {
+            'Dict': Dict, 'Any': Any, 'Optional': Optional,
+            'math': __import__('math'),
+            '_CY_THUNDER_WMO_CODES': {95, 96, 99},
+            '_CY_PRECIP_WMO_CODES': {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99},
+            'WMO_DESC': {0: 'ясно', 1: 'ясно', 2: 'облачно', 3: 'пасмурно', 45: 'туман',
+                         48: 'туман', 51: 'морось', 61: 'дождь', 71: 'снег', 95: 'гроза'},
+            '_daily_idx_for_date': lambda wm, tz, d: (
+                (wm.get('daily') or {}).get('time', []).index(str(d))
+                if str(d) in (wm.get('daily') or {}).get('time', []) else None),
+            '_pick': lambda d, *keys, default=None: next((d[k] for k in keys if k in d), default),
+            '_number_at': lambda values, idx: (
+                float(values[idx]) if isinstance(values, list) and isinstance(idx, int)
+                and idx < len(values) and values[idx] is not None else None),
+            '_value_at': lambda values, idx: (
+                values[idx] if isinstance(values, list) and isinstance(idx, int)
+                and idx < len(values) else None),
+            '_weather_code_int': lambda value: int(value) if value is not None else None,
+            '_source_indices_for_date': lambda times, d, tz: [
+                i for i, t in enumerate(times) if str(t).startswith(str(d))
+                and 'T' in str(t)],
+            '_city_header_metrics_for_date': lambda wm, tz, d: (
+                3.0 if any(str(t).startswith(str(d)) for t in wm.get('hourly', {}).get('time', []))
+                and any(v is not None for v in wm.get('hourly', {}).get('windspeed_10m', [])) else None,
+                None, None, '→',
+                6.0 if any(str(t).startswith(str(d)) for t in wm.get('hourly', {}).get('time', []))
+                and any(v is not None for v in wm.get('hourly', {}).get('windgusts_10m', [])) else None),
+            '_city_daily_metrics_for_date': lambda wm, tz, d: (
+                next((wm.get('daily', {}).get(k, [None])[0] for k in ('temperature_2m_max',) if k in wm.get('daily', {})), None),
+                wm.get('daily', {}).get('temperature_2m_min', [None])[0],
+                wm.get('daily', {}).get('weathercode', [None])[0]),
+        }
+        cls.evidence = staticmethod(_extract('post_common.py', '_cyprus_city_forecast_evidence', cls.city_ns))
+
+    def _city(self, **overrides):
+        import copy
+        wm = {
+            'daily': {'time': ['2026-10-19'], 'temperature_2m_max': [25],
+                      'temperature_2m_min': [18], 'weathercode': [0],
+                      'precipitation_sum': [0]},
+            'hourly': {'time': ['2026-10-19T12:00'], 'windspeed_10m': [10],
+                       'windgusts_10m': [18], 'precipitation_probability': [0]},
+            '_vaybometer_weather_meta': {'source': 'live', 'age_sec': 0},
+        }
+        for section, pairs in overrides.items():
+            wm[section].update(pairs)
+        return self.evidence('Лимассол', wm, None, self.date)
+
+    def test_r6_complete_city_accepts_true_zero_precipitation(self):
+        self.assertTrue(self._city()['complete'])
+
+    def test_r6_missing_city_fields_fail_closed(self):
+        cases = (
+            {'daily': {'weathercode': [None]}},
+            {'daily': {'weathercode': [73]}},
+            {'daily': {'temperature_2m_min': [None]}},
+            {'hourly': {'windspeed_10m': [None]}},
+            {'hourly': {'windgusts_10m': [None]}},
+            {'hourly': {'time': ['2026-10-19T06:00', '2026-10-19T12:00'],
+                        'windspeed_10m': [10, None], 'windgusts_10m': [None, 18]}},
+            {'daily': {'precipitation_sum': [None]}, 'hourly': {'precipitation_probability': [None]}},
+            {'hourly': {'time': ['2026-10-20T12:00']}},
+            {'_vaybometer_weather_meta': {'source': 'cache_stale'}},
+            {'_vaybometer_weather_meta': {'age_sec': 1900}},
+        )
+        for changed in cases:
+            with self.subTest(changed=changed):
+                self.assertFalse(self._city(**changed)['complete'])
+
+    def test_r6_city_thunder_is_preserved_even_without_temperature(self):
+        result = self._city(daily={'weathercode': [95], 'temperature_2m_max': [None]})
+        self.assertTrue(result['thunder'])
+        self.assertFalse(result['complete'])
+
+    def test_r6_rating_requires_every_city_and_both_coastal_reads(self):
+        good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
+                    gust_known=True, air_known=True, weather_source='live',
+                    weather_age_sec=0, official_warnings_checked=True)
+        dummy = dict(complete=True)
+        good['city_expected_checks'] = 3
+        good['city_checks'] = [dummy.copy() for _ in range(3)]
+        self.assertIn('10.0/10', WeatherSafetyR1.score('Нет локального сигнала непогоды', good))
+        for change in ({'city_checks': [dummy.copy(), dict(complete=False), dummy.copy()]},
+                       {'city_checks': [dummy.copy(), dummy.copy()]},
+                       {'city_checks': []}):
+            with self.subTest(change=change):
+                bad = dict(good, **change)
+                self.assertIn('VayboMeter: н/д', WeatherSafetyR1.score('Нет локального сигнала непогоды', bad))
+
+    def test_r6_thunder_cap_survives_incomplete_city_evidence(self):
+        e = dict(city_expected_checks=2, city_checks=[dict(complete=False)])
+        self.assertIn('5.4/10', WeatherSafetyR1.score('🌦 Локально: Лимассол — гроза', e))
 
 
 if __name__ == '__main__':

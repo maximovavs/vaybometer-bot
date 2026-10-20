@@ -560,11 +560,12 @@ def get_weather(
     # Fast path: fresh cache
     if cached_payload is not None and isinstance(cached_ts, int):
         age = _now_ts() - cached_ts
-        if age <= ttl:
+        if 0 <= age <= ttl:
             if DEBUG:
                 LOG.info("weather: cache hit %s (age=%ss)", cache_path.name, age)
             out = dict(cached_payload)
             out = _ensure_aliases(_normalize_times(out, tz_name_eff))
+            out["_vaybometer_weather_meta"] = {"source": "cache_fresh", "age_sec": age}
             return out
 
     last_err: Optional[str] = None
@@ -584,7 +585,7 @@ def get_weather(
                     break  # move to next spec
                 obj2 = _ensure_aliases(_normalize_times(obj, tz_name_eff))
                 _write_cache(cache_path, {"fetched_at": _now_ts(), "data": obj2})
-                return obj2
+                return {**obj2, "_vaybometer_weather_meta": {"source": "live", "age_sec": 0}}
             except Exception as e:
                 last_err = str(e)
                 if t < tries - 1:
@@ -593,13 +594,15 @@ def get_weather(
                     if DEBUG:
                         LOG.warning("weather: fetch failed (spec=%s, err=%s)", attempt_idx + 1, e)
 
-    # Emergency: stale cache up to 24h
-    if cached_payload is not None:
-        if cached_ts is None or (_now_ts() - int(cached_ts) <= 24 * 3600):
+    # Emergency: only bounded timestamped cache is acceptable.
+    if cached_payload is not None and isinstance(cached_ts, int):
+        age = _now_ts() - cached_ts
+        if 0 <= age <= 24 * 3600:
             if DEBUG:
-                LOG.warning("weather: using stale cache (%s), last_err=%s", cache_path.name, last_err)
+                LOG.warning("weather: using stale cache (%s), age=%ss, last_err=%s", cache_path.name, age, last_err)
             out = dict(cached_payload)
             out = _ensure_aliases(_normalize_times(out, tz_name_eff))
+            out["_vaybometer_weather_meta"] = {"source": "cache_stale", "age_sec": age}
             return out
 
     if DEBUG:
