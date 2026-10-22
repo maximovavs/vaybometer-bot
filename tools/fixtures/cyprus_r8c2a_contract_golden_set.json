@@ -12,7 +12,7 @@
     "feed_id_from_captured_atom": "tag:meteoalarm.org,2021-02-19:CY",
     "national_warning_geography": {"product": "land_weather_warnings", "coastal_sectors": ["north", "east", "south", "west"], "band_km": 10, "direction": "inland"},
     "marine_geography": {"product": "coastal_waters_forecast", "sectors": ["north", "east", "south", "west"], "band_km": 8, "direction": "seaward"},
-    "unproven": ["CAP.sender", "Cyprus EMMA_ID values", "Cyprus EMMA_ID-to-city mapping", "MeteoAlarm Atom completeness SLA", "authentic Cyprus CAP Alert/Update/Cancel", "CAP references history"]
+    "unproven": ["CAP.sender", "Cyprus EMMA_ID values", "Cyprus EMMA_ID-to-city mapping", "MeteoAlarm Atom completeness SLA", "authentic Cyprus CAP Alert/Update/Cancel", "CAP references history", "MeteoAlarm metadata geocodes/geocode-aliases/regions: HTTP 401 without authorization observed 2026-10-22T17:08Z (R8-C3A)"]
   },
   "atom_cases": [
     {"id": "CY_ATOM_REAL_EMPTY", "mutation": "none", "expected": "EMPTY_UNVERIFIED", "origin": "actual_capture"},
