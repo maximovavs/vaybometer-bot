@@ -121,6 +121,8 @@ jobs:
           python tools/test_format_v2_morning_cy.py
           python tools/test_sup_safety_cy.py
           python tools/test_cyprus_weather_safety_r1.py
+          python tools/test_cyprus_official_atom_envelope.py
+          python tools/test_cyprus_official_cap_offline.py
           python tools/test_air_cy.py
           python tools/test_weekly_forecast.py
           python tools/test_weekly_workflow_schedule.py

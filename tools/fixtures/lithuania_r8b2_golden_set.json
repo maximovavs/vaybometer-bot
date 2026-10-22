@@ -1,0 +1,314 @@
+{
+  "source": "3_real_LT_CAP_capture_2026-10-22_plus_explicit_synthetic_negative_mutations",
+  "real_sample_sha256": "b0a8bb8983bccba7916e37a48853698fdfe35bdf02f92c454158ec6fa20b1bbe",
+  "cases": [
+    {
+      "id": "B2-01",
+      "mutation": "real_capture",
+      "basis": "real",
+      "state": "STALE_UNVERIFIED",
+      "reason": "FEED_UPDATED_OLDER_THAN_30M"
+    },
+    {
+      "id": "B2-02",
+      "mutation": "fresh_synthetic_receive",
+      "basis": "synthetic",
+      "state": "CAP_STRUCTURE_VALID_UNTRUSTED_FOR_CYPRUS",
+      "reason": "LT_CAP_STRUCTURE_ONLY"
+    },
+    {
+      "id": "B2-03",
+      "mutation": "missing_cap",
+      "basis": "synthetic",
+      "state": "PARTIAL",
+      "reason": "CAP_SET_INCOMPLETE_OR_EXTRANEOUS"
+    },
+    {
+      "id": "B2-04",
+      "mutation": "extra_cap",
+      "basis": "synthetic",
+      "state": "PARTIAL",
+      "reason": "CAP_SET_INCOMPLETE_OR_EXTRANEOUS"
+    },
+    {
+      "id": "B2-05",
+      "mutation": "empty_feed",
+      "basis": "synthetic",
+      "state": "PARTIAL",
+      "reason": "EMPTY_FEED_UNVERIFIED"
+    },
+    {
+      "id": "B2-06",
+      "mutation": "wrong_source",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "UNTRUSTED_SOURCE"
+    },
+    {
+      "id": "B2-07",
+      "mutation": "wrong_country",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "WRONG_FEED_ID"
+    },
+    {
+      "id": "B2-08",
+      "mutation": "stale_feed",
+      "basis": "synthetic",
+      "state": "STALE_UNVERIFIED",
+      "reason": "FEED_UPDATED_OLDER_THAN_30M"
+    },
+    {
+      "id": "B2-09",
+      "mutation": "future_feed",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "INVALID_FEED_UPDATED"
+    },
+    {
+      "id": "B2-10",
+      "mutation": "wrong_generator",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "INVALID_FEED_GENERATOR"
+    },
+    {
+      "id": "B2-11",
+      "mutation": "bad_self",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "INVALID_FEED_SELF_LINK"
+    },
+    {
+      "id": "B2-12",
+      "mutation": "invalid_atom",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "MALFORMED_XML"
+    },
+    {
+      "id": "B2-13",
+      "mutation": "entity_atom",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "INVALID_XML_BYTES"
+    },
+    {
+      "id": "B2-14",
+      "mutation": "doctype_cap",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "INVALID_XML_BYTES"
+    },
+    {
+      "id": "B2-15",
+      "mutation": "oversize_cap",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "INVALID_XML_BYTES"
+    },
+    {
+      "id": "B2-16",
+      "mutation": "bad_cap_root",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "WRONG_XML_ROOT"
+    },
+    {
+      "id": "B2-17",
+      "mutation": "id_mismatch",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_HEADER_MISMATCH"
+    },
+    {
+      "id": "B2-18",
+      "mutation": "sender_mismatch",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "LT_SENDER_UNVERIFIED"
+    },
+    {
+      "id": "B2-19",
+      "mutation": "type_mismatch",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_HEADER_MISMATCH"
+    },
+    {
+      "id": "B2-20",
+      "mutation": "actual_cancel",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "UPDATE_CANCEL_HISTORY_UNVERIFIED"
+    },
+    {
+      "id": "B2-21",
+      "mutation": "actual_update",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "UPDATE_CANCEL_HISTORY_UNVERIFIED"
+    },
+    {
+      "id": "B2-22",
+      "mutation": "wrong_status",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_HEADER_MISMATCH"
+    },
+    {
+      "id": "B2-23",
+      "mutation": "wrong_scope",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_HEADER_MISMATCH"
+    },
+    {
+      "id": "B2-24",
+      "mutation": "wrong_sent",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_HEADER_MISMATCH"
+    },
+    {
+      "id": "B2-25",
+      "mutation": "bad_onset",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "INFO_TIME_ORDER_INVALID"
+    },
+    {
+      "id": "B2-26",
+      "mutation": "bad_expiry",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "INFO_TIME_ORDER_INVALID"
+    },
+    {
+      "id": "B2-27",
+      "mutation": "wrong_severity",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_INFO_MISMATCH_severity"
+    },
+    {
+      "id": "B2-28",
+      "mutation": "wrong_urgency",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_INFO_MISMATCH_urgency"
+    },
+    {
+      "id": "B2-29",
+      "mutation": "wrong_certainty",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_INFO_MISMATCH_certainty"
+    },
+    {
+      "id": "B2-30",
+      "mutation": "wrong_geocode",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_GEOGRAPHY_MISMATCH"
+    },
+    {
+      "id": "B2-31",
+      "mutation": "wrong_awareness",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "UNOBSERVED_AWARENESS_MAPPING"
+    },
+    {
+      "id": "B2-32",
+      "mutation": "missing_english",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "LT_LANGUAGE_SET_UNVERIFIED"
+    },
+    {
+      "id": "B2-33",
+      "mutation": "duplicate_language",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "INFO_LANGUAGE_DUPLICATE_OR_MISSING"
+    },
+    {
+      "id": "B2-34",
+      "mutation": "cap_link_cross_host",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "CAP_LINK_UNTRUSTED"
+    },
+    {
+      "id": "B2-35",
+      "mutation": "cap_link_query",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "CAP_LINK_UNTRUSTED"
+    },
+    {
+      "id": "B2-36",
+      "mutation": "wrong_atom_identifier",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_HEADER_MISMATCH"
+    },
+    {
+      "id": "B2-37",
+      "mutation": "wrong_atom_msgtype",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_HEADER_MISMATCH"
+    },
+    {
+      "id": "B2-38",
+      "mutation": "wrong_atom_geography",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "ATOM_CAP_GEOGRAPHY_MISMATCH"
+    },
+    {
+      "id": "B2-39",
+      "mutation": "wrong_capture_clock",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "CAPTURE_CLOCK_SKEW"
+    },
+    {
+      "id": "B2-40",
+      "mutation": "naive_capture_time",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "NAIVE_CAPTURE_TIME"
+    },
+    {
+      "id": "B2-41",
+      "mutation": "duplicate_cap_link",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "CAP_LINK_MISSING_OR_AMBIGUOUS"
+    },
+    {
+      "id": "B2-42",
+      "mutation": "matched_test_status",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "CAP_NOT_ACTUAL_PUBLIC"
+    },
+    {
+      "id": "B2-43",
+      "mutation": "matched_private_scope",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "CAP_NOT_ACTUAL_PUBLIC"
+    },
+    {
+      "id": "B2-44",
+      "mutation": "duplicate_identifier_distinct_links",
+      "basis": "synthetic",
+      "state": "UNKNOWN",
+      "reason": "DUPLICATE_CAP_IDENTIFIER"
+    }
+  ]
+}
