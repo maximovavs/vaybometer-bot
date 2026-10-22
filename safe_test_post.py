@@ -599,8 +599,8 @@ def _cyprus_conditions(v2_text: str) -> dict[str, float | bool | str | None]:
         "warm_t": float(warm.group(2).replace(",", ".")) if warm else None,
         "cool_t": float(cool.group(2).replace(",", ".")) if cool else None,
         "wind": _num(r"Ветер:\s*(\d+(?:[\.,]\d+)?)", wind_line),
-        "gust": _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", wind_line),
-        "uv": _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line),
+        "gust": _num(r"порывы\s+(?:до\s*)?(\d+(?:[\.,]\d+)?)", wind_line),
+        "uv": _num(r"УФ(?:-индекс)?\s*(\d+(?:[\.,]\d+)?)", uv_line),
         "aqi": _num(r"AQI\s*(\d+(?:[\.,]\d+)?)", air_line),
     }
 
@@ -717,7 +717,7 @@ def _has_cyprus_precip_risk(text: str) -> bool:
     )
 
 
-def _cyprus_score_line(v2_text: str) -> str:
+def _cyprus_score_line(v2_text: str, weather_evidence: dict | None = None) -> str:
     c = _cyprus_conditions(v2_text)
     warm_t = c.get("warm_t")
     uv = c.get("uv")
@@ -750,7 +750,14 @@ def _cyprus_score_line(v2_text: str) -> str:
             score -= 0.8; reasons.append("ветер у моря")
     elif isinstance(wind, (int, float)) and wind >= 6:
         score -= 0.5; reasons.append("ветер")
-    air_penalty = 0.8 if isinstance(aqi, (int, float)) and aqi > 80 else 0.0
+    air_line = next((line for line in str(v2_text or "").splitlines() if line.strip().startswith("🏭")), "")
+    pm25 = _num(r"PM(?:₂\.₅|2\.?5)\s*(\d+(?:[\.,]\d+)?)", air_line)
+    pm10 = _num(r"PM(?:₁₀|10)\s*(\d+(?:[\.,]\d+)?)", air_line)
+    air_penalty = 0.8 if (
+        (isinstance(aqi, (int, float)) and aqi > 80)
+        or (isinstance(pm25, (int, float)) and pm25 >= 20)
+        or (isinstance(pm10, (int, float)) and pm10 >= 50)
+    ) else 0.0
     atmospheric_penalty = visibility_air_penalty(visibility_condition, air_penalty)
     if atmospheric_penalty:
         score -= atmospheric_penalty
@@ -768,7 +775,7 @@ def _cyprus_score_line(v2_text: str) -> str:
         if _plain(line).startswith(("⚠️ По прогнозу:", "⚠️ Официальное предупреждение:",
                                     "⚠️ Шторм", "🌦", "💨", "🔎", "⚠️ 🔎"))
     ]
-    storm_signal = _has_actual_cyprus_storm_signal("\n".join(weather_lines), gust)
+    storm_signal = _has_actual_cyprus_storm_signal("\n".join(weather_lines), gust) or (isinstance(wind, (int, float)) and wind >= 13)
     if precipitation_kind == "storm" or storm_signal:
         # An active thunder/storm forecast cannot yield "отлично" on a 10-point scale.
         score = min(score - (1.0 if precipitation_kind == "storm" else 0.0), 5.4)
@@ -776,6 +783,48 @@ def _cyprus_score_line(v2_text: str) -> str:
     elif precipitation_kind:
         score -= 0.7
         reasons.append("локальные осадки")
+
+    # Production provides original source provenance; missing/old data must
+    # not silently be treated as favourable. Confirmed hazards retain the cap.
+    if weather_evidence is not None and not (precipitation_kind == "storm" or storm_signal):
+        complete = all(
+            weather_evidence.get(key) is True
+            for key in ("region_wmo_known", "uv_known", "wind_known", "gust_known", "air_known")
+        )
+        source = weather_evidence.get("weather_source")
+        age = weather_evidence.get("weather_age_sec")
+        freshness_ok = isinstance(age, (int, float)) and 0 <= age <= 1800
+        city_checks = weather_evidence.get("city_checks")
+        expected_checks = weather_evidence.get("city_expected_checks")
+        cities_complete = (
+            isinstance(expected_checks, int) and expected_checks > 0
+            and isinstance(city_checks, list) and len(city_checks) == expected_checks
+            and all(isinstance(item, dict) and item.get("complete") is True for item in city_checks)
+        )
+        if not complete or source not in ("live", "cache_fresh") or not freshness_ok or not cities_complete:
+            return "✨ VayboMeter: н/д — погодные данные неполные или устарели."
+        # Regional Open-Meteo forecast flags are not official alerts. An
+        # unchecked official-alert source cannot substantiate '10/10'.
+        # A bare True is not evidence. Source authentication must be supplied
+        # by a separately reviewed official-alert collector; none is wired yet.
+        checked_at = weather_evidence.get("official_warnings_checked_at")
+        source = weather_evidence.get("official_warnings_source")
+        verified_at = (
+            isinstance(checked_at, dt.datetime)
+            and checked_at.tzinfo is not None
+            and checked_at.utcoffset() is not None
+        )
+        if verified_at:
+            now_utc = dt.datetime.now(dt.timezone.utc)
+            age_seconds = (now_utc - checked_at).total_seconds()
+            verified_at = 0 <= age_seconds <= 1800
+        official_verified = (
+            weather_evidence.get("official_warnings_checked") is True
+            and source == "cyprus_meteorology_official_verified"
+            and verified_at
+        )
+        if not official_verified:
+            return "✨ VayboMeter: н/д — официальные предупреждения не проверены."
 
     score = max(1.0, min(10.0, score))
     label = _score_label(score)
@@ -1264,6 +1313,11 @@ def _apply_score_conclusion(v2_text: str) -> str:
         return v2_text
     score = _score_value(v2_text)
     if score is None:
+        if "✨ VayboMeter: н/д" in v2_text:
+            return _replace_conclusion(
+                v2_text,
+                "Достоверная оценка дня недоступна: проверьте прогноз и предупреждения."
+            )
         return v2_text
     if _env_on("FORMAT_V2_REASON_CONCLUSION"):
         return _replace_conclusion(v2_text, _cyprus_reason_conclusion(score, _score_reasons(v2_text), v2_text))
@@ -1885,15 +1939,15 @@ def _inject_morning_best_window(v2_text: str, mode: str) -> str:
     return _inject_after_anchor(v2_text, window, ("💨", "🌡"))
 
 
-def _inject_morning_score(v2_text: str, mode: str) -> str:
+def _inject_morning_score(v2_text: str, mode: str, weather_evidence: dict | None = None) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_VAYBOMETER_SCORE")):
         return v2_text
-    score = _cyprus_score_line(v2_text)
+    score = _cyprus_score_line(v2_text, weather_evidence=weather_evidence)
     if "🕒 Лучшее окно:" in v2_text:
         return _inject_after_anchor(v2_text, score, ("🕒 Лучшее окно:",))
     if "🌡 Ощущается:" in v2_text:
         return _inject_after_anchor(v2_text, score, ("🌡 Ощущается:",))
-    return _inject_after_anchor(v2_text, score, ("💨", "🌡"))
+    return _insert_before_anchor(v2_text, score, ("🏭", "✅", "🔎", "📌"))
 
 
 def _replace_existing_score_line(v2_text: str, new_score: str, prefixes: tuple[str, ...]) -> tuple[str, bool]:
@@ -3780,6 +3834,7 @@ async def main() -> None:
         image_requested=args.generate_image,
     )
 
+    morning_weather_evidence: dict[str, object] = {}
     with _TodayPatch(base_date):
         raw_msg = build_message(
             region_name="Кипр",
@@ -3789,6 +3844,7 @@ async def main() -> None:
             other_cities=OTHER_CITIES_ALL,
             tz=TZ_STR,
             mode=mode,
+            weather_evidence=morning_weather_evidence if mode.startswith("morn") else None,
         )
 
     legacy_result = sanitize_post_text(raw_msg)
@@ -3800,7 +3856,7 @@ async def main() -> None:
         v2_raw = build_format_v2("Кипр", mode, legacy_result.text)
         v2_raw = _inject_morning_feels(v2_raw, mode)
         v2_raw = _inject_morning_best_window(v2_raw, mode)
-        v2_raw = _inject_morning_score(v2_raw, mode)
+        v2_raw = _inject_morning_score(v2_raw, mode, morning_weather_evidence)
         v2_raw = _inject_evening_score(v2_raw, mode)
         v2_raw = _apply_format_v2_test_polish(v2_raw)
         v2_raw = _apply_confidence_polish(v2_raw)

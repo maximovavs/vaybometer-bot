@@ -2423,6 +2423,74 @@ def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
     return "гидрокостюм 6/5 мм + капюшон (боты, перчатки)"
 
 
+def _cyprus_city_forecast_evidence(city: str, wm: Dict[str, Any], tz_obj: pendulum.Timezone, target_date: Any) -> Dict[str, Any]:
+    """Fail-closed completeness for a single city's target-local-date forecast.
+
+    Only aligned daily/hourly rows count; a valid code alone is not rain evidence.
+    This is rating provenance only and never relaxes a water-sport decision.
+    """
+    daily = wm.get("daily") or {}
+    hourly = wm.get("hourly") or {}
+    day_idx = _daily_idx_for_date(wm, tz_obj, target_date)
+    tmax, tmin, raw_code = _city_daily_metrics_for_date(wm, tz_obj, target_date)
+    code = _weather_code_int(raw_code)
+    # Never rate a code positively when the city formatter cannot convey its
+    # condition or precipitation type (e.g. unhandled snow-shower codes).
+    known_codes = set(WMO_DESC) | _CY_PRECIP_WMO_CODES
+    raw_times = _pick(hourly, "time", "time_local", "timestamp", default=[])
+    aligned = _source_indices_for_date(raw_times, target_date, tz_obj)
+    wind_ms, _, _, _, gust_ms = _city_header_metrics_for_date(wm, tz_obj, target_date)
+    wind_values = _pick(hourly, "windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed", default=[])
+    gust_values = _pick(hourly, "windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[])
+    paired_indices = [i for i in aligned if _number_at(wind_values, i) is not None
+                      and _number_at(gust_values, i) is not None]
+    wind_known = bool(paired_indices and wind_ms is not None)
+    gust_known = bool(paired_indices and gust_ms is not None)
+
+    # A zero amount/probability is genuine data; absent arrays are not a dry forecast.
+    precip_values = [
+        _number_at(_pick(daily, key, default=[]), day_idx)
+        for key in ("precipitation_sum", "rain_sum", "precipitation_probability_max")
+    ]
+    for key in ("rain", "showers", "precipitation", "precipitation_probability"):
+        values = _pick(hourly, key, default=[])
+        precip_values.extend(_number_at(values, i) for i in aligned)
+    # Probability has its own unit and valid range; reject out-of-range values.
+    precip_amount = [v for v in precip_values if v is not None and v >= 0]
+    precipitation_known = bool(precip_amount)
+    for key in ("precipitation_probability_max",):
+        value = _number_at(_pick(daily, key, default=[]), day_idx)
+        if value is not None and not 0 <= value <= 100:
+            precipitation_known = False
+    for i in aligned:
+        value = _number_at(_pick(hourly, "precipitation_probability", default=[]), i)
+        if value is not None and not 0 <= value <= 100:
+            precipitation_known = False
+
+    hourly_codes = _pick(hourly, "weathercode", "weather_code", default=[])
+    thunder = code in _CY_THUNDER_WMO_CODES or any(
+        _weather_code_int(_value_at(hourly_codes, i)) in _CY_THUNDER_WMO_CODES for i in aligned
+    )
+    provenance = wm.get("_vaybometer_weather_meta") or {}
+    age = provenance.get("age_sec")
+    fresh = (provenance.get("source") in ("live", "cache_fresh")
+             and isinstance(age, (int, float)) and not isinstance(age, bool)
+             and math.isfinite(age) and 0 <= age <= 1800)
+    temp_known = (tmax is not None and tmin is not None and tmin <= tmax)
+    code_known = (code in known_codes and not isinstance(raw_code, bool)
+                  and not (isinstance(raw_code, float) and
+                           (not math.isfinite(raw_code) or not raw_code.is_integer())))
+    complete = all((temp_known, code_known, wind_known, gust_known,
+                    precipitation_known, fresh, day_idx is not None))
+    return {
+        "city": city, "date": str(target_date), "complete": bool(complete),
+        "temperature_known": bool(temp_known), "wmo_known": bool(code_known),
+        "wind_known": wind_known, "gust_known": gust_known,
+        "precipitation_known": precipitation_known, "time_aligned": bool(aligned),
+        "fresh": bool(fresh), "thunder": bool(thunder),
+    }
+
+
 def _city_detail_line(
     city: str,
     la: float,
@@ -2430,9 +2498,14 @@ def _city_detail_line(
     tz_obj: pendulum.Timezone,
     include_sst: bool,
     target_date: Any = None,
+    weather_evidence: Optional[Dict[str, Any]] = None,
 ) -> tuple[Optional[float], Optional[str]]:
     wanted_date = target_date or pendulum.today(tz_obj).add(days=1).date()
     wm = get_weather(la, lo) or {}
+    if weather_evidence is not None:
+        weather_evidence.setdefault("city_checks", []).append(
+            _cyprus_city_forecast_evidence(city, wm, tz_obj, wanted_date)
+        )
     tmax, tmin, weather_code = _city_daily_metrics_for_date(wm, tz_obj, wanted_date)
     if tmax is None:
         return None, None
@@ -2490,6 +2563,7 @@ def _morning_sea_city_lines(
     sea_pairs: Sequence[tuple[str, tuple[float, float]]],
     tz_obj: pendulum.Timezone,
     target_date: Any = None,
+    weather_evidence: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Build morning coastal rows through the canonical city formatter with SST."""
 
@@ -2503,6 +2577,7 @@ def _morning_sea_city_lines(
             tz_obj,
             include_sst=True,
             target_date=wanted_date,
+            weather_evidence=weather_evidence,
         )
         if line:
             rows.append(line)
@@ -2920,6 +2995,7 @@ def build_message(
     other_cities,
     tz: Union[pendulum.Timezone, str],
     mode: Optional[str] = None,
+    weather_evidence: Optional[Dict[str, Any]] = None,
 ) -> str:
     # Защита от перепутанных аргументов (tz ←→ mode)
     if isinstance(tz, str) and tz.strip().lower() in ("morning", "evening", "am", "pm"):
@@ -2950,9 +3026,49 @@ def build_message(
 
     wm_region = get_weather(CY_LAT, CY_LON) or {}
     storm_region = storm_flags_for_today(wm_region, tz_obj) if is_morning else storm_flags_for_tomorrow(wm_region, tz_obj)
+    if is_morning and weather_evidence is not None:
+        daily = wm_region.get("daily") or {}
+        day_idx = _daily_idx_for_date(wm_region, tz_obj, today.date())
+        day_code = _value_at(_pick(daily, "weathercode", "weather_code", default=[]), day_idx)
+        uv_value, _ = _uv_max_for_date(wm_region, tz_obj, today.date())
+        provenance = wm_region.get("_vaybometer_weather_meta") or {}
+        parsed_code = _weather_code_int(day_code)
+        if parsed_code in _CY_THUNDER_WMO_CODES and "гроз" not in str(storm_region.get("warning_text") or "").lower():
+            existing = str(storm_region.get("warning_text") or "")
+            storm_region = {
+                **storm_region,
+                "warning": True,
+                "thunder": True,
+                "warning_text": (
+                    existing + ", гроза (WMO)" if existing
+                    else "⚠️ <b>По прогнозу</b>: гроза (WMO)"
+                ),
+            }
+        weather_evidence.update({
+            "region_wmo_known": (
+                parsed_code in (set(WMO_DESC) | _CY_PRECIP_WMO_CODES)
+                and not isinstance(day_code, bool)
+                and not (isinstance(day_code, float) and
+                         (not math.isfinite(day_code) or not day_code.is_integer()))
+            ),
+            "uv_known": isinstance(uv_value, (int, float)) and math.isfinite(float(uv_value)),
+            "wind_known": isinstance(storm_region.get("max_speed_ms"), (int, float)) and math.isfinite(float(storm_region["max_speed_ms"])),
+            "gust_known": isinstance(storm_region.get("max_gust_ms"), (int, float)) and math.isfinite(float(storm_region["max_gust_ms"])),
+            "weather_source": provenance.get("source", "unknown"),
+            "weather_age_sec": provenance.get("age_sec"),
+            # No authenticated official-warning observation is wired here.
+            # Never upgrade a forecast warning to an official-source check.
+            "official_warnings_checked": False,
+            "official_warnings_source": None,
+            "official_warnings_checked_at": None,
+        })
 
     # === УТРО ===
     if is_morning:
+        if weather_evidence is not None:
+            # Coast is read for extrema and again for the final coastal rows.
+            weather_evidence["city_checks"] = []
+            weather_evidence["city_expected_checks"] = len(sea_pairs) * 2 + len(other_pairs)
         thunder_cities: List[str] = []
 
         def _collect_city_tmax_list(spairs, opairs):
@@ -2966,11 +3082,17 @@ def build_message(
                     tz_obj,
                     include_sst=False,
                     target_date=today.date(),
+                    weather_evidence=weather_evidence,
                 )
                 if isinstance(tmax, (int, float)):
                     out.append((_ru_city(city), float(tmax)))
-                    if _cyprus_city_thunder_signal(_line):
-                        thunder_cities.append(_ru_city(city))
+                latest_city = (weather_evidence or {}).get("city_checks", [])
+                has_thunder = (
+                    bool(latest_city and latest_city[-1].get("thunder"))
+                    or _cyprus_city_thunder_signal(_line)
+                )
+                if has_thunder and _ru_city(city) not in thunder_cities:
+                    thunder_cities.append(_ru_city(city))
             return out
 
         rows = _collect_city_tmax_list(sea_pairs, other_pairs)
@@ -3000,6 +3122,16 @@ def build_message(
         if storm_region.get("warning"):
             P.append(storm_region["warning_text"] + " Берегите планы и закладывайте время.")
         air_now = get_air(CY_LAT, CY_LON) or {}
+        if weather_evidence is not None:
+            aqi = air_now.get("aqi")
+            official_level = air_now.get("pollution_level") if air_now.get("src") == "cy_official" else None
+            weather_evidence["air_known"] = (
+                air_now.get("observation_status") == "fresh"
+                and (
+                    (isinstance(aqi, (int, float)) and math.isfinite(float(aqi)))
+                    or (isinstance(official_level, (int, float)) and 1 <= official_level <= 4)
+                )
+            )
         visibility_context = get_cyprus_visibility_context(
             wm_region,
             post_type="morning",
@@ -3020,7 +3152,9 @@ def build_message(
         if uv_line:
             P.append(uv_line)
 
-        sea_rows_morning = _morning_sea_city_lines(sea_pairs, tz_obj, target_date=today.date())
+        sea_rows_morning = _morning_sea_city_lines(
+            sea_pairs, tz_obj, target_date=today.date(), weather_evidence=weather_evidence,
+        )
         if sea_rows_morning:
             P.extend(sea_rows_morning)
 

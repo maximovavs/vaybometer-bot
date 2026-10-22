@@ -345,7 +345,7 @@ def cy_morning_source_rows_use_city_formatter_sst_and_preserve_evening() -> None
     calls: list[tuple[str, float, float, bool, date | None]] = []
     old_city_detail_line = post_common_module._city_detail_line
 
-    def fake_city_detail_line(city, la, lo, _tz_obj, include_sst, target_date=None):
+    def fake_city_detail_line(city, la, lo, _tz_obj, include_sst, target_date=None, weather_evidence=None):
         calls.append((city, la, lo, include_sst, target_date))
         temperatures = {"Лимассол": 26.0, "Ларнака": 28.0}
         sst = temperatures[city]
