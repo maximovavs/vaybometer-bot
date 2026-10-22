@@ -1,0 +1,74 @@
+{
+  "schema": "cyprus-r8-c3b-empty-feed-metadata-401-v1",
+  "scope": "OFFLINE TEST-ONLY. Two authentic empty Cyprus Atom captures and one authentic metadata HTTP 401 body. No Cyprus CAP, EMMA_ID, region or city mapping was obtained. Reference policies in the test are NOT production validation; only parse_cyprus_atom_envelope / inspect_lt_atom_cap_samples are merged code.",
+  "snapshots": [
+    {
+      "id": "CY_ATOM_EMPTY_1005Z",
+      "file": "cyprus_atom_empty_2026-10-22.xml",
+      "origin": "actual_capture",
+      "stage": "R8-A5",
+      "capture_tool_sha256": "c71028d2547d5dff990b8eb405bad245b8c461106a31b30811725e69bb8e0f30",
+      "capture_manifest_sha256": "dd16119aa81d11395898f213d3a19d9e3a76a3be50368d74c2da5586cb353370",
+      "url": "https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-cyprus",
+      "http_status": 200,
+      "content_type": "application/atom+xml; charset=utf-8",
+      "http_date": "Thu, 22 Oct 2026 10:08:19 GMT",
+      "received_utc": "2026-10-22T10:08:20.095715+00:00",
+      "size": 985,
+      "sha256": "f7caef8f16f6ec4ef09478344bc8efc9c3dd0e5b770c251f1ff8d37596fa56cc",
+      "feed_updated": "2026-10-22T10:05:03.855448+00:00",
+      "redirect_followed": false,
+      "credentials_sent": false,
+      "tls_peer_certificate": null
+    },
+    {
+      "id": "CY_ATOM_EMPTY_1705Z",
+      "file": "cyprus_atom_empty_2026-10-22T1705Z.xml",
+      "origin": "actual_capture",
+      "stage": "R8-C3A",
+      "capture_tool_sha256": "2552d39c9e083b2b521ec1ccf94158cdc5938d09613dfc45715087a521c72801",
+      "capture_manifest_sha256": "d1393a2e3924033d2fe953e2b2113e2e5449760e1f1c9d3c43981af4073e6100",
+      "url": "https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-cyprus",
+      "http_status": 200,
+      "content_type": "application/atom+xml; charset=utf-8",
+      "http_date": "Thu, 22 Oct 2026 17:08:18 GMT",
+      "requested_utc": "2026-10-22T17:08:18.198984+00:00",
+      "received_utc": "2026-10-22T17:08:19.253135+00:00",
+      "x_request_id": "GODpDkKS63zMtDchszzB",
+      "size": 985,
+      "sha256": "fdea7dd986a43ef388a644dcb0a706d5f957bb064390ae5d6a92da42db341602",
+      "feed_updated": "2026-10-22T17:05:03.664455+00:00",
+      "redirect_followed": false,
+      "credentials_sent": false,
+      "tls_peer_certificate": {"subject": "commonName=*.meteoalarm.org", "issuer": "countryName=GR, organizationName=Hellenic Academic and Research Institutions CA, commonName=GEANT TLS RSA 1", "notAfter": "Jan 13 10:06:56 2027 GMT"}
+    }
+  ],
+  "c3a_capture_extract": {
+    "evidence_zip_sha256": "276b412487e15ad8ff7780787fc866a599b2036f0c5355d57ecc6677096ab526",
+    "capture_mode": "sample_only_not_completeness_proof",
+    "atom_entry_count": 0,
+    "typed_cap_link_count": 0,
+    "blocked_cap_link_count": 0,
+    "discoverable_allowed_cap_links": 0,
+    "cap_sample_limit": 3,
+    "cap_set_complete": true,
+    "clean_verified": false,
+    "official_warnings_checked": false
+  },
+  "metadata_401": {
+    "file": "cyprus_metadata_401_2026-10-22.raw",
+    "origin": "actual_capture",
+    "stage": "R8-C3A",
+    "size": 24,
+    "sha256": "3be5b8e53fdc8b0a2996590589456db33504977f3d1ce9bb75016c8a707e1a71",
+    "credentials_sent": false,
+    "tls_peer_certificate": null,
+    "responses": [
+      {"endpoint": "https://api.meteoalarm.org/metadata/v1/geocodes", "requested_utc": "2026-10-22T17:08:19.255268+00:00", "http_status": 401, "content_type": "application/json; charset=utf-8", "http_date": "Thu, 22 Oct 2026 17:08:19 GMT", "x_request_id": "GODpDoN0wIlp5IkAJorj"},
+      {"endpoint": "https://api.meteoalarm.org/metadata/v1/geocode-aliases", "requested_utc": "2026-10-22T17:08:20.294687+00:00", "http_status": 401, "content_type": "application/json; charset=utf-8", "http_date": "Thu, 22 Oct 2026 17:08:21 GMT", "x_request_id": "GODpDrPi5gK30zUAUwEB"},
+      {"endpoint": "https://api.meteoalarm.org/metadata/v1/regions", "requested_utc": "2026-10-22T17:08:21.108217+00:00", "http_status": 401, "content_type": "application/json; charset=utf-8", "http_date": "Thu, 22 Oct 2026 17:08:20 GMT", "x_request_id": "GODpDtTaAfQlX94AN5Xi"}
+    ]
+  },
+  "cities": ["Limassol", "Paphos", "Larnaca", "Paralimni", "Nicosia"],
+  "prohibited_positive_states": ["CLEAN_VERIFIED", "NO_WARNINGS_CONFIRMED", "NATIONAL_COMPLETE", "CITY_CLEARED", "EMMA_ID_MAPPED", "REGION_MAPPED"]
+}
