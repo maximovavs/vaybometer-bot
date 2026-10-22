@@ -1,0 +1,208 @@
+{
+  "stage": "Cyprus R8-B1 foreign structural sampling only",
+  "country": "Lithuania",
+  "source_url": "https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-lithuania",
+  "allowed_total_calls": 4,
+  "allowed_atom_calls": 1,
+  "allowed_cap_calls": 3,
+  "observed_calls": [
+    {
+      "stage": "atom",
+      "url": "https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-lithuania",
+      "started_utc": "2026-10-22T11:36:12.158424+00:00",
+      "http_status": 200,
+      "response_headers": {
+        "cache-control": "max-age=0, private, must-revalidate",
+        "connection": "close",
+        "content-length": "5758",
+        "content-type": "application/atom+xml; charset=utf-8",
+        "cross-origin-window-policy": "deny",
+        "date": "Thu, 22 Oct 2026 11:36:12 GMT",
+        "server": "Cowboy",
+        "x-content-type-options": "nosniff",
+        "x-download-options": "noopen",
+        "x-frame-options": "SAMEORIGIN",
+        "x-permitted-cross-domain-policies": "none",
+        "x-request-id": "GODW7sAYdCEA3B8QJ_0j",
+        "x-xss-protection": "1; mode=block"
+      },
+      "finished_utc": "2026-10-22T11:36:12.700898+00:00",
+      "saved_file": "lithuania_atom.raw.xml",
+      "sha256": "725034bbadae9945284d494df44d1e8b90e2010af21f4906d7113be1c57a43ef",
+      "body_length": 5758
+    },
+    {
+      "stage": "cap_1",
+      "url": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/18c05a22-9e43-4de4-bb33-e03b42f900c8",
+      "started_utc": "2026-10-22T11:36:12.703331+00:00",
+      "http_status": 200,
+      "response_headers": {
+        "cache-control": "max-age=0, private, must-revalidate",
+        "connection": "close",
+        "content-length": "2696",
+        "content-type": "text/xml; charset=utf-8",
+        "date": "Thu, 22 Oct 2026 11:36:13 GMT",
+        "server": "Cowboy",
+        "x-request-id": "GODW7umPti6mYFAQkqdD"
+      },
+      "finished_utc": "2026-10-22T11:36:13.355272+00:00",
+      "saved_file": "lithuania_cap_1.raw.xml",
+      "sha256": "ac867d342f6c2003480c3471cdd018e41a5cd71b0261531c2ceebcae1993ca19",
+      "body_length": 2696
+    },
+    {
+      "stage": "cap_2",
+      "url": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/794dafd0-222c-4b22-9e58-135c209f62a8",
+      "started_utc": "2026-10-22T11:36:13.356182+00:00",
+      "http_status": 200,
+      "response_headers": {
+        "cache-control": "max-age=0, private, must-revalidate",
+        "connection": "close",
+        "content-length": "2562",
+        "content-type": "text/xml; charset=utf-8",
+        "date": "Thu, 22 Oct 2026 11:36:13 GMT",
+        "server": "Cowboy",
+        "x-request-id": "GODW7wJmTHAV-80QKAIj"
+      },
+      "finished_utc": "2026-10-22T11:36:13.772680+00:00",
+      "saved_file": "lithuania_cap_2.raw.xml",
+      "sha256": "79c9c3aba801512b9b64fd6489c1ddc8129835b17fd91e96685c9d4c4eb2ea8a",
+      "body_length": 2562
+    },
+    {
+      "stage": "cap_3",
+      "url": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/575d3c15-ba1a-4e3f-b458-f4f02b776a5a",
+      "started_utc": "2026-10-22T11:36:13.773512+00:00",
+      "http_status": 200,
+      "response_headers": {
+        "cache-control": "max-age=0, private, must-revalidate",
+        "connection": "close",
+        "content-length": "2423",
+        "content-type": "text/xml; charset=utf-8",
+        "date": "Thu, 22 Oct 2026 11:36:13 GMT",
+        "server": "Cowboy",
+        "x-request-id": "GODW7xw4HJ3Dcg8aymqi"
+      },
+      "finished_utc": "2026-10-22T11:36:14.206081+00:00",
+      "saved_file": "lithuania_cap_3.raw.xml",
+      "sha256": "cf2eb9921370375fdca34fa1d9973c3b0391e01baf9d4365acd3f11210da291b",
+      "body_length": 2423
+    }
+  ],
+  "clean_verified": false,
+  "official_warnings_checked": false,
+  "completeness_proven": false,
+  "cyprus_semantics_proven": false,
+  "captured_at_utc": "2026-10-22T11:36:12.157567+00:00",
+  "atom": {
+    "id": "tag:meteoalarm.org,2021-02-19:LT",
+    "updated": "2026-10-22T11:05:02.556628Z",
+    "generator": "MeteoAlarm Producer Server",
+    "entry_count": 3
+  },
+  "entries": [
+    {
+      "id": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/18c05a22-9e43-4de4-bb33-e03b42f900c8?index_info=1&index_area=0&index_geocode=0",
+      "updated": "2026-10-22T10:35:14Z",
+      "title": "Yellow Wind Warning issued for Lithuania - South Eastern Baltic, Curonian Lagoon",
+      "links": [
+        {
+          "rel": "",
+          "type": "",
+          "href": "https://meteoalarm.org?geocode=EMMA_ID:LT801"
+        },
+        {
+          "rel": "",
+          "type": "application/cap+xml",
+          "href": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/18c05a22-9e43-4de4-bb33-e03b42f900c8"
+        },
+        {
+          "rel": "related",
+          "type": "",
+          "href": "https://meteoalarm.org?region=LT"
+        }
+      ]
+    },
+    {
+      "id": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/794dafd0-222c-4b22-9e58-135c209f62a8?index_info=1&index_area=0&index_geocode=0",
+      "updated": "2026-10-22T10:35:14Z",
+      "title": "Yellow Wind Warning issued for Lithuania - South Eastern Baltic, Curonian Lagoon",
+      "links": [
+        {
+          "rel": "",
+          "type": "",
+          "href": "https://meteoalarm.org?geocode=EMMA_ID:LT801"
+        },
+        {
+          "rel": "",
+          "type": "application/cap+xml",
+          "href": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/794dafd0-222c-4b22-9e58-135c209f62a8"
+        },
+        {
+          "rel": "related",
+          "type": "",
+          "href": "https://meteoalarm.org?region=LT"
+        }
+      ]
+    },
+    {
+      "id": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/575d3c15-ba1a-4e3f-b458-f4f02b776a5a?index_info=1&index_area=0&index_geocode=0",
+      "updated": "2026-10-22T10:35:14Z",
+      "title": "Yellow Wind Warning issued for Lithuania - South Eastern Baltic, Curonian Lagoon",
+      "links": [
+        {
+          "rel": "",
+          "type": "",
+          "href": "https://meteoalarm.org?geocode=EMMA_ID:LT801"
+        },
+        {
+          "rel": "",
+          "type": "application/cap+xml",
+          "href": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/575d3c15-ba1a-4e3f-b458-f4f02b776a5a"
+        },
+        {
+          "rel": "related",
+          "type": "",
+          "href": "https://meteoalarm.org?region=LT"
+        }
+      ]
+    }
+  ],
+  "cap_candidate_urls": [
+    "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/18c05a22-9e43-4de4-bb33-e03b42f900c8",
+    "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/794dafd0-222c-4b22-9e58-135c209f62a8",
+    "https://feeds.meteoalarm.org/api/v1/warnings/feeds-lithuania/575d3c15-ba1a-4e3f-b458-f4f02b776a5a"
+  ],
+  "cap_summaries": [
+    {
+      "filename": "lithuania_cap_1.raw.xml",
+      "sender": "LHMS",
+      "identifier": "2.49.0.0.440.0.LT.261022133514__001",
+      "sent": "2026-10-22T13:35:14+03:00",
+      "status": "Actual",
+      "msgType": "Alert",
+      "references": null,
+      "info_count": 2
+    },
+    {
+      "filename": "lithuania_cap_2.raw.xml",
+      "sender": "LHMS",
+      "identifier": "2.49.0.0.440.0.LT.261022133514__002",
+      "sent": "2026-10-22T13:35:14+03:00",
+      "status": "Actual",
+      "msgType": "Alert",
+      "references": null,
+      "info_count": 2
+    },
+    {
+      "filename": "lithuania_cap_3.raw.xml",
+      "sender": "LHMS",
+      "identifier": "2.49.0.0.440.0.LT.261022133514__000",
+      "sent": "2026-10-22T13:35:14+03:00",
+      "status": "Actual",
+      "msgType": "Alert",
+      "references": null,
+      "info_count": 2
+    }
+  ]
+}

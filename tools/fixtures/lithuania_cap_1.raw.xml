@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>2.49.0.0.440.0.LT.261022133514__001</identifier>
+  <sender>LHMS</sender>
+  <sent>2026-10-22T13:35:14+03:00</sent>
+  <status>Actual</status>
+  <msgType>Alert</msgType>
+  <scope>Public</scope>
+  <incidents/>
+  <info>
+    <language>lt-LT</language>
+    <category>Met</category>
+    <event>Smarkus vėjas</event>
+    <urgency>Future</urgency>
+    <severity>Moderate</severity>
+    <certainty>Likely</certainty>
+    <effective>2026-10-22T13:35:14+03:00</effective>
+    <onset>2026-10-22T23:30:00+03:00</onset>
+    <expires>2026-10-23T17:59:59+03:00</expires>
+    <senderName>Lietuvos hidrometeologijos tarnyba prie Aplinkos ministerijos</senderName>
+    <headline>Smarkus vėjas: Pietryčių Baltija, Kuršių marios</headline>
+    <description>Naktį pietryčių, pereinančio į šiaurės vakarų vėjo gūsiai 15-18 m/s, dieną vakarų, pietvakarių vėjo gūsiai 15-17 m/s.</description>
+    <instruction>Uoste ribojama laivų krova.</instruction>
+    <parameter>
+      <valueName>awareness_type</valueName>
+      <value>1; Wind</value>
+    </parameter>
+    <parameter>
+      <valueName>awareness_level</valueName>
+      <value>2; yellow; Moderate</value>
+    </parameter>
+    <area>
+      <areaDesc>Pietryčių Baltija, Kuršių marios</areaDesc>
+      <geocode>
+        <valueName>EMMA_ID</valueName>
+        <value>LT801</value>
+      </geocode>
+    </area>
+  </info>
+  <info>
+    <language>en-GB</language>
+    <category>Met</category>
+    <event>Dangerous wind</event>
+    <urgency>Future</urgency>
+    <severity>Moderate</severity>
+    <certainty>Likely</certainty>
+    <effective>2026-10-22T13:35:14+03:00</effective>
+    <onset>2026-10-22T23:30:00+03:00</onset>
+    <expires>2026-10-23T17:59:59+03:00</expires>
+    <senderName>Lithuanian Hydrometeorological Service under the Ministry of Environment</senderName>
+    <headline>Dangerous wind alert for South Eastern Baltic, Curonian Lagoon</headline>
+    <description>At night wind southeast, turns to northwest gusts gale 15 to 18 m/s, by day west, southwest gusts near gale 15 to 17 m/s.</description>
+    <instruction>Ship loading may be restricted in the sea port.</instruction>
+    <parameter>
+      <valueName>awareness_type</valueName>
+      <value>1; Wind</value>
+    </parameter>
+    <parameter>
+      <valueName>awareness_level</valueName>
+      <value>2; yellow; Moderate</value>
+    </parameter>
+    <area>
+      <areaDesc>South Eastern Baltic, Curonian Lagoon</areaDesc>
+      <geocode>
+        <valueName>EMMA_ID</valueName>
+        <value>LT801</value>
+      </geocode>
+    </area>
+  </info>
+</alert>
