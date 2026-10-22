@@ -805,7 +805,25 @@ def _cyprus_score_line(v2_text: str, weather_evidence: dict | None = None) -> st
             return "✨ VayboMeter: н/д — погодные данные неполные или устарели."
         # Regional Open-Meteo forecast flags are not official alerts. An
         # unchecked official-alert source cannot substantiate '10/10'.
-        if weather_evidence.get("official_warnings_checked") is not True:
+        # A bare True is not evidence. Source authentication must be supplied
+        # by a separately reviewed official-alert collector; none is wired yet.
+        checked_at = weather_evidence.get("official_warnings_checked_at")
+        source = weather_evidence.get("official_warnings_source")
+        verified_at = (
+            isinstance(checked_at, dt.datetime)
+            and checked_at.tzinfo is not None
+            and checked_at.utcoffset() is not None
+        )
+        if verified_at:
+            now_utc = dt.datetime.now(dt.timezone.utc)
+            age_seconds = (now_utc - checked_at).total_seconds()
+            verified_at = 0 <= age_seconds <= 1800
+        official_verified = (
+            weather_evidence.get("official_warnings_checked") is True
+            and source == "cyprus_meteorology_official_verified"
+            and verified_at
+        )
+        if not official_verified:
             return "✨ VayboMeter: н/д — официальные предупреждения не проверены."
 
     score = max(1.0, min(10.0, score))

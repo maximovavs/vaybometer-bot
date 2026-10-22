@@ -8,6 +8,7 @@ full repository regression suite or prove weather-provider integration.
 from __future__ import annotations
 
 import ast
+import datetime as dt
 from pathlib import Path
 import re
 import unittest
@@ -41,6 +42,15 @@ def _num(pattern: str, text: str) -> Optional[float]:
     return float(m.group(1).replace(",", ".")) if m else None
 
 
+def _verified_official_evidence() -> Dict[str, Any]:
+    """Synthetic test fixture; not evidence of an actual official collector."""
+    return {
+        'official_warnings_checked': True,
+        'official_warnings_source': 'cyprus_meteorology_official_verified',
+        'official_warnings_checked_at': dt.datetime.now(dt.timezone.utc),
+    }
+
+
 class WeatherSafetyR1(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -63,6 +73,7 @@ class WeatherSafetyR1(unittest.TestCase):
             're': re,
             '_plain': _plain,
             '_num': _num,
+            'dt': dt,
             '_CY_STORM_NEGATION_RE': cls.format_ns['_STORM_NEGATION_RE'],
             '_CY_STORM_POSITIVE_RE': cls.format_ns['_STORM_POSITIVE_RE'],
             'visibility_air_penalty': lambda visibility, air: air,
@@ -104,7 +115,8 @@ class WeatherSafetyR1(unittest.TestCase):
     def test_r3_fails_closed_on_unknown_wmo(self):
         good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
                     gust_known=True, air_known=True, weather_source='live', weather_age_sec=0,
-                    official_warnings_checked=True, city_expected_checks=1, city_checks=[{'complete': True}])
+                    city_expected_checks=1, city_checks=[{'complete': True}],
+                    **_verified_official_evidence())
         bad = dict(good, region_wmo_known=False)
         self.assertIn('VayboMeter: н/д', self.score('Нет локального сигнала непогоды', bad))
         self.assertIn('10.0/10', self.score('Нет локального сигнала непогоды', good))
@@ -112,7 +124,8 @@ class WeatherSafetyR1(unittest.TestCase):
     def test_r3_fails_closed_on_stale_or_missing_observations(self):
         good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
                     gust_known=True, air_known=True, weather_source='live', weather_age_sec=0,
-                    official_warnings_checked=True, city_expected_checks=1, city_checks=[{'complete': True}])
+                    city_expected_checks=1, city_checks=[{'complete': True}],
+                    **_verified_official_evidence())
         for changes in ({'weather_source': 'cache_stale'}, {'air_known': False},
                         {'uv_known': False}, {'wind_known': False}, {'gust_known': False}):
             with self.subTest(changes=changes):
@@ -137,7 +150,8 @@ class WeatherSafetyR1(unittest.TestCase):
     def test_r4_official_warnings_unverified_never_perfect(self):
         good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
                     gust_known=True, air_known=True, weather_source='live', weather_age_sec=0,
-                    official_warnings_checked=True, city_expected_checks=1, city_checks=[{'complete': True}])
+                    city_expected_checks=1, city_checks=[{'complete': True}],
+                    **_verified_official_evidence())
         calm = 'Нет локального сигнала непогоды'
         self.assertIn('10.0/10', self.score(calm, good))
         for unchecked in (False, None, 'true', 0):
@@ -151,10 +165,45 @@ class WeatherSafetyR1(unittest.TestCase):
         del missing_flag['official_warnings_checked']
         self.assertIn('официальные предупреждения не проверены', self.score(calm, missing_flag))
 
+    def test_r7_official_warnings_require_provenance_and_fresh_timestamp(self):
+        calm = 'Нет локального сигнала непогоды'
+        verified = dict(region_wmo_known=True, uv_known=True, wind_known=True,
+                        gust_known=True, air_known=True, weather_source='live',
+                        weather_age_sec=0, city_expected_checks=1,
+                        city_checks=[{'complete': True}], **_verified_official_evidence())
+        self.assertIn('10.0/10', self.score(calm, verified))
+        offset_time = dt.datetime.now(dt.timezone(dt.timedelta(hours=3)))
+        self.assertIn('10.0/10', self.score(
+            calm, dict(verified, official_warnings_checked_at=offset_time)))
+
+        invalid = {
+            'checked_false': {'official_warnings_checked': False},
+            'checked_integer': {'official_warnings_checked': 1},
+            'missing_source': {'official_warnings_source': None},
+            'wrong_source': {'official_warnings_source': 'unverified'},
+            'source_case_changed': {'official_warnings_source': 'CYPRUS_METEOROLOGY_OFFICIAL_VERIFIED'},
+            'missing_timestamp': {'official_warnings_checked_at': None},
+            'naive_timestamp': {'official_warnings_checked_at': dt.datetime.now()},
+            'timestamp_string': {'official_warnings_checked_at': dt.datetime.now(dt.timezone.utc).isoformat()},
+            'stale_timestamp': {
+                'official_warnings_checked_at': dt.datetime.now(dt.timezone.utc)
+                - dt.timedelta(seconds=1900)},
+            'future_timestamp': {
+                'official_warnings_checked_at': dt.datetime.now(dt.timezone.utc)
+                + dt.timedelta(seconds=60)},
+        }
+        for case, changes in invalid.items():
+            with self.subTest(case=case):
+                rendered = self.score(calm, dict(verified, **changes))
+                self.assertIn('VayboMeter: н/д', rendered)
+                self.assertIn('официальные предупреждения не проверены', rendered)
+                self.assertNotIn('10.0/10', rendered)
+
     def test_r4_uncertain_weather_outweighs_official_check(self):
         good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
                     gust_known=True, air_known=True, weather_source='live', weather_age_sec=0,
-                    official_warnings_checked=True, city_expected_checks=1, city_checks=[{'complete': True}])
+                    city_expected_checks=1, city_checks=[{'complete': True}],
+                    **_verified_official_evidence())
         result = self.score('Нет локального сигнала непогоды', dict(good, air_known=False))
         self.assertIn('погодные данные неполные или устарели', result)
         self.assertNotIn('10.0/10', result)
@@ -304,7 +353,7 @@ class WeatherSafetyR6(unittest.TestCase):
     def test_r6_rating_requires_every_city_and_both_coastal_reads(self):
         good = dict(region_wmo_known=True, uv_known=True, wind_known=True,
                     gust_known=True, air_known=True, weather_source='live',
-                    weather_age_sec=0, official_warnings_checked=True)
+                    weather_age_sec=0, **_verified_official_evidence())
         dummy = dict(complete=True)
         good['city_expected_checks'] = 3
         good['city_checks'] = [dummy.copy() for _ in range(3)]
@@ -320,6 +369,60 @@ class WeatherSafetyR6(unittest.TestCase):
         e = dict(city_expected_checks=2, city_checks=[dict(complete=False)])
         self.assertIn('5.4/10', WeatherSafetyR1.score('🌦 Локально: Лимассол — гроза', e))
 
+
+    def test_r7_region_wmo_known_rejects_unknown_codes_and_bool(self):
+        """Exercise the actual region rating expression, not a copied predicate.
+
+        Parse-only inspection of production code: no weather or Telegram imports.
+        This guards against accepting every int (P1) or bool as a code (P2).
+        """
+        import math
+
+        tree = ast.parse((ROOT / 'post_common.py').read_text(encoding='utf-8'),
+                         filename='post_common.py')
+        builds = [node for node in tree.body
+                  if isinstance(node, ast.FunctionDef) and node.name == 'build_message']
+        self.assertEqual(1, len(builds), 'expected the real build_message')
+        checks = []
+        for node in ast.walk(builds[0]):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == 'update' and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == 'weather_evidence'
+                    and len(node.args) == 1 and isinstance(node.args[0], ast.Dict)):
+                continue
+            for key, value in zip(node.args[0].keys, node.args[0].values):
+                if isinstance(key, ast.Constant) and key.value == 'region_wmo_known':
+                    checks.append(value)
+        self.assertEqual(1, len(checks), 'region_wmo_known must be set exactly once')
+
+        def production_literal(name):
+            matches = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == name
+                               for target in node.targets)]
+            self.assertEqual(1, len(matches), f'missing production constant {name}')
+            return ast.literal_eval(matches[0])
+
+        descriptions = production_literal('WMO_DESC')
+        precip_codes = production_literal('_CY_PRECIP_WMO_CODES')
+        convert = _extract('post_common.py', '_weather_code_int',
+                           {'Any': Any, 'Optional': Optional})
+        expression = compile(ast.Expression(body=checks[0]), 'post_common.py', 'eval')
+
+        def accepted(day_code):
+            bindings = {'day_code': day_code, 'parsed_code': convert(day_code),
+                        'WMO_DESC': descriptions, '_CY_PRECIP_WMO_CODES': precip_codes,
+                        'math': math}
+            return eval(expression,
+                        {'__builtins__': {'set': set, 'isinstance': isinstance,
+                                          'bool': bool, 'float': float}}, bindings)
+
+        for code in (0, 1, 45, 61, 71, 95, 96, 99, 61.0, '61'):
+            with self.subTest(valid=repr(code)):
+                self.assertIs(accepted(code), True)
+        for code in (True, False, None, 73, 85, 999, -1, 61.5,
+                     float('nan'), float('inf'), 'abc'):
+            with self.subTest(invalid=repr(code)):
+                self.assertIs(accepted(code), False)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

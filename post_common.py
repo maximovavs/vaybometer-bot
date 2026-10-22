@@ -3045,13 +3045,22 @@ def build_message(
                 ),
             }
         weather_evidence.update({
-            "region_wmo_known": _weather_code_int(day_code) is not None,
+            "region_wmo_known": (
+                parsed_code in (set(WMO_DESC) | _CY_PRECIP_WMO_CODES)
+                and not isinstance(day_code, bool)
+                and not (isinstance(day_code, float) and
+                         (not math.isfinite(day_code) or not day_code.is_integer()))
+            ),
             "uv_known": isinstance(uv_value, (int, float)) and math.isfinite(float(uv_value)),
             "wind_known": isinstance(storm_region.get("max_speed_ms"), (int, float)) and math.isfinite(float(storm_region["max_speed_ms"])),
             "gust_known": isinstance(storm_region.get("max_gust_ms"), (int, float)) and math.isfinite(float(storm_region["max_gust_ms"])),
             "weather_source": provenance.get("source", "unknown"),
             "weather_age_sec": provenance.get("age_sec"),
+            # No authenticated official-warning observation is wired here.
+            # Never upgrade a forecast warning to an official-source check.
             "official_warnings_checked": False,
+            "official_warnings_source": None,
+            "official_warnings_checked_at": None,
         })
 
     # === УТРО ===
