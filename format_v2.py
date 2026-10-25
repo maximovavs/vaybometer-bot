@@ -835,61 +835,68 @@ def _critical_safecast_cy_line(lines: list[str]) -> str:
 
 
 def _morning_sea_line(lines: list[str]) -> str:
+    """Extract SST only from coastal forecast rows or explicitly labelled sea facts."""
     waters: list[float] = []
-    wave_value = None
     sea_lines: list[str] = []
     date_s = _date_from_title("\n".join(lines))
 
     for line in lines:
         s = _plain(line).replace("\u00a0", " ").strip()
-        low = s.lower()
-        if "закат" in low or "рассвет" in low or re.search(r"\b(?:aqi|pm₂|pm2|pm₁|pm10|гпа|hpa|давл|ветер|уф)\b", low, flags=re.I):
+        # City rows have the canonical 'City: max/min °C ... • 🌊 SST' shape.
+        # Atmospheric pressure / wind may be present on those same rows.
+        city_row = re.match(
+            r"^[^:\n]{2,60}:\s*[+-]?\d+(?:[.,]\d+)?\s*/\s*[+-]?\d+(?:[.,]\d+)?\s*°?\s*C\b",
+            s, flags=re.I,
+        )
+        if city_row:
+            match = re.search(
+                r"(?:^|•)\s*🌊\s*([+-]?\d+(?:[.,]\d+)?)(?=\s*(?:•|$))", s
+            )
+            if match:
+                value = float(match.group(1).replace(",", "."))
+                if _valid_cy_sea_temp(value, date_s):
+                    waters.append(value)
             continue
-        if not re.search(r"🌊|\bвода\b|\bsea\b|\bволна\b|\bwave\b", s, flags=re.I):
+
+        # Ignore greetings and decorative wave emoji followed by air temperature.
+        if not re.match(
+            r"^(?:🌊\s*)?(?:море\b|температура\s+воды\b|вода\s+в\s+море\b)",
+            s, flags=re.I,
+        ):
             continue
         sea_lines.append(s)
-        wave_only = bool(re.search(r"\b(?:волна|wave)\b", low)) and not bool(
-            re.search(r"\bвода\b|\bsea\b|температур\w*\s+воды", low, flags=re.I)
+        match = re.search(
+            r"(?:\bвода\b|\bтемпература\s+воды\b)\s*[:=]?\s*"
+            r"([+-]?\d+(?:[.,]\d+)?)\s*°?\s*C\b", s, flags=re.I,
         )
-        if "🌊" in s and not wave_only:
-            tail = s.split("🌊", 1)[1]
-            nums: list[float] = []
-            for raw_num in re.findall(r"([+-]?\d+(?:[\.,]\d+)?)", tail):
-                try:
-                    nums.append(float(raw_num.replace(",", ".")))
-                except Exception:
-                    continue
-            if nums and _valid_cy_sea_temp(nums[0], date_s):
-                waters.append(nums[0])
-            if wave_value is None and len(nums) >= 2 and 0 <= nums[1] <= 5:
-                wave_value = nums[1]
+        if not match:
+            match = re.search(
+                r"^(?:🌊\s*)?море\s*:\s*([+-]?\d+(?:[.,]\d+)?)\s*°?\s*C\b",
+                s, flags=re.I,
+            )
+        if match:
+            value = float(match.group(1).replace(",", "."))
+            if _valid_cy_sea_temp(value, date_s):
+                waters.append(value)
 
     sea_text = "\n".join(sea_lines)
-    for line in sea_lines:
-        for pattern in (
-            r"(?:\bвода\b|\bsea\b)[^\d+-]{0,12}([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?",
-            r"([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?\s*(?:\bвода\b|\bsea\b)",
-        ):
-            match = re.search(pattern, line, flags=re.I)
-            if match:
-                try:
-                    value = float(match.group(1).replace(",", "."))
-                    if _valid_cy_sea_temp(value, date_s):
-                        waters.append(value)
-                except Exception:
-                    pass
-                break
-
     wave = ""
-    if isinstance(wave_value, (int, float)):
-        wave = "спокойная" if wave_value < 0.5 else "умеренная"
-    low = sea_text.lower()
-    if not wave and re.search(r"спокойн|штиль|calm", low):
-        wave = "спокойная"
-    elif not wave and re.search(r"умерен|moderate|средн", low):
-        wave = "умеренная"
-    elif not wave and re.search(r"волн|wave|неспокой", low):
-        wave = "умеренная"
+    wave_match = re.search(r"\b(?:волна|wave)\s*[:=]?\s*(\d+(?:[.,]\d+)?)", sea_text, flags=re.I)
+    if wave_match:
+        wave_value = float(wave_match.group(1).replace(",", "."))
+        if 0 <= wave_value <= 5:
+            wave = "спокойная" if wave_value < 0.5 else "умеренная"
+    # Only evidence explicitly attached to a wave may set its state.
+    # "средняя вода", "умеренный ветер" and a bare "волна" are not wave states.
+    if not wave:
+        state_match = re.search(
+            r"\b(?:волна|волны|wave|waves)\b\s*[:=]?\s*"
+            r"(спокойн\w*|штиль|calm|умерен\w*|moderate|средн\w*|неспокойн\w*)\b",
+            sea_text, flags=re.I,
+        )
+        if state_match:
+            descriptor = state_match.group(1).lower()
+            wave = "спокойная" if re.match(r"спокойн|штиль|calm", descriptor) else "умеренная"
 
     if waters:
         if len(waters) >= 2:

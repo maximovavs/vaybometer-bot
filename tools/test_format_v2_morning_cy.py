@@ -1168,6 +1168,90 @@ def cy_morning_averages_coastal_sea_rows() -> None:
     assert "🌊 Море: вода 20°C" not in text
 
 
+def cy_r9b_natural_20261023_sst_not_from_greeting() -> None:
+    # Captured factual rows and misleading greeting from natural morning run 39922748989.
+    raw = """<b>Кипр: погода на сегодня (23.10.2026)</b>
+👋 Доброе утро! Летом вода в Средиземном море прогревается до 27 °C — купаться комфортно почти весь июнь–сентябрь 🌊 Теплее всего — Ларнака (30°), прохладнее — Тродос (21°).
+<b>Лимассол</b>: 29/19 °C • ⛅ переменная облачность • 💨 1.7 м/с (ЮЮВ) • порывы 6 • 1017 гПа → • 🌊 24
+<b>Пафос</b>: 27/19 °C • ⛅ переменная облачность • 💨 2.0 м/с (ЗЮЗ) • порывы 6 • 1018 гПа ↑ • 🌊 24
+<b>Паралимни</b>: 27/18 °C • 🌤 преимущественно ясно • 💨 3.9 м/с (ССВ) • порывы 9 • 1017 гПа → • 🌊 25
+<b>Ларнака</b>: 30/18 °C • ⛅ переменная облачность • 💨 2.8 м/с (ССВ) • порывы 8 • 1017 гПа → • 🌊 24
+"""
+    expected = "🌊 Море: средняя вода 24.2°C."
+    assert format_v2_module._morning_sea_line(raw.splitlines()) == expected
+    assert safe_module._cy_morning_sea_line_from_source(raw) == expected
+    legacy_text = sanitize_post_text(raw).text
+    result = _apply_cyprus_morning_raw_context(
+        build_morning_format_v2("Кипр", legacy_text), raw, legacy_text, "morning"
+    )
+    assert _h3_sea_line(result) == expected
+    assert "🌊 Море: вода 30°C" not in result
+
+
+def cy_r9b_decorative_waves_and_unverified_sst_fail_closed() -> None:
+    greeting_only = """<b>Кипр: погода на сегодня (23.10.2026)</b>
+👋 Море летом тёплое 🌊 Ларнака (30°); температура воздуха 30°C.
+🏭 Воздух: AQI 46 • данные на 11:00
+Лимассол: 29/19 °C • 💨 1.7 м/с • 1017 гПа →
+🌊 Волна: 0.4 м.
+"""
+    assert format_v2_module._morning_sea_line(greeting_only.splitlines()) == ""
+    assert safe_module._cy_morning_sea_line_from_source(greeting_only) == ""
+    assert _h3_sea_lines(build_morning_format_v2("Кипр", greeting_only)) == []
+    explicit = "<b>Кипр (27.06.2026)</b>\nМоре у Ларнаки: вода 28°C, волна спокойная."
+    assert safe_module._cy_morning_sea_line_from_source(explicit) == "🌊 Море: вода 28°C; волна спокойная."
+
+
+def cy_r9c2_wave_requires_explicit_marine_state() -> None:
+    title = "<b>Кипр: погода на сегодня (23.10.2026)</b>\n"
+    negatives = (
+        "🌊 Море: средняя вода 24.2°C.",
+        "🌊 Море: вода 24°C; умеренный ветер.",
+        "🌊 Море: вода 24°C; ветер спокойный.",
+        "🌊 Море: вода 24°C; средняя температура воздуха 26°C.",
+        "🌊 Море: вода 24°C; волна ожидается.",
+        "🌊 Море: вода 24°C; волна не спокойная.",
+        "Море у Ларнаки: вода 28°C, ветер умеренный.",
+        "Море у Ларнаки: вода 28°C, море спокойное.",
+    )
+    for source in negatives:
+        expected = "🌊 Море: вода " + ("28" if source.startswith("Море у Ларнаки") else
+                                      "24.2" if "24.2" in source else "24") + "°C."
+        for parser in (format_v2_module._morning_sea_line,
+                       lambda lines: safe_module._cy_morning_sea_line_from_source("\n".join(lines))):
+            output = parser((title + source).splitlines())
+            assert output == expected, (source, output, expected)
+            assert "; волна " not in output, (source, output)
+
+
+def cy_r9c2_wave_preserves_explicit_states_and_sst() -> None:
+    title = "<b>Кипр: погода на сегодня (23.10.2026)</b>\n"
+    positives = (
+        ("Море у Ларнаки: вода 28°C, волна спокойная.", "вода 28°C; волна спокойная."),
+        ("Море у Ларнаки: вода 28°C, волна умеренная.", "вода 28°C; волна умеренная."),
+        ("Море у Ларнаки: вода 28°C, волна средняя.", "вода 28°C; волна умеренная."),
+        ("🌊 Море: вода 24°C; волна 0.3 м; умеренный ветер.", "вода 24°C; волна спокойная."),
+        ("🌊 Море: вода 24°C; волна 0.7 м; штиль.", "вода 24°C; волна умеренная."),
+        ("🌊 Море: вода 24°C; wave calm.", "вода 24°C; волна спокойная."),
+        ("🌊 Море: вода 24°C; wave moderate.", "вода 24°C; волна умеренная."),
+    )
+    for source, ending in positives:
+        expected = "🌊 Море: " + ending
+        assert format_v2_module._morning_sea_line((title + source).splitlines()) == expected, source
+        assert safe_module._cy_morning_sea_line_from_source(title + source) == expected, source
+    # The production incident must stay fixed after the wave-only change.
+    natural = """<b>Кипр: погода на сегодня (23.10.2026)</b>
+👋 Доброе утро! Летом вода в Средиземном море прогревается до 27 °C 🌊 Теплее всего — Ларнака (30°).
+Лимассол: 29/19 °C • 1017 гПа → • 🌊 24
+Пафос: 27/19 °C • 1018 гПа ↑ • 🌊 24
+Паралимни: 27/18 °C • 1017 гПа → • 🌊 25
+Ларнака: 30/18 °C • 1017 гПа → • 🌊 24
+"""
+    expected = "🌊 Море: средняя вода 24.2°C."
+    assert format_v2_module._morning_sea_line(natural.splitlines()) == expected
+    assert safe_module._cy_morning_sea_line_from_source(natural) == expected
+
+
 def cy_morning_omits_sea_line_when_unavailable() -> None:
     text = build_morning_format_v2("Кипр", MORNING_NO_SEA)
     assert _h3_sea_lines(text) == []
@@ -3853,6 +3937,10 @@ def main() -> None:
         cy_morning_format_v2_current_sentinels_do_not_change_downstream,
         cy_evening_format_v2_preserves_tomorrow_city_values,
         cy_morning_averages_coastal_sea_rows,
+        cy_r9b_natural_20261023_sst_not_from_greeting,
+        cy_r9b_decorative_waves_and_unverified_sst_fail_closed,
+        cy_r9c2_wave_requires_explicit_marine_state,
+        cy_r9c2_wave_preserves_explicit_states_and_sst,
         cy_morning_omits_sea_line_when_unavailable,
         cy_morning_single_sst_does_not_invent_wave_state,
         cy_morning_rejects_non_marine_numbers_for_sea,
