@@ -1709,68 +1709,11 @@ def _valid_cy_sea_temp(value: float, date_s: str) -> bool:
 
 
 def _cy_morning_sea_line_from_source(source_text: str) -> str:
-    waters: list[float] = []
-    sea_lines: list[str] = []
-    date_s = _cy_date_from_text(source_text)
+    # Use the same source-grounded SST parser in both publication paths.
+    # A decorative 🌊 in a greeting must never become a temperature reading.
+    from format_v2 import _morning_sea_line
 
-    for raw in str(source_text or "").splitlines():
-        s = _plain(raw).replace("\u00a0", " ").strip()
-        low = s.lower()
-        if "закат" in low or "рассвет" in low or re.search(r"\b(?:aqi|pm₂|pm2|pm₁|pm10|гпа|hpa|давл|ветер|уф)\b", low, flags=re.I):
-            continue
-        if not re.search(r"🌊|\bвода\b|\bsea\b|\bволна\b|\bwave\b", s, flags=re.I):
-            continue
-        sea_lines.append(s)
-        wave_only = bool(re.search(r"\b(?:волна|wave)\b", low)) and not bool(
-            re.search(r"\bвода\b|\bsea\b|температур\w*\s+воды", low, flags=re.I)
-        )
-        if "🌊" in s and not wave_only:
-            tail = s.split("🌊", 1)[1]
-            m = re.search(r"([+-]?\d+(?:[\.,]\d+)?)", tail)
-            if m:
-                try:
-                    value = float(m.group(1).replace(",", "."))
-                    if _valid_cy_sea_temp(value, date_s):
-                        waters.append(value)
-                except Exception:
-                    pass
-        for pattern in (
-            r"(?:\bвода\b|\bsea\b)[^\d+-]{0,12}([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?",
-            r"([+-]?\d+(?:[\.,]\d+)?)\s*°?\s*C?\s*(?:\bвода\b|\bsea\b)",
-        ):
-            m = re.search(pattern, s, flags=re.I)
-            if not m:
-                continue
-            try:
-                value = float(m.group(1).replace(",", "."))
-                if _valid_cy_sea_temp(value, date_s):
-                    waters.append(value)
-            except Exception:
-                pass
-            break
-
-    if len(waters) >= 2:
-        avg = sum(waters) / len(waters)
-        return f"🌊 Море: средняя вода {_fmt_cy_temp(avg)}°C."
-    if len(waters) == 1:
-        sea_text = "\n".join(sea_lines)
-        wave = ""
-        wave_match = re.search(r"(?:волна|wave)\D{0,12}(\d+(?:[\.,]\d+)?)", sea_text, flags=re.I)
-        if wave_match:
-            try:
-                wave_value = float(wave_match.group(1).replace(",", "."))
-                if 0 <= wave_value <= 5:
-                    wave = "спокойная" if wave_value < 0.5 else "умеренная"
-            except Exception:
-                pass
-        low_sea = sea_text.lower()
-        if not wave and re.search(r"спокойн|штиль|calm", low_sea):
-            wave = "спокойная"
-        elif not wave and re.search(r"умерен|moderate|средн|неспокой", low_sea):
-            wave = "умеренная"
-        wave_part = f"; волна {wave}" if wave else ""
-        return f"🌊 Море: вода {_fmt_cy_temp(waters[0])}°C{wave_part}."
-    return ""
+    return _morning_sea_line(str(source_text or "").splitlines())
 
 def _replace_cy_morning_sea_line(v2_text: str, sea_line: str) -> str:
     if not sea_line:
