@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import json
 import mimetypes
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -264,6 +265,28 @@ def _is_retryable_model_availability_failure(exc: Exception) -> bool:
     )
 
 
+def _parse_single_json_document(content: str) -> Mapping[str, Any]:
+    """Accept only an entire JSON object, optionally in one JSON code fence.
+
+    Never extract embedded JSON from prose or concatenate separate objects. Schema,
+    semantic weather truth and all visual guards remain separate mandatory checks.
+    """
+    document = content.strip()
+    if document.startswith("```"):
+        fence = re.fullmatch(
+            r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n```",
+            document,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if fence is None:
+            raise json.JSONDecodeError("Invalid fenced JSON document", content, 0)
+        document = fence.group("body")
+    parsed = json.loads(document)
+    if not isinstance(parsed, Mapping):
+        raise RuntimeError("Gemini semantic QA returned non-object JSON")
+    return parsed
+
+
 def _gemini_structured_evaluator(
     image_path: Path,
     request: Mapping[str, Any],
@@ -333,7 +356,7 @@ def _gemini_structured_evaluator(
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("Gemini semantic QA returned empty content")
     try:
-        parsed = json.loads(content)
+        parsed = _parse_single_json_document(content)
     except json.JSONDecodeError as exc:
         exc.qa_diagnostics = _json_decode_diagnostics(content, exc)
         raise
