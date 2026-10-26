@@ -371,11 +371,12 @@ def _water_sport_lines(metrics: dict[str, Any]) -> list[str]:
     gust = metrics.get("gust_max")
     has_gust = isinstance(gust, (int, float))
 
-    sup = "SUP: короткие утренние окна в защищённых бухтах."
+    # Weekly aggregate is not a spot/time safety assessment. Stay fail-closed.
+    sup = "SUP: безопасность по спотам и времени не подтверждена; выход без локальной проверки не планировать."
     if has_gust and gust > 15:
         kite = "Кайт/винг: только опытным; порывы могут быть резкими."
     else:
-        kite = "Кайт/винг: рабочие окна только для уверенных; порывы проверять по споту."
+        kite = "Кайт/винг: подходящие окна по спотам не подтверждены; порывы и направление проверить до выхода."
     return [
         sup,
         kite,

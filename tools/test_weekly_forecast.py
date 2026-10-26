@@ -125,9 +125,10 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     assert "SUP:" in text
     assert "Кайт/винг:" in text
     assert "Серф:" in text
-    assert "SUP: короткие утренние окна в защищённых бухтах." in text
+    assert "SUP: безопасность по спотам и времени не подтверждена; выход без локальной проверки не планировать." in text
+    assert "короткие утренние окна" not in text
     assert "идеально" not in text.lower()
-    assert "Кайт/винг: рабочие окна только для уверенных; порывы проверять по споту." in text
+    assert "Кайт/винг: подходящие окна по спотам не подтверждены; порывы и направление проверить до выхода." in text
     assert "Серф: зависит от фактической волны; скорее не главный сценарий недели." in text
     assert "🏭 Воздух сейчас" in text
     assert "Текущий снимок воздуха:" in text
@@ -183,6 +184,35 @@ def test_weekly_forecast_keeps_stronger_kite_warning_for_high_gusts() -> None:
     )
     assert "Кайт/винг: только опытным; порывы могут быть резкими." in text
     assert text.splitlines()[-1] == "#Кипр #вайбнедели #погода #море #астропогода"
+
+
+def test_weekly_water_safety_requires_spot_evidence_even_when_week_complete() -> None:
+    scenarios = (
+        {},
+        {"coverage_complete": False},
+        {"coverage_complete": True, "gust_max": 8.0, "wave_max": 0.2},
+        {"coverage_complete": True, "gust_max": 25.0, "wave_max": 3.5, "rain": True},
+    )
+    for metrics in scenarios:
+        lines = weekly_module._water_sport_lines(metrics)
+        assert len(lines) == 3
+        assert "SUP: безопасность по спотам и времени не подтверждена" in lines[0]
+        assert "короткие утренние окна" not in "\n".join(lines)
+        assert "Кайт/винг: рабочие окна" not in "\n".join(lines)
+        assert "Серф: зависит от фактической волны" in lines[2]
+    assert "только опытным; порывы могут быть резкими" in weekly_module._water_sport_lines(
+        {"coverage_complete": True, "gust_max": 25.0}
+    )[1]
+
+
+def test_weekly_water_safety_incomplete_weather_does_not_restore_sup_windows() -> None:
+    text = build_weekly_forecast(
+        date(2026, 7, 1), weather_payload={}, air_data=AIR,
+        sea_temps=[], kp_tuple=KP, lunar_data=LUNAR,
+        astro_events_paths=[Path("__missing_astro_events.json")],
+    )
+    assert "SUP: безопасность по спотам и времени не подтверждена" in text
+    assert "SUP: короткие" not in text
 
 
 def test_weekly_weather_fetches_exact_island_points() -> None:
@@ -667,6 +697,8 @@ def main() -> None:
         test_weekly_forecast_structure_without_optional_config,
         test_weekly_forecast_includes_curated_astro_events,
         test_weekly_forecast_keeps_stronger_kite_warning_for_high_gusts,
+        test_weekly_water_safety_requires_spot_evidence_even_when_week_complete,
+        test_weekly_water_safety_incomplete_weather_does_not_restore_sup_windows,
         test_weekly_weather_fetches_exact_island_points,
         test_weekly_weather_preserves_island_extremes,
         test_weekly_air_fetches_exact_island_points,
