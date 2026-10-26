@@ -2363,6 +2363,86 @@ def provider_semantic_qa_sdk_timeout_on_explicit_nondefault_primary_does_not_fal
 
 
 
+def provider_semantic_qa_fenced_json_sdk_contract() -> None:
+    """Transport-only repair: entire fenced JSON allowed; safety gates unchanged."""
+    valid = json.dumps(_semantic_qa_checks(), separators=(",", ":"))
+    encodings = (
+        valid,
+        "  " + valid + "\n",
+        "```json\n" + valid + "\n```",
+        "```JSON\r\n" + valid + "\r\n```",
+        "```\n" + valid + "\n```",
+    )
+    for content in encodings:
+        fake = _FakeOpenAISDK({"gemini-3.7-flash": content})
+        with _patched_openai_sdk(fake):
+            verdict = _evaluate_default_semantic_qa_with(None)
+        assert verdict.accepted and verdict.status == "accepted", content[:32]
+        assert fake.models == ["gemini-3.7-flash"]
+        _assert_single_attempt_clients(fake)
+
+    # The parser must not transform an actual weather or scene mismatch into PASS.
+    for changes, expected in (
+        ({"weather_compatible": False}, "weather_mismatch"),
+        ({"scene_family_present_and_dominant": False}, "requested_scene_not_dominant"),
+        ({"visible_text_logo_or_watermark": True}, "visible_text_logo_watermark"),
+        ({"photographic_editorial_realism": False}, "non_photographic_or_fantasy"),
+    ):
+        content = "```json\n" + json.dumps(_semantic_qa_checks(**changes)) + "\n```"
+        fake = _FakeOpenAISDK({"gemini-3.7-flash": content})
+        with _patched_openai_sdk(fake):
+            verdict = _evaluate_default_semantic_qa_with(None)
+        assert verdict.status == "rejected" and not verdict.accepted
+        assert verdict.reason == expected
+        assert fake.models == ["gemini-3.7-flash"]
+
+    # Well-formed transport is not permission to accept an invalid checks schema.
+    schema_cases = (
+        {"checks": {"weather_compatible": True}},
+        _semantic_qa_checks(weather_compatible="true"),
+        {"checks": dict(_semantic_qa_checks()["checks"], unexpected=True)},
+    )
+    for schema in schema_cases:
+        fake = _FakeOpenAISDK({
+            "gemini-3.7-flash": "```json\n" + json.dumps(schema) + "\n```",
+        })
+        with _patched_openai_sdk(fake):
+            verdict = _evaluate_default_semantic_qa_with(None)
+        assert not verdict.accepted and verdict.status == "unavailable"
+        assert verdict.reason == "invalid_structured_response"
+        assert verdict.error_type == "SchemaError"
+        assert fake.models == ["gemini-3.7-flash"]
+
+    malformed = (
+        "```json\n{bad json}\n```",
+        "```javascript\n" + valid + "\n```",
+        "```json\n" + valid + "\n```\nAdditional explanation",
+        "Here is JSON:\n```json\n" + valid + "\n```",
+        "```json\n" + valid + "\n```\n```json\n" + valid + "\n```",
+        valid + " " + valid,
+    )
+    for content in malformed:
+        fake = _FakeOpenAISDK({"gemini-3.7-flash": content})
+        with _patched_openai_sdk(fake):
+            verdict = _evaluate_default_semantic_qa_with(None)
+        assert not verdict.accepted and verdict.status == "unavailable"
+        assert verdict.reason == "qa_unavailable" and verdict.error_type == "JSONDecodeError"
+        assert fake.models == ["gemini-3.7-flash"]  # No model retry for malformed JSON.
+
+    # Only availability errors may try the established 3.7 -> 2.5 path.
+    fake = _FakeOpenAISDK({
+        "gemini-3.7-flash": _sdk_timeout(),
+        "gemini-2.5-flash": "```json\n" + json.dumps(
+            _semantic_qa_checks(weather_compatible=False)
+        ) + "\n```",
+    })
+    with _patched_openai_sdk(fake):
+        verdict = _evaluate_default_semantic_qa_with(None)
+    assert fake.models == ["gemini-3.7-flash", "gemini-2.5-flash"]
+    assert verdict.status == "rejected" and verdict.reason == "weather_mismatch"
+    _assert_single_attempt_clients(fake)
+
+
 def provider_semantic_qa_structured_verdicts_are_deterministic() -> None:
     with tempfile.TemporaryDirectory() as tmp_name:
         image_path = Path(tmp_name) / "candidate.jpg"
@@ -2630,6 +2710,7 @@ def ai_presentation_failure_falls_through_to_existing_local_cover() -> None:
 def main() -> None:
     checks = (
         provider_semantic_qa_structured_verdicts_are_deterministic,
+        provider_semantic_qa_fenced_json_sdk_contract,
         provider_semantic_qa_json_decode_diagnostics_are_bounded_and_classified,
         provider_semantic_qa_json_decode_diagnostics_do_not_expand_fallback,
         provider_semantic_qa_503_falls_back_to_25_accept,
