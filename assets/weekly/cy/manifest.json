@@ -1,0 +1,35 @@
+{
+  "version": "cy_weekly_photos_r2_candidate",
+  "size": [
+    1080,
+    1350
+  ],
+  "approved_for_production": false,
+  "variants": {
+    "neutral": {
+      "file": "cy_weekly_neutral_UNAPPROVED.jpg",
+      "sha256": "31efaf99570577192f3be93af6bb59ab27b618bd87b5f1fad5a9f849b46b874b",
+      "approved": false,
+      "photographic_subject": "soft morning/evening light with mixed clouds, rocky cove",
+      "asset_origin": "R4 static synthetic photographic illustration; not a weather observation",
+      "visual_safety": "clean photograph, no text, graphic overlay or baked glass; generated static R4 candidate"
+    },
+    "overcast": {
+      "file": "cy_weekly_overcast_UNAPPROVED.jpg",
+      "sha256": "710896bf325172cb3fc2b55199400040c3686db3a9b8cad88d32c3b3e5615e7f",
+      "approved": false,
+      "photographic_subject": "Cyprus promenade and seawall, uniform heavy cloud cover",
+      "asset_origin": "R4 static synthetic photographic illustration; not a weather observation",
+      "visual_safety": "clean photograph, no text, graphic overlay or baked glass; generated static R4 candidate"
+    },
+    "sunny": {
+      "file": "cy_weekly_sunny_UNAPPROVED.jpg",
+      "sha256": "e5bfb7cdf5cf85802c4f8c52f839938aa81fe375e034b8bcfeb10abc0cabc1e0",
+      "approved": false,
+      "photographic_subject": "bright Cyprus coastal viewpoint, clear sky, sunlit shoreline",
+      "asset_origin": "R4 static synthetic photographic illustration; not a weather observation",
+      "visual_safety": "clean photograph, no text, graphic overlay or baked glass; generated static R4 candidate"
+    }
+  },
+  "warning": "R4 static clean photographs; no production activation; approved=false pending independent safety/visual acceptance and Python 3.11 canonical CI"
+}

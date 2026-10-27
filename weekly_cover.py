@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 RENDERER_VERSION = "cy_weekly_cover_v2_portrait"
@@ -74,7 +76,15 @@ def _wrap(draw: Any, text: str, font: Any, max_width: int, max_lines: int = 2) -
     return lines[:max_lines]
 
 
-def render_weekly_cover(text: str, *, start: date, output_path: str | Path) -> dict[str, Any]:
+def render_weekly_cover(text: str, *, start: date, output_path: str | Path,
+                        trusted_weather: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    # Strictly OFF unless set exactly to 1; never mutate the historical renderer.
+    if os.getenv("WEEKLY_PHOTO_COVER_ENABLED", "0").strip() == "1":
+        try:
+            from weekly_photo_cover_cy import render_photo_cover
+            return render_photo_cover(text, start=start, output_path=output_path, trusted_weather=trusted_weather)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Cyprus weekly photo rejected, using legacy cover: %s", exc)
     from PIL import Image, ImageDraw, PngImagePlugin
 
     week_label = _week_label(text, start)

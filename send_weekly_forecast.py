@@ -601,12 +601,33 @@ def build_weekly_forecast(
 async def _send(
     text: str, chat_id: str, start: date, *, snapshot_candidate: dict[str, Any] | None = None,
     production_snapshot_out: Path | None = None, production_chat_id: str = "",
+    trusted_weather: dict[str, Any] | None = None,
 ) -> int | None:
     from telegram import Bot, constants  # type: ignore
     token=os.getenv("TELEGRAM_TOKEN","").strip()
     if not token: raise SystemExit("TELEGRAM_TOKEN is not set")
     destination=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
     bot=Bot(token=token)
+    if os.getenv("WEEKLY_PHOTO_COVER_ENABLED", "0").strip() == "1":
+        # ON path: fully deliver authoritative warning-bearing text BEFORE photo.
+        # A failing/ambiguous send_message must not trigger any image send/retry.
+        message=await bot.send_message(chat_id=destination,text=text,parse_mode=constants.ParseMode.HTML,disable_web_page_preview=True)
+        message_id=getattr(message,"message_id",None)
+        if not (isinstance(message_id,int) and not isinstance(message_id,bool) and message_id>0):
+            # Unknown text delivery receipt: do not send a comforting image.
+            return None
+        if (snapshot_candidate is not None and production_snapshot_out is not None and str(production_chat_id).strip()
+            and str(chat_id)==str(production_chat_id)):
+            write_snapshot_atomic(production_snapshot_out,finalize_snapshot(snapshot_candidate,message_id))
+            print(f"WEEKLY_SNAPSHOT: {production_snapshot_out}")
+        try:
+            cover=render_weekly_cover(text,start=start,output_path=Path("weekly_cover.png"),trusted_weather=trusted_weather)
+            with Path(cover["path"]).open("rb") as photo:
+                await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
+        except Exception as exc:
+            # Text and its source-backed snapshot remain authoritative.
+            print(f"Weekly cover unavailable after text; no retries: {type(exc).__name__}: {exc}",file=sys.stderr)
+        return message_id
     try:
         cover=render_weekly_cover(text,start=start,output_path=Path("weekly_cover.png"))
         with Path(cover["path"]).open("rb") as photo:
@@ -639,13 +660,15 @@ async def main() -> None:
         lunar_data=lunar_data,delta_lines=delta_lines)
     print(text)
     if args.cover_out:
-        metadata=render_weekly_cover(text,start=start,output_path=args.cover_out)
+        metadata=(render_weekly_cover(text,start=start,output_path=args.cover_out,trusted_weather=weather_payload)
+                  if os.getenv("WEEKLY_PHOTO_COVER_ENABLED", "0").strip() == "1"
+                  else render_weekly_cover(text,start=start,output_path=args.cover_out))
         print("WEEKLY_COVER: "+json.dumps(metadata,ensure_ascii=False,sort_keys=True))
     if args.send:
         if not args.chat_id: raise SystemExit("--chat-id or CHANNEL_ID is required for sending")
         await _send(text,args.chat_id,start,snapshot_candidate=candidate,
             production_snapshot_out=Path(args.production_snapshot_out) if args.production_snapshot_out else None,
-            production_chat_id=os.getenv("CHANNEL_ID",""))
+            production_chat_id=os.getenv("CHANNEL_ID",""),trusted_weather=weather_payload)
 
 if __name__=="__main__":
     asyncio.run(main())
