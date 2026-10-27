@@ -3,11 +3,12 @@
 from __future__ import annotations
 import ast
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from copy import deepcopy
 from datetime import date, timedelta
 import hashlib
 import importlib
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -431,6 +432,152 @@ def test_delivery_order_and_fail_closed():
         os.environ.clear();os.environ.update(previous)
 
 
+def test_photo_delivery_observability_no_network():
+    """Real production _send AST, fake Telegram, no provider calls or publication."""
+    send, env = _isolated_send()
+    activity=[]
+    snapshots=[]
+    class FakeBot:
+        text_reply=SimpleNamespace(message_id=22)
+        photo_reply=SimpleNamespace(message_id=23)
+        fail_text=False
+        fail_photo=False
+        def __init__(self, token): assert token=='OFFLINE_PLACEHOLDER'
+        async def send_message(self, **kwargs):
+            activity.append('text')
+            if self.fail_text: raise RuntimeError('PRIVATE_TOKEN_MUST_NOT_LOG')
+            return self.text_reply
+        async def send_photo(self, **kwargs):
+            activity.append('photo')
+            if self.fail_photo: raise RuntimeError('PRIVATE_TOKEN_MUST_NOT_LOG')
+            return self.photo_reply
+
+    fake=ModuleType('telegram'); fake.Bot=FakeBot; fake.constants=env['constants']
+    mode='photo'
+    filename=Path(__file__)
+    def mock_render(*args,**kwargs):
+        activity.append('render')
+        if mode=='fail': raise RuntimeError('PRIVATE_TOKEN_MUST_NOT_LOG')
+        if mode=='missing_file': return {'path':str(filename.parent/'missing_R9A_file.png'),
+                                         'renderer_version':photo.RENDERER_VERSION,'variant':'sunny'}
+        return {'path':str(filename),
+                'renderer_version': (photo.RENDERER_VERSION if mode=='photo' else
+                                     wrapper.RENDERER_VERSION if mode=='legacy' else 'INJECTED_PRIVATE_METADATA'),
+                'variant': ('sunny' if mode=='photo' else 'INJECTED_PRIVATE_METADATA')}
+    env['render_weekly_cover']=mock_render
+    env['write_snapshot_atomic']=lambda path, data:snapshots.append('snapshot')
+
+    def run(flag='1', snapshot=False):
+        activity.clear(); snapshots.clear()
+        out=StringIO(); err=StringIO()
+        with patch.dict(os.environ, {'TELEGRAM_TOKEN':'OFFLINE_PLACEHOLDER',
+                                     'WEEKLY_PHOTO_COVER_ENABLED':flag}), \
+             patch.dict(sys.modules,{'telegram':fake}), \
+             redirect_stdout(out),redirect_stderr(err):
+            result=asyncio.run(send('PRIVATE_TEXT_MUST_NOT_LOG', '@PRIVATE_CHAT_MUST_NOT_LOG', WEEK,
+                  trusted_weather=valid_weekly_wmo(0),
+                  snapshot_candidate={'fake':True} if snapshot else None,
+                  production_snapshot_out=Path('weekly_snapshot_state/current.json') if snapshot else None,
+                  production_chat_id='@PRIVATE_CHAT_MUST_NOT_LOG'))
+        log=out.getvalue()+err.getvalue()
+        for secret in ('PRIVATE_TOKEN_MUST_NOT_LOG','PRIVATE_TEXT_MUST_NOT_LOG',
+                       'PRIVATE_CHAT_MUST_NOT_LOG','INJECTED_PRIVATE_METADATA'):
+            assert secret not in log, ('privacy leak',secret)
+        assert 'published' not in log and 'publication_proven' not in log
+        return result, log, activity[:], snapshots[:]
+
+    previous=dict(os.environ)
+    try:
+        result,log,ev,sn=run(snapshot=True)
+        assert result==22 and ev==['text','render','photo'] and sn==['snapshot']
+        assert 'event=text_receipt status=valid message_id=22' in log
+        assert 'event=render_ok renderer=photo variant=sunny' in log
+        assert 'event=photo_attempt renderer=photo' in log
+        assert 'event=photo_receipt renderer=photo status=valid message_id=23' in log
+
+        mode='legacy' # ON: source safety fallback, still send photo AFTER text
+        result,log,ev,sn=run()
+        assert result==22 and ev==['text','render','photo'] and not sn
+        assert 'event=render_ok renderer=legacy variant=none' in log
+        assert 'event=photo_attempt renderer=legacy' in log
+        assert 'event=photo_receipt renderer=legacy status=valid message_id=23' in log
+
+        mode='photo'
+        result,log,ev,_=run(flag='0')
+        assert result==22 and ev==['render','photo','text']
+        assert 'event=photo_receipt renderer=photo status=valid message_id=23' in log
+
+        mode='unknown'
+        result,log,ev,_=run()
+        assert result==22 and ev==['text','render','photo']
+        assert 'event=render_ok renderer=unknown variant=none' in log
+        assert 'INJECTED_PRIVATE_METADATA' not in log
+
+        mode='photo'
+        for bad_id in (None, False, True, 0, -1, '22', 22.5):
+            FakeBot.text_reply=SimpleNamespace(message_id=bad_id)
+            result,log,ev,sn=run(snapshot=True)
+            assert result is None and ev==['text'] and not sn,(bad_id,ev)
+            assert 'event=photo_skipped reason=text_receipt_missing' in log
+            assert 'event=photo_attempt' not in log
+        FakeBot.text_reply=SimpleNamespace(message_id=22)
+
+        FakeBot.fail_text=True
+        activity.clear(); err=StringIO(); out=StringIO()
+        with patch.dict(os.environ,{'TELEGRAM_TOKEN':'OFFLINE_PLACEHOLDER',
+                                     'WEEKLY_PHOTO_COVER_ENABLED':'1'}), \
+             patch.dict(sys.modules,{'telegram':fake}), \
+             redirect_stdout(out),redirect_stderr(err):
+            try: asyncio.run(send('PRIVATE_TEXT_MUST_NOT_LOG','@PRIVATE_CHAT_MUST_NOT_LOG',WEEK))
+            except RuntimeError: pass
+            else: raise AssertionError('ambiguous text send was swallowed')
+        assert activity==['text'] and 'event=photo_attempt' not in out.getvalue()+err.getvalue()
+        assert 'event=photo_skipped reason=text_send_exception error_type=RuntimeError' in err.getvalue()
+        FakeBot.fail_text=False
+
+        for bad_id in (None, False, True, 0, -1, '23', 23.5):
+            FakeBot.photo_reply=SimpleNamespace(message_id=bad_id)
+            result,log,ev,sn=run(snapshot=True)
+            assert result==22 and ev==['text','render','photo'] and sn==['snapshot']
+            assert 'event=photo_receipt renderer=photo status=missing' in log
+            assert 'event=photo_receipt renderer=photo status=valid' not in log
+        FakeBot.photo_reply=object() # absent attribute is not a receipt
+        result,log,ev,_=run()
+        assert result==22 and 'status=missing' in log and ev==['text','render','photo']
+        class AmbiguousResponse:
+            @property
+            def message_id(self): raise RuntimeError('PRIVATE_TOKEN_MUST_NOT_LOG')
+        FakeBot.photo_reply=AmbiguousResponse()
+        result,log,ev,_=run()
+        assert result==22 and ev==['text','render','photo']
+        assert 'event=photo_receipt renderer=photo status=missing' in log
+        assert 'event=photo_error' not in log
+        FakeBot.photo_reply=SimpleNamespace(message_id=23)
+
+        FakeBot.fail_photo=True
+        result,log,ev,sn=run(snapshot=True)
+        assert result==22 and ev==['text','render','photo'] and sn==['snapshot']
+        assert 'event=photo_attempt renderer=photo' in log
+        assert 'event=photo_error phase=send error_type=RuntimeError' in log
+        assert 'event=photo_receipt' not in log
+        FakeBot.fail_photo=False
+
+        mode='fail'
+        result,log,ev,_=run()
+        assert result==22 and ev==['text','render']
+        assert 'event=photo_error phase=render error_type=RuntimeError' in log
+        assert 'event=photo_attempt' not in log
+
+        mode='missing_file'
+        result,log,ev,_=run()
+        assert result==22 and ev==['text','render']
+        assert 'event=photo_error phase=open error_type=FileNotFoundError' in log
+        assert 'event=photo_attempt' not in log
+    finally:
+        os.environ.clear(); os.environ.update(previous)
+    return 'photo+legacy+OFF, missing/invalid text and photo receipts, render/send/open exceptions'
+
+
 def test_workflow_and_scope_static():
     workflow=(ROOT/'.github/workflows/weekly_forecast.yml').read_text()
     assert "WEEKLY_PHOTO_COVER_ENABLED: ${{ vars.WEEKLY_PHOTO_COVER_ENABLED == '1' && '1' || '0' }}" in workflow
@@ -448,10 +595,12 @@ def main():
              test_trusted_weather_provenance_golden,
              test_r5a_adversarial_weather_truth_and_full_text_warnings,
              test_fallback_and_off_switch,test_three_photo_geometry_only_with_temporary_inmemory_approval,
-             test_source_bound_real_wrapper_and_forged_text, test_delivery_order_and_fail_closed,test_workflow_and_scope_static]
+             test_source_bound_real_wrapper_and_forged_text, test_delivery_order_and_fail_closed,
+             test_photo_delivery_observability_no_network,test_workflow_and_scope_static]
     for method in methods:
         ret=method()
         print('PASS',method.__name__,ret or '')
     print('PASS Cyprus Weekly Photo R5c offline contract 9/9 groups, trusted WMO provenance + R5a adversarial cases')
+    print('PASS Cyprus Weekly Photo R9-A observability test passed (10/10 groups total)')
 
 if __name__=='__main__': main()

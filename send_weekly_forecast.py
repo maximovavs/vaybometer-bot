@@ -608,32 +608,79 @@ async def _send(
     if not token: raise SystemExit("TELEGRAM_TOKEN is not set")
     destination=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
     bot=Bot(token=token)
+
+    # Operational receipts only. No token, destination, forecast text or photo paths.
+    # A Telegram message_id is API receipt evidence, NOT proof of public visibility.
+    def observe_render(cover: dict[str, Any]) -> str:
+        # Observability itself must never block a previously renderable cover.
+        renderer, variant = "unknown", "none"
+        try:
+            from weekly_cover import RENDERER_VERSION as legacy_version
+            from weekly_photo_cover_cy import RENDERER_VERSION as photo_version
+            version=cover.get("renderer_version") if isinstance(cover,dict) else None
+            renderer=("photo" if version==photo_version else
+                      "legacy" if version==legacy_version else "unknown")
+            if renderer=="photo" and cover.get("variant") in ("neutral", "sunny", "overcast"):
+                variant=cover["variant"]
+        except Exception:
+            renderer, variant = "unknown", "none"
+        print(f"WEEKLY_COVER_OBS event=render_ok renderer={renderer} variant={variant}")
+        return renderer
+
+    def observe_photo_receipt(response: Any, renderer: str) -> None:
+        try:
+            photo_message_id=getattr(response,"message_id",None)
+        except Exception:
+            photo_message_id=None
+        if type(photo_message_id) is int and photo_message_id>0:
+            print(f"WEEKLY_COVER_OBS event=photo_receipt renderer={renderer} status=valid message_id={photo_message_id}")
+        else:
+            print(f"WEEKLY_COVER_OBS event=photo_receipt renderer={renderer} status=missing")
+
     if os.getenv("WEEKLY_PHOTO_COVER_ENABLED", "0").strip() == "1":
         # ON path: fully deliver authoritative warning-bearing text BEFORE photo.
         # A failing/ambiguous send_message must not trigger any image send/retry.
-        message=await bot.send_message(chat_id=destination,text=text,parse_mode=constants.ParseMode.HTML,disable_web_page_preview=True)
+        try:
+            message=await bot.send_message(chat_id=destination,text=text,parse_mode=constants.ParseMode.HTML,disable_web_page_preview=True)
+        except Exception as exc:
+            print(f"WEEKLY_COVER_OBS event=photo_skipped reason=text_send_exception error_type={type(exc).__name__}",file=sys.stderr)
+            raise
         message_id=getattr(message,"message_id",None)
         if not (isinstance(message_id,int) and not isinstance(message_id,bool) and message_id>0):
             # Unknown text delivery receipt: do not send a comforting image.
+            print("WEEKLY_COVER_OBS event=photo_skipped reason=text_receipt_missing")
             return None
+        print(f"WEEKLY_COVER_OBS event=text_receipt status=valid message_id={message_id}")
         if (snapshot_candidate is not None and production_snapshot_out is not None and str(production_chat_id).strip()
             and str(chat_id)==str(production_chat_id)):
             write_snapshot_atomic(production_snapshot_out,finalize_snapshot(snapshot_candidate,message_id))
             print(f"WEEKLY_SNAPSHOT: {production_snapshot_out}")
+        phase="render"
         try:
             cover=render_weekly_cover(text,start=start,output_path=Path("weekly_cover.png"),trusted_weather=trusted_weather)
+            renderer=observe_render(cover)
+            phase="open"
             with Path(cover["path"]).open("rb") as photo:
-                await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
+                phase="send"
+                print(f"WEEKLY_COVER_OBS event=photo_attempt renderer={renderer}")
+                result=await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
+                observe_photo_receipt(result,renderer)
         except Exception as exc:
-            # Text and its source-backed snapshot remain authoritative.
-            print(f"Weekly cover unavailable after text; no retries: {type(exc).__name__}: {exc}",file=sys.stderr)
+            # Avoid leaking Telegram exception text; text/snapshot remain authoritative.
+            print(f"WEEKLY_COVER_OBS event=photo_error phase={phase} error_type={type(exc).__name__}",file=sys.stderr)
         return message_id
+    phase="render"
     try:
         cover=render_weekly_cover(text,start=start,output_path=Path("weekly_cover.png"))
+        renderer=observe_render(cover)
+        phase="open"
         with Path(cover["path"]).open("rb") as photo:
-            await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
+            phase="send"
+            print(f"WEEKLY_COVER_OBS event=photo_attempt renderer={renderer}")
+            result=await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
+            observe_photo_receipt(result,renderer)
     except Exception as exc:
-        print(f"Weekly cover unavailable; text will still be sent: {type(exc).__name__}: {exc}",file=sys.stderr)
+        print(f"WEEKLY_COVER_OBS event=photo_error phase={phase} error_type={type(exc).__name__}",file=sys.stderr)
     message=await bot.send_message(chat_id=destination,text=text,parse_mode=constants.ParseMode.HTML,disable_web_page_preview=True)
     message_id=getattr(message,"message_id",None)
     if (snapshot_candidate is not None and production_snapshot_out is not None and str(production_chat_id).strip()
