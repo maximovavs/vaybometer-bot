@@ -184,8 +184,14 @@ class DerivedOnlyEm68(unittest.TestCase):
     def test_derived_case_does_not_promote_verified_source(self):
         g = reference_gate(CASE, "2026-10-28T08:00:00+02:00")
         self.assertEqual("CAP_MATCH", g["source_crosscheck"])
+        # The *stored acceptance contract* must fail mutation probes too;
+        # reference_gate currently hardcodes these values to False.
+        for field in ("official_warnings_checked", "clean_verified", "city_cleared"):
+            with self.subTest(acceptance_field=field):
+                self.assertIs(CASE["acceptance"][field], False)
         self.assertFalse(g["official_warnings_checked"])
         self.assertFalse(g["clean_verified"])
+        self.assertFalse(g["city_cleared"])
         self.assertFalse(g["complete_national_inventory"])
 
     def test_fail_closed_on_tampered_or_unknown_warning_times(self):
