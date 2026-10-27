@@ -41,6 +41,8 @@ jobs:
             image_prompt_cy_scene.py \
             safe_test_post.py \
             send_weekly_forecast.py \
+            weekly_photo_cover_cy.py \
+            tools/test_cyprus_weekly_photo_cover.py \
             visibility_context.py \
             visual_context_cy.py \
             visual_rules_cy.py \
@@ -127,6 +129,7 @@ jobs:
           python tools/test_cyprus_empty_feed_metadata_r8c3b.py
           python tools/test_air_cy.py
           python tools/test_weekly_forecast.py
+          python tools/test_cyprus_weekly_photo_cover.py
           python tools/test_weekly_workflow_schedule.py
           python -B tools/test_cyprus_culture_quiz.py
           python -B tools/test_cyprus_culture_quiz_v6_1.py

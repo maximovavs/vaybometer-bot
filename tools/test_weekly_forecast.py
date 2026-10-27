@@ -389,6 +389,21 @@ def _run_weekly_send_case(*, render_fails: bool = False, image_fails: bool = Fal
     return events
 
 
+def test_weekly_photo_r2_flag_defaults_off_and_unapproved_fails_closed() -> None:
+    from unittest.mock import patch
+    from weekly_photo_cover_cy import RENDERER_VERSION as PHOTO_VERSION
+    text = _base_text()
+    with tempfile.TemporaryDirectory() as td:
+        dest = Path(td) / "cover.png"
+        with patch.dict(os.environ, {"WEEKLY_PHOTO_COVER_ENABLED": "0"}):
+            previous = render_weekly_cover(text, start=date(2026, 7, 1), output_path=dest)
+        assert previous["renderer_version"] == WEEKLY_COVER_VERSION
+        with patch.dict(os.environ, {"WEEKLY_PHOTO_COVER_ENABLED": "1"}):
+            guarded = render_weekly_cover(text, start=date(2026, 7, 1), output_path=dest)
+        assert guarded["renderer_version"] == WEEKLY_COVER_VERSION
+        assert guarded["renderer_version"] != PHOTO_VERSION
+
+
 def test_weekly_send_orders_cover_before_text_without_network() -> None:
     assert _run_weekly_send_case() == ["cover", "photo", "text"]
 
@@ -704,6 +719,7 @@ def main() -> None:
         test_weekly_air_fetches_exact_island_points,
         test_weekly_air_preserves_worst_island_values,
         test_weekly_cover_is_high_contrast_factual_projection,
+        test_weekly_photo_r2_flag_defaults_off_and_unapproved_fails_closed,
         test_weekly_send_orders_cover_before_text_without_network,
         test_weekly_send_survives_cover_render_failure,
         test_weekly_send_survives_image_send_failure,

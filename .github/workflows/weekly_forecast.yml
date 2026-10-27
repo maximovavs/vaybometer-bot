@@ -54,6 +54,7 @@ env:
   SCHEDULE_EXPR: ${{ github.event.schedule }}
   AIRVISUAL_KEY: ${{ secrets.AIRVISUAL_KEY }}
   OWM_KEY: ${{ secrets.OWM_KEY }}
+  WEEKLY_PHOTO_COVER_ENABLED: ${{ vars.WEEKLY_PHOTO_COVER_ENABLED == '1' && '1' || '0' }}
   TZ: Asia/Nicosia
   VAYBOMETER_CACHE_DIR: ".cache"
 
