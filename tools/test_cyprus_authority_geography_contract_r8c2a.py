@@ -285,6 +285,10 @@ if __name__ == "__main__":
     for p in network_patches:
         p.start()
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(CyprusR8C2AGoldenSet)
+    # R8-E4A: include derived-only Golden Case in the already scheduled offline
+    # PR checks without changing workflows or any production modules.
+    from test_cyprus_r8e4a_emma68_derived import DerivedOnlyEm68
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(DerivedOnlyEm68))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if not result.wasSuccessful():
         raise SystemExit(1)
