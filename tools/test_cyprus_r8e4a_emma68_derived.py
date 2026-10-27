@@ -193,6 +193,16 @@ class DerivedOnlyEm68(unittest.TestCase):
         self.assertFalse(g["clean_verified"])
         self.assertFalse(g["city_cleared"])
         self.assertFalse(g["complete_national_inventory"])
+        # These stored derived-only claims must not silently upgrade to evidence.
+        a, w = CASE["acceptance"], CASE["warning"]
+        for key in ("full_national_inventory_verified", "empty_feed_can_erase_known_alert",
+                    "unresolved_cancel_can_confirm_clean", "positive_water_guidance_without_spot_evidence"):
+            self.assertIs(a[key], False, key)
+        self.assertEqual("NO_POST", a["unknown_or_missing_warning_draft"])
+        self.assertEqual("historical document concordance only", a["stored_triple_meaning"])
+        self.assertEqual("Cyprus", w["geographic_scope"])
+        self.assertEqual("western_half_first_then_other_areas_after_midday", w["text_geography_scope"])
+        self.assertIs(w["later_update_or_cancel_observed"], False)
 
     def test_fail_closed_on_tampered_or_unknown_warning_times(self):
         bad = copy.deepcopy(CASE)
