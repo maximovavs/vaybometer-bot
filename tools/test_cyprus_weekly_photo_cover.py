@@ -128,10 +128,10 @@ def expect_reject(text, *, term):
 
 def test_provenance_and_approval_fail_closed():
     m=json.loads(photo.MANIFEST.read_text('utf-8'))
-    assert m['approved_for_production'] is False
+    assert m['approved_for_production'] is True
     assert m['size']==[1080,1350]
-    assert len(m['variants']) == 3
-    assert all(x['approved'] is False for x in m['variants'].values())
+    assert set(m['variants']) == {'neutral', 'overcast', 'sunny'}
+    assert all(x['approved'] is True for x in m['variants'].values())
     from PIL import Image
     for name,desc in m['variants'].items():
         image=photo.ASSET_ROOT/desc['file']
@@ -139,12 +139,38 @@ def test_provenance_and_approval_fail_closed():
         with Image.open(image) as j:
             assert j.size==photo.SIZE and j.format=='JPEG'
             assert j.getexif().get(306) is None # no embedded dates
-    try:
-        photo.render_photo_cover(text_fixture(),start=WEEK,output_path=ROOT/'__should_not_exist__.png')
-    except ValueError as exc:
-        assert 'approval' in str(exc)
-    else:
-        raise AssertionError('UNAPPROVED production candidate rendered')
+
+    # Approval is a per-asset authorization gate, not merely a label.
+    # Reject both revoked and missing approval even with complete, safe WMO.
+    cases = (
+        ('global', 'neutral', 1, text_fixture()),
+        ('neutral', 'neutral', 1, text_fixture()),
+        ('sunny', 'sunny', 0, text_fixture(weather='Температура держится в диапазоне 20–26°C; ясно.')),
+        ('overcast', 'overcast', 3, text_fixture(weather='Температура держится в диапазоне 20–26°C; пасмурно.')),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        candidate_manifest = Path(td) / 'manifest.json'
+        for approval_field, variant, wmo_code, source in cases:
+            for revoked_value in (False, None):
+                revoked = deepcopy(m)
+                if approval_field == 'global':
+                    if revoked_value is None: revoked.pop('approved_for_production')
+                    else: revoked['approved_for_production'] = revoked_value
+                else:
+                    if revoked_value is None: revoked['variants'][variant].pop('approved')
+                    else: revoked['variants'][variant]['approved'] = revoked_value
+                candidate_manifest.write_text(json.dumps(revoked), encoding='utf-8')
+                output = Path(td) / f'blocked_{approval_field}_{revoked_value}.png'
+                with patch.object(photo, 'MANIFEST', candidate_manifest):
+                    try:
+                        photo.render_photo_cover(source, start=WEEK, output_path=output,
+                                                trusted_weather=valid_weekly_wmo(wmo_code))
+                    except ValueError as exc:
+                        assert ('approval' in str(exc) if approval_field == 'global'
+                                else 'unapproved' in str(exc)), str(exc)
+                    else:
+                        raise AssertionError(f'Unapproved {approval_field} scene rendered')
+                assert not output.exists(), 'Unapproved image was written to disk'
 
 
 def test_golden_warning_matrix():
