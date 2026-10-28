@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC TEST INPUT. NOT A REAL CAP OR AN AUTHENTIC METEOALARM RESPONSE. -->
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:cap="urn:oasis:names:tc:emergency:cap:1.2">
+  <id>tag:meteoalarm.org,2021-02-19:CY</id>
+  <title>CY TEST-ONLY fixture</title>
+  <updated>2026-10-27T17:05:16Z</updated>
+  <generator>MeteoAlarm Producer Server</generator>
+  <author><name>meteoalarm.org</name><uri>https://meteoalarm.org</uri></author>
+  <link rel="self" type="application/atom+xml" href="https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-cyprus" />
+  <entry>
+    <id>urn:synthetic:cyprus:test-only:warning-68</id>
+    <title>SYNTHETIC EMMA68 structure only</title>
+    <cap:identifier>SYNTHETIC-CY-68-DO-NOT-PUBLISH</cap:identifier>
+    <cap:status>Actual</cap:status><cap:message_type>Alert</cap:message_type>
+    <cap:severity>Moderate</cap:severity>
+    <link type="application/cap+xml" href="https://example.invalid/test-only-cap-68" />
+  </entry>
+</feed>

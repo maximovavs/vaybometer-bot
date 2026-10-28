@@ -1,0 +1,60 @@
+{
+  "schema": "cyprus-r8-e4a-derived-only-golden-v1",
+  "case_id": "CY-EMMA-68-2026-10-27",
+  "purpose": "OFFLINE TEST-ONLY. Not an online source, not source authentication, not a source-of-truth CAP inventory.",
+  "provenance": {
+    "source_capture": "R8-E2 one-time capture, independently cross-checked in R8-E3",
+    "capture_utc": "2026-10-27T17:09:10Z",
+    "raw_included": false,
+    "atom": {
+      "url": "https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-cyprus",
+      "sha256": "5e9b06f53cc066f357726e979a356b1c527fb3140bbc46cca69063067db340ad",
+      "entries_observed": 1
+    },
+    "cap": {
+      "url": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-cyprus/ffb0ff82-5a6d-4c33-9e8c-2aefb5e43cf6",
+      "sha256": "fb9bda2794e5e9509888030ab6023316ebb7d94c121964c98289972635014fcf",
+      "identifier": "2.49.0.0.196.0.CY.261027154600.thunder.000",
+      "cap_signature_observed": false,
+      "sender_independently_authenticated": false
+    },
+    "national_html": {
+      "url": "https://dom.org.cy/WARNING/EMMA_Thunderstorm_2026-10-27T1546.html",
+      "sha256": "95e4c139df73e0ac2ced46e0c8d9caf14da3d2395bc032ad378902a5ba79d146"
+    }
+  },
+  "warning": {
+    "dom_warning_number": 68,
+    "hazard": "isolated_heavy_thunderstorms",
+    "color": "yellow",
+    "severity": "Moderate",
+    "awareness_type": "3; Thunderstorm",
+    "awareness_level": "2; yellow; Moderate",
+    "issued_local": "2026-10-27T15:46:00+02:00",
+    "starts_local": "2026-10-28T02:00:00+02:00",
+    "cap_expires_local": "2026-10-28T17:59:59+02:00",
+    "dom_valid_until_exclusive_local": "2026-10-28T18:00:00+02:00",
+    "rate_mm_per_hour": [35, 55],
+    "hail_possible": true,
+    "gusts_beaufort": [7, 8],
+    "geographic_scope": "Cyprus",
+    "cap_emma_id": "CY001",
+    "text_geography_scope": "western_half_first_then_other_areas_after_midday",
+    "city_mapping_state": "UNKNOWN_EMMA_CITY_MAPPING",
+    "message_type_observed": "Alert",
+    "status_observed": "Actual",
+    "later_update_or_cancel_observed": false
+  },
+  "acceptance": {
+    "stored_triple_result": "CAP_MATCH",
+    "stored_triple_meaning": "historical document concordance only",
+    "full_national_inventory_verified": false,
+    "official_warnings_checked": false,
+    "clean_verified": false,
+    "city_cleared": false,
+    "positive_water_guidance_without_spot_evidence": false,
+    "empty_feed_can_erase_known_alert": false,
+    "unresolved_cancel_can_confirm_clean": false,
+    "unknown_or_missing_warning_draft": "NO_POST"
+  }
+}

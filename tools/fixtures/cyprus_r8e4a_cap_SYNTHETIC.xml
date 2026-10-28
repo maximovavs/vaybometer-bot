@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC TEST INPUT. NO TEXT COPIED FROM REAL WARNINGS. -->
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>SYNTHETIC-CY-68-DO-NOT-PUBLISH</identifier>
+  <sender>synthetic-test@example.invalid</sender>
+  <sent>2026-10-27T15:46:00+02:00</sent>
+  <status>Actual</status><msgType>Alert</msgType><scope>Public</scope>
+  <info>
+    <language>en-GB</language><category>Met</category><event>TEST ONLY thunderstorm</event>
+    <urgency>Future</urgency><severity>Moderate</severity><certainty>Likely</certainty>
+    <onset>2026-10-28T02:00:00+02:00</onset>
+    <expires>2026-10-28T17:59:59+02:00</expires>
+    <description>SYNTHETIC-ONLY short placeholder; not an official description.</description>
+    <area><areaDesc>Cyprus</areaDesc><geocode><valueName>EMMA_ID</valueName><value>CY001</value></geocode></area>
+  </info>
+</alert>
