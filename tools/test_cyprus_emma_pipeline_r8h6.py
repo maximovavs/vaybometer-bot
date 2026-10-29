@@ -3,8 +3,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
+import runpy
+import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+
+# The real FORMAT_V2 builder, sanitizer and splitter live in the repository root.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 
 from cyprus_emma_preview_r8h5 import OfflinePreview, preview_warning_capture
 from cyprus_emma_pipeline_r8h6 import (
@@ -132,21 +141,100 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(BASE, apply_emma_preview_offline(BASE,p,offline_preview=True,sanitizer=identity_sanitize))
 
     def test_real_sanitizer_when_available(self):
-        try:
-            from post_safety import sanitize_post_text, split_telegram_text
-        except ImportError:
-            self.skipTest('full checkout / actual post_safety not present')
+        from post_safety import sanitize_post_text, split_telegram_text
         p=warning()
         original=sanitize_post_text(BASE).text
         out=apply_emma_preview_offline(original,p,offline_preview=True,sanitizer=sanitize_post_text)
-        # When sanitizer is unable to preserve exact text, it must refuse to inject.
-        if out != original:
-            self.assertEqual(out.count('По данным MeteoAlarm'),1)
-            self.assertIn('SUP / кайт / сёрф:',out)
-            chunks=split_telegram_text(out)
-            self.assertTrue(chunks)
-            self.assertTrue(any('По данным MeteoAlarm' in ch for ch in chunks))
+        self.assertNotEqual(original,out,'real sanitizer must keep a valid offline preview')
+        self.assertEqual(out.count('По данным MeteoAlarm'),1)
+        self.assertIn('SUP / кайт / сёрф:',out)
+        chunks=split_telegram_text(out)
+        self.assertEqual(1,sum(ch.count('По данным MeteoAlarm') for ch in chunks))
         self.assertEqual('NO_POST', p.publication_action)
+
+
+def _real_format_v2_cases():
+    """Evening/morning sources from the existing FORMAT_V2 regression suite."""
+    fx = runpy.run_path(str(ROOT / 'tools' / 'test_format_v2_cy.py'), run_name='r8h8_fixtures')
+    return [(name, 'morning' if name.startswith('MORNING') else 'evening', value)
+            for name, value in sorted(fx.items())
+            if name.isupper() and isinstance(value, str) and len(value) > 200
+            and ('MORNING' in name or 'EVENING' in name)]
+
+
+class RealFormatV2PipelineTests(unittest.TestCase):
+    """Real FORMAT_V2 -> sanitizer -> seam -> hashtags -> Telegram split."""
+
+    @classmethod
+    def setUpClass(cls):
+        # Some morning fixtures have no wind line, so FORMAT_V2 would ask
+        # weather.get_weather(); keep the cases offline and deterministic.
+        import weather
+        weather_stub = patch.object(weather, 'get_weather', return_value={})
+        weather_stub.start()
+        cls.addClassCleanup(weather_stub.stop)
+        from format_v2 import build_format_v2
+        from post_safety import sanitize_post_text, split_telegram_text, _SAFE_CHUNK_LIMIT
+        from safe_test_post import finalize_hashtags_at_end, _CY_CANONICAL_DAILY_HASHTAGS
+        cls.build, cls.sanitize, cls.split = map(staticmethod, (
+            build_format_v2, sanitize_post_text, split_telegram_text))
+        cls.limit = _SAFE_CHUNK_LIMIT
+        cls.finalize = staticmethod(lambda text: finalize_hashtags_at_end(
+            text, canonical_hashtags=_CY_CANONICAL_DAILY_HASHTAGS))
+        cls.cases = _real_format_v2_cases()
+        cls.preview = warning()
+
+    def publish_path(self, base):
+        out = apply_emma_preview_offline(base, self.preview, offline_preview=True,
+                                         sanitizer=self.sanitize)
+        return out, self.split(self.finalize(out))
+
+    def assert_lossless(self, base, out, chunks):
+        self.assertNotEqual(base, out, 'valid offline preview was not inserted')
+        self.assertEqual(1, out.count(self.preview.text))
+        self.assertEqual(1, sum(ch.count('По данным MeteoAlarm') for ch in chunks))
+        base_lines = [l for l in base.splitlines() if l.strip()]
+        out_lines = [l for l in out.splitlines() if l.strip()]
+        added = [l for l in self.preview.text.splitlines() if l.strip()]
+        # Exactly one contiguous preview block added; every original line kept once, in order.
+        at = out_lines.index(added[0])
+        self.assertEqual(added, out_lines[at:at + len(added)])
+        self.assertEqual(base_lines, out_lines[:at] + out_lines[at + len(added):])
+        joined = [l.strip() for ch in chunks for l in ch.splitlines() if l.strip()]
+        for line in base_lines:
+            if not line.strip().startswith('#'):
+                self.assertEqual(base_lines.count(line), joined.count(line.strip()), line)
+        for ch in chunks:
+            self.assertLessEqual(len(ch), self.limit)
+
+    def test_all_real_fixtures_require_insertion_without_loss(self):
+        self.assertGreaterEqual(len(self.cases), 20)
+        for name, mode, source in self.cases:
+            with self.subTest(case=name):
+                base = self.sanitize(self.build('Кипр', mode, source)).text
+                # Production default stays an exact no-op.
+                self.assertEqual(base, apply_emma_preview_offline(base))
+                out, chunks = self.publish_path(base)
+                self.assert_lossless(base, out, chunks)
+                self.assertEqual('NO_POST', self.preview.publication_action)
+                self.assertFalse(any((self.preview.official_warnings_checked, self.preview.clean_verified,
+                                      self.preview.city_cleared, self.preview.positive_water_guidance_allowed,
+                                      self.preview.national_inventory_complete)))
+
+    def test_deterministic_multi_chunk_telegram_split(self):
+        name, mode, source = next(c for c in self.cases if c[0] == 'NORMAL_EVENING')
+        lines = self.sanitize(self.build('Кипр', mode, source)).text.split('\n')
+        tags = next(i for i, l in enumerate(lines) if l.strip().startswith('#'))
+        filler = [f'Справка {i:02d}: нейтральная тестовая строка для детерминированного разбиения поста.'
+                  for i in range(80)]
+        paragraphs = ['\n'.join(filler[i:i + 5]) + '\n' for i in range(0, 80, 5)]
+        base = self.sanitize('\n'.join(lines[:tags] + paragraphs + lines[tags:])).text
+        self.assertGreater(len(base), self.limit)
+        out, chunks = self.publish_path(base)
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assert_lossless(base, out, chunks)
+        self.assertEqual(1, sum(1 for ch in chunks if self.preview.text in ch),
+                         'preview must stay whole inside one chunk')
 
 
 if __name__ == '__main__':

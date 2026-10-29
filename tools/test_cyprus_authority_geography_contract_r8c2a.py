@@ -295,6 +295,12 @@ if __name__ == "__main__":
     from test_cyprus_cap_r8g1_mutations import NegativeMutations
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(ContractTests))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(NegativeMutations))
+    # R8-H8: run the offline EMMA preview (H5) and publisher-seam (H6) suites,
+    # including real FORMAT_V2/sanitizer/split cases, under the same network block.
+    from test_cyprus_emma_preview_r8h5 import PreviewTests
+    from test_cyprus_emma_pipeline_r8h6 import PipelineTests, RealFormatV2PipelineTests
+    for case in (PreviewTests, PipelineTests, RealFormatV2PipelineTests):
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if not result.wasSuccessful():
         raise SystemExit(1)
