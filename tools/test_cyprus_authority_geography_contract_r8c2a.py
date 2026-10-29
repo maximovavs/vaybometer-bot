@@ -289,6 +289,12 @@ if __name__ == "__main__":
     # PR checks without changing workflows or any production modules.
     from test_cyprus_r8e4a_emma68_derived import DerivedOnlyEm68
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(DerivedOnlyEm68))
+    # R8-G4: run the fail-closed CAP contract and its negative code mutations
+    # through the existing R8-C2A CI entrypoint (workflow remains unchanged).
+    from test_cyprus_cap_r8g1_contract import ContractTests
+    from test_cyprus_cap_r8g1_mutations import NegativeMutations
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(ContractTests))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(NegativeMutations))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if not result.wasSuccessful():
         raise SystemExit(1)
