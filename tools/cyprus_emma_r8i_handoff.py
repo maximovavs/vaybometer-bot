@@ -24,12 +24,12 @@ from xml.etree import ElementTree as ET
 from typing import Any, Callable, Mapping
 
 try:
-    from .cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM,
+    from .cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM, CAP,
                                             CY_CAP_PATH, MAX_BYTES, _xml, _exact_https_url)
     from .cyprus_emma_pipeline_r8h6 import (apply_emma_preview_offline,
                                             guarded_preview_warning_capture)
 except ImportError:
-    from cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM,
+    from cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM, CAP,
                                            CY_CAP_PATH, MAX_BYTES, _xml, _exact_https_url)
     from cyprus_emma_pipeline_r8h6 import (apply_emma_preview_offline,
                                           guarded_preview_warning_capture)
@@ -282,3 +282,157 @@ def inspect_registered_cyprus_offline(*, final_sanitized_text: str,
             OverflowError, OSError, TimeoutError, HTTPException):
         return WarningHandoff(final_sanitized_text,
                               reason='SOURCE_CAPTURE_REJECTED')
+
+
+# R8-J: bounded publisher integration of source-bound MeteoAlarm-distributed alerts.
+# It is never called when the feature flag in safe_test_post.py is OFF.
+from datetime import timedelta
+from xml.etree import ElementTree as ET
+import re
+
+
+@dataclass(frozen=True)
+class PublisherWarningDecision:
+    publisher_text: str
+    warning_attached: bool = False
+    block_publication: bool = False
+    reason: str = 'DISABLED'
+    expires_utc: datetime | None = None
+
+
+_MARINE_ACTIVITY = re.compile(r'\bSUP\b|\bkite\b|\bsurf\b|кайт|с[её]рф|сап|виндс[её]рф', re.I)
+_MARINE_NO_GO = re.compile(r'не\s+(?:рекоменд|подход|подтвержден)|опасн|запрещ|\bSTOP\b|\bNO_GO\b|н/д|🚫|⛔|❌', re.I)
+_MARINE_GO = re.compile(r'✅|🟢|\bGO\b|\bможно\b|\bподходит\b|\bотличн|\bхорош|\bидеальн', re.I)
+
+
+def _marine_contradiction(text: str) -> bool:
+    """Never append a weather hazard beside a positive/ambiguous marine recommendation.
+
+    This is deliberately narrower than assessing the coast: no EMMA-to-spot
+    mapping is known, so it cannot establish that any activity is safe.
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if not _MARINE_ACTIVITY.search(line):
+            continue
+        if not _MARINE_NO_GO.search(line) or _MARINE_GO.search(line):
+            return True
+        # A positive recommendation may be placed on the following line
+        # beneath an activity heading. Unrelated section headings terminate it.
+        for following in lines[i + 1:i + 3]:
+            if not following.strip() or following.lstrip().startswith(('✨', '#', '⚠️')):
+                break
+            if _MARINE_GO.search(following):
+                return True
+    return False
+
+
+def prepare_registered_emma_warning_for_publisher(*,
+        final_sanitized_text: str, enabled: bool, at_utc: datetime,
+        forecast_date: date, sanitizer: Callable[[str], object]) -> PublisherWarningDecision:
+    """Build warning-bearing *existing weather post*, not an independent CAP post.
+
+    The only acquisition route uses the built-in TLS/hostname-verified HTTPS
+    fetcher, exact registered Cyprus URLs and all R8-G1/H5/H6 guards.
+    No injectable transport; offline tests patch the internal HTTPS function.
+    Never upgrade the older G1 UNKNOWN/NO_POST fields, never assert an all-clear.
+    """
+    if not isinstance(final_sanitized_text, str):
+        raise TypeError('finalized text must be str')
+    original = PublisherWarningDecision(final_sanitized_text)
+    if not enabled:
+        return original
+    # Feed uncertainty must never coexist with new positive SUP/kite/surf advice.
+    # This guard is only in the future opt-in path, not existing production.
+    fallback = replace(original,
+        block_publication=_marine_contradiction(final_sanitized_text))
+    try:
+        if not isinstance(at_utc, datetime) or at_utc.utcoffset() is None:
+            return replace(fallback, reason='UNKNOWN_CLOCK')
+        atom, caps, source = acquire_registered_cyprus_pair(at_utc=at_utc)
+        inspected = inspect_offline_capture(
+            final_sanitized_text=final_sanitized_text, atom=atom,
+            cap_by_url=caps, source=source, at_utc=at_utc,
+            forecast_date=forecast_date, sanitizer=sanitizer,
+            attribute_translation=True)
+        if (inspected.state != 'UNKNOWN' or inspected.publication_action != 'NO_POST'
+                or any((inspected.official_warnings_checked,
+                        inspected.clean_verified, inspected.city_cleared,
+                        inspected.positive_water_guidance_allowed,
+                        inspected.national_inventory_complete))
+                or inspected.reason != 'CAP_SENDER_AND_SOURCE_UNVERIFIED'
+                or inspected.publisher_text != final_sanitized_text
+                or inspected.offline_candidate == ''
+                or inspected.offline_candidate.count('Данные: MeteoAlarm, CC BY 4.0') != 1
+                or inspected.offline_candidate.count('Источник: '+FEED_URL) != 1):
+            # Missing/incomplete/unknown source never creates a positive claim.
+            return replace(fallback, reason='UNKNOWN_OR_UNSUPPORTED_CAP')
+        # Do not pretend that an unresolved EMMA_ID authorizes a local marine GO.
+        if _marine_contradiction(final_sanitized_text):
+            return replace(original, block_publication=True,
+                           reason='ACTIVE_WARNING_CONFLICTS_WITH_MARINE_GUIDANCE')
+        # The warning may expire while an image is generated; caller must check
+        # expires_utc again immediately before Telegram delivery.
+        expiries = []
+        for xml in caps.values():
+            root = ET.fromstring(xml)
+            infos = root.findall(f'{{{CAP}}}info')
+            if len(infos) != 1:
+                return replace(original, block_publication=True,
+                               reason='CAP_INFO_AMBIGUOUS')
+            expires_raw = infos[0].findtext(f'{{{CAP}}}expires')
+            expires = datetime.fromisoformat(expires_raw.replace('Z', '+00:00'))
+            if expires.utcoffset() is None:
+                raise ValueError('naive CAP expiry')
+            expiries.append(expires.astimezone(timezone.utc))
+        end = min(expiries)
+        if end <= at_utc.astimezone(timezone.utc) + timedelta(minutes=15):
+            return replace(original, block_publication=True,
+                           reason='CAP_NEAR_EXPIRY')
+        return PublisherWarningDecision(inspected.offline_candidate,
+            warning_attached=True, reason='METEOALARM_DISTRIBUTION_VERIFIED_WARNING',
+            expires_utc=end)
+    except (CaptureRejected, ET.ParseError, TypeError, ValueError,
+            AttributeError, KeyError, OverflowError, OSError,
+            TimeoutError, HTTPException):
+        return replace(fallback, reason='UNKNOWN_CAPTURE_FAILED')
+
+
+
+def warning_overlay_survives_telegram_split(text: str, chunks: list[str]) -> bool:
+    """The entire MeteoAlarm block, source and attribution must share one chunk."""
+    marker = '⚠️ <b>По данным MeteoAlarm</b>:'
+    total = text.count(marker)
+    if not (1 <= total <= 8) or not chunks:
+        return False
+    sources = 'Источник: ' + FEED_URL
+    credit = 'Данные: MeteoAlarm, CC BY 4.0'
+    if text.count(sources) != 1 or text.count(credit) != 1:
+        return False
+    return (sum(chunk.count(marker) for chunk in chunks) == total
+            and sum(marker in chunk and chunk.count(marker) == total
+                    and sources in chunk and credit in chunk
+                    for chunk in chunks) == 1)
+
+
+def warning_overlay_fresh_for_delivery(decision: PublisherWarningDecision,
+                                       at_utc: datetime) -> bool:
+    """Do not send a CAP excerpt if the earliest alert is about to expire."""
+    return bool(decision.warning_attached and decision.expires_utc
+                and isinstance(at_utc, datetime) and at_utc.utcoffset() is not None
+                and at_utc.astimezone(timezone.utc) + timedelta(minutes=1)
+                < decision.expires_utc)
+
+
+def resolve_emma_publication_forecast_date(*, mode: str, base_date: date,
+                                           evening_cycle: object = None) -> date | None:
+    """Use the verified forecast date, never the evening execution date."""
+    if not isinstance(base_date, date) or isinstance(base_date, datetime):
+        return None
+    if mode == 'morning':
+        return base_date
+    if mode == 'evening' and getattr(evening_cycle, 'is_valid', False):
+        expected = getattr(evening_cycle, 'expected_forecast_date', None)
+        if isinstance(expected, date) and not isinstance(expected, datetime):
+            return expected
+    return None

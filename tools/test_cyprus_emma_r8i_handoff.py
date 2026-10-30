@@ -387,5 +387,149 @@ class RegisteredAggregatorTransportTests(unittest.TestCase):
         self.assertEqual('',empty.offline_candidate)
         self.assertEqual(BASE,empty.publisher_text)
 
+
+
+class PublisherWarningBridgeTests(unittest.TestCase):
+    def _run(self, *, atom=None, docs=None, text=BASE, fake=None, clock=NOW, enabled=True):
+        if atom is None:
+            atom, docs = pair()
+        if fake is None:
+            fake = fake_official_transport(atom, docs)
+        from cyprus_emma_r8i_handoff import prepare_registered_emma_warning_for_publisher
+        with patch('cyprus_emma_r8i_handoff._verified_https_get', fake):
+            return prepare_registered_emma_warning_for_publisher(
+                final_sanitized_text=text, enabled=enabled, at_utc=clock,
+                forecast_date=TARGET, sanitizer=identity_sanitizer)
+
+    def test_evening_uses_next_day_cycle_identity_not_execution_date(self):
+        from cyprus_emma_r8i_handoff import resolve_emma_publication_forecast_date
+        today = TARGET - timedelta(days=1)
+        cycle = SimpleNamespace(is_valid=True, expected_forecast_date=TARGET)
+        self.assertEqual(TARGET, resolve_emma_publication_forecast_date(
+            mode='evening', base_date=today, evening_cycle=cycle))
+        self.assertEqual(today, resolve_emma_publication_forecast_date(
+            mode='morning', base_date=today))
+        self.assertIsNone(resolve_emma_publication_forecast_date(
+            mode='evening', base_date=today, evening_cycle=None))
+        self.assertIsNone(resolve_emma_publication_forecast_date(
+            mode='evening', base_date=today,
+            evening_cycle=SimpleNamespace(is_valid=False, expected_forecast_date=TARGET)))
+
+    def test_off_never_fetches(self):
+        def forbidden(_): raise AssertionError('NETWORK')
+        result = self._run(fake=forbidden, enabled=False)
+        self.assertEqual(BASE, result.publisher_text)
+        self.assertFalse(result.warning_attached)
+        self.assertFalse(result.block_publication)
+
+    def test_real_bound_warning_overlay_and_marine_no_go(self):
+        atom, docs = pair(count=2)
+        result = self._run(atom=atom, docs=docs)
+        self.assertTrue(result.warning_attached)
+        self.assertFalse(result.block_publication)
+        self.assertEqual(2, result.publisher_text.count('По данным MeteoAlarm'))
+        self.assertIn('Территория по CAP: Cyprus', result.publisher_text)
+        self.assertIn('Русский перевод и сокращение', result.publisher_text)
+        self.assertIn('Источник: '+FEED_URL, result.publisher_text)
+        self.assertIn('SUP / кайт / сёрф: безопасность не подтверждена', result.publisher_text)
+        self.assertGreater(result.expires_utc, NOW)
+
+    def test_marine_go_is_never_sent_beside_weather_alert(self):
+        text = BASE.replace('безопасность не подтверждена', '✅ можно кататься')
+        result = self._run(text=text)
+        self.assertFalse(result.warning_attached)
+        self.assertTrue(result.block_publication)
+        self.assertEqual(text, result.publisher_text)
+        self.assertEqual('ACTIVE_WARNING_CONFLICTS_WITH_MARINE_GUIDANCE', result.reason)
+
+    def test_unknown_and_update_cancel_do_not_publish_official_claim(self):
+        for kind in ('Update', 'Cancel'):
+            atom,docs=pair(msg_type=kind)
+            with self.subTest(kind=kind):
+                r=self._run(atom=atom, docs=docs)
+                self.assertFalse(r.warning_attached)
+                self.assertEqual(BASE,r.publisher_text)
+        r=self._run(fake=lambda _url: (_ for _ in ()).throw(IncompleteRead(b'', 20)))
+        self.assertEqual('UNKNOWN_CAPTURE_FAILED',r.reason)
+        self.assertFalse(r.warning_attached)
+        self.assertFalse(r.block_publication)
+
+        # Unverified official warnings cannot justify an affirmative water GO.
+        affirmative = BASE.replace('безопасность не подтверждена', '✅ можно кататься')
+        r = self._run(text=affirmative, fake=lambda _url: (_ for _ in ()).throw(
+            IncompleteRead(b'', 20)))
+        self.assertTrue(r.block_publication)
+        self.assertFalse(r.warning_attached)
+        self.assertEqual(affirmative, r.publisher_text)
+
+    def test_source_cross_host_rejected_without_fetch(self):
+        atom, docs = pair()
+        root=ET.fromstring(atom)
+        link=root.find(f'{{{ATOM}}}entry/{{{ATOM}}}link')
+        link.set('href', 'https://evil.example/cap')
+        r=self._run(atom=ET.tostring(root), docs=docs)
+        self.assertFalse(r.warning_attached)
+        self.assertEqual(BASE,r.publisher_text)
+
+    def test_positive_marine_advice_on_following_line_is_blocked(self):
+        text = BASE.replace('безопасность не подтверждена',
+                            'не рекомендуется\n✅ можно выходить на воду')
+        result = self._run(text=text)
+        self.assertTrue(result.block_publication)
+        self.assertFalse(result.warning_attached)
+
+    def test_expiry_close_blocks_message(self):
+        atom, docs = pair()
+        # Valid at NOW and in the forecast day, but <15min until expires.
+        revised={}
+        for u,v in docs.items():
+            root=ET.fromstring(v)
+            root.find(f'{{{CAP}}}info/{{{CAP}}}expires').text=(NOW+timedelta(minutes=5)).isoformat()
+            revised[u]=ET.tostring(root,encoding='utf-8')
+        from cyprus_emma_r8i_handoff import WarningHandoff
+        # Isolate the final horizon guard: the synthetic source's unchanged
+        # onset date otherwise makes this modified expiry invalid at R8-G1.
+        trusted_overlay = WarningHandoff(BASE, reason='CAP_SENDER_AND_SOURCE_UNVERIFIED',
+            offline_candidate=BASE + '\n⚠️ <b>По данным MeteoAlarm</b>:\nИсточник: ' + FEED_URL +
+            '\nДанные: MeteoAlarm, CC BY 4.0')
+        with patch('cyprus_emma_r8i_handoff.inspect_offline_capture',
+                   return_value=trusted_overlay):
+            r=self._run(atom=atom, docs=revised)
+        self.assertFalse(r.warning_attached)
+        self.assertTrue(r.block_publication)
+
+    def test_publisher_seam_is_behind_disabled_by_default_flag(self):
+        source = ROOT / 'safe_test_post.py'
+        if not source.exists():
+            self.skipTest('publisher source requires complete checkout')
+        value = source.read_text(encoding='utf-8')
+        self.assertIn('_env_on("CY_EMMA_WARNING_OVERLAY")', value)
+        self.assertIn('not args.image_only_recovery', value)
+        self.assertIn('warning_overlay_survives_telegram_split', value)
+        self.assertIn('warning_overlay_fresh_for_delivery', value)
+        workflow = ROOT / '.github/workflows/daily_post.yml'
+        if workflow.exists():
+            content = workflow.read_text(encoding='utf-8')
+            self.assertIn('CY_EMMA_WARNING_OVERLAY: "0"', content)
+
+    def test_chunk_integrity_and_send_time_expiry_guard(self):
+        from cyprus_emma_r8i_handoff import (
+            warning_overlay_survives_telegram_split,
+            warning_overlay_fresh_for_delivery)
+        r = self._run()
+        self.assertTrue(r.warning_attached)
+        self.assertTrue(warning_overlay_survives_telegram_split(r.publisher_text,
+                                                                 [r.publisher_text]))
+        pivot = r.publisher_text.index('Источник: ')
+        self.assertFalse(warning_overlay_survives_telegram_split(
+            r.publisher_text, [r.publisher_text[:pivot], r.publisher_text[pivot:]]))
+        self.assertTrue(warning_overlay_fresh_for_delivery(r, NOW))
+        self.assertFalse(warning_overlay_fresh_for_delivery(r, r.expires_utc))
+
+    def test_ambiguous_marine_line_is_blocked(self):
+        r=self._run(text=BASE.replace('безопасность не подтверждена', 'Море сегодня'))
+        self.assertTrue(r.block_publication)
+        self.assertEqual(BASE.replace('безопасность не подтверждена','Море сегодня'),r.publisher_text)
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
