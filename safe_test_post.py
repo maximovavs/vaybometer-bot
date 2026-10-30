@@ -3823,16 +3823,45 @@ async def main() -> None:
         print("\n===== FORMAT_V2 SAFETY SUMMARY =====\n")
         print(validation_summary(final_result))
 
-    # R8-H6 integration candidate: preview is never supplied in production.
-    # A future source handoff requires separate authorization and safety tests.
+    # Historical H6 no-op remains unchanged. The registered MeteoAlarm bridge
+    # is separately gated OFF by default and cannot run in image-only recovery.
     from tools.cyprus_emma_pipeline_r8h6 import apply_emma_preview_offline
     final_result.text = apply_emma_preview_offline(final_result.text)
+
+    emma_delivery = None
+    if not args.image_only_recovery and _env_on("CY_EMMA_WARNING_OVERLAY"):
+        from tools.cyprus_emma_r8i_handoff import (
+            prepare_registered_emma_warning_for_publisher,
+            warning_overlay_survives_telegram_split,
+            warning_overlay_fresh_for_delivery,
+            resolve_emma_publication_forecast_date,
+        )
+        emma_target_date = resolve_emma_publication_forecast_date(
+            mode=mode, base_date=base_date.date(), evening_cycle=evening_cycle)
+        if emma_target_date is None:
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: UNKNOWN_FORECAST_DATE')
+        emma_delivery = prepare_registered_emma_warning_for_publisher(
+            final_sanitized_text=final_result.text,
+            enabled=True,
+            at_utc=dt.datetime.now(dt.timezone.utc),
+            forecast_date=emma_target_date,
+            sanitizer=sanitize_post_text,
+        )
+        if emma_delivery.block_publication:
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: ' + emma_delivery.reason)
+        final_result.text = emma_delivery.publisher_text
 
     final_result.text = finalize_hashtags_at_end(
         final_result.text,
         canonical_hashtags=_CY_CANONICAL_DAILY_HASHTAGS if use_format_v2 else None,
     )
     chunks = split_telegram_text(final_result.text)
+    if emma_delivery and emma_delivery.warning_attached:
+        if not warning_overlay_survives_telegram_split(final_result.text, chunks):
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: TELEGRAM_SPLIT_INTEGRITY')
+        if not warning_overlay_fresh_for_delivery(
+                emma_delivery, dt.datetime.now(dt.timezone.utc)):
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: EXPIRED_BEFORE_IMAGE')
     _CY_MORNING_FINAL_TEXT = final_result.text
     _cy_morning_phase(
         "text_ready",
@@ -3908,6 +3937,11 @@ async def main() -> None:
             image_result=image_result.get("result"),
         )
         return
+
+    if emma_delivery and emma_delivery.warning_attached:
+        if not warning_overlay_fresh_for_delivery(
+                emma_delivery, dt.datetime.now(dt.timezone.utc)):
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: EXPIRED_BEFORE_SEND')
 
     if not TOKEN:
         raise SystemExit("TELEGRAM_TOKEN не задан")
