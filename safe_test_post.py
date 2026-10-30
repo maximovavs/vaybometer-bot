@@ -3823,6 +3823,11 @@ async def main() -> None:
         print("\n===== FORMAT_V2 SAFETY SUMMARY =====\n")
         print(validation_summary(final_result))
 
+    # R8-H6 integration candidate: preview is never supplied in production.
+    # A future source handoff requires separate authorization and safety tests.
+    from tools.cyprus_emma_pipeline_r8h6 import apply_emma_preview_offline
+    final_result.text = apply_emma_preview_offline(final_result.text)
+
     final_result.text = finalize_hashtags_at_end(
         final_result.text,
         canonical_hashtags=_CY_CANONICAL_DAILY_HASHTAGS if use_format_v2 else None,
