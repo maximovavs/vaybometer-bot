@@ -96,7 +96,10 @@ def apply_emma_preview_offline(final_sanitized_text: str, preview: object = None
         return final_sanitized_text
     safe = checked.text
     # An altered/incomplete warning must not be accepted as a rendered warning.
-    if safe.count(preview.text) != 1 or safe.count('По данным MeteoAlarm') != 1:
+    expected_alert_count = preview.text.count('⚠️ <b>По данным MeteoAlarm</b>:')
+    if (not 1 <= expected_alert_count <= 8
+            or safe.count(preview.text) != 1
+            or safe.count('По данным MeteoAlarm') != expected_alert_count):
         return final_sanitized_text
     # If final sanitization removes/reorders preexisting content (particularly
     # weather warnings, ratings and marine guards), reject rather than patch it.

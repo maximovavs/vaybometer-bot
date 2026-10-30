@@ -94,6 +94,37 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual('NO_POST', p.publication_action)
         self.assertIs(p.official_warnings_checked, False)
 
+    def test_multiple_cap_alerts_preserved_as_one_preview_block(self):
+        atom, docs = pair(count=2)
+        p = guarded_preview_warning_capture(atom=atom, cap_by_url=docs,
+            source=attrs(atom, docs), at_utc=NOW, forecast_date=TARGET)
+        self.assertEqual('OFFLINE_OBSERVED_ALERT_CANDIDATE', p.classification)
+        self.assertEqual('NO_POST', p.publication_action)
+        self.assertEqual(2, p.text.count('⚠️ <b>По данным MeteoAlarm</b>:'))
+        self.assertFalse(any((p.official_warnings_checked, p.clean_verified,
+                              p.city_cleared, p.positive_water_guidance_allowed,
+                              p.national_inventory_complete)))
+
+        out = apply_emma_preview_offline(BASE, p, offline_preview=True,
+                                         sanitizer=identity_sanitize)
+        self.assertNotEqual(BASE, out)
+        self.assertEqual(1, out.count(p.text))
+        self.assertEqual(2, out.count('По данным MeteoAlarm'))
+        self.assertEqual(1, out.count('Источник: https://feeds.meteoalarm.org/'))
+        self.assertEqual(BASE.splitlines(), [line for line in out.splitlines()
+            if line not in p.text.splitlines()])
+        self.assertEqual(out, apply_emma_preview_offline(out, p,
+            offline_preview=True, sanitizer=identity_sanitize))
+
+        # A sanitizer that loses just one alert must fail closed, not
+        # silently deliver the incomplete remainder of the warning block.
+        alert_line = next(line for line in p.text.splitlines()
+                          if line.startswith('⚠️ <b>По данным MeteoAlarm</b>:'))
+        def drop_alert(s):
+            return SimpleNamespace(text=s.replace(alert_line + '\n', '', 1))
+        self.assertEqual(BASE, apply_emma_preview_offline(BASE, p,
+            offline_preview=True, sanitizer=drop_alert))
+
     def test_preview_false_or_forged_positive_status_rejected(self):
         p = warning()
         for variant in (OfflinePreview(), replace(p, publication_action='POST'),
