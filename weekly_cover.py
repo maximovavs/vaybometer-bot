@@ -56,6 +56,9 @@ def _wrap(draw: Any, text: str, font: Any, max_width: int, max_lines: int = 2) -
     lines: list[str] = []
     current = ""
     for word in words:
+        if (os.getenv("WEEKLY_PHOTO_COVER_ENABLED", "0").strip() == "1"
+                and draw.textbbox((0,0),word,font=font)[2] > max_width):
+            return ["ПОДРОБНОСТИ В ПОСТЕ"]
         probe = f"{current} {word}".strip()
         box = draw.textbbox((0, 0), probe, font=font)
         if box[2] - box[0] <= max_width:
@@ -69,6 +72,10 @@ def _wrap(draw: Any, text: str, font: Any, max_width: int, max_lines: int = 2) -
     if current and len(lines) < max_lines:
         lines.append(current)
     if len(lines) == max_lines and len(" ".join(lines).split()) < len(words):
+        if os.getenv("WEEKLY_PHOTO_COVER_ENABLED", "0").strip() == "1":
+            # In the R10 photo-on fallback, don't visually clip safety/forecast
+            # statements. The complete authoritative warning remains in text.
+            return ["ПОДРОБНОСТИ В ПОСТЕ"]
         last = lines[-1]
         while last and draw.textbbox((0, 0), last + "…", font=font)[2] > max_width:
             last = last[:-1].rstrip()

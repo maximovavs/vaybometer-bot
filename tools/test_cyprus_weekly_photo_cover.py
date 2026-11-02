@@ -590,13 +590,70 @@ def test_workflow_and_scope_static():
     assert 'Кайт/винг: подходящие окна по спотам не подтверждены' in text
 
 
+def test_r10_actual_partial_week_illustration_and_same_payload():
+    # Reproduce actual scheduled warning text from run #41251809614.
+    sample='🗓 Вайб недели: 02–08 ноября\n\n✨ Главный фон недели\nПолный прогноз на все 7 дней пока не подтверждён; погодные ориентиры недели уточнятся ближе к датам.\n\n🌿 Смысл недели\nЭта неделя про разумное распределение сил. Не всё нужно успеть до того, как тело попросит остановиться.\n\n🌦 Погода\nПолный прогноз на все 7 дней пока не собран; температуру, осадки и ветер лучше уточнять ближе к датам.\n\n🌊 Море\nСредняя вода 23–24°C; лучше утром или ближе к закату.\n\n🏄 Вода и спорт\nSUP: безопасность по спотам и времени не подтверждена; выход без локальной проверки не планировать.\nКайт/винг: подходящие окна по спотам не подтверждены; порывы и направление проверить до выхода.\nСерф: зависит от фактической волны; скорее не главный сценарий недели.\n\n🏭 Воздух сейчас\nТекущий снимок воздуха: AQI 36 (низкий) • PM₂.₅ 17 / PM₁₀ 55. Воздух неидеален: активность на улице короче, окна лучше закрывать в часы пыли/дымки.\n\n🧲 Космопогода сейчас\nСейчас Kp 6.0: фон повышен; это текущий снимок, а не прогноз на всю неделю.\n\n🌙 Луна и астроритм (интерпретация)\n🌑 08.11: Новолуние — мягко планировать новое без рывков.\n✨ Освещённость Луны: примерно 48→2% — темп недели лучше держать ровным.\n⚫️ VoC: 02.11 22:13–03.11 00:00; 03.11 00:00–10:28 — не перегружать расписание.\n\n✅ Как прожить неделю\n• важное и активное планировать на утро;\n• оставлять буфер на дорогу и бытовые дела;\n• при пыли/дымке сокращать активность на улице;\n• не перегружать дни с нестабильным фоном, важное подтверждать дважды;\n• море планировать утром или ближе к закату.\n\n#Кипр #вайбнедели #погода #море #астропогода'
+    def reject(text, evidence=None):
+        try:
+            photo._r10_partial_illustration(text,date(2026,11,2),evidence or {})
+        except ValueError:
+            return
+        raise AssertionError('R10 unsafe photo admitted')
+    reject(sample)  # Known AQI/haze information must not be hidden by calm photo.
+    safe=sample.replace('AQI 36 (низкий) • PM₂.₅ 17 / PM₁₀ 55. Воздух неидеален: активность на улице короче, окна лучше закрывать в часы пыли/дымки.', 'AQI 25 (низкий) • PM₂.₅ 8 / PM₁₀ 20.').replace('• при пыли/дымке сокращать активность на улице;','• учитывать обновления прогноза;')
+    r=photo._r10_partial_illustration(safe,date(2026,11,2),{})
+    assert r[:4]==('neutral','ПРОГНОЗ УТОЧНЯЕТСЯ','НЕТ ПОЛНЫХ ДАННЫХ','23–24°C'),r
+    # A canonical partial-weather notice is exempt ONLY as an exact substring;
+    # any adjacent hazard on the same line is still detected.
+    for danger in (
+        'ожидаются порывы ветра до 20 м/с', 'в горах возможен гололёд',
+        'ожидается жара до 38°C', 'УФ-индекс высокий, нужна защита',
+        'действует предупреждение метеослужбы', 'на море опасно',
+        'выход в море небезопасен', 'ожидается пыль и дымка',
+        'активности на воде лучше отложить', 'возможен шторм',
+        'возможны грозы', 'возможны осадки',
+    ):
+        reject(safe.replace('температуру, осадки и ветер лучше уточнять ближе к датам.',
+                            'температуру, осадки и ветер лучше уточнять ближе к датам.; '+danger))
+    reject(safe.replace('не подтверждена; выход', '✅ можно кататься; выход'))
+    for field, value in (('wind_gusts_10m_max',22),('windgusts_10m_max',22),
+                         ('precipitation_probability_max',80),('precipitation_sum',4),
+                         ('uv_index_max',9),('temperature_2m_max',38)):
+        reject(safe, {'Limassol':{'daily':{'time':['2026-11-02'],
+                'weather_code':[1],field:[value]}}})
+    reject(safe, {'Limassol':{'daily':{'time':['2026-11-02'],
+                'weather_code':[95]}}})
+    # Complete mixed sky: use source-bound temperature, never 'NO DATA'.
+    mixed=valid_weekly_wmo(1)
+    first=next(iter(mixed))
+    mixed[first]['daily']['weather_code'][3]=3
+    full=text_fixture(main='ровная неделя',
+        weather='Температура держится в диапазоне 20–26°C; резких погодных акцентов не видно.')
+    result=photo._r10_partial_illustration(full,WEEK,mixed)
+    assert result[:4]==('neutral','НЕБО МЕНЯЕТСЯ ПО ДНЯМ','20–26°C','24–25°C'),result
+    # One fixed prepared payload is shared by preview and every send.
+    from send_weekly_forecast import _save_prepared_weekly,_load_prepared_weekly
+    with tempfile.TemporaryDirectory() as td:
+        f=Path(td)/'prepared.json';start=date(2026,11,2)
+        _save_prepared_weekly(f,start,safe,{},None)
+        assert _load_prepared_weekly(f,start)==(safe,{},None)
+        try: _load_prepared_weekly(f,date(2026,11,9))
+        except ValueError: pass
+        else: raise AssertionError('Wrong week accepted')
+        obj=json.loads(f.read_text());obj['payload']['text']='FALSE SUNSHINE'
+        f.write_text(json.dumps(obj))
+        try: _load_prepared_weekly(f,start)
+        except ValueError: pass
+        else: raise AssertionError('Tampered payload accepted')
+    return '13 adverse text cases, source-bound hazards, complete mixed labels, prepared snapshot'
 def main():
     methods=[test_provenance_and_approval_fail_closed,test_golden_warning_matrix,
              test_trusted_weather_provenance_golden,
              test_r5a_adversarial_weather_truth_and_full_text_warnings,
              test_fallback_and_off_switch,test_three_photo_geometry_only_with_temporary_inmemory_approval,
              test_source_bound_real_wrapper_and_forged_text, test_delivery_order_and_fail_closed,
-             test_photo_delivery_observability_no_network,test_workflow_and_scope_static]
+             test_photo_delivery_observability_no_network,test_workflow_and_scope_static,
+             test_r10_actual_partial_week_illustration_and_same_payload]
     for method in methods:
         ret=method()
         print('PASS',method.__name__,ret or '')

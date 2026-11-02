@@ -274,16 +274,198 @@ def _trusted_variant(main: str, weather: str, weather_payload: Mapping[str, Any]
     return variant
 
 
+# R10: an editorial image is not a weather observation. This fallback is for
+# incomplete data or fully verified mixed WMO skies; the strict photo gate
+# remains untouched for complete or explicitly hazardous weeks.
+_R10_CRITICAL = re.compile(r"небезопас|шторм|гроз|молни|ливн|дожд|туман|снег|град|шквал|наводнен|торнад|смерч|"
+                           r"опасн.{0,16}волн|высок.{0,12}волн|"
+                           r"экстремальн.{0,20}(?:жар|уф)|не выходить|не рекоменд|"
+                           r"сильн.{0,16}ветер|ветер.{0,16}сильн|пыльн.{0,8}бур|"
+                           r"(?:официальн|экстренн).{0,15}предупрежд", re.I)
+_R10_POSITIVE_WATER = re.compile(r"(?:✅|🟢|\bможно\b|\bподходит\b|"
+                                 r"идеальн|отличн|хорош|комфортн|прекрасн.{0,12}окн|безопасн.{0,12}выход)", re.I)
+
+
+def _r10_safe_mixed_wmo(weather_payload: Mapping[str, Any] | None, start: date) -> bool:
+    # One isolated special case: verified, nonhazardous but MIXED WMO sky days.
+    # The original strict classifier and its thresholds remain unchanged.
+    from settings_cy import INLAND_CITIES, MARINE_CITIES
+    cities = (*MARINE_CITIES, *INLAND_CITIES)
+    if not isinstance(weather_payload, Mapping) or set(weather_payload) != set(cities):
+        return False
+    days = [(start + timedelta(days=i)).isoformat() for i in range(7)]
+    classes = set()
+    for city in cities:
+        payload = weather_payload.get(city)
+        if not isinstance(payload, Mapping):
+            return False
+        daily, meta = payload.get("daily"), payload.get("_weekly_meta")
+        if not isinstance(daily, Mapping) or not isinstance(meta, Mapping):
+            return False
+        units = meta.get("normalized_units")
+        if (meta.get("provider") != "open-meteo" or meta.get("weather_code_system") != "wmo"
+                or meta.get("coverage_complete") is not True or meta.get("coverage_days") != 7
+                or meta.get("requested_start") != days[0] or meta.get("requested_end") != days[-1]
+                or meta.get("returned_dates") != days or not isinstance(units, Mapping)
+                or units.get("wind_speed") != "m/s" or units.get("precipitation") != "mm"
+                or daily.get("time", daily.get("date")) != days):
+            return False
+        if "date" in daily and "time" in daily and daily["time"] != daily["date"]:
+            return False
+        if "weathercode" in daily and "weather_code" in daily and daily["weather_code"] != daily["weathercode"]:
+            return False
+        codes = daily.get("weather_code", daily.get("weathercode"))
+        if not isinstance(codes, list) or len(codes) != 7:
+            return False
+        for code in codes:
+            if type(code) is not int or code not in (0, 1, 2, 3):
+                return False
+            classes.add(code)
+        for field, limit, strict in (("precipitation_probability_max",40,False),
+                    ("precipitation_sum",0,True),("wind_gusts_10m_max",10,False),
+                    ("uv_index_max",6,False),("temperature_2m_max",33,False)):
+            values = daily.get(field)
+            if not isinstance(values,list) or len(values) != 7:
+                return False
+            if any(type(v) not in (int,float) or not math.isfinite(v) or
+                   (v < 0 and field != "temperature_2m_max") or
+                   (v > limit if strict else v >= limit) for v in values):
+                return False
+    return len(classes) > 1
+
+
+def _r10_partial_hazard_veto(trusted_weather: Mapping[str, Any] | None,
+                             start: date) -> None:
+    """Known hazards in INCOMPLETE weekly data still veto decorative photos.
+
+    Missing fields never imply all-clear; this only preserves negative evidence.
+    Thresholds duplicate the strict photo gate, not publication safety rules.
+    """
+    if not isinstance(trusted_weather, Mapping):
+        return
+    dates = {(start + timedelta(days=i)).isoformat() for i in range(7)}
+    for payload in _weather_payloads_for_r10(trusted_weather):
+        meta = payload.get("_weekly_meta")
+        if isinstance(meta, Mapping) and (meta.get("provider") not in (None, "open-meteo")
+                or meta.get("weather_code_system") not in (None, "wmo")):
+            raise ValueError("R10: contradictory weekly weather provenance")
+        daily = payload.get("daily")
+        if not isinstance(daily, Mapping):
+            continue
+        times = daily.get("time", daily.get("date"))
+        if times is not None and (not isinstance(times, list)
+                or any(not isinstance(d, str) or d[:10] not in dates for d in times)
+                or len(set(d[:10] for d in times)) != len(times)):
+            raise ValueError("R10: unaligned weekly weather observations")
+        if "time" in daily and "date" in daily and daily["time"] != daily["date"]:
+            raise ValueError("R10: conflicting weekly dates")
+        if "weather_code" in daily and "weathercode" in daily and daily["weather_code"] != daily["weathercode"]:
+            raise ValueError("R10: conflicting WMO aliases")
+        codes = daily.get("weather_code", daily.get("weathercode"))
+        if codes is not None:
+            if not isinstance(codes, list) or (times is not None and len(codes) != len(times)):
+                raise ValueError("R10: invalid partial WMO samples")
+            for code in codes:
+                if code is not None and (type(code) is not int or code not in (0, 1, 2, 3)):
+                    raise ValueError("R10: known hazardous/unknown WMO code")
+        for field, limit, strict in (("precipitation_probability_max", 40, False),
+                 ("precipitation_sum", 0, True), ("wind_gusts_10m_max", 10, False),
+                 ("windgusts_10m_max", 10, False),
+                 ("uv_index_max", 6, False), ("temperature_2m_max", 33, False)):
+            values = daily.get(field)
+            if values is None:
+                continue
+            if not isinstance(values, list) or (times is not None and len(values) != len(times)):
+                raise ValueError("R10: invalid partial hazard samples")
+            for value in values:
+                if value is None:
+                    continue
+                if (type(value) not in (int, float) or not math.isfinite(value)
+                        or (value < 0 and field != "temperature_2m_max")
+                        or (value > limit if strict else value >= limit)):
+                    raise ValueError("R10: known weather hazard in partial forecast")
+
+
+def _r10_partial_illustration(text: str, start: date,
+                              trusted_weather: Mapping[str, Any] | None) -> tuple[str, str, str, str, str]:
+    if not text.startswith("🗓 Вайб недели:"):
+        raise ValueError("R10: missing weekly heading")
+    # Keep the original comprehensive R5/R9 hazard vocabulary. The only
+    # exclusions are the three exact PR #104 no-go sport lines and the one
+    # canonical seven-day incompleteness notice; never exempt an entire line
+    # which may contain an appended danger after that notice.
+    routine_notice = (
+        "Полный прогноз на все 7 дней пока не собран; "
+        "температуру, осадки и ветер лучше уточнять ближе к датам."
+    )
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line in _ROUTINE_SPORT:
+            continue
+        if line.startswith(("⚠", "🚨", "❗", "🛑")):
+            raise ValueError("R10: explicit warning requires an appropriate photo")
+        hazard_probe = line.replace(routine_notice, "")
+        if _HAZARD.search(hazard_probe) or _R10_CRITICAL.search(hazard_probe):
+            raise ValueError("R10: weather/safety warning not represented by photo")
+    _r10_partial_hazard_veto(trusted_weather, start)
+    data = _sections(text)
+    main, weather, sea, sport = (data[h] for h in
+        ("✨ Главный фон недели", "🌦 Погода", "🌊 Море", "🏄 Вода и спорт"))
+    if any(len(group) != 1 for group in (main, weather, sea)) or len(sport) != 3:
+        raise ValueError("R10: incomplete or unrecognized weekly sections")
+    if (tuple(sport) != _ROUTINE_SPORT
+            or any(_R10_POSITIVE_WATER.search(row) for row in sport)):
+        raise ValueError("R10: unverified/positive water recommendation")
+    if _sky_cues(main[0]) or _sky_cues(weather[0]):
+        raise ValueError("R10: cannot replace explicit sky evidence")
+    incomplete = any(_PARTIAL.search(row) for row in main + weather)
+    if not incomplete:
+        # The verified mixed-sky exception is NOT an incomplete forecast.
+        # Require the original full-text safety gate to succeed, then reuse
+        # its sourced temperature and SST rather than claiming missing data.
+        if not _r10_safe_mixed_wmo(trusted_weather, start):
+            raise ValueError("R10: complete data must pass strict photo gate")
+        source_weather, temperature, sea_now, _ = _source_guard(text)
+        return "neutral", "НЕБО МЕНЯЕТСЯ ПО ДНЯМ", temperature, sea_now, main[0]
+    # Partial dates must not be projected as an all-island sky forecast.
+    # The approved neutral illustration is not an observation or promise.
+    variant = "neutral"
+    # Verified all-overcast WMO, if present, may use the overcast illustration;
+    # partial city/day values can never promote that claim.
+    if isinstance(trusted_weather, Mapping):
+        try:
+            if _trusted_wmo_variant(trusted_weather, start) == "overcast":
+                variant = "overcast"
+        except ValueError:
+            pass
+    match = _SEA.search(sea[0]) if "Средняя вода" in sea[0] else None
+    sea_now = ((match.group(1) + ("–" + match.group(2) if match.group(2) else "") + "°C")
+               if match else "УТОЧНЯЕТСЯ")
+    return variant, "ПРОГНОЗ УТОЧНЯЕТСЯ", "НЕТ ПОЛНЫХ ДАННЫХ", sea_now, main[0]
+def _weather_payloads_for_r10(trusted_weather: Mapping[str, Any]):
+    # Date-aligned safety-only scan; incomplete data never grants a safe sky class.
+    if "daily" in trusted_weather:
+        return [trusted_weather]
+    return [v for v in trusted_weather.values() if isinstance(v, Mapping)]
+
+
 def render_photo_cover(text: str, *, start: date, output_path: str | Path,
                        trusted_weather: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from PIL import Image, ImageDraw, PngImagePlugin
-    weather, temp, sea, main = _source_guard(text)
+    illustration_only = False
+    try:
+        weather, temp, sea, main = _source_guard(text)
+        variant = _trusted_variant(main, weather, trusted_weather, start)
+    except ValueError:
+        # Only an explicitly incomplete forecast may use an editorial photograph.
+        # Never imply that its depicted sky describes actual conditions.
+        variant, weather, temp, sea, main = _r10_partial_illustration(text, start, trusted_weather)
+        illustration_only = True
     doc = json.loads(MANIFEST.read_text("utf-8"))
     if doc.get("approved_for_production") is not True:
         raise ValueError("Cyprus weekly photo assets require independent visual approval")
     if doc.get("version") != "cy_weekly_photos_r2_candidate" or doc.get("size") != [1080, 1350]:
         raise ValueError("invalid weekly photo manifest")
-    variant = _trusted_variant(main, weather, trusted_weather, start)
     item = doc.get("variants", {}).get(variant)
     if not isinstance(item, dict) or not item.get("approved"):
         raise ValueError("weekly scene is unapproved")
@@ -310,6 +492,8 @@ def render_photo_cover(text: str, *, start: date, output_path: str | Path,
     painted.append(_paint(draw,(74,213),"ВАЙБ НЕДЕЛИ",_font(54,True),boxes[0],"#FFFFFF"))
     end = start + timedelta(days=6)
     painted.append(_paint(draw,(75,290),f"{start:%d.%m}–{end:%d.%m.%Y}",_font(26),boxes[0],"#E0EFF5"))
+    if illustration_only:
+        painted.append(_paint(draw,(75,327),"ФОТО — ИЛЛЮСТРАЦИЯ, НЕ ПРОГНОЗ",_font(17,True),boxes[0],"#FFE6B0"))
     painted.append(_paint(draw,(75,925),"SUP / КАЙТ / СЁРФ: ОКНА НЕ ПОДТВЕРЖДЕНЫ",_font(21,True),boxes[1],"#FFFFFF"))
     facts = (("ПОГОДА", weather.split(";", 1)[1].strip() if ";" in weather else weather), ("ТЕМПЕРАТУРА", temp), ("МОРЕ СЕЙЧАС", sea))
     # A nonhazardous forecast does not license claiming a specific sky scenario.
@@ -323,7 +507,7 @@ def render_photo_cover(text: str, *, start: date, output_path: str | Path,
             painted.append(_paint(draw,(x,1078+n*36),line,_font(22,True),cell,"#FFFFFF"))
     meta = {"renderer_version":RENDERER_VERSION,"region":"cyprus","week_start":start.isoformat(),
             "asset_sha256":hashlib.sha256(raw).hexdigest(),"source_text_sha256":hashlib.sha256(text.encode()).hexdigest(),
-            "variant":variant,"weather_provenance":"seven_day_island_wmo_all_cities", "temperature":temp,"marine_observation":sea,"photo_is_illustration":True,
+            "variant":variant,"weather_provenance":("seven_day_island_wmo_mixed_sky" if illustration_only and temp != "НЕТ ПОЛНЫХ ДАННЫХ" else "editorial_only_incomplete_week" if illustration_only else "seven_day_island_wmo_all_cities"), "temperature":temp,"marine_observation":sea,"photo_is_illustration":True,"illustration_only":illustration_only,
             "safety_footer":"spot/time windows not confirmed","text_boxes":len(painted)}
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)

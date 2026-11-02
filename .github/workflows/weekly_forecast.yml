@@ -200,8 +200,13 @@ jobs:
             args+=("--date" "$WEEK_START_DATE")
           fi
 
+          # Generate once: preview and every destination consume identical
+          # forecast facts and source-bound photo selection. Nothing uploaded.
+          prepared_weekly="weekly_snapshot_state/prepared_this_run.json"
+          mkdir -p weekly_snapshot_state
+          trap 'rm -f "$prepared_weekly"' EXIT
           echo "Weekly forecast preview:"
-          python "${args[@]}" | tee weekly_forecast_preview.log
+          python "${args[@]}" --prepared-out "$prepared_weekly" | tee weekly_forecast_preview.log
 
           intended=()
           if [ -n "${CHANNEL_ID_OVERRIDE:-}" ]; then
@@ -263,7 +268,7 @@ jobs:
 
           for i in "${!targets[@]}"; do
             echo "Weekly forecast target: ${labels[$i]}"
-            send_args=("${args[@]}" "--send" "--chat-id" "${targets[$i]}")
+            send_args=("${args[@]}" "--prepared-in" "$prepared_weekly" "--send" "--chat-id" "${targets[$i]}")
             if [ "${labels[$i]}" = "production" ] && [ -n "${WEEK_START_DATE:-}" ]; then
               send_args+=("--production-snapshot-out" "weekly_snapshot_state/current.json")
             fi
