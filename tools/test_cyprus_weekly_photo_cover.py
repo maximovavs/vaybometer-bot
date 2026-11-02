@@ -630,7 +630,12 @@ def test_r10_actual_partial_week_illustration_and_same_payload():
     full=text_fixture(main='ровная неделя',
         weather='Температура держится в диапазоне 20–26°C; резких погодных акцентов не видно.')
     result=photo._r10_partial_illustration(full,WEEK,mixed)
-    assert result[:4]==('neutral','НЕБО МЕНЯЕТСЯ ПО ДНЯМ','20–26°C','24–25°C'),result
+    assert result[:4]==('neutral','НЕБО НЕОДНОРОДНО','20–26°C','24–25°C'),result
+    # Different conditions between cities alone must not claim daily change.
+    city_only=valid_weekly_wmo(1)
+    city_only[first]['daily']['weather_code']=[3]*7
+    result=photo._r10_partial_illustration(full,WEEK,city_only)
+    assert result[:4]==('neutral','НЕБО НЕОДНОРОДНО','20–26°C','24–25°C'),result
     # One fixed prepared payload is shared by preview and every send.
     from send_weekly_forecast import _save_prepared_weekly,_load_prepared_weekly
     with tempfile.TemporaryDirectory() as td:

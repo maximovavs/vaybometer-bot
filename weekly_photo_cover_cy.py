@@ -426,7 +426,7 @@ def _r10_partial_illustration(text: str, start: date,
         if not _r10_safe_mixed_wmo(trusted_weather, start):
             raise ValueError("R10: complete data must pass strict photo gate")
         source_weather, temperature, sea_now, _ = _source_guard(text)
-        return "neutral", "НЕБО МЕНЯЕТСЯ ПО ДНЯМ", temperature, sea_now, main[0]
+        return "neutral", "НЕБО НЕОДНОРОДНО", temperature, sea_now, main[0]
     # Partial dates must not be projected as an all-island sky forecast.
     # The approved neutral illustration is not an observation or promise.
     variant = "neutral"
