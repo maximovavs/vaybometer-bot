@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import html
 import json
 import os
 import re
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -689,6 +690,45 @@ async def _send(
         print(f"WEEKLY_SNAPSHOT: {production_snapshot_out}")
     return message_id if isinstance(message_id,int) and not isinstance(message_id,bool) else None
 
+def _prepared_digest(payload: dict[str, Any]) -> str:
+    raw=json.dumps(payload,sort_keys=True,ensure_ascii=False,allow_nan=False,separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _save_prepared_weekly(path: Path, start: date, text: str,
+                          weather: dict[str, Any], candidate: dict[str, Any] | None) -> None:
+    """One-run preview/send handoff; SHA detects accidental corruption, not authorship."""
+    payload={"version":1,"week_start":start.isoformat(),
+             "built_utc":datetime.now(timezone.utc).isoformat(),
+             "text":text,"weather":weather,"candidate":candidate}
+    record={"payload":payload,"sha256":_prepared_digest(payload)}
+    path.parent.mkdir(parents=True,exist_ok=True)
+    tmp=path.with_suffix(path.suffix+".tmp")
+    tmp.write_text(json.dumps(record,ensure_ascii=False,allow_nan=False),encoding="utf-8")
+    os.replace(tmp,path)
+
+
+def _load_prepared_weekly(path: Path, start: date) -> tuple[str,dict[str, Any],dict[str, Any]|None]:
+    if not path.is_file() or path.stat().st_size > 4_000_000:
+        raise ValueError("weekly prepared payload missing/oversized")
+    obj=json.loads(path.read_text(encoding="utf-8"))
+    payload=obj.get("payload") if isinstance(obj,dict) else None
+    if not isinstance(payload,dict) or obj.get("sha256")!=_prepared_digest(payload):
+        raise ValueError("weekly prepared payload changed")
+    if payload.get("version")!=1 or payload.get("week_start")!=start.isoformat():
+        raise ValueError("weekly prepared date/version mismatch")
+    built=datetime.fromisoformat(payload["built_utc"])
+    age=(datetime.now(timezone.utc)-built.astimezone(timezone.utc)).total_seconds()
+    if built.utcoffset() is None or not (0<=age<=1200):
+        raise ValueError("weekly prepared payload expired")
+    text,weather,candidate=payload.get("text"),payload.get("weather"),payload.get("candidate")
+    if not isinstance(text,str) or not text.startswith("🗓 Вайб недели:") or not isinstance(weather,dict):
+        raise ValueError("weekly prepared payload invalid")
+    if candidate is not None and not isinstance(candidate,dict):
+        raise ValueError("weekly prepared snapshot invalid")
+    return text,weather,candidate
+
+
 async def main() -> None:
     parser=argparse.ArgumentParser(description="Build/send weekly Cyprus VayboMeter forecast")
     parser.add_argument("--date",default="",help="Week start date, YYYY-MM-DD. Defaults to today.")
@@ -696,15 +736,24 @@ async def main() -> None:
     parser.add_argument("--chat-id",default=os.getenv("CHANNEL_ID",""))
     parser.add_argument("--cover-out",default="",help="Optional path for a deterministic weekly cover preview.")
     parser.add_argument("--production-snapshot-out",default="",help="Write authoritative WeeklySnapshot only after successful production text send.")
+    parser.add_argument("--prepared-out", default="", help="Save this week's reviewed payload for the same job only.")
+    parser.add_argument("--prepared-in", default="", help="Send exactly the previewed forecast without refetching.")
     args=parser.parse_args()
+    if args.prepared_in and args.prepared_out:
+        raise SystemExit("Prepared input and output cannot be used together")
     start=datetime.strptime(args.date,"%Y-%m-%d").date() if args.date else _today()
-    weather_payload=_fetch_weather(start); air_data=_fetch_air(); sea_temps=_fetch_sea_temps(); kp_tuple=_fetch_kp(); lunar_data=_load_lunar_calendar()
-    candidate=_build_snapshot_candidate(start,weather_payload,sea_temps)
-    previous=load_snapshot_file(Path(os.getenv("WEEKLY_PREVIOUS_SNAPSHOT","weekly_snapshot_state/previous.json")),
-        region=SNAPSHOT_REGION,expected_week_start=(start-timedelta(days=7)).isoformat())
-    delta_lines=derive_delta_lines(candidate,previous,region=SNAPSHOT_REGION) if candidate else []
-    text=build_weekly_forecast(start,weather_payload=weather_payload,air_data=air_data,sea_temps=sea_temps,kp_tuple=kp_tuple,
-        lunar_data=lunar_data,delta_lines=delta_lines)
+    if args.prepared_in:
+        text, weather_payload, candidate = _load_prepared_weekly(Path(args.prepared_in), start)
+    else:
+        weather_payload=_fetch_weather(start); air_data=_fetch_air(); sea_temps=_fetch_sea_temps(); kp_tuple=_fetch_kp(); lunar_data=_load_lunar_calendar()
+        candidate=_build_snapshot_candidate(start,weather_payload,sea_temps)
+        previous=load_snapshot_file(Path(os.getenv("WEEKLY_PREVIOUS_SNAPSHOT","weekly_snapshot_state/previous.json")),
+            region=SNAPSHOT_REGION,expected_week_start=(start-timedelta(days=7)).isoformat())
+        delta_lines=derive_delta_lines(candidate,previous,region=SNAPSHOT_REGION) if candidate else []
+        text=build_weekly_forecast(start,weather_payload=weather_payload,air_data=air_data,sea_temps=sea_temps,kp_tuple=kp_tuple,
+            lunar_data=lunar_data,delta_lines=delta_lines)
+        if args.prepared_out:
+            _save_prepared_weekly(Path(args.prepared_out), start, text, weather_payload, candidate)
     print(text)
     if args.cover_out:
         metadata=(render_weekly_cover(text,start=start,output_path=args.cover_out,trusted_weather=weather_payload)
