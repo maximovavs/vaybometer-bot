@@ -405,8 +405,41 @@ def prepare_registered_emma_warning_for_publisher(*,
 
 
 
+def warning_first_for_delivery(text: str) -> str | None:
+    """Move only the complete validated CAP excerpt to the front of an ON post.
+
+    A partial or ambiguous warning block is never split or reordered. The
+    ordinary weather text remains in its original relative order; OFF bypasses
+    this function entirely.
+    """
+    if not isinstance(text, str):
+        return None
+    marker = '⚠️ <b>По данным MeteoAlarm</b>:'
+    source = 'Источник: ' + FEED_URL
+    credit = 'Данные: MeteoAlarm, CC BY 4.0'
+    lines = text.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(marker)]
+    sources = [i for i, line in enumerate(lines) if line == source]
+    credits = [i for i, line in enumerate(lines) if line.startswith(credit)]
+    if (not 1 <= len(starts) <= 8 or text.count(marker) != len(starts)
+            or len(sources) != 1 or len(credits) != 1
+            or text.count(source) != 1 or text.count(credit) != 1):
+        return None
+    first = starts[0]
+    src = sources[0]
+    end = credits[0]
+    if (starts != list(range(first, first + len(starts)))
+            or src != first + len(starts) or end != src + 1):
+        return None
+    block = '\n'.join(lines[first:end + 1])
+    ordinary = '\n'.join(lines[:first] + lines[end + 1:]).strip()
+    if not ordinary:
+        return None
+    return block + '\n\n' + ordinary
+
+
 def warning_overlay_survives_telegram_split(text: str, chunks: list[str]) -> bool:
-    """The entire MeteoAlarm block, source and attribution must share one chunk."""
+    """Warning and attribution must precede all other Telegram text chunks."""
     marker = '⚠️ <b>По данным MeteoAlarm</b>:'
     total = text.count(marker)
     if not (1 <= total <= 8) or not chunks:
@@ -415,10 +448,10 @@ def warning_overlay_survives_telegram_split(text: str, chunks: list[str]) -> boo
     credit = 'Данные: MeteoAlarm, CC BY 4.0'
     if text.count(sources) != 1 or text.count(credit) != 1:
         return False
-    return (sum(chunk.count(marker) for chunk in chunks) == total
-            and sum(marker in chunk and chunk.count(marker) == total
-                    and sources in chunk and credit in chunk
-                    for chunk in chunks) == 1)
+    return (chunks[0].startswith(marker)
+            and chunks[0].count(marker) == total
+            and sources in chunks[0] and credit in chunks[0]
+            and sum(chunk.count(marker) for chunk in chunks) == total)
 
 
 def warning_overlay_fresh_for_delivery(decision: PublisherWarningDecision,

@@ -517,15 +517,19 @@ class PublisherWarningBridgeTests(unittest.TestCase):
 
     def test_chunk_integrity_and_send_time_expiry_guard(self):
         from cyprus_emma_r8i_handoff import (
-            warning_overlay_survives_telegram_split,
+            warning_first_for_delivery, warning_overlay_survives_telegram_split,
             warning_overlay_fresh_for_delivery)
         r = self._run()
         self.assertTrue(r.warning_attached)
-        self.assertTrue(warning_overlay_survives_telegram_split(r.publisher_text,
-                                                                 [r.publisher_text]))
-        pivot = r.publisher_text.index('Источник: ')
+        first = warning_first_for_delivery(r.publisher_text)
+        self.assertIsNotNone(first)
+        self.assertTrue(warning_overlay_survives_telegram_split(first, [first]))
+        # The old late warning must not be considered safe for streaming.
         self.assertFalse(warning_overlay_survives_telegram_split(
-            r.publisher_text, [r.publisher_text[:pivot], r.publisher_text[pivot:]]))
+            r.publisher_text, [r.publisher_text]))
+        pivot = first.index('Источник: ')
+        self.assertFalse(warning_overlay_survives_telegram_split(
+            first, [first[:pivot], first[pivot:]]))
         self.assertTrue(warning_overlay_fresh_for_delivery(r, NOW))
         self.assertFalse(warning_overlay_fresh_for_delivery(r, r.expires_utc))
 
@@ -572,6 +576,94 @@ class PublisherWarningBridgeTests(unittest.TestCase):
                 self.assertFalse(out.warning_attached)
                 self.assertEqual(text, out.publisher_text)
                 self.assertEqual('ACTIVE_WARNING_CONFLICTS_WITH_MARINE_GUIDANCE', out.reason)
+
+    def test_warning_first_blocks_second_chunk_partial_delivery(self):
+        from cyprus_emma_r8i_handoff import (
+            warning_first_for_delivery, warning_overlay_survives_telegram_split)
+        from post_safety import split_telegram_text
+        # Before the fix, the warning sits behind this long weather text.
+        long_post = BASE.replace('#Кипр #погода', ('Прогноз по берегу. ' * 250) + '\n#Кипр #погода')
+        original = self._run(text=long_post)
+        self.assertTrue(original.warning_attached)
+        late_chunks = split_telegram_text(original.publisher_text)
+        self.assertGreaterEqual(len(late_chunks), 2)
+        self.assertFalse(late_chunks[0].startswith('⚠️ <b>По данным MeteoAlarm</b>:'))
+        first = warning_first_for_delivery(original.publisher_text)
+        self.assertIsNotNone(first)
+        chunks = split_telegram_text(first)
+        self.assertTrue(warning_overlay_survives_telegram_split(first, chunks))
+        self.assertTrue(chunks[0].startswith('⚠️ <b>По данным MeteoAlarm</b>:'))
+        self.assertEqual(1, first.count('Данные: MeteoAlarm, CC BY 4.0'))
+        self.assertEqual(1, first.count('Источник: ' + FEED_URL))
+        self.assertEqual(1, first.count('Прогноз по берегу. ' * 250))
+        # Source and credit must never be detached from the warning block.
+        self.assertIsNone(warning_first_for_delivery(first.replace('Источник: '+FEED_URL, '')))
+
+    def test_warning_first_requires_confirmed_telegram_ids_and_live_expiry(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+        from cyprus_emma_r8i_handoff import (
+            warning_first_for_delivery, warning_overlay_fresh_for_delivery)
+        from post_safety import split_telegram_text
+        import safe_test_post
+        long_post = BASE.replace('#Кипр #погода', ('Прогноз по берегу. ' * 250) + '\n#Кипр #погода')
+        result = self._run(text=long_post)
+        first = warning_first_for_delivery(result.publisher_text)
+        chunks = split_telegram_text(first)
+        self.assertGreaterEqual(len(chunks), 2)
+        async def run_case(responses, clock):
+            sent = []
+            async def mock_send(_bot, **kwargs):
+                sent.append(kwargs['text'])
+                answer = responses[len(sent)-1]
+                if isinstance(answer, BaseException):
+                    raise answer
+                return SimpleNamespace(message_id=answer)
+            def before_chunk():
+                if not warning_overlay_fresh_for_delivery(result, clock[len(sent)]):
+                    raise RuntimeError('CY_EMMA_WARNING_BLOCKED: EXPIRED_DURING_TEXT_SEND')
+            with patch.object(safe_test_post, '_send_telegram_message_with_retry',
+                              new=mock_send):
+                await safe_test_post._send_telegram_text_chunks(
+                    object(), chat_id=1, chunks=chunks, add_test_label=False,
+                    before_chunk=before_chunk, require_confirmed_ids=True)
+            return sent
+        # First warning delivered, but next chunk fails: warning is not lost.
+        with self.assertRaises(OSError):
+            asyncio.run(run_case([101, OSError('partial delivery')], [NOW, NOW]))
+        # Warning without an acknowledged ID must not be followed by weather.
+        with self.assertRaisesRegex(RuntimeError, 'TEXT_DELIVERY_UNCONFIRMED'):
+            asyncio.run(run_case([None], [NOW, NOW]))
+        # CAP expires between chunks: refuse subsequent text transmissions.
+        with self.assertRaisesRegex(RuntimeError, 'EXPIRED_DURING_TEXT_SEND'):
+            asyncio.run(run_case([101], [NOW, result.expires_utc]))
+
+    def test_multiple_alerts_keep_source_and_credit_with_first_chunk(self):
+        from cyprus_emma_r8i_handoff import (
+            warning_first_for_delivery, warning_overlay_survives_telegram_split)
+        from post_safety import split_telegram_text
+        atom, docs = pair(count=2)
+        result = self._run(atom=atom, docs=docs)
+        self.assertTrue(result.warning_attached)
+        first = warning_first_for_delivery(result.publisher_text)
+        self.assertEqual(2, first.count('⚠️ <b>По данным MeteoAlarm</b>:'))
+        chunks = split_telegram_text(first)
+        self.assertTrue(warning_overlay_survives_telegram_split(first, chunks))
+        self.assertTrue(chunks[0].startswith('⚠️ <b>По данным MeteoAlarm</b>:'))
+        self.assertEqual(1, chunks[0].count('Данные: MeteoAlarm, CC BY 4.0'))
+        self.assertEqual(1, chunks[0].count('Источник: ' + FEED_URL))
+
+    def test_delivery_reordering_does_not_modify_visual_or_receipt_text(self):
+        source = (ROOT / 'safe_test_post.py').read_text(encoding='utf-8')
+        self.assertIn('delivery_text = final_result.text', source)
+        self.assertIn('delivery_text = warning_first_for_delivery(delivery_text)', source)
+        self.assertIn('chunks = split_telegram_text(delivery_text)', source)
+        self.assertIn('warning_overlay_survives_telegram_split(delivery_text, chunks)', source)
+        self.assertIn('image_result = ', source)
+        self.assertIn('            final_result.text,', source)
+        self.assertIn('    text_target_date = _cy_extract_receipt_date(\n        final_result.text,', source)
+        self.assertIn('if emma_warning_send else {}', source)
+        self.assertIn('**emma_send_kwargs,', source)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

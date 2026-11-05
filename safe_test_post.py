@@ -16,6 +16,7 @@ import logging
 import os
 from pathlib import Path
 import re
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 import pendulum
@@ -3665,9 +3666,15 @@ async def _send_telegram_text_chunks(
     chunks: list[str],
     add_test_label: bool,
     partial_message_ids: list[int] | None = None,
+    before_chunk: Callable[[], None] | None = None,
+    require_confirmed_ids: bool = False,
 ) -> list[int]:
     message_ids: list[int] = []
     for idx, chunk in enumerate(chunks, start=1):
+        # The warning-bearing ON path rechecks expiry immediately before
+        # EVERY Telegram text call, including calls after partial delivery.
+        if before_chunk is not None:
+            before_chunk()
         if add_test_label:
             prefix = f"<b>Test safe post {idx}/{len(chunks)}</b>\n" if len(chunks) > 1 else "<b>Test safe post</b>\n"
             text = prefix + chunk
@@ -3681,6 +3688,10 @@ async def _send_telegram_text_chunks(
             disable_web_page_preview=True,
         )
         message_id = getattr(message, "message_id", None)
+        if require_confirmed_ids and (type(message_id) is not int or message_id <= 0):
+            # A missing acknowledgement for the first warning must not be
+            # followed by weather text that might be published without it.
+            raise RuntimeError('CY_EMMA_WARNING_BLOCKED: TEXT_DELIVERY_UNCONFIRMED')
         if isinstance(message_id, int):
             message_ids.append(message_id)
             if partial_message_ids is not None:
@@ -3832,6 +3843,7 @@ async def main() -> None:
     if not args.image_only_recovery and _env_on("CY_EMMA_WARNING_OVERLAY"):
         from tools.cyprus_emma_r8i_handoff import (
             prepare_registered_emma_warning_for_publisher,
+            warning_first_for_delivery,
             warning_overlay_survives_telegram_split,
             warning_overlay_fresh_for_delivery,
             resolve_emma_publication_forecast_date,
@@ -3855,9 +3867,16 @@ async def main() -> None:
         final_result.text,
         canonical_hashtags=_CY_CANONICAL_DAILY_HASHTAGS if use_format_v2 else None,
     )
-    chunks = split_telegram_text(final_result.text)
+    # Reorder only Telegram delivery chunks, not the weather text used by
+    # visual generation, date receipts, diagnostics and existing safeguards.
+    delivery_text = final_result.text
     if emma_delivery and emma_delivery.warning_attached:
-        if not warning_overlay_survives_telegram_split(final_result.text, chunks):
+        delivery_text = warning_first_for_delivery(delivery_text)
+        if delivery_text is None:
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: WARNING_FIRST_INTEGRITY')
+    chunks = split_telegram_text(delivery_text)
+    if emma_delivery and emma_delivery.warning_attached:
+        if not warning_overlay_survives_telegram_split(delivery_text, chunks):
             raise SystemExit('CY_EMMA_WARNING_BLOCKED: TELEGRAM_SPLIT_INTEGRITY')
         if not warning_overlay_fresh_for_delivery(
                 emma_delivery, dt.datetime.now(dt.timezone.utc)):
@@ -4008,6 +4027,18 @@ async def main() -> None:
         chunk_count=len(chunks),
         final_text_length=len(final_result.text),
     )
+    # No change to the OFF path or image-only recovery. A warning-bearing
+    # send is fail-closed on expiry and missing acknowledgement per chunk.
+    emma_warning_send = bool(emma_delivery and emma_delivery.warning_attached)
+    def _emma_before_chunk() -> None:
+        if not warning_overlay_fresh_for_delivery(
+                emma_delivery, dt.datetime.now(dt.timezone.utc)):
+            raise RuntimeError('CY_EMMA_WARNING_BLOCKED: EXPIRED_DURING_TEXT_SEND')
+    # Keep the exact OFF-path call signature for legacy publisher harnesses.
+    emma_send_kwargs = (
+        {"before_chunk": _emma_before_chunk, "require_confirmed_ids": True}
+        if emma_warning_send else {}
+    )
     try:
         sent_message_ids = await _send_telegram_text_chunks(
             bot,
@@ -4015,6 +4046,7 @@ async def main() -> None:
             chunks=chunks,
             add_test_label=not args.no_test_label,
             partial_message_ids=_CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS,
+            **emma_send_kwargs,
         )
     except Exception as exc:
         _cy_morning_phase(
