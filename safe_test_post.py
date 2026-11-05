@@ -3886,34 +3886,48 @@ async def main() -> None:
     if args.image_only_recovery and not _cy_is_production_text_send(resolved_text_chat_id):
         raise SystemExit("--image-only-recovery разрешён только для CHANNEL_ID production")
 
-    if args.generate_image:
+    # Only the opt-in warning-bearing ON-path sends text first. OFF-path and
+    # explicit image-only recovery retain their historical behavior.
+    emma_image_deferred = bool(
+        emma_delivery and emma_delivery.warning_attached and args.send
+        and args.generate_image and (args.send_image_to_chat or args.send_image_to_test)
+    )
+
+    async def _cy_generate_image_for_current_post():
+        if args.generate_image:
+            _cy_morning_phase(
+                "image_started",
+                target_date=_CY_MORNING_TARGET_DATE,
+                chat_type=chat_type,
+            )
+        result = await _build_safe_test_image(
+            final_result.text,
+            mode,
+            generate_image=args.generate_image,
+            send_image_to_test=args.send_image_to_test,
+            send_image_to_chat=args.send_image_to_chat,
+            image_chat_id=resolved_text_chat_id,
+            image_only_recovery=args.image_only_recovery,
+            # Publication paths enforce provider semantic QA. Direct unit harnesses
+            # can inject a fake evaluator without making any network call.
+            provider_semantic_qa_evaluator=None,
+        )
+        status = str(result.get("result") or "unknown")
         _cy_morning_phase(
-            "image_started",
+            cy_morning_image_phase_for_result(status),
             target_date=_CY_MORNING_TARGET_DATE,
             chat_type=chat_type,
+            image_result=status,
+            telegram_message_ids=result.get("message_ids"),
+            image_error_type=result.get("error_type"),
         )
-    image_result = await _build_safe_test_image(
-        final_result.text,
-        mode,
-        generate_image=args.generate_image,
-        send_image_to_test=args.send_image_to_test,
-        send_image_to_chat=args.send_image_to_chat,
-        image_chat_id=resolved_text_chat_id,
-        image_only_recovery=args.image_only_recovery,
-        # Publication paths enforce provider semantic QA. Direct unit harnesses
-        # can inject a fake evaluator without making any network call.
-        provider_semantic_qa_evaluator=None,
-    )
-    image_status = str(image_result.get("result") or "unknown")
-    image_phase = cy_morning_image_phase_for_result(image_status)
-    _cy_morning_phase(
-        image_phase,
-        target_date=_CY_MORNING_TARGET_DATE,
-        chat_type=chat_type,
-        image_result=image_status,
-        telegram_message_ids=image_result.get("message_ids"),
-        image_error_type=image_result.get("error_type"),
-    )
+        return result, status
+
+    if emma_image_deferred:
+        image_result = {"result": "deferred_until_text_sent", "message_ids": []}
+        image_status = "deferred_until_text_sent"
+    else:
+        image_result, image_status = await _cy_generate_image_for_current_post()
 
     if args.image_only_recovery:
         logging.info("CY IMAGE RECOVERY: text send skipped by design")
@@ -4019,6 +4033,10 @@ async def main() -> None:
         chunk_count=len(chunks),
         telegram_message_ids=sent_message_ids,
     )
+    if emma_image_deferred and (
+            len(sent_message_ids) != len(chunks)
+            or any(type(mid) is not int or mid <= 0 for mid in sent_message_ids)):
+        raise SystemExit('CY_EMMA_WARNING_BLOCKED: TEXT_DELIVERY_UNCONFIRMED')
     receipt_path = ""
     if mode == "morning" and chat_type == "production":
         receipt = cy_morning_maybe_write_delivery_receipt(
@@ -4048,16 +4066,17 @@ async def main() -> None:
                 chunk_count=len(chunks),
                 telegram_message_ids=sent_message_ids,
             )
-    _cy_morning_phase(
-        "completed",
-        target_date=_CY_MORNING_TARGET_DATE,
-        chat_type=chat_type,
-        sent=True,
-        chunk_count=len(chunks),
-        final_text_length=len(final_result.text),
-        image_result=image_result.get("result"),
-        receipt_path=receipt_path,
-    )
+    if not emma_image_deferred:
+        _cy_morning_phase(
+            "completed",
+            target_date=_CY_MORNING_TARGET_DATE,
+            chat_type=chat_type,
+            sent=True,
+            chunk_count=len(chunks),
+            final_text_length=len(final_result.text),
+            image_result=image_result.get("result"),
+            receipt_path=receipt_path,
+        )
     expected_text_date = (
         evening_cycle.expected_forecast_date.isoformat()
         if evening_cycle is not None and evening_cycle.expected_forecast_date
@@ -4086,6 +4105,21 @@ async def main() -> None:
         print(f"CY_TEXT_RECEIPT_WRITTEN: {receipt_path}")
     elif _cy_is_production_text_send(chat_id):
         print("CY_TEXT_RECEIPT_NOT_WRITTEN: missing valid Telegram message ids")
+
+    if emma_image_deferred:
+        # No image unless *every* text chunk has a confirmed Telegram message id.
+        # The text receipt has already been persisted when one is applicable.
+        image_result, image_status = await _cy_generate_image_for_current_post()
+        _cy_morning_phase(
+            "completed",
+            target_date=_CY_MORNING_TARGET_DATE,
+            chat_type=chat_type,
+            sent=True,
+            chunk_count=len(chunks),
+            final_text_length=len(final_result.text),
+            image_result=image_result.get("result"),
+            receipt_path=receipt_path,
+        )
     logging.info("SAFE TEST sent: chat=%s chunks=%d format_v2=%s", chat_id, len(chunks), use_format_v2)
 
 

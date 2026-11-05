@@ -392,9 +392,15 @@ def prepare_registered_emma_warning_for_publisher(*,
         return PublisherWarningDecision(inspected.offline_candidate,
             warning_attached=True, reason='METEOALARM_DISTRIBUTION_VERIFIED_WARNING',
             expires_utc=end)
+    except (OSError, TimeoutError, HTTPException):
+        # Optional source transport outage is not a newly proven weather hazard.
+        # Preserve the independently validated ordinary post, without a CAP
+        # excerpt, city clearance or any new positive marine assertion.
+        return replace(original, reason='SOURCE_UNAVAILABLE')
     except (CaptureRejected, ET.ParseError, TypeError, ValueError,
-            AttributeError, KeyError, OverflowError, OSError,
-            TimeoutError, HTTPException):
+            AttributeError, KeyError, OverflowError):
+        # Malformed/partial/untrusted warning evidence is NOT a mere outage:
+        # keep the conservative marine-conflict veto for this branch.
         return replace(fallback, reason='UNKNOWN_CAPTURE_FAILED')
 
 

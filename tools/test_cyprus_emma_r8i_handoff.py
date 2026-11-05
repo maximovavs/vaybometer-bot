@@ -450,7 +450,7 @@ class PublisherWarningBridgeTests(unittest.TestCase):
                 self.assertFalse(r.warning_attached)
                 self.assertEqual(BASE,r.publisher_text)
         r=self._run(fake=lambda _url: (_ for _ in ()).throw(IncompleteRead(b'', 20)))
-        self.assertEqual('UNKNOWN_CAPTURE_FAILED',r.reason)
+        self.assertEqual('SOURCE_UNAVAILABLE',r.reason)
         self.assertFalse(r.warning_attached)
         self.assertFalse(r.block_publication)
 
@@ -458,8 +458,11 @@ class PublisherWarningBridgeTests(unittest.TestCase):
         affirmative = BASE.replace('безопасность не подтверждена', '✅ можно кататься')
         r = self._run(text=affirmative, fake=lambda _url: (_ for _ in ()).throw(
             IncompleteRead(b'', 20)))
-        self.assertTrue(r.block_publication)
+        # A pure optional HTTPS failure must not suppress the otherwise
+        # validated ordinary post or add an unverified warning/all-clear.
+        self.assertFalse(r.block_publication)
         self.assertFalse(r.warning_attached)
+        self.assertEqual('SOURCE_UNAVAILABLE', r.reason)
         self.assertEqual(affirmative, r.publisher_text)
 
     def test_source_cross_host_rejected_without_fetch(self):
@@ -530,6 +533,45 @@ class PublisherWarningBridgeTests(unittest.TestCase):
         r=self._run(text=BASE.replace('безопасность не подтверждена', 'Море сегодня'))
         self.assertTrue(r.block_publication)
         self.assertEqual(BASE.replace('безопасность не подтверждена','Море сегодня'),r.publisher_text)
+
+    def test_publisher_text_first_gate_and_off_path_are_present(self):
+        # Source-level regression for the send ordering. End-to-end publisher
+        # integration must also pass canonical CI on the exact PR head.
+        source = (ROOT / 'safe_test_post.py').read_text(encoding='utf-8')
+        self.assertIn('if emma_image_deferred:', source)
+        self.assertIn('image_result, image_status = await _cy_generate_image_for_current_post()', source)
+        self.assertIn("CY_EMMA_WARNING_BLOCKED: TEXT_DELIVERY_UNCONFIRMED", source)
+        self.assertLess(source.index('sent_message_ids = await _send_telegram_text_chunks('),
+                        source.rindex('image_result, image_status = await _cy_generate_image_for_current_post()'))
+        self.assertLess(source.index('CY_TEXT_RECEIPT_WRITTEN:'),
+                        source.rindex('image_result, image_status = await _cy_generate_image_for_current_post()'))
+        self.assertIn('if not emma_image_deferred:', source)
+        self.assertLess(source.index('CY_EMMA_WARNING_BLOCKED: TEXT_DELIVERY_UNCONFIRMED'),
+                        source.index('CY_TEXT_RECEIPT_WRITTEN:'))
+
+    def test_optional_feed_outage_vs_malformed_evidence_preserves_safety(self):
+        positive = BASE.replace('безопасность не подтверждена', '✅ можно кататься')
+        ambiguous = BASE.replace('безопасность не подтверждена', 'Море сегодня')
+        for text in (positive, ambiguous):
+            with self.subTest(kind='transport_unavailable', text=text[-24:]):
+                out = self._run(text=text,
+                    fake=lambda _url: (_ for _ in ()).throw(TimeoutError('offline')))
+                self.assertEqual(text, out.publisher_text)
+                self.assertFalse(out.warning_attached)
+                self.assertFalse(out.block_publication)
+                self.assertEqual('SOURCE_UNAVAILABLE', out.reason)
+            with self.subTest(kind='malformed_capture', text=text[-24:]):
+                out = self._run(text=text, fake=lambda url: {'url':url, 'status':200})
+                self.assertEqual(text, out.publisher_text)
+                self.assertFalse(out.warning_attached)
+                self.assertTrue(out.block_publication)
+                self.assertEqual('UNKNOWN_CAPTURE_FAILED', out.reason)
+            with self.subTest(kind='verified_warning', text=text[-24:]):
+                out = self._run(text=text)
+                self.assertTrue(out.block_publication)
+                self.assertFalse(out.warning_attached)
+                self.assertEqual(text, out.publisher_text)
+                self.assertEqual('ACTIVE_WARNING_CONFLICTS_WITH_MARINE_GUIDANCE', out.reason)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

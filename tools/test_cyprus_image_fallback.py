@@ -751,7 +751,7 @@ def primary_evening_incident_sends_local_visual_before_text() -> None:
             assert "scene_macro_family" not in probe["metadata"]
 
             amain_source = inspect.getsource(safe_module.main)
-            image_index = amain_source.index("image_result = await _build_safe_test_image(")
+            image_index = amain_source.index("image_result, image_status = await _cy_generate_image_for_current_post()")
             recovery_return_index = amain_source.index("if args.image_only_recovery:", image_index)
             text_send_index = amain_source.index("await _send_telegram_text_chunks(", recovery_return_index)
             assert image_index < recovery_return_index < text_send_index
