@@ -665,5 +665,99 @@ class PublisherWarningBridgeTests(unittest.TestCase):
         self.assertIn('if emma_warning_send else {}', source)
         self.assertIn('**emma_send_kwargs,', source)
 
+    def test_main_m8_expiry_guard_is_wired_before_every_chunk(self):
+        """Real main(): expiry after warning chunk must stop subsequent sends.
+
+        Regression for M8 (removing before_chunk from main's sender wiring).
+        The fake source supplies only a synthetic warning; no HTTP/Telegram
+        request or actual publication can occur.
+        """
+        import ast
+        import inspect
+        import os
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+        from test_cy_cycle_date import Harness, Clock, local
+        import safe_test_post as safe_module
+        import tools.cyprus_emma_r8i_handoff as live_handoff
+
+        # Structural part of M8: main must pass its expiry callback into
+        # the chunk sender, not merely define an unused callback.
+        main_tree = ast.parse(inspect.getsource(safe_module.main))
+        wired = any(
+            isinstance(node, ast.Dict) and any(
+                isinstance(k, ast.Constant) and k.value == 'before_chunk'
+                and isinstance(v, ast.Name) and v.id == '_emma_before_chunk'
+                for k, v in zip(node.keys, node.values)
+            ) for node in ast.walk(main_tree)
+        )
+        self.assertTrue(wired, 'M8: per-chunk expiry callback not wired in main()')
+
+        warning = (
+            '⚠️ <b>По данным MeteoAlarm</b>: предупреждение о грозах. '
+            'Уровень: серьёзная. Территория по CAP: Cyprus.\n'
+            'Источник: ' + FEED_URL + '\n'
+            'Данные: MeteoAlarm, CC BY 4.0 '
+            '(https://creativecommons.org/licenses/by/4.0/). '
+            'Русский перевод и сокращение; неофициальная адаптация.'
+        )
+        expires = datetime.now(timezone.utc) + timedelta(minutes=30)
+        valid_time = expires - timedelta(minutes=10)
+        real_freshness = live_handoff.warning_overlay_fresh_for_delivery
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # The harness runs the actual publisher with fake Bot and offline
+            # image backends; the flag is restored after this one test.
+            with patch.dict(os.environ, {'CY_EMMA_WARNING_OVERLAY': '1'}):
+                with Harness(Path(temp_dir), Clock(local(2026, 10, 28, 9, 0))) as harness:
+                    def long_weather(**_kwargs):
+                        return (
+                            '🌅 Кипр сегодня (28.10.2026)\n'
+                            '✨ VayboMeter: 5.0/10 — с оговорками.\n'
+                            '🏄 SUP / кайт / сёрф: безопасность не подтверждена.\n'
+                            + '🏙 Прогноз побережья: ветер 7 м/с, волны 1 м.\n' * 130
+                            + '#Кипр #погода'
+                        )
+
+                    def fake_warning(*, final_sanitized_text, **_kwargs):
+                        from tools.cyprus_emma_r8i_handoff import PublisherWarningDecision
+                        return PublisherWarningDecision(
+                            publisher_text=final_sanitized_text + '\n' + warning,
+                            warning_attached=True,
+                            expires_utc=expires,
+                        )
+
+                    fresh_checks = []
+
+                    def advancing_freshness(decision, _actual_now):
+                        # The time changes only AFTER Telegram acknowledged the
+                        # first chunk, so pre-send checks must initially pass.
+                        count = len(harness.messages)
+                        fresh_checks.append(count)
+                        simulated_now = valid_time if count == 0 else expires
+                        return real_freshness(decision, simulated_now)
+
+                    safe_module.build_message = long_weather
+                    with patch.object(live_handoff, 'prepare_registered_emma_warning_for_publisher',
+                                      side_effect=fake_warning), \
+                         patch.object(live_handoff, 'warning_overlay_fresh_for_delivery',
+                                      side_effect=advancing_freshness), \
+                         patch.object(live_handoff, '_verified_https_get',
+                                      side_effect=AssertionError('unexpected HTTPS')):
+                        with self.assertRaisesRegex(RuntimeError, 'EXPIRED_DURING_TEXT_SEND'):
+                            harness.run([
+                                'safe_test_post.py', '--mode', 'morning',
+                                '--date', '2026-10-28', '--chat-id', '777',
+                                '--send', '--no-test-label',
+                            ], event='workflow_dispatch', anchor=False)
+
+                    self.assertGreaterEqual(len(fresh_checks), 3, fresh_checks)
+                    self.assertEqual(1, sum(count > 0 for count in fresh_checks))
+                    self.assertEqual(1, len(harness.messages))
+                    self.assertTrue(harness.messages[0]['text'].startswith(
+                        '⚠️ <b>По данным MeteoAlarm</b>:'), harness.messages)
+                    self.assertEqual([], harness.photos)
+                    self.assertEqual({}, harness.receipts('text'))
+                    self.assertEqual({}, harness.receipts('image'))
 if __name__ == '__main__':
     unittest.main(verbosity=2)
