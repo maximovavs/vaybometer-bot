@@ -327,6 +327,115 @@ def _marine_contradiction(text: str) -> bool:
     return False
 
 
+_OUTAGE_MARINE_CAUTION = re.compile(
+    r'не\s+(?:рекоменд|подход|подтвержден)|'
+    r'лучше\s+отлож|отложить|только\s+опытн|'
+    r'шторм|шквал|гроз|сильн\w*\s+ветер|не\s+выход\w*|'
+    r'\b(?:опасн|небезопасн)|не\s+безопасн|риск|запрещ|\bSTOP\b|\bNO_GO\b|н/д|🚫|⛔|❌', re.I)
+_OUTAGE_MARINE_GO = re.compile(
+    r'✅|🟢|\bGO\b|\bможно\b|\bподходит\b|'
+    # A good-visibility observation does not turn a caution into marine GO.
+    # Require a nearby explicit water-sport cue; ordinary good visibility is
+    # not an affirmative marine recommendation.
+    r'\bотличн|\bхорош\w*(?=[^\n]{0,80}\b(?:кататься|катания|'
+    r'с[её]рф\w*|кайт\w*|на\s+вод[уе]|выходить\s+на))|'
+    r'\bидеальн|\bразрешен', re.I)
+_OUTAGE_MARINE_FOLLOWUP = re.compile(
+    r'кататься|на\s+воду|выходить\s+на|\bSUP\b|кайт|с[её]рф|\bсап\b|'
+    r'доск(?:е|ах|у)|парус', re.I)
+_OUTAGE_SECTION = ('🏙', '🏖', '🏞', '📍', '🌆', '🏘', '🗺', '🌡', '💬',
+                   '✨', '☀️', '🌇', '🌊', '#', '⚠️', '🚨', '❗', '🛑')
+_OUTAGE_CITY = re.compile(
+    r'^(?:Лимассол|Ларнака|Пафос|Паралимни|Айя-Напа|Протарас|'
+    r'Никосия|Тродос|Полис|Пейя|Кирения)\s*:', re.I)
+_OUTAGE_SAFE_MARINE = ('🏄 SUP / кайт / сёрф: безопасность не подтверждена; '
+                       'источник официальных предупреждений недоступен.')
+
+
+def _outage_boundary(line: str) -> bool:
+    """Stop at next city, section, or independent non-marine advice."""
+    s = line.lstrip()
+    return (not s or s.startswith(_OUTAGE_SECTION)
+            or bool(_OUTAGE_CITY.match(s))
+            or (s.startswith(('✅ План', '✅ Прогулк', '✅ Совет'))
+                and not _OUTAGE_MARINE_FOLLOWUP.search(s)))
+
+
+def _outage_replace_marine_advice(line: str) -> str:
+    """Remove unsupported GO without erasing hazard, wind, or direction."""
+    measures = re.findall(
+        r'(?i)(?:ветер|порывы|волны)[^;\n.]{0,65}?\d+(?:[.,]\d+)?\s*(?:м/с|км/ч|м)\b',
+        line)
+    cautions = []
+    for marker, label in (
+        (r'\bопасно\b', 'опасно'),
+        (r'\bриск\b', 'риск'),
+        (r'лучше\s+отлож', 'лучше отложить'),
+        (r'только\s+опытн', 'только опытным'),
+        (r'не\s+рекоменд', 'не рекомендуется'),
+        (r'шторм\w*', 'шторм'),
+        (r'шквал\w*', 'шквалы'),
+        (r'гроз\w*', 'гроза'),
+        (r'сильн\w*\s+ветер', 'сильный ветер'),
+        (r'не\s+выход\w*', 'не выходить на воду'),
+    ):
+        if re.search(marker, line, re.I):
+            cautions.append(label)
+    directions = re.findall(
+        r'\(([^()\n]*(?:ветер|берег|волны)[^()\n]*)\)', line, re.I)
+    directions = [d.strip() for d in directions
+                  if not _OUTAGE_MARINE_GO.search(d)]
+    # Do not repeat a gust value already present within a preserved direction.
+    facts = [m for m in measures if not any(m.casefold() in d.casefold()
+                                          for d in directions)] + directions
+    return _OUTAGE_SAFE_MARINE + (
+        ' Ограничения прогноза: ' + ', '.join(cautions) + '.'
+        if cautions else '') + (
+        ' По прогнозу: ' + '; '.join(dict.fromkeys(facts)) + '.'
+        if facts else '')
+
+
+def _outage_neutralizes_marine_go(text: str) -> str:
+    """Conservatively neutralize marine GO inside its own city/section."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if not _MARINE_ACTIVITY.search(line):
+            continue
+        cautious = bool(_OUTAGE_MARINE_CAUTION.search(line))
+        if _OUTAGE_MARINE_GO.search(line) or not cautious:
+            lines[i] = _outage_replace_marine_advice(line)
+        # Stop at each new city's weather, section, or a new marine activity.
+        # That next marine line must receive its OWN fact-preserving pass.
+        for j in range(i + 1, min(i + 3, len(lines))):
+            following = lines[j]
+            if _MARINE_ACTIVITY.search(following) or _outage_boundary(following):
+                break
+            if (_OUTAGE_MARINE_FOLLOWUP.search(following)
+                    and (_OUTAGE_MARINE_GO.search(following)
+                         or not _OUTAGE_MARINE_CAUTION.search(following))):
+                lines[j] = _outage_replace_marine_advice(following)
+    return '\n'.join(lines)
+
+
+def _outage_unresolved_marine_go(text: str) -> bool:
+    """Fail closed if a marine GO or ambiguous claim survives sanitization."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if not _MARINE_ACTIVITY.search(line):
+            continue
+        if (_OUTAGE_MARINE_GO.search(line)
+                or not _OUTAGE_MARINE_CAUTION.search(line)):
+            return True
+        for following in lines[i + 1:i + 3]:
+            if _MARINE_ACTIVITY.search(following) or _outage_boundary(following):
+                break
+            if (_OUTAGE_MARINE_FOLLOWUP.search(following)
+                    and (_OUTAGE_MARINE_GO.search(following)
+                         or not _OUTAGE_MARINE_CAUTION.search(following))):
+                return True
+    return False
+
+
 def prepare_registered_emma_warning_for_publisher(*,
         final_sanitized_text: str, enabled: bool, at_utc: datetime,
         forecast_date: date, sanitizer: Callable[[str], object]) -> PublisherWarningDecision:
@@ -393,10 +502,12 @@ def prepare_registered_emma_warning_for_publisher(*,
             warning_attached=True, reason='METEOALARM_DISTRIBUTION_VERIFIED_WARNING',
             expires_utc=end)
     except (OSError, TimeoutError, HTTPException):
-        # Optional source transport outage is not a newly proven weather hazard.
-        # Preserve the independently validated ordinary post, without a CAP
-        # excerpt, city clearance or any new positive marine assertion.
-        return replace(original, reason='SOURCE_UNAVAILABLE')
+        # Keep the ordinary forecast; CAP outage proves neither safety nor
+        # hazard. Suppress only unsupported marine GO/ambiguous guidance.
+        safe_text = _outage_neutralizes_marine_go(final_sanitized_text)
+        return replace(original, publisher_text=safe_text,
+                       block_publication=_outage_unresolved_marine_go(safe_text),
+                       reason='SOURCE_UNAVAILABLE')
     except (CaptureRejected, ET.ParseError, TypeError, ValueError,
             AttributeError, KeyError, OverflowError):
         # Malformed/partial/untrusted warning evidence is NOT a mere outage:

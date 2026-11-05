@@ -26,6 +26,14 @@ try:  # python-telegram-bot exposes retryable exceptions here in CI/prod.
 except Exception:  # pragma: no cover - local lightweight telegram module fallback
     NetworkError = RetryAfter = ServerError = TimedOut = None  # type: ignore[assignment]
 
+# PTB 20.x has RetryAfter but may not have ServerError. The legacy aggregate
+# import above can therefore fail; keep OFF behavior and import the ON-path
+# 429 class independently instead of weakening the exception contract.
+try:
+    from telegram.error import RetryAfter as _CY_RETRY_AFTER
+except ImportError:  # pragma: no cover - mocked/offline telegram or missing PTB
+    _CY_RETRY_AFTER = None
+
 import cy_cycle_date
 from editorial_voice import build_evening_human_line, build_morning_human_line
 from post_common import build_message, sup_safety_level
@@ -3635,17 +3643,33 @@ def _is_transient_telegram_error(exc: Exception) -> bool:
     return isinstance(exc, (ConnectionError, TimeoutError, OSError))
 
 
-async def _send_telegram_message_with_retry(bot: Bot, **kwargs) -> object:
+async def _send_telegram_message_with_retry(
+    bot: Bot, *, before_attempt: Callable[[], None] | None = None,
+    retry_after_only: bool = False, **kwargs,
+) -> object:
     delays = [2.0, 5.0, 10.0]
     for attempt in range(1, len(delays) + 2):
+        # Run outside the retry catch: an expired CAP is never retried.
+        if before_attempt is not None:
+            before_attempt()
         try:
             return await bot.send_message(**kwargs)
         except Exception as exc:
+            if retry_after_only:
+                # Only a concrete Telegram 429 rejection is safe to retry.
+                # Timeouts/network errors may occur after Telegram accepted it.
+                if not (isinstance(_CY_RETRY_AFTER, type)
+                        and isinstance(exc, _CY_RETRY_AFTER)):
+                    raise
             if not _is_transient_telegram_error(exc) or attempt > len(delays):
                 raise
             delay = getattr(exc, "retry_after", None)
             try:
-                delay_seconds = float(delay) if delay is not None else delays[attempt - 1]
+                delay_seconds = (
+                    float(delay.total_seconds())
+                    if retry_after_only and hasattr(delay, 'total_seconds')
+                    else float(delay) if delay is not None else delays[attempt - 1]
+                )
             except (TypeError, ValueError):
                 delay_seconds = delays[attempt - 1]
             logging.warning(
@@ -3680,8 +3704,14 @@ async def _send_telegram_text_chunks(
             text = prefix + chunk
         else:
             text = chunk
+        # OFF path retains the original exact retry call/behavior.
+        retry_guards = (
+            {"before_attempt": before_chunk, "retry_after_only": True}
+            if require_confirmed_ids else {}
+        )
         message = await _send_telegram_message_with_retry(
             bot,
+            **retry_guards,
             chat_id=chat_id,
             text=text,
             parse_mode=constants.ParseMode.HTML,

@@ -458,12 +458,14 @@ class PublisherWarningBridgeTests(unittest.TestCase):
         affirmative = BASE.replace('безопасность не подтверждена', '✅ можно кататься')
         r = self._run(text=affirmative, fake=lambda _url: (_ for _ in ()).throw(
             IncompleteRead(b'', 20)))
-        # A pure optional HTTPS failure must not suppress the otherwise
-        # validated ordinary post or add an unverified warning/all-clear.
+        # A source outage preserves forecast facts but must not retain
+        # unsupported marine GO or add unverified warning/all-clear claims.
         self.assertFalse(r.block_publication)
         self.assertFalse(r.warning_attached)
         self.assertEqual('SOURCE_UNAVAILABLE', r.reason)
-        self.assertEqual(affirmative, r.publisher_text)
+        self.assertNotIn('✅ можно кататься', r.publisher_text)
+        self.assertIn('безопасность не подтверждена', r.publisher_text)
+        self.assertIn('⚠️ По прогнозу: сильный ветер', r.publisher_text)
 
     def test_source_cross_host_rejected_without_fetch(self):
         atom, docs = pair()
@@ -560,7 +562,11 @@ class PublisherWarningBridgeTests(unittest.TestCase):
             with self.subTest(kind='transport_unavailable', text=text[-24:]):
                 out = self._run(text=text,
                     fake=lambda _url: (_ for _ in ()).throw(TimeoutError('offline')))
-                self.assertEqual(text, out.publisher_text)
+                self.assertNotEqual(text, out.publisher_text)
+                self.assertIn('безопасность не подтверждена', out.publisher_text)
+                self.assertNotIn('✅ можно кататься', out.publisher_text)
+                self.assertNotIn('Море сегодня', out.publisher_text)
+                self.assertIn('⚠️ По прогнозу: сильный ветер', out.publisher_text)
                 self.assertFalse(out.warning_attached)
                 self.assertFalse(out.block_publication)
                 self.assertEqual('SOURCE_UNAVAILABLE', out.reason)
@@ -759,5 +765,216 @@ class PublisherWarningBridgeTests(unittest.TestCase):
                     self.assertEqual([], harness.photos)
                     self.assertEqual({}, harness.receipts('text'))
                     self.assertEqual({}, harness.receipts('image'))
+
+
+    def test_outage_preserves_cautious_marine_and_unrelated_weather(self):
+        outage = lambda _url: (_ for _ in ()).throw(TimeoutError('offline'))
+        cases = (
+            '🏄 SUP лучше отложить: порывы до 15 м/с',
+            '🏄 SUP: только опытным; порывы до 12 м/с',
+            '🏄 SUP: не рекомендуется',
+        )
+        for marine in cases:
+            text = BASE + '\n' + marine + '\n🏙 Лимассол: хорошая погода\n🌡 Вода 24 °C — отлично\n✅ План завтра: прогулки утром'
+            with self.subTest(marine=marine):
+                out = self._run(text=text, fake=outage)
+                self.assertFalse(out.block_publication)
+                self.assertEqual(text, out.publisher_text)
+                self.assertEqual('SOURCE_UNAVAILABLE', out.reason)
+        positive = BASE.replace('безопасность не подтверждена', '✅ можно кататься')
+        out = self._run(text=positive, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertNotIn('✅ можно кататься', out.publisher_text)
+        self.assertIn('⚠️ По прогнозу: сильный ветер', out.publisher_text)
+        followup = BASE.replace('безопасность не подтверждена',
+                                'безопасность не подтверждена\n✅ Отлично: можно кататься')
+        out = self._run(text=followup, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertNotIn('✅ Отлично: можно кататься', out.publisher_text)
+        self.assertIn('⚠️ По прогнозу: сильный ветер', out.publisher_text)
+        self.assertNotIn('официальные предупреждения проверены', out.publisher_text)
+        # A daily plan is unrelated unless it actually gives marine GO advice.
+        sea_plan = BASE.replace('безопасность не подтверждена',
+                                'безопасность не подтверждена\n✅ План завтра: кататься')
+        out = self._run(text=sea_plan, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertNotIn('✅ План завтра: кататься', out.publisher_text)
+
+    def test_retry_after_expiry_and_unknown_delivery_on_warning_path(self):
+        import asyncio
+        from datetime import datetime, timedelta, timezone
+        import safe_test_post as publisher
+        from cyprus_emma_r8i_handoff import PublisherWarningDecision, warning_overlay_fresh_for_delivery
+        # Regression: PTB 20.x has RetryAfter, but not necessarily ServerError.
+        self.assertIsInstance(publisher._CY_RETRY_AFTER, type)
+        start = datetime(2026, 10, 28, 9, 0, tzinfo=timezone.utc)
+        decision = PublisherWarningDecision('synthetic', warning_attached=True,
+                                            expires_utc=start + timedelta(minutes=5))
+
+        def case(events, *, sleep_minutes=0, warning=True, chunks=None):
+            now = [start]
+            sent = []
+            ids = []
+            sleeps = []
+            class FakeBot:
+                async def send_message(self, **kwargs):
+                    sent.append(kwargs['text'])
+                    event = events[len(sent)-1]
+                    if isinstance(event, BaseException):
+                        raise event
+                    return SimpleNamespace(message_id=event)
+            async def fake_sleep(seconds):
+                sleeps.append(seconds)
+                now[0] += timedelta(minutes=sleep_minutes)
+            def before_chunk():
+                if not warning_overlay_fresh_for_delivery(decision, now[0]):
+                    raise RuntimeError('CY_EMMA_WARNING_BLOCKED: EXPIRED_DURING_TEXT_SEND')
+            async def run():
+                return await publisher._send_telegram_text_chunks(
+                    FakeBot(), chat_id=1, chunks=chunks or ['⚠️ warning', 'weather'],
+                    add_test_label=False, partial_message_ids=ids,
+                    before_chunk=before_chunk if warning else None,
+                    require_confirmed_ids=warning)
+            with patch.object(publisher.asyncio, 'sleep', new=fake_sleep):
+                try:
+                    return ('ok', asyncio.run(run()), sent, sleeps, ids)
+                except Exception as exc:
+                    return (exc, None, sent, sleeps, ids)
+
+        exc, _, sent, sleeps, ids = case([publisher._CY_RETRY_AFTER(2)], sleep_minutes=7)
+        self.assertIsInstance(exc, RuntimeError)
+        self.assertIn('EXPIRED_DURING_TEXT_SEND', str(exc))
+        self.assertEqual(1, len(sent))
+        self.assertEqual([], ids)
+        self.assertEqual(1, len(sleeps))
+
+        result, got, sent, sleeps, ids = case([publisher._CY_RETRY_AFTER(2), 101, 102], sleep_minutes=1)
+        self.assertEqual('ok', result)
+        self.assertEqual([101, 102], got)
+        self.assertEqual(3, len(sent))
+        self.assertEqual([101, 102], ids)
+
+        for failure in (TimeoutError('unknown'), OSError('network unknown')):
+            with self.subTest(failure=type(failure).__name__):
+                exc, _, sent, sleeps, ids = case([failure])
+                self.assertIsInstance(exc, type(failure))
+                self.assertEqual(1, len(sent))
+                self.assertEqual([], sleeps)
+                self.assertEqual([], ids)
+
+        # First confirmed chunk followed by ambiguous second-chunk timeout:
+        # do not send the photo or write complete delivery receipts in main().
+        exc, _, sent, sleeps, ids = case([201, TimeoutError('unknown')])
+        self.assertIsInstance(exc, TimeoutError)
+        self.assertEqual(2, len(sent))
+        self.assertEqual([201], ids)
+
+        # OFF call still retries TimedOut/OSError as before.
+        result, got, sent, sleeps, ids = case([TimeoutError('legacy'), 301, 302], warning=False)
+        self.assertEqual('ok', result)
+        self.assertEqual([301, 302], got)
+        self.assertEqual(3, len(sent))
+
+    def test_outage_keeps_explicit_danger_and_wind_direction(self):
+        outage = lambda _url: (_ for _ in ()).throw(TimeoutError('offline'))
+        mixed = BASE.replace('безопасность не подтверждена',
+                             'опасно — ветер 12 м/с; ✅ можно кататься')
+        out = self._run(text=mixed, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertIn('опасно', out.publisher_text)
+        self.assertIn('ветер 12 м/с', out.publisher_text)
+        self.assertNotIn('✅ можно кататься', out.publisher_text)
+        self.assertIn('SOURCE_UNAVAILABLE', out.reason)
+
+        # A benign visibility observation must not erase a no-go sentence.
+        caution = BASE.replace('безопасность не подтверждена',
+                               'опасно — ветер 12 м/с, хорошая видимость')
+        out = self._run(text=caution, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertEqual(caution, out.publisher_text)
+
+        direction = BASE.replace('безопасность не подтверждена',
+                                '✅ Отлично: Серф (западный ветер, вдоль берега)')
+        out = self._run(text=direction, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertNotIn('✅ Отлично: Серф', out.publisher_text)
+        self.assertIn('западный ветер, вдоль берега', out.publisher_text)
+
+        # `опасн` must not accidentally match the substring in `безопасно`.
+        unsupported = BASE.replace('безопасность не подтверждена',
+                                   'безопасно, хорошая видимость')
+        out = self._run(text=unsupported, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertNotIn('безопасно, хорошая видимость', out.publisher_text)
+        self.assertIn('безопасность не подтверждена', out.publisher_text)
+
+        unsafe = BASE.replace('безопасность не подтверждена',
+                              'небезопасно: порывы до 14 м/с')
+        out = self._run(text=unsafe, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertEqual(unsafe, out.publisher_text)
+
+    def test_outage_respects_city_boundary_and_each_marine_line(self):
+        # Read two existing FORMAT_V2 fixtures without importing its side-effectful
+        # module (it installs isolated Telegram/pendulum stubs).
+        import ast
+        fixture_src = (ROOT / 'tools/test_format_v2_cy.py').read_text(encoding='utf-8')
+        fixtures = {
+            target.id: ast.literal_eval(node.value)
+            for node in ast.parse(fixture_src).body
+            if isinstance(node, ast.Assign) and len(node.targets) == 1
+            for target in node.targets
+            if isinstance(target, ast.Name)
+            and target.id in ('GROUPED_WATER_SPORTS_EVENING', 'SURF_CARRY_OVER_EVENING')
+        }
+        self.assertEqual(2, len(fixtures))
+        outage = lambda _url: (_ for _ in ()).throw(TimeoutError('offline'))
+        for name, text in fixtures.items():
+            with self.subTest(fixture=name):
+                out = self._run(text=text, fake=outage)
+                self.assertFalse(out.block_publication)
+                self.assertEqual('SOURCE_UNAVAILABLE', out.reason)
+                original_marine = [line for line in text.splitlines()
+                                   if '🧜‍♂️ Отлично:' in line]
+                self.assertTrue(original_marine)
+                self.assertNotIn('🧜‍♂️ Отлично:', out.publisher_text)
+                self.assertEqual(len(original_marine),
+                    out.publisher_text.count('По прогнозу: западный ветер, вдоль берега.'))
+                if name == 'GROUPED_WATER_SPORTS_EVENING':
+                    self.assertIn('SUP лучше отложить: порывы до 15 м/с',
+                                  out.publisher_text)
+
+    def test_outage_followup_positive_and_mixed_danger(self):
+        outage = lambda _url: (_ for _ in ()).throw(TimeoutError('offline'))
+        for advice in ('Хорошие условия, чтобы кататься вечером',
+                       'Хорошие волны для сёрфа'):
+            with self.subTest(advice=advice):
+                text = BASE.replace('безопасность не подтверждена',
+                                    'не рекомендуется\n' + advice)
+                out = self._run(text=text, fake=outage)
+                self.assertFalse(out.block_publication)
+                self.assertNotIn(advice, out.publisher_text)
+                self.assertIn('безопасность не подтверждена', out.publisher_text)
+        text = BASE.replace('безопасность не подтверждена',
+                            'опасно, хорошие волны для сёрфа')
+        out = self._run(text=text, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertNotIn('хорошие волны для сёрфа', out.publisher_text)
+        self.assertIn('Ограничения прогноза: опасно', out.publisher_text)
+        mixed_hazard = BASE.replace('безопасность не подтверждена',
+            'шторм, сильный ветер 16 м/с; ✅ можно кататься')
+        out = self._run(text=mixed_hazard, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertIn('шторм', out.publisher_text)
+        self.assertIn('сильный ветер', out.publisher_text)
+        self.assertIn('16 м/с', out.publisher_text)
+        self.assertNotIn('✅ можно кататься', out.publisher_text)
+        gust = BASE.replace('безопасность не подтверждена',
+            '✅ Отлично: Кайт (порывы до 10 м/с, северо-западный ветер к берегу)')
+        out = self._run(text=gust, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertEqual(1, out.publisher_text.count('порывы до 10 м/с'))
+        self.assertIn('северо-западный ветер к берегу', out.publisher_text)
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
