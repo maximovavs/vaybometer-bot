@@ -16,6 +16,7 @@ import logging
 import os
 from pathlib import Path
 import re
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 import pendulum
@@ -24,6 +25,14 @@ try:  # python-telegram-bot exposes retryable exceptions here in CI/prod.
     from telegram.error import NetworkError, RetryAfter, ServerError, TimedOut
 except Exception:  # pragma: no cover - local lightweight telegram module fallback
     NetworkError = RetryAfter = ServerError = TimedOut = None  # type: ignore[assignment]
+
+# PTB 20.x has RetryAfter but may not have ServerError. The legacy aggregate
+# import above can therefore fail; keep OFF behavior and import the ON-path
+# 429 class independently instead of weakening the exception contract.
+try:
+    from telegram.error import RetryAfter as _CY_RETRY_AFTER
+except ImportError:  # pragma: no cover - mocked/offline telegram or missing PTB
+    _CY_RETRY_AFTER = None
 
 import cy_cycle_date
 from editorial_voice import build_evening_human_line, build_morning_human_line
@@ -3634,17 +3643,33 @@ def _is_transient_telegram_error(exc: Exception) -> bool:
     return isinstance(exc, (ConnectionError, TimeoutError, OSError))
 
 
-async def _send_telegram_message_with_retry(bot: Bot, **kwargs) -> object:
+async def _send_telegram_message_with_retry(
+    bot: Bot, *, before_attempt: Callable[[], None] | None = None,
+    retry_after_only: bool = False, **kwargs,
+) -> object:
     delays = [2.0, 5.0, 10.0]
     for attempt in range(1, len(delays) + 2):
+        # Run outside the retry catch: an expired CAP is never retried.
+        if before_attempt is not None:
+            before_attempt()
         try:
             return await bot.send_message(**kwargs)
         except Exception as exc:
+            if retry_after_only:
+                # Only a concrete Telegram 429 rejection is safe to retry.
+                # Timeouts/network errors may occur after Telegram accepted it.
+                if not (isinstance(_CY_RETRY_AFTER, type)
+                        and isinstance(exc, _CY_RETRY_AFTER)):
+                    raise
             if not _is_transient_telegram_error(exc) or attempt > len(delays):
                 raise
             delay = getattr(exc, "retry_after", None)
             try:
-                delay_seconds = float(delay) if delay is not None else delays[attempt - 1]
+                delay_seconds = (
+                    float(delay.total_seconds())
+                    if retry_after_only and hasattr(delay, 'total_seconds')
+                    else float(delay) if delay is not None else delays[attempt - 1]
+                )
             except (TypeError, ValueError):
                 delay_seconds = delays[attempt - 1]
             logging.warning(
@@ -3665,22 +3690,38 @@ async def _send_telegram_text_chunks(
     chunks: list[str],
     add_test_label: bool,
     partial_message_ids: list[int] | None = None,
+    before_chunk: Callable[[], None] | None = None,
+    require_confirmed_ids: bool = False,
 ) -> list[int]:
     message_ids: list[int] = []
     for idx, chunk in enumerate(chunks, start=1):
+        # The warning-bearing ON path rechecks expiry immediately before
+        # EVERY Telegram text call, including calls after partial delivery.
+        if before_chunk is not None:
+            before_chunk()
         if add_test_label:
             prefix = f"<b>Test safe post {idx}/{len(chunks)}</b>\n" if len(chunks) > 1 else "<b>Test safe post</b>\n"
             text = prefix + chunk
         else:
             text = chunk
+        # OFF path retains the original exact retry call/behavior.
+        retry_guards = (
+            {"before_attempt": before_chunk, "retry_after_only": True}
+            if require_confirmed_ids else {}
+        )
         message = await _send_telegram_message_with_retry(
             bot,
+            **retry_guards,
             chat_id=chat_id,
             text=text,
             parse_mode=constants.ParseMode.HTML,
             disable_web_page_preview=True,
         )
         message_id = getattr(message, "message_id", None)
+        if require_confirmed_ids and (type(message_id) is not int or message_id <= 0):
+            # A missing acknowledgement for the first warning must not be
+            # followed by weather text that might be published without it.
+            raise RuntimeError('CY_EMMA_WARNING_BLOCKED: TEXT_DELIVERY_UNCONFIRMED')
         if isinstance(message_id, int):
             message_ids.append(message_id)
             if partial_message_ids is not None:
@@ -3823,16 +3864,53 @@ async def main() -> None:
         print("\n===== FORMAT_V2 SAFETY SUMMARY =====\n")
         print(validation_summary(final_result))
 
-    # R8-H6 integration candidate: preview is never supplied in production.
-    # A future source handoff requires separate authorization and safety tests.
+    # Historical H6 no-op remains unchanged. The registered MeteoAlarm bridge
+    # is separately gated OFF by default and cannot run in image-only recovery.
     from tools.cyprus_emma_pipeline_r8h6 import apply_emma_preview_offline
     final_result.text = apply_emma_preview_offline(final_result.text)
+
+    emma_delivery = None
+    if not args.image_only_recovery and _env_on("CY_EMMA_WARNING_OVERLAY"):
+        from tools.cyprus_emma_r8i_handoff import (
+            prepare_registered_emma_warning_for_publisher,
+            warning_first_for_delivery,
+            warning_overlay_survives_telegram_split,
+            warning_overlay_fresh_for_delivery,
+            resolve_emma_publication_forecast_date,
+        )
+        emma_target_date = resolve_emma_publication_forecast_date(
+            mode=mode, base_date=base_date.date(), evening_cycle=evening_cycle)
+        if emma_target_date is None:
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: UNKNOWN_FORECAST_DATE')
+        emma_delivery = prepare_registered_emma_warning_for_publisher(
+            final_sanitized_text=final_result.text,
+            enabled=True,
+            at_utc=dt.datetime.now(dt.timezone.utc),
+            forecast_date=emma_target_date,
+            sanitizer=sanitize_post_text,
+        )
+        if emma_delivery.block_publication:
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: ' + emma_delivery.reason)
+        final_result.text = emma_delivery.publisher_text
 
     final_result.text = finalize_hashtags_at_end(
         final_result.text,
         canonical_hashtags=_CY_CANONICAL_DAILY_HASHTAGS if use_format_v2 else None,
     )
-    chunks = split_telegram_text(final_result.text)
+    # Reorder only Telegram delivery chunks, not the weather text used by
+    # visual generation, date receipts, diagnostics and existing safeguards.
+    delivery_text = final_result.text
+    if emma_delivery and emma_delivery.warning_attached:
+        delivery_text = warning_first_for_delivery(delivery_text)
+        if delivery_text is None:
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: WARNING_FIRST_INTEGRITY')
+    chunks = split_telegram_text(delivery_text)
+    if emma_delivery and emma_delivery.warning_attached:
+        if not warning_overlay_survives_telegram_split(delivery_text, chunks):
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: TELEGRAM_SPLIT_INTEGRITY')
+        if not warning_overlay_fresh_for_delivery(
+                emma_delivery, dt.datetime.now(dt.timezone.utc)):
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: EXPIRED_BEFORE_IMAGE')
     _CY_MORNING_FINAL_TEXT = final_result.text
     _cy_morning_phase(
         "text_ready",
@@ -3857,34 +3935,48 @@ async def main() -> None:
     if args.image_only_recovery and not _cy_is_production_text_send(resolved_text_chat_id):
         raise SystemExit("--image-only-recovery разрешён только для CHANNEL_ID production")
 
-    if args.generate_image:
+    # Only the opt-in warning-bearing ON-path sends text first. OFF-path and
+    # explicit image-only recovery retain their historical behavior.
+    emma_image_deferred = bool(
+        emma_delivery and emma_delivery.warning_attached and args.send
+        and args.generate_image and (args.send_image_to_chat or args.send_image_to_test)
+    )
+
+    async def _cy_generate_image_for_current_post():
+        if args.generate_image:
+            _cy_morning_phase(
+                "image_started",
+                target_date=_CY_MORNING_TARGET_DATE,
+                chat_type=chat_type,
+            )
+        result = await _build_safe_test_image(
+            final_result.text,
+            mode,
+            generate_image=args.generate_image,
+            send_image_to_test=args.send_image_to_test,
+            send_image_to_chat=args.send_image_to_chat,
+            image_chat_id=resolved_text_chat_id,
+            image_only_recovery=args.image_only_recovery,
+            # Publication paths enforce provider semantic QA. Direct unit harnesses
+            # can inject a fake evaluator without making any network call.
+            provider_semantic_qa_evaluator=None,
+        )
+        status = str(result.get("result") or "unknown")
         _cy_morning_phase(
-            "image_started",
+            cy_morning_image_phase_for_result(status),
             target_date=_CY_MORNING_TARGET_DATE,
             chat_type=chat_type,
+            image_result=status,
+            telegram_message_ids=result.get("message_ids"),
+            image_error_type=result.get("error_type"),
         )
-    image_result = await _build_safe_test_image(
-        final_result.text,
-        mode,
-        generate_image=args.generate_image,
-        send_image_to_test=args.send_image_to_test,
-        send_image_to_chat=args.send_image_to_chat,
-        image_chat_id=resolved_text_chat_id,
-        image_only_recovery=args.image_only_recovery,
-        # Publication paths enforce provider semantic QA. Direct unit harnesses
-        # can inject a fake evaluator without making any network call.
-        provider_semantic_qa_evaluator=None,
-    )
-    image_status = str(image_result.get("result") or "unknown")
-    image_phase = cy_morning_image_phase_for_result(image_status)
-    _cy_morning_phase(
-        image_phase,
-        target_date=_CY_MORNING_TARGET_DATE,
-        chat_type=chat_type,
-        image_result=image_status,
-        telegram_message_ids=image_result.get("message_ids"),
-        image_error_type=image_result.get("error_type"),
-    )
+        return result, status
+
+    if emma_image_deferred:
+        image_result = {"result": "deferred_until_text_sent", "message_ids": []}
+        image_status = "deferred_until_text_sent"
+    else:
+        image_result, image_status = await _cy_generate_image_for_current_post()
 
     if args.image_only_recovery:
         logging.info("CY IMAGE RECOVERY: text send skipped by design")
@@ -3908,6 +4000,11 @@ async def main() -> None:
             image_result=image_result.get("result"),
         )
         return
+
+    if emma_delivery and emma_delivery.warning_attached:
+        if not warning_overlay_fresh_for_delivery(
+                emma_delivery, dt.datetime.now(dt.timezone.utc)):
+            raise SystemExit('CY_EMMA_WARNING_BLOCKED: EXPIRED_BEFORE_SEND')
 
     if not TOKEN:
         raise SystemExit("TELEGRAM_TOKEN не задан")
@@ -3960,6 +4057,18 @@ async def main() -> None:
         chunk_count=len(chunks),
         final_text_length=len(final_result.text),
     )
+    # No change to the OFF path or image-only recovery. A warning-bearing
+    # send is fail-closed on expiry and missing acknowledgement per chunk.
+    emma_warning_send = bool(emma_delivery and emma_delivery.warning_attached)
+    def _emma_before_chunk() -> None:
+        if not warning_overlay_fresh_for_delivery(
+                emma_delivery, dt.datetime.now(dt.timezone.utc)):
+            raise RuntimeError('CY_EMMA_WARNING_BLOCKED: EXPIRED_DURING_TEXT_SEND')
+    # Keep the exact OFF-path call signature for legacy publisher harnesses.
+    emma_send_kwargs = (
+        {"before_chunk": _emma_before_chunk, "require_confirmed_ids": True}
+        if emma_warning_send else {}
+    )
     try:
         sent_message_ids = await _send_telegram_text_chunks(
             bot,
@@ -3967,6 +4076,7 @@ async def main() -> None:
             chunks=chunks,
             add_test_label=not args.no_test_label,
             partial_message_ids=_CY_MORNING_PARTIAL_TEXT_MESSAGE_IDS,
+            **emma_send_kwargs,
         )
     except Exception as exc:
         _cy_morning_phase(
@@ -3985,6 +4095,10 @@ async def main() -> None:
         chunk_count=len(chunks),
         telegram_message_ids=sent_message_ids,
     )
+    if emma_image_deferred and (
+            len(sent_message_ids) != len(chunks)
+            or any(type(mid) is not int or mid <= 0 for mid in sent_message_ids)):
+        raise SystemExit('CY_EMMA_WARNING_BLOCKED: TEXT_DELIVERY_UNCONFIRMED')
     receipt_path = ""
     if mode == "morning" and chat_type == "production":
         receipt = cy_morning_maybe_write_delivery_receipt(
@@ -4014,16 +4128,17 @@ async def main() -> None:
                 chunk_count=len(chunks),
                 telegram_message_ids=sent_message_ids,
             )
-    _cy_morning_phase(
-        "completed",
-        target_date=_CY_MORNING_TARGET_DATE,
-        chat_type=chat_type,
-        sent=True,
-        chunk_count=len(chunks),
-        final_text_length=len(final_result.text),
-        image_result=image_result.get("result"),
-        receipt_path=receipt_path,
-    )
+    if not emma_image_deferred:
+        _cy_morning_phase(
+            "completed",
+            target_date=_CY_MORNING_TARGET_DATE,
+            chat_type=chat_type,
+            sent=True,
+            chunk_count=len(chunks),
+            final_text_length=len(final_result.text),
+            image_result=image_result.get("result"),
+            receipt_path=receipt_path,
+        )
     expected_text_date = (
         evening_cycle.expected_forecast_date.isoformat()
         if evening_cycle is not None and evening_cycle.expected_forecast_date
@@ -4052,6 +4167,21 @@ async def main() -> None:
         print(f"CY_TEXT_RECEIPT_WRITTEN: {receipt_path}")
     elif _cy_is_production_text_send(chat_id):
         print("CY_TEXT_RECEIPT_NOT_WRITTEN: missing valid Telegram message ids")
+
+    if emma_image_deferred:
+        # No image unless *every* text chunk has a confirmed Telegram message id.
+        # The text receipt has already been persisted when one is applicable.
+        image_result, image_status = await _cy_generate_image_for_current_post()
+        _cy_morning_phase(
+            "completed",
+            target_date=_CY_MORNING_TARGET_DATE,
+            chat_type=chat_type,
+            sent=True,
+            chunk_count=len(chunks),
+            final_text_length=len(final_result.text),
+            image_result=image_result.get("result"),
+            receipt_path=receipt_path,
+        )
     logging.info("SAFE TEST sent: chat=%s chunks=%d format_v2=%s", chat_id, len(chunks), use_format_v2)
 
 

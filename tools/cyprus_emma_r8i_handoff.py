@@ -24,12 +24,12 @@ from xml.etree import ElementTree as ET
 from typing import Any, Callable, Mapping
 
 try:
-    from .cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM,
+    from .cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM, CAP,
                                             CY_CAP_PATH, MAX_BYTES, _xml, _exact_https_url)
     from .cyprus_emma_pipeline_r8h6 import (apply_emma_preview_offline,
                                             guarded_preview_warning_capture)
 except ImportError:
-    from cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM,
+    from cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM, CAP,
                                            CY_CAP_PATH, MAX_BYTES, _xml, _exact_https_url)
     from cyprus_emma_pipeline_r8h6 import (apply_emma_preview_offline,
                                           guarded_preview_warning_capture)
@@ -282,3 +282,307 @@ def inspect_registered_cyprus_offline(*, final_sanitized_text: str,
             OverflowError, OSError, TimeoutError, HTTPException):
         return WarningHandoff(final_sanitized_text,
                               reason='SOURCE_CAPTURE_REJECTED')
+
+
+# R8-J: bounded publisher integration of source-bound MeteoAlarm-distributed alerts.
+# It is never called when the feature flag in safe_test_post.py is OFF.
+from datetime import timedelta
+from xml.etree import ElementTree as ET
+import re
+
+
+@dataclass(frozen=True)
+class PublisherWarningDecision:
+    publisher_text: str
+    warning_attached: bool = False
+    block_publication: bool = False
+    reason: str = 'DISABLED'
+    expires_utc: datetime | None = None
+
+
+_MARINE_ACTIVITY = re.compile(r'\bSUP\b|\bkite\b|\bsurf\b|кайт|с[её]рф|сап|виндс[её]рф', re.I)
+_MARINE_NO_GO = re.compile(r'не\s+(?:рекоменд|подход|подтвержден)|опасн|запрещ|\bSTOP\b|\bNO_GO\b|н/д|🚫|⛔|❌', re.I)
+_MARINE_GO = re.compile(r'✅|🟢|\bGO\b|\bможно\b|\bподходит\b|\bотличн|\bхорош|\bидеальн', re.I)
+
+
+def _marine_contradiction(text: str) -> bool:
+    """Never append a weather hazard beside a positive/ambiguous marine recommendation.
+
+    This is deliberately narrower than assessing the coast: no EMMA-to-spot
+    mapping is known, so it cannot establish that any activity is safe.
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if not _MARINE_ACTIVITY.search(line):
+            continue
+        if not _MARINE_NO_GO.search(line) or _MARINE_GO.search(line):
+            return True
+        # A positive recommendation may be placed on the following line
+        # beneath an activity heading. Unrelated section headings terminate it.
+        for following in lines[i + 1:i + 3]:
+            if not following.strip() or following.lstrip().startswith(('✨', '#', '⚠️')):
+                break
+            if _MARINE_GO.search(following):
+                return True
+    return False
+
+
+_OUTAGE_MARINE_CAUTION = re.compile(
+    r'не\s+(?:рекоменд|подход|подтвержден)|'
+    r'лучше\s+отлож|отложить|только\s+опытн|'
+    r'шторм|шквал|гроз|сильн\w*\s+ветер|не\s+выход\w*|'
+    r'\b(?:опасн|небезопасн)|не\s+безопасн|риск|запрещ|\bSTOP\b|\bNO_GO\b|н/д|🚫|⛔|❌', re.I)
+_OUTAGE_MARINE_GO = re.compile(
+    r'✅|🟢|\bGO\b|\bможно\b|\bподходит\b|'
+    # A good-visibility observation does not turn a caution into marine GO.
+    # Require a nearby explicit water-sport cue; ordinary good visibility is
+    # not an affirmative marine recommendation.
+    r'\bотличн|\bхорош\w*(?=[^\n]{0,80}\b(?:кататься|катания|'
+    r'с[её]рф\w*|кайт\w*|на\s+вод[уе]|выходить\s+на))|'
+    r'\bидеальн|\bразрешен', re.I)
+_OUTAGE_MARINE_FOLLOWUP = re.compile(
+    r'кататься|на\s+воду|выходить\s+на|\bSUP\b|кайт|с[её]рф|\bсап\b|'
+    r'доск(?:е|ах|у)|парус', re.I)
+_OUTAGE_SECTION = ('🏙', '🏖', '🏞', '📍', '🌆', '🏘', '🗺', '🌡', '💬',
+                   '✨', '☀️', '🌇', '🌊', '#', '⚠️', '🚨', '❗', '🛑')
+_OUTAGE_CITY = re.compile(
+    r'^(?:Лимассол|Ларнака|Пафос|Паралимни|Айя-Напа|Протарас|'
+    r'Никосия|Тродос|Полис|Пейя|Кирения)\s*:', re.I)
+_OUTAGE_SAFE_MARINE = ('🏄 SUP / кайт / сёрф: безопасность не подтверждена; '
+                       'источник официальных предупреждений недоступен.')
+
+
+def _outage_boundary(line: str) -> bool:
+    """Stop at next city, section, or independent non-marine advice."""
+    s = line.lstrip()
+    return (not s or s.startswith(_OUTAGE_SECTION)
+            or bool(_OUTAGE_CITY.match(s))
+            or (s.startswith(('✅ План', '✅ Прогулк', '✅ Совет'))
+                and not _OUTAGE_MARINE_FOLLOWUP.search(s)))
+
+
+def _outage_replace_marine_advice(line: str) -> str:
+    """Remove unsupported GO without erasing hazard, wind, or direction."""
+    measures = re.findall(
+        r'(?i)(?:ветер|порывы|волны)[^;\n.]{0,65}?\d+(?:[.,]\d+)?\s*(?:м/с|км/ч|м)\b',
+        line)
+    cautions = []
+    for marker, label in (
+        (r'\bопасно\b', 'опасно'),
+        (r'\bриск\b', 'риск'),
+        (r'лучше\s+отлож', 'лучше отложить'),
+        (r'только\s+опытн', 'только опытным'),
+        (r'не\s+рекоменд', 'не рекомендуется'),
+        (r'шторм\w*', 'шторм'),
+        (r'шквал\w*', 'шквалы'),
+        (r'гроз\w*', 'гроза'),
+        (r'сильн\w*\s+ветер', 'сильный ветер'),
+        (r'не\s+выход\w*', 'не выходить на воду'),
+    ):
+        if re.search(marker, line, re.I):
+            cautions.append(label)
+    directions = re.findall(
+        r'\(([^()\n]*(?:ветер|берег|волны)[^()\n]*)\)', line, re.I)
+    directions = [d.strip() for d in directions
+                  if not _OUTAGE_MARINE_GO.search(d)]
+    # Do not repeat a gust value already present within a preserved direction.
+    facts = [m for m in measures if not any(m.casefold() in d.casefold()
+                                          for d in directions)] + directions
+    return _OUTAGE_SAFE_MARINE + (
+        ' Ограничения прогноза: ' + ', '.join(cautions) + '.'
+        if cautions else '') + (
+        ' По прогнозу: ' + '; '.join(dict.fromkeys(facts)) + '.'
+        if facts else '')
+
+
+def _outage_neutralizes_marine_go(text: str) -> str:
+    """Conservatively neutralize marine GO inside its own city/section."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if not _MARINE_ACTIVITY.search(line):
+            continue
+        cautious = bool(_OUTAGE_MARINE_CAUTION.search(line))
+        if _OUTAGE_MARINE_GO.search(line) or not cautious:
+            lines[i] = _outage_replace_marine_advice(line)
+        # Stop at each new city's weather, section, or a new marine activity.
+        # That next marine line must receive its OWN fact-preserving pass.
+        for j in range(i + 1, min(i + 3, len(lines))):
+            following = lines[j]
+            if _MARINE_ACTIVITY.search(following) or _outage_boundary(following):
+                break
+            if (_OUTAGE_MARINE_FOLLOWUP.search(following)
+                    and (_OUTAGE_MARINE_GO.search(following)
+                         or not _OUTAGE_MARINE_CAUTION.search(following))):
+                lines[j] = _outage_replace_marine_advice(following)
+    return '\n'.join(lines)
+
+
+def _outage_unresolved_marine_go(text: str) -> bool:
+    """Fail closed if a marine GO or ambiguous claim survives sanitization."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if not _MARINE_ACTIVITY.search(line):
+            continue
+        if (_OUTAGE_MARINE_GO.search(line)
+                or not _OUTAGE_MARINE_CAUTION.search(line)):
+            return True
+        for following in lines[i + 1:i + 3]:
+            if _MARINE_ACTIVITY.search(following) or _outage_boundary(following):
+                break
+            if (_OUTAGE_MARINE_FOLLOWUP.search(following)
+                    and (_OUTAGE_MARINE_GO.search(following)
+                         or not _OUTAGE_MARINE_CAUTION.search(following))):
+                return True
+    return False
+
+
+def prepare_registered_emma_warning_for_publisher(*,
+        final_sanitized_text: str, enabled: bool, at_utc: datetime,
+        forecast_date: date, sanitizer: Callable[[str], object]) -> PublisherWarningDecision:
+    """Build warning-bearing *existing weather post*, not an independent CAP post.
+
+    The only acquisition route uses the built-in TLS/hostname-verified HTTPS
+    fetcher, exact registered Cyprus URLs and all R8-G1/H5/H6 guards.
+    No injectable transport; offline tests patch the internal HTTPS function.
+    Never upgrade the older G1 UNKNOWN/NO_POST fields, never assert an all-clear.
+    """
+    if not isinstance(final_sanitized_text, str):
+        raise TypeError('finalized text must be str')
+    original = PublisherWarningDecision(final_sanitized_text)
+    if not enabled:
+        return original
+    # Feed uncertainty must never coexist with new positive SUP/kite/surf advice.
+    # This guard is only in the future opt-in path, not existing production.
+    fallback = replace(original,
+        block_publication=_marine_contradiction(final_sanitized_text))
+    try:
+        if not isinstance(at_utc, datetime) or at_utc.utcoffset() is None:
+            return replace(fallback, reason='UNKNOWN_CLOCK')
+        atom, caps, source = acquire_registered_cyprus_pair(at_utc=at_utc)
+        inspected = inspect_offline_capture(
+            final_sanitized_text=final_sanitized_text, atom=atom,
+            cap_by_url=caps, source=source, at_utc=at_utc,
+            forecast_date=forecast_date, sanitizer=sanitizer,
+            attribute_translation=True)
+        if (inspected.state != 'UNKNOWN' or inspected.publication_action != 'NO_POST'
+                or any((inspected.official_warnings_checked,
+                        inspected.clean_verified, inspected.city_cleared,
+                        inspected.positive_water_guidance_allowed,
+                        inspected.national_inventory_complete))
+                or inspected.reason != 'CAP_SENDER_AND_SOURCE_UNVERIFIED'
+                or inspected.publisher_text != final_sanitized_text
+                or inspected.offline_candidate == ''
+                or inspected.offline_candidate.count('Данные: MeteoAlarm, CC BY 4.0') != 1
+                or inspected.offline_candidate.count('Источник: '+FEED_URL) != 1):
+            # Missing/incomplete/unknown source never creates a positive claim.
+            return replace(fallback, reason='UNKNOWN_OR_UNSUPPORTED_CAP')
+        # Do not pretend that an unresolved EMMA_ID authorizes a local marine GO.
+        if _marine_contradiction(final_sanitized_text):
+            return replace(original, block_publication=True,
+                           reason='ACTIVE_WARNING_CONFLICTS_WITH_MARINE_GUIDANCE')
+        # The warning may expire while an image is generated; caller must check
+        # expires_utc again immediately before Telegram delivery.
+        expiries = []
+        for xml in caps.values():
+            root = ET.fromstring(xml)
+            infos = root.findall(f'{{{CAP}}}info')
+            if len(infos) != 1:
+                return replace(original, block_publication=True,
+                               reason='CAP_INFO_AMBIGUOUS')
+            expires_raw = infos[0].findtext(f'{{{CAP}}}expires')
+            expires = datetime.fromisoformat(expires_raw.replace('Z', '+00:00'))
+            if expires.utcoffset() is None:
+                raise ValueError('naive CAP expiry')
+            expiries.append(expires.astimezone(timezone.utc))
+        end = min(expiries)
+        if end <= at_utc.astimezone(timezone.utc) + timedelta(minutes=15):
+            return replace(original, block_publication=True,
+                           reason='CAP_NEAR_EXPIRY')
+        return PublisherWarningDecision(inspected.offline_candidate,
+            warning_attached=True, reason='METEOALARM_DISTRIBUTION_VERIFIED_WARNING',
+            expires_utc=end)
+    except (OSError, TimeoutError, HTTPException):
+        # Keep the ordinary forecast; CAP outage proves neither safety nor
+        # hazard. Suppress only unsupported marine GO/ambiguous guidance.
+        safe_text = _outage_neutralizes_marine_go(final_sanitized_text)
+        return replace(original, publisher_text=safe_text,
+                       block_publication=_outage_unresolved_marine_go(safe_text),
+                       reason='SOURCE_UNAVAILABLE')
+    except (CaptureRejected, ET.ParseError, TypeError, ValueError,
+            AttributeError, KeyError, OverflowError):
+        # Malformed/partial/untrusted warning evidence is NOT a mere outage:
+        # keep the conservative marine-conflict veto for this branch.
+        return replace(fallback, reason='UNKNOWN_CAPTURE_FAILED')
+
+
+
+def warning_first_for_delivery(text: str) -> str | None:
+    """Move only the complete validated CAP excerpt to the front of an ON post.
+
+    A partial or ambiguous warning block is never split or reordered. The
+    ordinary weather text remains in its original relative order; OFF bypasses
+    this function entirely.
+    """
+    if not isinstance(text, str):
+        return None
+    marker = '⚠️ <b>По данным MeteoAlarm</b>:'
+    source = 'Источник: ' + FEED_URL
+    credit = 'Данные: MeteoAlarm, CC BY 4.0'
+    lines = text.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(marker)]
+    sources = [i for i, line in enumerate(lines) if line == source]
+    credits = [i for i, line in enumerate(lines) if line.startswith(credit)]
+    if (not 1 <= len(starts) <= 8 or text.count(marker) != len(starts)
+            or len(sources) != 1 or len(credits) != 1
+            or text.count(source) != 1 or text.count(credit) != 1):
+        return None
+    first = starts[0]
+    src = sources[0]
+    end = credits[0]
+    if (starts != list(range(first, first + len(starts)))
+            or src != first + len(starts) or end != src + 1):
+        return None
+    block = '\n'.join(lines[first:end + 1])
+    ordinary = '\n'.join(lines[:first] + lines[end + 1:]).strip()
+    if not ordinary:
+        return None
+    return block + '\n\n' + ordinary
+
+
+def warning_overlay_survives_telegram_split(text: str, chunks: list[str]) -> bool:
+    """Warning and attribution must precede all other Telegram text chunks."""
+    marker = '⚠️ <b>По данным MeteoAlarm</b>:'
+    total = text.count(marker)
+    if not (1 <= total <= 8) or not chunks:
+        return False
+    sources = 'Источник: ' + FEED_URL
+    credit = 'Данные: MeteoAlarm, CC BY 4.0'
+    if text.count(sources) != 1 or text.count(credit) != 1:
+        return False
+    return (chunks[0].startswith(marker)
+            and chunks[0].count(marker) == total
+            and sources in chunks[0] and credit in chunks[0]
+            and sum(chunk.count(marker) for chunk in chunks) == total)
+
+
+def warning_overlay_fresh_for_delivery(decision: PublisherWarningDecision,
+                                       at_utc: datetime) -> bool:
+    """Do not send a CAP excerpt if the earliest alert is about to expire."""
+    return bool(decision.warning_attached and decision.expires_utc
+                and isinstance(at_utc, datetime) and at_utc.utcoffset() is not None
+                and at_utc.astimezone(timezone.utc) + timedelta(minutes=1)
+                < decision.expires_utc)
+
+
+def resolve_emma_publication_forecast_date(*, mode: str, base_date: date,
+                                           evening_cycle: object = None) -> date | None:
+    """Use the verified forecast date, never the evening execution date."""
+    if not isinstance(base_date, date) or isinstance(base_date, datetime):
+        return None
+    if mode == 'morning':
+        return base_date
+    if mode == 'evening' and getattr(evening_cycle, 'is_valid', False):
+        expected = getattr(evening_cycle, 'expected_forecast_date', None)
+        if isinstance(expected, date) and not isinstance(expected, datetime):
+            return expected
+    return None

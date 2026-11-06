@@ -301,9 +301,11 @@ if __name__ == "__main__":
     from test_cyprus_emma_pipeline_r8h6 import PipelineTests, RealFormatV2PipelineTests
     for case in (PreviewTests, PipelineTests, RealFormatV2PipelineTests):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
-    # R8-I: prove the warning handoff is review-only and fail-closed in CI.
-    from test_cyprus_emma_r8i_handoff import OfflineHandoffTests, RegisteredAggregatorTransportTests
-    for case in (OfflineHandoffTests, RegisteredAggregatorTransportTests):
+    # R8-I/J: include active publisher warning bridge and delivery safety cases.
+    from test_cyprus_emma_r8i_handoff import (
+        OfflineHandoffTests, RegisteredAggregatorTransportTests, PublisherWarningBridgeTests,
+    )
+    for case in (OfflineHandoffTests, RegisteredAggregatorTransportTests, PublisherWarningBridgeTests):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if not result.wasSuccessful():
