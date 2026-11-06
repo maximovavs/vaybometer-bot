@@ -83,6 +83,51 @@ def _wrap(draw: Any, text: str, font: Any, max_width: int, max_lines: int = 2) -
     return lines[:max_lines]
 
 
+
+# Only the exact R10 photo *asset* failures below permit an R12 attempt.
+# In particular, no R10 safety/refusal message or arbitrary runtime exception
+# can ever promote a comforting architectural scene.
+_R12_PHOTO_ASSET_FAILURES = {
+    "Cyprus weekly photo assets require independent visual approval": "photo_global_unapproved",
+    "weekly scene is unapproved": "photo_scene_unapproved",
+    "missing/bad weekly asset path": "photo_asset_missing",
+    "weekly asset provenance mismatch": "photo_asset_sha_mismatch",
+    "weekly candidate must be full-resolution verified JPEG": "photo_asset_geometry",
+}
+
+
+def _photo_refusal_reason(exc: Exception) -> tuple[str, bool]:
+    if type(exc) is not ValueError:
+        return "photo_runtime_error", False
+    message = str(exc)
+    if message in _R12_PHOTO_ASSET_FAILURES:
+        return _R12_PHOTO_ASSET_FAILURES[message], True
+    if message.startswith("R10: explicit warning"):
+        return "r10_explicit_warning", False
+    if message.startswith("R10: weather/safety warning"):
+        return "r10_weather_safety_warning", False
+    if "weather/safety warning" in message:
+        return "source_weather_safety_warning", False
+    if message.startswith("R10:"):
+        return "r10_refused", False
+    return "photo_source_or_visual_refused", False
+
+
+def _landmark_refusal_reason(exc: Exception) -> tuple[str, bool]:
+    if type(exc) is not ValueError:
+        return "landmark_runtime_error", False
+    message = str(exc)
+    if message == "R12: no independently approved landmark assets":
+        return "landmark_unapproved", False
+    if message == "R12: asset SHA mismatch":
+        return "landmark_asset_sha_mismatch", False
+    if message == "R12: bad asset path":
+        return "landmark_asset_missing", False
+    if message.startswith("R12:"):
+        return "landmark_safety_or_source_refused", False
+    return "landmark_r10_validation_refused", False
+
+
 def render_weekly_cover(text: str, *, start: date, output_path: str | Path,
                         trusted_weather: Mapping[str, Any] | None = None) -> dict[str, Any]:
     # Strictly OFF unless set exactly to 1; never mutate the historical renderer.
@@ -91,7 +136,24 @@ def render_weekly_cover(text: str, *, start: date, output_path: str | Path,
             from weekly_photo_cover_cy import render_photo_cover
             return render_photo_cover(text, start=start, output_path=output_path, trusted_weather=trusted_weather)
         except Exception as exc:
-            logging.getLogger(__name__).warning("Cyprus weekly photo rejected, using legacy cover: %s", exc)
+            reason, asset_only = _photo_refusal_reason(exc)
+            # Stable reason labels avoid leaking source strings into CI logs.
+            logging.getLogger(__name__).warning(
+                "Cyprus weekly strict photo rejected reason=%s", reason)
+            # R12 cannot override any R10 source, weather, semantic or safety
+            # refusal. Only an independently approved/verified photo asset
+            # failure is eligible, and the landmark rechecks R10 source/WMO.
+            if asset_only:
+                try:
+                    from weekly_architecture_cover_cy import render_landmark_cover
+                    return render_landmark_cover(
+                        text, start=start, output_path=output_path,
+                        trusted_weather=trusted_weather)
+                except Exception as landmark_error:
+                    landmark_reason, _ = _landmark_refusal_reason(landmark_error)
+                    logging.getLogger(__name__).warning(
+                        "Cyprus weekly landmark refused reason=%s; using legacy",
+                        landmark_reason)
     from PIL import Image, ImageDraw, PngImagePlugin
 
     week_label = _week_label(text, start)
