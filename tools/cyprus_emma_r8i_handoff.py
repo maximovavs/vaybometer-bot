@@ -364,7 +364,7 @@ def _outage_boundary(line: str) -> bool:
 def _outage_replace_marine_advice(line: str) -> str:
     """Remove unsupported GO without erasing hazard, wind, or direction."""
     measures = re.findall(
-        r'(?i)(?:ветер|порывы|волны)[^;\n.]{0,65}?\d+(?:[.,]\d+)?\s*(?:м/с|км/ч|м)\b',
+        r'(?i)(?:ветер|порывы|волн[аы])[^;\n.]{0,65}?\d+(?:[.,]\d+)?\s*(?:м/с|км/ч|м)\b',
         line)
     cautions = []
     for marker, label in (
