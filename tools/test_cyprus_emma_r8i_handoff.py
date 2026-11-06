@@ -914,6 +914,49 @@ class PublisherWarningBridgeTests(unittest.TestCase):
         self.assertFalse(out.block_publication)
         self.assertEqual(unsafe, out.publisher_text)
 
+    def test_outage_preserves_singular_wave_from_actual_sup_template(self):
+        # post_common._sup_guidance_line uses _sup_evidence_facts, which emits
+        # singular `волна 0.3 м` (not `волны`). Do not silently drop it on outage.
+        from post_common import _sup_evidence_facts
+        outage = lambda _url: (_ for _ in ()).throw(TimeoutError('offline'))
+        sup_go = '🧜‍♂️ Отлично: SUP • ' + ' • '.join(
+            _sup_evidence_facts(4.0, 7.0, 0.3))
+        self.assertIn('волна 0.3 м', sup_go)
+        for marine in (
+            sup_go,
+            sup_go + ' (западный ветер, вдоль берега)',
+            '🧜‍♂️ Отлично: SUP • волна 0,3 м • порывы до 7 м/с',
+            '🧜‍♂️ Отлично: SUP • волны 0.4 м • ветер 4 м/с',
+        ):
+            with self.subTest(marine=marine):
+                weather = BASE.replace(
+                    '🏄 SUP / кайт / сёрф: безопасность не подтверждена', marine)
+                result = self._run(text=weather, fake=outage)
+                self.assertEqual('SOURCE_UNAVAILABLE', result.reason)
+                self.assertFalse(result.warning_attached)
+                self.assertFalse(result.block_publication)
+                self.assertNotIn('Отлично: SUP', result.publisher_text)
+                self.assertIn('безопасность не подтверждена', result.publisher_text)
+                for value in ('волна 0.3 м', 'волна 0,3 м', 'волны 0.4 м',
+                              'ветер 4 м/с', 'порывы до 7 м/с',
+                              'западный ветер, вдоль берега'):
+                    if value in marine:
+                        self.assertEqual(1, result.publisher_text.count(value), value)
+                self.assertIn('⚠️ По прогнозу: сильный ветер', result.publisher_text)
+        caution = BASE.replace(
+            '🏄 SUP / кайт / сёрф: безопасность не подтверждена',
+            '🧜‍♂️ SUP лучше отложить: волна 1.4 м, порывы до 14 м/с.')
+        out = self._run(text=caution, fake=outage)
+        self.assertFalse(out.block_publication)
+        self.assertEqual(caution, out.publisher_text)
+        # The feature is OFF by default: do not edit or fetch the ordinary post.
+        disabled = BASE.replace(
+            '🏄 SUP / кайт / сёрф: безопасность не подтверждена', sup_go)
+        off = self._run(text=disabled, fake=outage, enabled=False)
+        self.assertEqual(disabled, off.publisher_text)
+        self.assertFalse(off.warning_attached)
+        self.assertFalse(off.block_publication)
+
     def test_outage_respects_city_boundary_and_each_marine_line(self):
         # Read two existing FORMAT_V2 fixtures without importing its side-effectful
         # module (it installs isolated Telegram/pendulum stubs).
