@@ -15,6 +15,8 @@ from typing import Any, Mapping
 RENDERER_VERSION = "cy_weekly_cover_v2_portrait"
 BRANDING = "VAYBOMETER · CYPRUS"
 TITLE = "ВАЙБ НЕДЕЛИ"
+# One font size for BOTH source-text preflight and actual legacy image drawing.
+_ARCHITECTURE_BODY_FONT_SIZE = 29
 
 
 def _font(size: int, *, bold: bool = False):
@@ -181,14 +183,48 @@ def render_weekly_cover(text: str, *, start: date, output_path: str | Path,
             color = tuple(round(middle[i] * (1 - local) + bottom[i] * local) for i in range(3))
         draw.line((0, y, width, y), fill=color)
 
-    for offset in range(4):
-        y = 1150 + offset * 38
-        draw.arc((70, y - 42, 1010, y + 62), 195, 345, fill=(235, 246, 243), width=5)
+    # R12-H2 affects only the legacy *background* after the unmodified
+    # R10/R12 routing. Never reinterpret safety refusals or change card text.
+    # OFF/unapproved/tampered assets retain the byte-identical gradient.
+    architecture_sha = None
+    if os.getenv("WEEKLY_PHOTO_COVER_ENABLED", "0").strip() == "1":
+        try:
+            from weekly_legacy_architecture_cy import approved_architecture_background
+            decorative = approved_architecture_background()
+            if decorative is not None:
+                candidate_image, candidate_sha = decorative
+                candidate_draw = ImageDraw.Draw(candidate_image)
+                candidate_font = _font(_ARCHITECTURE_BODY_FONT_SIZE, bold=True)
+                # A scenic background is NOT allowed to obscure a sourced
+                # warning, temperature or sea fact behind a truncation label.
+                readable = all(
+                    not fact or " ".join(_wrap(candidate_draw, fact, candidate_font, 815, 3))
+                    == " ".join(fact.split())
+                    for fact in (main_fact, weather_fact, sea_fact)
+                )
+                if readable:
+                    image, architecture_sha = candidate_image, candidate_sha
+                    draw = ImageDraw.Draw(image)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Cyprus weekly legacy architecture unavailable error_type=%s; using gradient",
+                type(exc).__name__)
 
-    draw.rounded_rectangle((64, 58, 1016, 300), radius=42, fill=(8, 30, 45), outline=(235, 243, 240), width=3)
-    draw.text((105, 94), BRANDING, font=_font(27, bold=True), fill=(185, 220, 229))
-    draw.text((105, 145), TITLE, font=_font(66, bold=True), fill=(250, 251, 247))
-    draw.text((108, 234), week_label, font=_font(34), fill=(219, 231, 231))
+    if architecture_sha is None:
+        for offset in range(4):
+            y = 1150 + offset * 38
+            draw.arc((70, y - 42, 1010, y + 62), 195, 345, fill=(235, 246, 243), width=5)
+
+    # For the optional architectural image, keep the same header text but
+    # shift it entirely into a centered Telegram-square thumbnail safe zone.
+    if architecture_sha is not None:
+        header_box, brand_y, title_y, date_y = (64, 135, 1016, 358), 155, 211, 297
+    else:
+        header_box, brand_y, title_y, date_y = (64, 58, 1016, 300), 94, 145, 234
+    draw.rounded_rectangle(header_box, radius=42, fill=(8, 30, 45), outline=(235, 243, 240), width=3)
+    draw.text((105, brand_y), BRANDING, font=_font(27, bold=True), fill=(185, 220, 229))
+    draw.text((105, title_y), TITLE, font=_font(66, bold=True), fill=(250, 251, 247))
+    draw.text((108, date_y), week_label, font=_font(34), fill=(219, 231, 231))
 
     cards = (
         ("ГЛАВНОЕ", main_fact),
@@ -196,16 +232,17 @@ def render_weekly_cover(text: str, *, start: date, output_path: str | Path,
         ("МОРЕ", sea_fact),
     )
     y = 370
-    body_font = _font(34, bold=True)
+    architecture_visible = architecture_sha is not None
+    body_font = _font(_ARCHITECTURE_BODY_FONT_SIZE if architecture_visible else 34, bold=True)
     label_font = _font(24, bold=True)
     for label, fact in cards:
         draw.rounded_rectangle((88, y, 992, y + 190), radius=26, fill=(249, 250, 247), outline=(225, 234, 232), width=2)
         draw.text((125, y + 24), label, font=label_font, fill=(31, 92, 111))
-        lines = _wrap(draw, fact, body_font, 815, 2)
-        line_y = y + 72
+        lines = _wrap(draw, fact, body_font, 815, 3 if architecture_visible else 2)
+        line_y = y + (65 if architecture_visible else 72)
         for line in lines:
             draw.text((125, line_y), line, font=body_font, fill=(17, 42, 58))
-            line_y += 46
+            line_y += 38 if architecture_visible else 46
         y += 220
 
     output = Path(output_path)
@@ -221,6 +258,9 @@ def render_weekly_cover(text: str, *, start: date, output_path: str | Path,
         "weather_fact": weather_fact,
         "sea_fact": sea_fact,
     }
+    if architecture_sha is not None:
+        metadata["background_role"] = "editorial_architecture_not_weather"
+        metadata["background_asset_sha256"] = architecture_sha
     for key, value in metadata.items():
         info.add_text(key, str(value))
     image.save(output, format="PNG", optimize=True, pnginfo=info)

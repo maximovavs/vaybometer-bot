@@ -1,0 +1,13 @@
+{
+  "schema": "cy_weekly_legacy_background_r12h2_v1",
+  "size": [
+    1080,
+    1350
+  ],
+  "approved": false,
+  "file": "cyprus_stone_architecture_neutral.jpg",
+  "sha256": "713aeed6d521e9fb41c5f02e63310bdc1f3ae335d6c1c21941d1e8cf993e0ece",
+  "origin": "AI-generated editorial image, extracted from clean stonework area; no photograph claim",
+  "weather_semantics": "none: no sky, sea, clouds or weather symbols; never forecast evidence",
+  "activation": "OFF pending independent visual approval and explicit production authorization"
+}
