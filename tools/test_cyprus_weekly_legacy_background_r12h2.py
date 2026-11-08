@@ -251,6 +251,38 @@ def run():
         print('PASS R12-H6 X7b: 24pt preflight cannot admit truncated 29pt warning',
               flush=True)
 
+        # R12-H8 X7b2: structural, fixture-independent font contract.
+        # The source data must be preflighted and drawn with the SAME font,
+        # line count and width. Even a 1pt preflight decrease must fail here.
+        observed_wrap_calls = []
+        baseline_wrap = cover._wrap
+        real_facts = tuple(cover._section_value(SOURCE, heading) for heading in (
+            '✨ Главный фон недели', '🌦 Погода', '🌊 Море'))
+        check(len(set(real_facts)) == 3 and all(real_facts),
+              'X7b2 must exercise three nonempty distinct source panels')
+
+        def trace_wrap(draw, value, font, width, max_lines=2):
+            result = baseline_wrap(draw, value, font, width, max_lines)
+            if value in real_facts:
+                observed_wrap_calls.append((value, getattr(font, 'size', None),
+                                            width, max_lines, tuple(result)))
+            return result
+
+        with patch.object(cover, '_wrap', side_effect=trace_wrap):
+            structural_meta, _ = render(root/'x7b2_structural_font_contract', SOURCE,
+                                        manifest=approved)
+        check(structural_meta.get('background_role') == 'editorial_architecture_not_weather',
+              'X7b2 must traverse both preflight and drawing paths')
+        for fact in real_facts:
+            calls = [item for item in observed_wrap_calls if item[0] == fact]
+            check(len(calls) == 2, f'X7b2 expected exactly one preflight and draw for {fact}')
+            for stage, call in zip(('preflight', 'drawing'), calls):
+                check(call[1:4] == (cover._ARCHITECTURE_BODY_FONT_SIZE, 815, 3),
+                      f'X7b2 {stage} font/width/line contract diverged for {fact}')
+                check(' '.join(call[4]) == ' '.join(fact.split()),
+                      f'X7b2 {stage} lost sourced warning/fact: {fact}')
+        print('PASS R12-H8 X7b2 preflight-draw font/geometry parity', flush=True)
+
         # A warning too long to display must refuse decorative background.
         overly_long=SOURCE.replace('тёплая неделя, но у моря порывы могут менять ощущение дня.',
                    'ОПАСНО: ' + ('очень сильный штормовой ветер и опасная гроза у побережья; '*15))
