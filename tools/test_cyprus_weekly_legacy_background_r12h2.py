@@ -203,6 +203,54 @@ def run():
         check(x7_png.is_file(), 'X7 preview must be saved')
         print('PASS R12-H4 X7 actual glyphs and preflight font match', flush=True)
 
+        # R12-H6 X7b: PRE-FLIGHT 24 pt, RASTER 29 pt is unsafe.  A short,
+        # real-world marine warning fits the former and is truncated by the
+        # latter.  The unmodified 29-pt renderer MUST refuse the architecture
+        # rather than put a safety-summary placeholder over the scenic image.
+        x7b_base = (
+            'Штормовой ветер у моря: порывы до 20 м/с; опасные волны. '
+            'Выход на воду не рекомендуется.'
+        )
+        x7b_suffix = 'Запрещены выходы на воду и пребывание на пирсах.'
+        x7b_warning = x7b_base + ' ' + x7b_suffix
+        x7b_draw = ImageDraw.Draw(Image.new('RGB', (1080, 1350)))
+        x7b_fit24 = cover._wrap(x7b_draw, x7b_warning, cover._font(24, bold=True), 815, 3)
+        x7b_fit29 = cover._wrap(x7b_draw, x7b_warning, cover._font(29, bold=True), 815, 3)
+        check(' '.join(x7b_fit24) == ' '.join(x7b_warning.split()),
+              'X7b fixture must fully fit at 24pt')
+        check(' '.join(x7b_fit29) != ' '.join(x7b_warning.split()),
+              'X7b fixture must exceed actual 29pt three-line capacity')
+        x7b_source = SOURCE.replace(
+            'тёплая неделя, но у моря порывы могут менять ощущение дня.',
+            x7b_warning,
+        )
+        check(x7b_warning in x7b_source and x7b_source != SOURCE,
+              'X7b source replacement must preserve the warning')
+        x7b_seen = []
+        def x7b_record(self, xy, value, *args, **kwargs):
+            x7b_seen.append(value)
+            return original_draw_text(self, xy, value, *args, **kwargs)
+        with patch.object(ImageDraw.ImageDraw, 'text', x7b_record):
+            x7b_meta, x7b_png = render(root/'x7b_reverse_boundary', x7b_source,
+                                       manifest=approved)
+        check(x7b_meta.get('background_role') is None,
+              'X7b decorative architecture wrongly accepted: preflight smaller than drawn font')
+        check(x7b_meta.get('main_fact') == x7b_warning,
+              'X7b full warning must survive in metadata, even on legacy gradient')
+        check(x7b_png.is_file(), 'X7b legacy fallback PNG required')
+        with Image.open(x7b_png) as x7b_image:
+            check(x7b_image.size == (1080, 1350), 'X7b fallback geometry')
+            check('background_role' not in x7b_image.info,
+                  'X7b fallback PNG must not falsely claim decorative background')
+        # Stronger than the prior X7 fixture: assert the warning can NEVER be
+        # substituted by a placeholder while an architectural backdrop is used.
+        # The safe old-gradient path may show a 'details in post' placeholder.
+        check(not ('background_role' in x7b_meta and
+                   'ПОДРОБНОСТИ В ПОСТЕ' in x7b_seen),
+              'X7b decorative card dropped critical words during raster drawing')
+        print('PASS R12-H6 X7b: 24pt preflight cannot admit truncated 29pt warning',
+              flush=True)
+
         # A warning too long to display must refuse decorative background.
         overly_long=SOURCE.replace('тёплая неделя, но у моря порывы могут менять ощущение дня.',
                    'ОПАСНО: ' + ('очень сильный штормовой ветер и опасная гроза у побережья; '*15))
