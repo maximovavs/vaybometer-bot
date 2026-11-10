@@ -618,9 +618,11 @@ async def _send(
         try:
             from weekly_cover import RENDERER_VERSION as legacy_version
             from weekly_photo_cover_cy import RENDERER_VERSION as photo_version
+            from weekly_architecture_cover_cy import RENDERER_VERSION as landmark_version
             version=cover.get("renderer_version") if isinstance(cover,dict) else None
             renderer=("photo" if version==photo_version else
-                      "legacy" if version==legacy_version else "unknown")
+                      "legacy" if version==legacy_version else
+                      "landmark" if version==landmark_version else "unknown")
             if renderer=="photo" and cover.get("variant") in ("neutral", "sunny", "overcast"):
                 variant=cover["variant"]
         except Exception:
