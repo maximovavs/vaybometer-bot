@@ -283,6 +283,64 @@ def run():
                       f'X7b2 {stage} lost sourced warning/fact: {fact}')
         print('PASS R12-H8 X7b2 preflight-draw font/geometry parity', flush=True)
 
+        # R12-H12 V1/V2: test the *rendered* text against the actual glass
+        # underlay at glyph locations. Sampling the underlay instead of edge
+        # antialiasing prevents false low contrast ratios from raster edges.
+        # This catches a dark-on-dark text mutation (V1) and transparent glass
+        # exposing light stone beneath white text (V2).
+        underlay_calls = []
+        def capture_without_glyphs(self, xy, value, *args, **kwargs):
+            underlay_calls.append((xy, str(value), kwargs.get('font'), kwargs.get('fill')))
+            # Intentionally do not draw text: produce the exact panel background.
+        with patch.object(ImageDraw.ImageDraw, 'text', capture_without_glyphs):
+            contrast_meta, contrast_underlay = render(
+                root/'contrast_underlay', SOURCE, manifest=approved)
+        check(contrast_meta.get('background_role') == 'editorial_architecture_not_weather',
+              'V1/V2 contrast must exercise the approved architecture route')
+
+        def luminance(rgb):
+            linear = []
+            for component in rgb[:3]:
+                channel = component / 255.0
+                linear.append(channel / 12.92 if channel <= 0.04045
+                              else ((channel + 0.055) / 1.055) ** 2.4)
+            return 0.2126*linear[0] + 0.7152*linear[1] + 0.0722*linear[2]
+
+        glass_card_tops = (552, 750, 948)
+        with Image.open(contrast_underlay) as underlay:
+            rgb_underlay = underlay.convert('RGB')
+            sample_image = ImageDraw.Draw(rgb_underlay)
+            for panel_index, top_y in enumerate(glass_card_tops):
+                # Facts are drawn at x=128, starting at card_top+59;
+                # labels at card_top+18 are deliberately excluded.
+                body_calls = [(xy, value, font, fill)
+                              for xy, value, font, fill in underlay_calls
+                              if xy[0] == 128 and top_y+59 <= xy[1] < top_y+175]
+                check(bool(body_calls), f'V1/V2 panel {panel_index} needs drawn fact lines')
+                ratios = []
+                for xy, value, font, fill in body_calls:
+                    check(isinstance(fill, tuple) and len(fill) >= 3 and font is not None,
+                          f'V1/V2 panel {panel_index} has invalid glyph colour/font')
+                    fg_luma = luminance(fill)
+                    bbox = sample_image.textbbox(xy, value, font=font)
+                    glyph_mask = Image.new('L', (bbox[2]-bbox[0], bbox[3]-bbox[1]), 0)
+                    ImageDraw.Draw(glyph_mask).text((xy[0]-bbox[0], xy[1]-bbox[1]),
+                                                    value, font=font, fill=255)
+                    for my in range(0, glyph_mask.height, 3):
+                        for mx in range(0, glyph_mask.width, 3):
+                            if glyph_mask.getpixel((mx,my)) < 224:
+                                continue
+                            bg_luma = luminance(rgb_underlay.getpixel((bbox[0]+mx,bbox[1]+my)))
+                            ratios.append((max(fg_luma,bg_luma)+0.05)/
+                                          (min(fg_luma,bg_luma)+0.05))
+                check(len(ratios) >= 50, f'V1/V2 panel {panel_index} has insufficient glyph samples')
+                ratios.sort()
+                p1 = ratios[max(0, int(0.01*len(ratios))-1)]
+                check(p1 >= 4.5,
+                      f'V1/V2 panel {panel_index} contrast below 4.5:1, p01={p1:.2f}')
+                print(f'PASS V1/V2 panel {panel_index} 1-percentile contrast {p1:.2f}:1',
+                      flush=True)
+
         # A warning too long to display must refuse decorative background.
         overly_long=SOURCE.replace('тёплая неделя, но у моря порывы могут менять ощущение дня.',
                    'ОПАСНО: ' + ('очень сильный штормовой ветер и опасная гроза у побережья; '*15))
