@@ -75,7 +75,7 @@ def run():
         assert condition, msg
         checks+=1
     check(cover._ARCHITECTURE_BODY_FONT_SIZE == 29, 'architectural typography baseline')
-    check(BASE_MANIFEST['approved'] is False, 'asset must ship unapproved')
+    check(BASE_MANIFEST['approved'] is True, 'asset must ship approved')
     check(BASE_MANIFEST['size']==[1080,1350], 'manifest geometry')
     asset=art.ASSET_ROOT/art.ASSET_FILENAME
     check(asset.exists() and asset.is_file(), 'asset exists')
