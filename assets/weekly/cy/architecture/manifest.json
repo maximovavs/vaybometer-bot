@@ -1,0 +1,38 @@
+{
+  "schema": "cy_weekly_landmark_r12_v1",
+  "size": [
+    1080,
+    1350
+  ],
+  "assets": [
+    {
+      "id": "eleftheria_nicosia",
+      "city_ru": "Никосия",
+      "file": "eleftheria_nicosia.jpg",
+      "sha256": "87c80b3dc8c16b1b0c7262d090d3b72eddf4dd6cf05c8d3822b3b712196d4e19",
+      "approved": false,
+      "asset_origin": "AI-generated architectural editorial concept; not documentary photography",
+      "visual_qa": "offline candidate; independent visual review required"
+    },
+    {
+      "id": "kamares_larnaca",
+      "city_ru": "Ларнака",
+      "file": "kamares_larnaca.jpg",
+      "sha256": "e6c472b3206d2a6ecb57f1c7fa5f6e59b0e3b1d04c6ea6370722c90e51c0e269",
+      "approved": false,
+      "asset_origin": "AI-generated editorial illustration of Kamares Aqueduct, Larnaca, not documentary photography",
+      "visual_qa": "offline 1080x1350 rendering candidate; requires independent acceptance",
+      "geographic_reference": "https://www.visitcyprus.com/discover-cyprus/culture/sites-and-monuments/kamares-aqueduct/"
+    },
+    {
+      "id": "limassol_skyline",
+      "city_ru": "Лимассол",
+      "file": "limassol_skyline.jpg",
+      "sha256": "f2de417bf79f5135299965b25de1fcf9f8c79cd91de90f50799ecaaf6e7e2d12",
+      "approved": false,
+      "asset_origin": "AI-generated photorealistic editorial illustration inspired by the Limassol seafront; not a documentary photograph or exact architectural survey",
+      "visual_qa": "offline visual-quality candidate; final approval remains separate; no claim of exact ONE or Trilogy geometry"
+    }
+  ],
+  "activation": "OFF: all 3 assets approved=false; no automatic usage until independently authorised"
+}
