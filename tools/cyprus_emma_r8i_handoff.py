@@ -25,12 +25,14 @@ from typing import Any, Callable, Mapping
 
 try:
     from .cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM, CAP,
-                                            CY_CAP_PATH, MAX_BYTES, _xml, _exact_https_url)
+                                            CY_CAP_PATH, MAX_BYTES, _xml, _exact_https_url,
+                                            CAP_MEDIA_TYPES)
     from .cyprus_emma_pipeline_r8h6 import (apply_emma_preview_offline,
                                             guarded_preview_warning_capture)
 except ImportError:
     from cyprus_cap_r8g1_contract import (inspect_captured_pair, FEED_URL, ATOM, CAP,
-                                           CY_CAP_PATH, MAX_BYTES, _xml, _exact_https_url)
+                                           CY_CAP_PATH, MAX_BYTES, _xml, _exact_https_url,
+                                           CAP_MEDIA_TYPES)
     from cyprus_emma_pipeline_r8h6 import (apply_emma_preview_offline,
                                           guarded_preview_warning_capture)
 
@@ -170,7 +172,7 @@ def _verified_https_get(url: str) -> dict[str, Any]:
         urllib.request.HTTPSHandler(context=ssl.create_default_context()),
         _RejectRedirects())
     req = urllib.request.Request(url, headers={
-        'Accept': 'application/atom+xml, application/cap+xml',
+        'Accept': '*/*',  # Feed negotiates Atom/CAP using this header.
         'User-Agent': 'VayboMeter-Cyprus-EMMA/1.0',
     })
     with opener.open(req, timeout=7) as res:
@@ -195,7 +197,10 @@ def _capture_one(url: str, mime: str, now: datetime,
     if not isinstance(body, bytes) or not 0 < len(body) <= MAX_BYTES:
         raise CaptureRejected('BODY_MISSING_OR_TOO_LARGE')
     content_type = res.get('content_type')
-    if not isinstance(content_type, str) or content_type.split(';')[0].strip().lower() != mime:
+    actual_mime = (content_type.split(';', 1)[0].strip().lower()
+                   if isinstance(content_type, str) else '')
+    # Only CAP XML gets the narrow compatibility allowance; Atom stays strict.
+    if actual_mime not in (CAP_MEDIA_TYPES if mime == 'application/cap+xml' else {mime}):
         raise CaptureRejected('CONTENT_TYPE')
     received = res.get('received_utc')
     try:

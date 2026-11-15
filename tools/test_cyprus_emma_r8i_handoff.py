@@ -252,6 +252,72 @@ def fake_official_transport(atom, docs, *, altered=None):
 
 
 class RegisteredAggregatorTransportTests(unittest.TestCase):
+    def test_registered_transport_sends_wildcard_accept_without_network(self):
+        from cyprus_emma_r8i_handoff import _verified_https_get
+        with patch('cyprus_emma_r8i_handoff.urllib.request.build_opener') as build:
+            response = build.return_value.open.return_value.__enter__.return_value
+            response.status = 200
+            response.geturl.return_value = FEED_URL
+            response.read.return_value = b'<feed/>'
+            response.headers = {'Content-Type': 'application/atom+xml',
+                                'Date': format_datetime(NOW, usegmt=True)}
+            result = _verified_https_get(FEED_URL)
+            request = build.return_value.open.call_args[0][0]
+            self.assertEqual('*/*', request.get_header('Accept'))
+            self.assertEqual(7, build.return_value.open.call_args.kwargs['timeout'])
+            self.assertEqual(200, result['status'])
+
+    def test_cap_xml_media_types_pass_full_g1_handoff_without_all_clear(self):
+        from cyprus_emma_r8i_handoff import prepare_registered_emma_warning_for_publisher
+        atom, docs = pair()
+        cap_url = next(iter(docs))
+        for mime in ('application/cap+xml', 'text/xml',
+                     'text/xml; charset=UTF-8', 'application/xml'):
+            with self.subTest(mime=mime):
+                fake = fake_official_transport(atom, docs,
+                    altered={cap_url: {'content_type': mime}})
+                with patch.object(socket.socket, 'connect',
+                                  side_effect=AssertionError('NETWORK_FORBIDDEN')):
+                    _, received_caps, source = acquire_registered_cyprus_pair(
+                        at_utc=NOW, fetch=fake)
+                    self.assertEqual(docs, received_caps)
+                    self.assertEqual(mime, source['cap_evidence'][cap_url]['content_type'])
+                    result = inspect_registered_cyprus_offline(
+                        final_sanitized_text=BASE, at_utc=NOW,
+                        forecast_date=TARGET, sanitizer=identity_sanitizer, fetch=fake)
+                    with patch('cyprus_emma_r8i_handoff._verified_https_get', fake):
+                        warning = prepare_registered_emma_warning_for_publisher(
+                            final_sanitized_text=BASE, enabled=True, at_utc=NOW,
+                            forecast_date=TARGET, sanitizer=identity_sanitizer)
+                self.assertEqual('UNKNOWN', result.state)
+                self.assertEqual('NO_POST', result.publication_action)
+                self.assertFalse(result.official_warnings_checked)
+                self.assertFalse(result.city_cleared)
+                self.assertFalse(result.positive_water_guidance_allowed)
+                self.assertTrue(result.offline_candidate)
+                self.assertTrue(warning.warning_attached)
+                self.assertFalse(warning.block_publication)
+
+        # Atom must continue requiring application/atom+xml.
+        bad_atom = fake_official_transport(atom, docs, altered={
+            FEED_URL: {'content_type': 'text/xml'}})
+        result = inspect_registered_cyprus_offline(
+            final_sanitized_text=BASE, at_utc=NOW, forecast_date=TARGET,
+            sanitizer=identity_sanitizer, fetch=bad_atom)
+        self.assertEqual('SOURCE_CAPTURE_REJECTED', result.reason)
+        self.assertFalse(result.offline_candidate)
+
+        # Permissive MIME must never override the CAP namespace/root check.
+        forged = fake_official_transport(atom, docs, altered={
+            cap_url: {'content_type': 'text/xml', 'body': b'<html/>'}})
+        result = inspect_registered_cyprus_offline(
+            final_sanitized_text=BASE, at_utc=NOW, forecast_date=TARGET,
+            sanitizer=identity_sanitizer, fetch=forged)
+        self.assertEqual('UNKNOWN', result.state)
+        self.assertEqual('NO_POST', result.publication_action)
+        self.assertFalse(result.offline_candidate)
+        self.assertFalse(result.city_cleared)
+
     def test_wmo_registered_atom_and_two_cap_links_to_lossless_licensed_excerpt(self):
         atom, docs = pair(count=2)
         fake = fake_official_transport(atom, docs)
