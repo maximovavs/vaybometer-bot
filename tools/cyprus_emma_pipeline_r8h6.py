@@ -31,10 +31,12 @@ def guarded_preview_warning_capture(*, atom: bytes,
     """
     try:
         from cyprus_emma_preview_r8h5 import (
-            OfflinePreview, preview_warning_capture, CAP)
+            OfflinePreview, preview_warning_capture, CAP, _select_display_info,
+            _coloured_event_contract)
     except ImportError:
         from tools.cyprus_emma_preview_r8h5 import (
-            OfflinePreview, preview_warning_capture, CAP)
+            OfflinePreview, preview_warning_capture, CAP, _select_display_info,
+            _coloured_event_contract)
 
     result = preview_warning_capture(atom=atom, cap_by_url=cap_by_url,
         source=source, at_utc=at_utc, forecast_date=forecast_date)
@@ -43,9 +45,15 @@ def guarded_preview_warning_capture(*, atom: bytes,
     try:
         for xml in cap_by_url.values():
             root = ET.fromstring(xml)
-            events = root.findall(f"{{{CAP}}}info/{{{CAP}}}event")
-            if (len(events) != 1 or events[0].text is None
-                    or events[0].text.strip().casefold() not in _ALLOWED_EVENT_NAMES):
+            info = _select_display_info(root)
+            if info is None:
+                return OfflinePreview(reason="UNKNOWN_MULTILINGUAL_OR_MULTIPLE_INFO")
+            events = info.findall(f"{{{CAP}}}event")
+            if len(events) != 1 or events[0].text is None:
+                return OfflinePreview(reason="UNKNOWN_EVENT_TAXONOMY")
+            if (events[0].text.strip().casefold() not in _ALLOWED_EVENT_NAMES
+                    and not (len(root.findall(f"{{{CAP}}}info")) == 2
+                             and _coloured_event_contract(info))):
                 return OfflinePreview(reason="UNKNOWN_EVENT_TAXONOMY")
     except (TypeError, ValueError, AttributeError, ET.ParseError):
         return OfflinePreview(reason="UNKNOWN_EVENT_TAXONOMY")

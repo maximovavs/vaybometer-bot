@@ -131,6 +131,32 @@ jobs:
           python tools/test_cyprus_official_cap_offline.py
           python tools/test_cyprus_authority_geography_contract_r8c2a.py
           python tools/test_cyprus_empty_feed_metadata_r8c3b.py
+          # EMMA tests and their child mutation processes must remain fully offline.
+          (
+            export OPENAI_API_KEY="" GEMINI_API_KEY="" GROQ_API_KEY=""
+            export TELEGRAM_TOKEN="" TELEGRAM_BOT_TOKEN="" TELEGRAM_TOKEN_CY=""
+            export POLLINATIONS_TOKEN="" POLLINATIONS_API_KEY=""
+            emma_guard="$(mktemp -d)"
+            trap 'rm -rf "$emma_guard"' EXIT
+            cat > "$emma_guard/sitecustomize.py" <<'PY'
+          import socket
+          def _deny(*args, **kwargs):
+              raise AssertionError("EMMA_OFFLINE_NETWORK_FORBIDDEN")
+          socket.socket.connect = _deny
+          socket.socket.connect_ex = _deny
+          socket.socket.sendto = _deny
+          socket.getaddrinfo = _deny
+          socket.create_connection = _deny
+          PY
+            export PYTHONPATH="$emma_guard${PYTHONPATH:+:$PYTHONPATH}"
+            python tools/test_cyprus_cap_r8g1_contract.py
+            python tools/test_cyprus_cap_r8g1_mutations.py
+            python tools/test_cyprus_r8e4a_emma68_derived.py
+            python tools/test_cyprus_emma_preview_r8h5.py
+            python tools/test_cyprus_emma_pipeline_r8h6.py
+            python tools/test_cyprus_emma_r8i_handoff.py
+            python tools/test_cyprus_emma_r8k3.py
+          )
           python tools/test_air_cy.py
           python tools/test_weekly_forecast.py
           python tools/test_cyprus_weekly_photo_cover.py
