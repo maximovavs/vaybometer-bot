@@ -252,6 +252,255 @@ def fake_official_transport(atom, docs, *, altered=None):
 
 
 class RegisteredAggregatorTransportTests(unittest.TestCase):
+    def test_registered_transport_sends_wildcard_accept_without_network(self):
+        from cyprus_emma_r8i_handoff import _verified_https_get
+        with patch('cyprus_emma_r8i_handoff.urllib.request.build_opener') as build:
+            response = build.return_value.open.return_value.__enter__.return_value
+            response.status = 200
+            response.geturl.return_value = FEED_URL
+            response.read.return_value = b'<feed/>'
+            response.headers = {'Content-Type': 'application/atom+xml',
+                                'Date': format_datetime(NOW, usegmt=True)}
+            result = _verified_https_get(FEED_URL)
+            request = build.return_value.open.call_args[0][0]
+            self.assertEqual('*/*', request.get_header('Accept'))
+            self.assertEqual(7, build.return_value.open.call_args.kwargs['timeout'])
+            self.assertEqual(200, result['status'])
+
+    def test_cap_xml_media_types_pass_full_g1_handoff_without_all_clear(self):
+        from cyprus_emma_r8i_handoff import prepare_registered_emma_warning_for_publisher
+        atom, docs = pair()
+        cap_url = next(iter(docs))
+        for mime in ('application/cap+xml', 'text/xml',
+                     'text/xml; charset=UTF-8', 'application/xml'):
+            with self.subTest(mime=mime):
+                fake = fake_official_transport(atom, docs,
+                    altered={cap_url: {'content_type': mime}})
+                with patch.object(socket.socket, 'connect',
+                                  side_effect=AssertionError('NETWORK_FORBIDDEN')):
+                    _, received_caps, source = acquire_registered_cyprus_pair(
+                        at_utc=NOW, fetch=fake)
+                    self.assertEqual(docs, received_caps)
+                    self.assertEqual(mime, source['cap_evidence'][cap_url]['content_type'])
+                    result = inspect_registered_cyprus_offline(
+                        final_sanitized_text=BASE, at_utc=NOW,
+                        forecast_date=TARGET, sanitizer=identity_sanitizer, fetch=fake)
+                    with patch('cyprus_emma_r8i_handoff._verified_https_get', fake):
+                        warning = prepare_registered_emma_warning_for_publisher(
+                            final_sanitized_text=BASE, enabled=True, at_utc=NOW,
+                            forecast_date=TARGET, sanitizer=identity_sanitizer)
+                self.assertEqual('UNKNOWN', result.state)
+                self.assertEqual('NO_POST', result.publication_action)
+                self.assertFalse(result.official_warnings_checked)
+                self.assertFalse(result.city_cleared)
+                self.assertFalse(result.positive_water_guidance_allowed)
+                self.assertTrue(result.offline_candidate)
+                self.assertTrue(warning.warning_attached)
+                self.assertFalse(warning.block_publication)
+
+        # Atom must continue requiring application/atom+xml.
+        bad_atom = fake_official_transport(atom, docs, altered={
+            FEED_URL: {'content_type': 'text/xml'}})
+        result = inspect_registered_cyprus_offline(
+            final_sanitized_text=BASE, at_utc=NOW, forecast_date=TARGET,
+            sanitizer=identity_sanitizer, fetch=bad_atom)
+        self.assertEqual('SOURCE_CAPTURE_REJECTED', result.reason)
+        self.assertFalse(result.offline_candidate)
+
+        # Permissive MIME must never override the CAP namespace/root check.
+        forged = fake_official_transport(atom, docs, altered={
+            cap_url: {'content_type': 'text/xml', 'body': b'<html/>'}})
+        result = inspect_registered_cyprus_offline(
+            final_sanitized_text=BASE, at_utc=NOW, forecast_date=TARGET,
+            sanitizer=identity_sanitizer, fetch=forged)
+        self.assertEqual('UNKNOWN', result.state)
+        self.assertEqual('NO_POST', result.publication_action)
+        self.assertFalse(result.offline_candidate)
+        self.assertFalse(result.city_cleared)
+
+
+    @staticmethod
+    def _bilingual_pair():
+        atom, docs = pair()
+        url = next(iter(docs))
+        alert = ET.fromstring(docs[url])
+        english = alert.find(f'{{{CAP}}}info')
+        ET.SubElement(english, f'{{{CAP}}}language').text = 'en-GB'
+        ET.SubElement(english, f'{{{CAP}}}urgency').text = 'Future'
+        ET.SubElement(english, f'{{{CAP}}}certainty').text = 'Likely'
+        greek = ET.fromstring(ET.tostring(english))
+        greek.find(f'{{{CAP}}}language').text = 'el-GR'
+        greek.find(f'{{{CAP}}}event').text = 'Καταιγίδες'
+        greek.find(f'{{{CAP}}}area/{{{CAP}}}areaDesc').text = 'Κύπρος'
+        alert.append(greek)
+        docs[url] = ET.tostring(alert, encoding='utf-8')
+        return atom, docs
+
+    def test_bilingual_cap_text_xml_reaches_publisher_without_safety_upgrade(self):
+        from cyprus_emma_r8i_handoff import prepare_registered_emma_warning_for_publisher
+        atom, docs = self._bilingual_pair()
+        url = next(iter(docs))
+        fake = fake_official_transport(atom, docs, altered={url: {'content_type': 'text/xml'}})
+        with patch('cyprus_emma_r8i_handoff._verified_https_get', fake), patch.object(
+                socket.socket, 'connect', side_effect=AssertionError('NETWORK_FORBIDDEN')):
+            result = prepare_registered_emma_warning_for_publisher(
+                final_sanitized_text=BASE, enabled=True, at_utc=NOW,
+                forecast_date=TARGET, sanitizer=identity_sanitizer)
+        self.assertTrue(result.warning_attached)
+        self.assertFalse(result.block_publication)
+        self.assertEqual(1, result.publisher_text.count('По данным MeteoAlarm'))
+        self.assertIn('Территория по CAP: Cyprus', result.publisher_text)
+        self.assertNotIn('Территория по CAP: Κύπρος', result.publisher_text)
+        self.assertIn('безопасность не подтверждена', result.publisher_text)
+        self.assertGreater(result.expires_utc, NOW)
+        self.assertEqual('METEOALARM_DISTRIBUTION_VERIFIED_WARNING', result.reason)
+
+    def test_bilingual_conflict_or_ambiguity_cannot_render_warning(self):
+        from cyprus_emma_r8i_handoff import prepare_registered_emma_warning_for_publisher
+        cases = (
+            ('hazard', f'{{{CAP}}}event', 'Ισχυρός άνεμος'),
+            ('negated', f'{{{CAP}}}event', 'Δεν αναμένονται καταιγίδες'),
+            ('severity', f'{{{CAP}}}severity', 'Severe'),
+            ('onset', f'{{{CAP}}}onset', '2026-10-28T03:00:00+02:00'),
+            ('expiry', f'{{{CAP}}}expires', '2026-10-28T19:00:00+02:00'),
+            ('urgency', f'{{{CAP}}}urgency', 'Immediate'),
+            ('language', f'{{{CAP}}}language', 'en-GB'),
+            ('geography', f'{{{CAP}}}area/{{{CAP}}}geocode/{{{CAP}}}value', 'CY999'),
+        )
+        for name, tag, value in cases:
+            with self.subTest(name=name):
+                atom, docs = self._bilingual_pair()
+                url = next(iter(docs))
+                root = ET.fromstring(docs[url])
+                root.findall(f'{{{CAP}}}info')[1].find(tag).text = value
+                docs[url] = ET.tostring(root, encoding='utf-8')
+                fake = fake_official_transport(atom, docs)
+                with patch('cyprus_emma_r8i_handoff._verified_https_get', fake):
+                    decision = prepare_registered_emma_warning_for_publisher(
+                        final_sanitized_text=BASE, enabled=True, at_utc=NOW,
+                        forecast_date=TARGET, sanitizer=identity_sanitizer)
+                self.assertFalse(decision.warning_attached)
+                self.assertEqual(BASE, decision.publisher_text)
+                self.assertNotIn('По данным MeteoAlarm', decision.publisher_text)
+
+    def test_bilingual_extra_info_and_update_cancel_remain_fail_closed(self):
+        from cyprus_emma_r8i_handoff import prepare_registered_emma_warning_for_publisher
+        for mode in ('third-info', 'Update', 'Cancel'):
+            with self.subTest(mode=mode):
+                atom, docs = self._bilingual_pair()
+                url = next(iter(docs))
+                cap = ET.fromstring(docs[url])
+                if mode == 'third-info':
+                    cap.append(ET.fromstring(ET.tostring(cap.findall(f'{{{CAP}}}info')[1])))
+                else:
+                    cap.find(f'{{{CAP}}}msgType').text = mode
+                    atom_root = ET.fromstring(atom)
+                    atom_root.find(f'{{{ATOM}}}entry/{{{CAP}}}message_type').text = mode
+                    atom = ET.tostring(atom_root, encoding='utf-8')
+                docs[url] = ET.tostring(cap, encoding='utf-8')
+                with patch('cyprus_emma_r8i_handoff._verified_https_get',
+                           fake_official_transport(atom, docs)):
+                    decision = prepare_registered_emma_warning_for_publisher(
+                        final_sanitized_text=BASE, enabled=True, at_utc=NOW,
+                        forecast_date=TARGET, sanitizer=identity_sanitizer)
+                self.assertFalse(decision.warning_attached)
+                self.assertEqual(BASE, decision.publisher_text)
+
+    def _r8k2_coloured_pair(self):
+        atom, docs = self._bilingual_pair()
+        url = next(iter(docs))
+        root = ET.fromstring(docs[url])
+        en, el = root.findall(f'{{{CAP}}}info')
+        en.find(f'{{{CAP}}}event').text = 'Thunderstorm Yellow'
+        el.find(f'{{{CAP}}}event').text = 'Καταιγίδα Κίτρινο'
+        from test_cyprus_emma_r8k3 import add_reviewed_prose
+        add_reviewed_prose(en, el)
+        for info in (en, el):
+            ET.SubElement(info, f'{{{CAP}}}category').text = 'Met'
+            for name, value in (('awareness_type', '3; Thunderstorm'),
+                                ('awareness_level', '2; yellow; Moderate')):
+                p = ET.SubElement(info, f'{{{CAP}}}parameter')
+                ET.SubElement(p, f'{{{CAP}}}valueName').text = name
+                ET.SubElement(p, f'{{{CAP}}}value').text = value
+        feed = ET.fromstring(atom)
+        ET.SubElement(feed.find(f'{{{ATOM}}}entry'), f'{{{CAP}}}event').text = 'Thunderstorm Yellow'
+        docs[url] = ET.tostring(root, encoding='utf-8')
+        return ET.tostring(feed, encoding='utf-8'), docs
+
+    def test_r8k2_observed_colour_contract_and_event_code_conflicts(self):
+        # Synthetic regression for the exact R8-E2 observed label/code tuple;
+        # raw original bytes are replayed separately in offline evidence.
+        from cyprus_emma_r8i_handoff import prepare_registered_emma_warning_for_publisher
+        for case, expected in (
+            ('original', True), ('matching_event_code', True),
+            ('event_code_mismatch', False), ('event_code_one_side', False),
+            ('event_code_duplicate', False), ('event_code_malformed', False),
+            ('awareness_wrong_both', False), ('level_wrong_both', False),
+            ('level_missing_both', False), ('greek_wrong_colour', False),
+            ('greek_unqualified', False), ('unknown_colour', False),
+            ('atom_event_mismatch', False), ('single_coloured_info', False),
+        ):
+            with self.subTest(case=case):
+                atom, docs = self._r8k2_coloured_pair()
+                url = next(iter(docs))
+                root = ET.fromstring(docs[url])
+                en, el = root.findall(f'{{{CAP}}}info')
+                def add_code(info, value='3; Thunderstorm'):
+                    code = ET.SubElement(info, f'{{{CAP}}}eventCode')
+                    ET.SubElement(code, f'{{{CAP}}}valueName').text = 'EMMA_CODE'
+                    ET.SubElement(code, f'{{{CAP}}}value').text = value
+                if case.startswith('event_code_') or case == 'matching_event_code':
+                    add_code(en)
+                    if case != 'event_code_one_side':
+                        add_code(el, '4; Wind' if case == 'event_code_mismatch' else '3; Thunderstorm')
+                    if case == 'event_code_duplicate':
+                        add_code(en)
+                        add_code(el)
+                    if case == 'event_code_malformed':
+                        for info in (en, el):
+                            info.find(f'{{{CAP}}}eventCode').remove(
+                                info.find(f'{{{CAP}}}eventCode/{{{CAP}}}value'))
+                if case in ('awareness_wrong_both', 'level_wrong_both', 'level_missing_both'):
+                    for info in (en, el):
+                        for p in info.findall(f'{{{CAP}}}parameter'):
+                            name = p.findtext(f'{{{CAP}}}valueName')
+                            if case == 'awareness_wrong_both' and name == 'awareness_type':
+                                p.find(f'{{{CAP}}}value').text = '4; Wind'
+                            if case == 'level_wrong_both' and name == 'awareness_level':
+                                p.find(f'{{{CAP}}}value').text = '3; orange; Severe'
+                            if case == 'level_missing_both' and name == 'awareness_level':
+                                info.remove(p)
+                if case == 'greek_wrong_colour':
+                    el.find(f'{{{CAP}}}event').text = 'Καταιγίδα Πορτοκαλί'
+                if case == 'greek_unqualified':
+                    el.find(f'{{{CAP}}}event').text = 'Καταιγίδες'
+                if case == 'unknown_colour':
+                    en.find(f'{{{CAP}}}event').text = 'Thunderstorm Orange'
+                if case == 'single_coloured_info':
+                    root.remove(el)
+                if case == 'atom_event_mismatch':
+                    feed = ET.fromstring(atom)
+                    feed.find(f'{{{ATOM}}}entry/{{{CAP}}}event').text = 'Strong Wind Yellow'
+                    atom = ET.tostring(feed, encoding='utf-8')
+                docs[url] = ET.tostring(root, encoding='utf-8')
+                with patch('cyprus_emma_r8i_handoff._verified_https_get',
+                           fake_official_transport(atom, docs, altered={url: {'content_type': 'text/xml'}})), patch.object(
+                        socket.socket, 'connect', side_effect=AssertionError('NETWORK_FORBIDDEN')):
+                    result = prepare_registered_emma_warning_for_publisher(
+                        final_sanitized_text=BASE, enabled=True, at_utc=NOW,
+                        forecast_date=TARGET, sanitizer=identity_sanitizer)
+                self.assertEqual(expected, result.warning_attached, result.reason)
+                if expected:
+                    self.assertFalse(result.block_publication)
+                    self.assertEqual(1, result.publisher_text.count('По данным MeteoAlarm'))
+                    self.assertIn('грозах', result.publisher_text)
+                    self.assertIn('Уровень: умеренная', result.publisher_text)
+                    self.assertIn('безопасность не подтверждена', result.publisher_text)
+                else:
+                    self.assertEqual(BASE, result.publisher_text)
+                    self.assertNotIn('По данным MeteoAlarm', result.publisher_text)
+
+
     def test_wmo_registered_atom_and_two_cap_links_to_lossless_licensed_excerpt(self):
         atom, docs = pair(count=2)
         fake = fake_official_transport(atom, docs)
@@ -779,7 +1028,12 @@ class PublisherWarningBridgeTests(unittest.TestCase):
             with self.subTest(marine=marine):
                 out = self._run(text=text, fake=outage)
                 self.assertFalse(out.block_publication)
-                self.assertEqual(text, out.publisher_text)
+                expected = text
+                if marine == '🏄 SUP: только опытным; порывы до 12 м/с':
+                    expected = text.replace(marine,
+                        '🏄 SUP: безопасность не подтверждена; порывы до 12 м/с', 1)
+                    self.assertNotIn('только опытным', out.publisher_text)
+                self.assertEqual(expected, out.publisher_text)
                 self.assertEqual('SOURCE_UNAVAILABLE', out.reason)
         positive = BASE.replace('безопасность не подтверждена', '✅ можно кататься')
         out = self._run(text=positive, fake=outage)

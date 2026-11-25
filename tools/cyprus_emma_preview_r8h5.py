@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from html import escape
 from typing import Any, Mapping
+import re
+import unicodedata
 from zoneinfo import ZoneInfo
 from xml.etree import ElementTree as ET
 
@@ -77,6 +79,218 @@ def _event_label(s: str | None) -> str | None:
     return labels[0] if len(labels) == 1 else None
 
 
+
+def _named_codes(info: ET.Element, tag: str) -> dict[str, str] | None:
+    """Reject malformed or repeated names rather than silently losing codes."""
+    result = {}
+    for item in info.findall(_CAP+tag):
+        name = _one(item, _CAP+'valueName')
+        value = _one(item, _CAP+'value')
+        if (not name or not value or name in result or len(item) != 2
+                or any(len(child) for child in item)):
+            return None
+        result[name] = value
+    return result
+
+
+def _awareness_codes(info: ET.Element) -> dict[str, str] | None:
+    codes = _named_codes(info, 'parameter')
+    if codes is None:
+        return None
+    return {name: value for name, value in codes.items()
+            if name in ('awareness_type', 'awareness_level')}
+
+
+# Same first-release hazard names as the H6 taxonomy (kept equal by a test).
+_COLOURED_TAXONOMY = frozenset({
+    'thunderstorm', 'heavy rain', 'strong wind', 'high temperature', 'snowfall', 'fog',
+})
+_WARNING_COLOURS = ('yellow', 'orange', 'red')
+# Only the code/label mappings evidenced by the captured Cyprus CAP and the
+# already agreed K4 structured orange fixture. Do not infer other codes.
+_AWARENESS_TYPES = {'thunderstorm': '3'}
+_AWARENESS_LEVELS = {'yellow': ('2', 'Moderate'), 'orange': ('3', 'Severe')}
+_GREEK_HAZARDS = {'thunderstorm': frozenset({'καταιγιδα', 'καταιγιδες'})}
+_GREEK_EVENT_COLOURS = {'yellow': 'κιτρινο', 'orange': 'πορτοκαλι'}
+
+
+def _coloured_event_contract(info: ET.Element) -> bool:
+    """Self-consistent MeteoAlarm coloured event, from language-independent codes.
+
+    The English event '<hazard> <colour>' must repeat the awareness_type name and
+    the awareness_level colour, and the level's severity must equal CAP severity
+    (e.g. 'Thunderstorm Yellow' / '3; Thunderstorm' / '2; yellow; Moderate').
+    Nothing is translated or inferred; any disagreement is UNKNOWN.
+    """
+    event = ' '.join((_one(info, _CAP+'event') or '').split()).casefold()
+    hazard, _, colour = event.rpartition(' ')
+    codes = _awareness_codes(info)
+    if (not codes or set(codes) != {'awareness_type', 'awareness_level'}
+            or _one(info, _CAP+'category') != 'Met'):
+        return False
+    kind = [x.strip() for x in codes['awareness_type'].split(';')]
+    level = [x.strip() for x in codes['awareness_level'].split(';')]
+    return (len(kind) == 2 and len(level) == 3
+            and hazard in _COLOURED_TAXONOMY and kind[1].casefold() == hazard
+            and _AWARENESS_TYPES.get(hazard) == kind[0]
+            and level[1].casefold() == colour
+            and _AWARENESS_LEVELS.get(colour) == (level[0], level[2])
+            and level[2] == _one(info, _CAP+'severity'))
+
+
+# Free text (headline/description/instruction) is never displayed and never
+# used as evidence that a hazard exists. It can only make a CAP UNKNOWN: when
+# it is malformed or carries an explicit retraction/all-clear marker. This is a
+# fail-closed screen, not a claim that the translations are equivalent.
+_PROSE_FIELDS = ('headline', 'description', 'instruction')
+_RETRACTION = re.compile(
+    r'cancel|withdrawn|\blifted\b|no longer|all[ -]?clear|not expected|'
+    r'\bno (?:warning|risk|danger|threat|hazard|thunderstorms?|rain|wind)\b|'
+    r'no action (?:is )?(?:needed|required)|'
+    r'ακυρ|\bαρση|δεν αναμεν|δεν υπαρχει κινδυν|χωρις κινδυν|καμια προειδοποιηση|'
+    r'δεν ισχυ|παυει να ισχυ')
+_SENTENCE_NEGATION = re.compile(r'(?:^|[.!?]\s+)(?:no|none)\b')
+_GREEK_COLOURS = (('κιτριν', 'yellow'), ('πορτοκαλ', 'orange'), ('κοκκιν', 'red'),
+                  ('πρασιν', 'green'))
+
+
+def _fold(value: str) -> str:
+    return ''.join(c for c in unicodedata.normalize('NFD', value.casefold())
+                   if unicodedata.category(c) != 'Mn')
+
+
+def _retracted(value: str | None) -> bool:
+    folded = _fold(' '.join((value or '').split()))
+    return bool(_RETRACTION.search(folded) or _SENTENCE_NEGATION.search(folded))
+
+
+def _colour_words(text: str) -> set[str]:
+    folded = _fold(text)
+    found = {c for c in _WARNING_COLOURS if re.search(r'\b' + c + r'\b', folded)}
+    return found | {c for stem, c in _GREEK_COLOURS if stem in folded}
+
+
+def _event_colour(info: ET.Element) -> str | None:
+    return (' '.join((_one(info, _CAP+'event') or '').split()).casefold().rpartition(' ')[2]
+            if _coloured_event_contract(info) else None)
+
+
+def _prose_contract(info: ET.Element, colour: str | None = None) -> bool:
+    """Optional plain-text fields: at most one each, no markup, no retraction,
+    and no warning colour other than the structured one (none for a plain event)."""
+    for key in _PROSE_FIELDS:
+        nodes = info.findall(_CAP+key)
+        if not nodes:
+            continue
+        if len(nodes) != 1 or len(nodes[0]) or nodes[0].attrib or nodes[0].text is None:
+            return False
+        text = ' '.join(nodes[0].text.split())
+        if not text or len(text) > 4000 or _retracted(text):
+            return False
+        if not _colour_words(text) <= ({colour} if colour else set()):
+            return False
+    return True
+
+
+def _select_display_info(cap: ET.Element) -> ET.Element | None:
+    """Select the English block of one structurally consistent warning.
+
+    Decisions use structured CAP fields only; free text can only veto (UNKNOWN).
+    UNKNOWN is never an all-clear or evidence that the warning is absent.
+    """
+    infos = cap.findall(_CAP+'info')
+    if len(infos) == 1:
+        info = infos[0]
+        codes = _awareness_codes(info)
+        # Legacy single-info plain labels remain supported; a structured code
+        # must not bypass the bilingual consistency contract.
+        return info if codes == {} and _prose_contract(info, _event_colour(info)) else None
+    if len(infos) != 2:
+        return None
+    by_lang = {}
+    for info in infos:
+        lang = _one(info, _CAP+'language')
+        role = ('en' if lang == 'en-GB' else
+                'el' if lang in ('el-GR', 'el-CY') else None)
+        if role is None or role in by_lang:
+            return None
+        by_lang[role] = info
+    if set(by_lang) != {'en', 'el'}:
+        return None
+    en, el = by_lang['en'], by_lang['el']
+    for key in ('category', 'urgency', 'severity', 'certainty', 'responseType'):
+        if (any(len(i.findall(_CAP+key)) > 1 for i in (en, el))
+                or _one(en, _CAP+key) != _one(el, _CAP+key)):
+            return None
+    if any(_one(en, _CAP+key) is None for key in ('urgency', 'severity', 'certainty')):
+        return None
+    for key in ('effective', 'onset', 'expires'):
+        if (any(len(i.findall(_CAP+key)) > 1 for i in (en, el))
+                or any(i.findall(_CAP+key) and _time(_one(i, _CAP+key)) is None
+                       for i in (en, el))
+                or _time(_one(en, _CAP+key)) != _time(_one(el, _CAP+key))):
+            return None
+    if any(_time(_one(en, _CAP+key)) is None for key in ('onset', 'expires')):
+        return None
+
+    # MeteoAlarm awareness codes are language-independent when present.
+    # Never accept a code on one side but absent/different on the other.
+    a, b = _awareness_codes(en), _awareness_codes(el)
+    if a is None or a != b:
+        return None
+    # CAP eventCode is optional; when present it must be unambiguous and
+    # identical in both languages, including the coding-system names.
+    en_codes, el_codes = _named_codes(en, 'eventCode'), _named_codes(el, 'eventCode')
+    if en_codes is None or en_codes != el_codes:
+        return None
+
+    # Only the observed national label pair is supported in the bilingual path.
+    # This is not an EMMA_ID-to-city or marine-zone mapping.
+    en_areas, el_areas = en.findall(_CAP+'area'), el.findall(_CAP+'area')
+    if len(en_areas) != 1 or len(el_areas) != 1:
+        return None
+    if (_one(en_areas[0], _CAP+'areaDesc') != 'Cyprus'
+            or _one(el_areas[0], _CAP+'areaDesc') not in ('Cyprus', 'Κύπρος')):
+        return None
+    def geography(area: ET.Element) -> tuple | None:
+        codes = []
+        for geo in area.findall(_CAP+'geocode'):
+            if _one(geo, _CAP+'valueName') == 'EMMA_ID':
+                value = _one(geo, _CAP+'value')
+                if not value or value in codes:
+                    return None
+                codes.append(value)
+        if not codes:
+            return None
+        geometry = tuple(tuple((e.text or '').strip() for e in area.findall(_CAP+tag))
+                         for tag in ('polygon', 'circle'))
+        return tuple(sorted(codes)), geometry
+    if geography(en_areas[0]) is None or geography(en_areas[0]) != geography(el_areas[0]):
+        return None
+    if geography(en_areas[0]) != (('CY001',), ((), ())):
+        return None
+
+    # Free text may only veto; it is never displayed or used as evidence.
+    english_event = _one(en, _CAP+'event')
+    greek_event = _one(el, _CAP+'event')
+    if (not _event_label(english_event) or not greek_event
+            or _retracted(english_event) or _retracted(greek_event)
+            or not _prose_contract(en, _event_colour(en))
+            or not _prose_contract(el, _event_colour(en))):
+        return None
+    if _coloured_event_contract(en):
+        # A colour match alone says nothing about the hazard. Accept only
+        # explicitly supported complete Greek labels for the same coded event.
+        hazard, _, colour = ' '.join(english_event.split()).casefold().rpartition(' ')
+        greek_hazard, _, greek_colour = _fold(' '.join(greek_event.split())).rpartition(' ')
+        return en if (greek_hazard in _GREEK_HAZARDS.get(hazard, ())
+                      and greek_colour == _GREEK_EVENT_COLOURS.get(colour)) else None
+    # Bare legacy fixture contract: exact unqualified labels, no awareness codes.
+    return en if (english_event.casefold() == 'thunderstorm'
+                  and greek_event.casefold() == 'Καταιγίδες'.casefold()
+                  and not a) else None
+
+
 def preview_warning_capture(*, atom: bytes, cap_by_url: Mapping[str, bytes],
                             source: Mapping[str, Any], at_utc: datetime,
                             forecast_date: date) -> OfflinePreview:
@@ -116,10 +330,13 @@ def preview_warning_capture(*, atom: bytes, cap_by_url: Mapping[str, bytes],
             # separately reject lifecycle changes we cannot reconstruct.
             if _one(cap, _CAP+'msgType') != 'Alert':
                 return OfflinePreview(reason='UNKNOWN_LIFECYCLE_EVENT')
-            infos = cap.findall(_CAP+'info')
-            if len(infos) != 1:
+            info = _select_display_info(cap)
+            if info is None:
                 return OfflinePreview(reason='UNKNOWN_MULTILINGUAL_OR_MULTIPLE_INFO')
-            info = infos[0]
+            if (_coloured_event_contract(info)
+                    and ' '.join((_one(entry, _CAP+'event') or '').split()).casefold()
+                    != ' '.join((_one(info, _CAP+'event') or '').split()).casefold()):
+                return OfflinePreview(reason='UNKNOWN_ATOM_CAP_EVENT_MISMATCH')
             areas = info.findall(_CAP+'area')
             if len(areas) != 1:
                 return OfflinePreview(reason='UNKNOWN_MULTIPLE_AREAS')

@@ -17,6 +17,8 @@ from xml.etree import ElementTree as ET
 
 ATOM = 'http://www.w3.org/2005/Atom'
 CAP = 'urn:oasis:names:tc:emergency:cap:1.2'
+# Explicit CAP-only compatibility; Atom still requires application/atom+xml.
+CAP_MEDIA_TYPES = frozenset({'application/cap+xml', 'text/xml', 'application/xml'})
 FEED_URL = 'https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-cyprus'
 FEED_ID = 'tag:meteoalarm.org,2021-02-19:CY'
 AUTHORITY_OID = '2.49.0.0.196.0'
@@ -221,7 +223,7 @@ def _inspect_captured_pair(*, atom: bytes, cap_by_url: Mapping[str, bytes],
                 or cap_source.get('http_status') != 200
                 or cap_source.get('redirect_followed') is not False
                 or cap_source.get('credentials_sent') is not False
-                or cap_source.get('content_type', '').split(';', 1)[0].strip().lower() != 'application/cap+xml'
+                or cap_source.get('content_type', '').split(';', 1)[0].strip().lower() not in CAP_MEDIA_TYPES
                 or cap_source.get('sha256') != hashlib.sha256(cap_by_url[url]).hexdigest()
                 or not HEX64.fullmatch(str(cap_source.get('sha256', '')))):
             return unknown('UNKNOWN_CAP_SOURCE_PROVENANCE')
