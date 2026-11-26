@@ -630,6 +630,82 @@ async def _send(
         print(f"WEEKLY_COVER_OBS event=render_ok renderer={renderer} variant={variant}")
         return renderer
 
+    def observe_photo_payload(cover: dict[str, Any], photo: Any, renderer: str) -> None:
+        # Best-effort inspection of the same local file via an independent handle.
+        # Do not consume the upload stream, alter bytes, or veto an existing send.
+        try:
+            from PIL import Image
+            from io import BytesIO
+
+            size = os.fstat(photo.fileno()).st_size
+            width = height = 0
+            fmt = mode = "unknown"
+            decode = "not_checked"
+            geometry = "unknown"
+            background = "unknown" if renderer == "legacy" else "not_applicable"
+            size_status = "ok" if 0 < size <= 10_000_000 else "outside_limit"
+            if size_status == "ok":
+                with Path(cover["path"]).open("rb") as probe:
+                    if not os.path.samestat(os.fstat(probe.fileno()), os.fstat(photo.fileno())):
+                        raise ValueError("inspection file changed")
+                    raw = probe.read(10_000_001)
+                if len(raw) != size:
+                    raise ValueError("inspection size changed")
+                try:
+                    with Image.open(BytesIO(raw)) as image:
+                        width, height = image.size
+                        fmt = image.format if image.format in ("PNG", "JPEG", "WEBP", "GIF") else "other"
+                        mode = image.mode if image.mode in ("RGB", "RGBA", "L", "P", "CMYK") else "other"
+                        geometry = ("ok" if min(width, height) > 0 and width + height <= 10_000
+                                    and max(width, height) <= 20 * min(width, height) else "outside_limit")
+                        image.verify()
+                    if geometry == "ok":
+                        with Image.open(BytesIO(raw)) as image:
+                            image.load()
+                            decode = "ok"
+                            if renderer == "legacy" and fmt == "PNG":
+                                role = image.info.get("background_role")
+                                digest = image.info.get("background_asset_sha256")
+                                if role == "editorial_architecture_not_weather" and isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+                                    background = "architecture"
+                                elif role is None and digest is None:
+                                    background = "gradient"
+                except Exception:
+                    decode = "failed"
+            print(f"WEEKLY_COVER_OBS event=photo_payload renderer={renderer} bytes={size} "
+                  f"format={fmt} mode={mode} width={width} height={height} "
+                  f"decode={decode} size_status={size_status} geometry={geometry} background={background}")
+        except Exception:
+            print("WEEKLY_COVER_OBS event=photo_payload status=unavailable")
+
+    def observe_bad_request(exc: Exception, phase: str) -> None:
+        if phase != "send":
+            return
+        try:
+            from telegram.error import BadRequest
+            if not isinstance(exc, BadRequest):
+                return
+            # Exact allowlist only: never emit Telegram-provided text or fields.
+            categories = {
+                "photo_invalid_dimensions": "dimensions",
+                "image_process_failed": "image_processing",
+                "file is too big": "file_size",
+                "request entity too large": "file_size",
+                "file must be non-empty": "empty_file",
+                "photo must be non-empty": "empty_file",
+                "media_empty": "empty_file",
+                "there is no photo in the request": "missing_photo",
+                "wrong file identifier/http url specified": "file_reference",
+                "caption is too long": "caption_length",
+                "chat not found": "destination",
+                "not enough rights to send photos": "permissions",
+            }
+            reason = categories.get(str(exc).strip().casefold(), "unknown")
+            print(f"WEEKLY_COVER_OBS event=photo_bad_request reason={reason}", file=sys.stderr)
+        except Exception:
+            # Diagnostics must never disrupt authoritative text/snapshot handling.
+            return
+
     def observe_photo_receipt(response: Any, renderer: str) -> None:
         try:
             photo_message_id=getattr(response,"message_id",None)
@@ -664,6 +740,7 @@ async def _send(
             renderer=observe_render(cover)
             phase="open"
             with Path(cover["path"]).open("rb") as photo:
+                observe_photo_payload(cover, photo, renderer)
                 phase="send"
                 print(f"WEEKLY_COVER_OBS event=photo_attempt renderer={renderer}")
                 result=await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
@@ -671,6 +748,7 @@ async def _send(
         except Exception as exc:
             # Avoid leaking Telegram exception text; text/snapshot remain authoritative.
             print(f"WEEKLY_COVER_OBS event=photo_error phase={phase} error_type={type(exc).__name__}",file=sys.stderr)
+            observe_bad_request(exc, phase)
         return message_id
     phase="render"
     try:
@@ -678,12 +756,14 @@ async def _send(
         renderer=observe_render(cover)
         phase="open"
         with Path(cover["path"]).open("rb") as photo:
+            observe_photo_payload(cover, photo, renderer)
             phase="send"
             print(f"WEEKLY_COVER_OBS event=photo_attempt renderer={renderer}")
             result=await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
             observe_photo_receipt(result,renderer)
     except Exception as exc:
         print(f"WEEKLY_COVER_OBS event=photo_error phase={phase} error_type={type(exc).__name__}",file=sys.stderr)
+        observe_bad_request(exc, phase)
     message=await bot.send_message(chat_id=destination,text=text,parse_mode=constants.ParseMode.HTML,disable_web_page_preview=True)
     message_id=getattr(message,"message_id",None)
     if (snapshot_candidate is not None and production_snapshot_out is not None and str(production_chat_id).strip()
