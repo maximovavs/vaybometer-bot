@@ -578,6 +578,162 @@ def test_photo_delivery_observability_no_network():
     return 'photo+legacy+OFF, missing/invalid text and photo receipts, render/send/open exceptions'
 
 
+def test_weekly_transport_diagnostics_no_network():
+    """Historical run text, real legacy renderer, synthetic asset and mock multipart."""
+    from email import policy
+    from email.parser import BytesParser
+    import random
+    import httpx
+    from PIL import Image
+    import weekly_legacy_architecture_cy as legacy
+
+    # The three rendered fields are verbatim from run 44965614596; the
+    # structured R10 payload was not retained. Reproduce its observed refusal.
+    historical = (
+        '🗓 Вайб недели: 23–29 ноября\n\n'
+        '✨ Главный фон недели\nтёплая неделя, но у моря порывы могут менять ощущение дня.\n\n'
+        '🌦 Погода\nТемпература держится в диапазоне 13–24°C; локальные дождевые окна лучше проверять утром.\n\n'
+        '🌊 Море\nСредняя вода около 22°C; лучше утром или ближе к закату.\n\n'
+        '🏄 Вода и спорт\nSUP: безопасность по спотам и времени не подтверждена; выход без локальной проверки не планировать.\n'
+        'Кайт/винг: только опытным; порывы могут быть резкими.\n'
+        'Серф: зависит от фактической волны; скорее не главный сценарий недели.'
+    )
+    send, env = _isolated_send()
+    events, snapshots, payloads = [], [], []
+    private = 'PRIVATE_EXCEPTION_CHAT_TOKEN_123'
+    class BadRequest(Exception):
+        pass
+    response_error = None
+    expected_bytes = b''
+    render_mode = 'architecture'
+
+    async def mock_transport(request):
+        assert request.url.host == 'telegram.invalid'
+        body = await request.aread()
+        content_type = request.headers['content-type']
+        assert content_type.startswith('multipart/form-data; boundary=')
+        parts = BytesParser(policy=policy.default).parsebytes(
+            b'Content-Type: ' + content_type.encode('ascii') + b'\r\nMIME-Version: 1.0\r\n\r\n' + body)
+        fields = {p.get_param('name', header='content-disposition'): p for p in parts.iter_parts()}
+        assert fields['photo'].get_filename() == 'weekly_cover.png'
+        assert fields['photo'].get_content_type() == 'image/png'
+        assert fields['photo'].get_payload(decode=True) == expected_bytes
+        assert fields['chat_id'].get_payload(decode=True) == b'@OFFLINE_PRIVATE_CHAT'
+        assert fields['caption'].get_payload(decode=True).decode().startswith('Вайб недели: ')
+        payloads.append(len(expected_bytes))
+        if response_error is not None:
+            return httpx.Response(400, json={'ok': False, 'description': response_error})
+        return httpx.Response(200, json={'ok': True, 'result': {'message_id': 23}})
+
+    class FakeBot:
+        text_reply = 22
+        def __init__(self, token):
+            assert token == 'OFFLINE_PLACEHOLDER'
+        async def send_message(self, **kwargs):
+            events.append('text')
+            assert kwargs['text'] == historical
+            return SimpleNamespace(message_id=self.text_reply)
+        async def send_photo(self, **kwargs):
+            events.append('photo')
+            assert kwargs['photo'].tell() == 0
+            # Surrogate serialization: tests the file/kwargs boundary, not PTB internals.
+            async with httpx.AsyncClient(transport=httpx.MockTransport(mock_transport), trust_env=False) as client:
+                response = await client.post('https://telegram.invalid/sendPhoto',
+                    data={'chat_id': str(kwargs['chat_id']), 'caption': kwargs['caption']},
+                    files={'photo': ('weekly_cover.png', kwargs['photo'], 'image/png')})
+            data = response.json()
+            if not data['ok']:
+                raise BadRequest(data['description'])
+            return SimpleNamespace(**data['result'])
+
+    fake = ModuleType('telegram'); fake.Bot = FakeBot; fake.constants = env['constants']
+    errors = ModuleType('telegram.error'); errors.BadRequest = BadRequest
+    fake.error = errors
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / 'weekly_cover.png'
+        def render(*args, **kwargs):
+            nonlocal expected_bytes
+            events.append('render')
+            if render_mode == 'corrupt':
+                path.write_bytes(b'not a PNG')
+                result = {'path': str(path), 'renderer_version': wrapper.RENDERER_VERSION}
+            elif render_mode == 'geometry':
+                Image.new('RGB', (20, 421)).save(path, format='PNG')
+                result = {'path': str(path), 'renderer_version': wrapper.RENDERER_VERSION}
+            elif render_mode == 'large':
+                with path.open('wb') as f:
+                    f.truncate(10_000_001)
+                result = {'path': str(path), 'renderer_version': wrapper.RENDERER_VERSION}
+            else:
+                kwargs['output_path'] = path
+                result = wrapper.render_weekly_cover(*args, **kwargs)
+            expected_bytes = path.read_bytes()
+            return result
+        env['render_weekly_cover'] = render
+        env['write_snapshot_atomic'] = lambda *args: (events.append('snapshot'), snapshots.append(args))
+        # High-entropy synthetic RGB background (not an approved production asset).
+        synthetic = Image.frombytes('RGB', (1080, 1350), random.Random(42).randbytes(1080 * 1350 * 3))
+        def background():
+            return (synthetic.copy(), 'a' * 64) if render_mode == 'architecture' else None
+        def run(flag='1'):
+            events.clear(); snapshots.clear(); payloads.clear()
+            out, err = StringIO(), StringIO()
+            with patch.dict(os.environ, {'TELEGRAM_TOKEN': 'OFFLINE_PLACEHOLDER', 'WEEKLY_PHOTO_COVER_ENABLED': flag}), \
+                 patch.dict(sys.modules, {'telegram': fake, 'telegram.error': errors}), \
+                 patch.object(photo, 'render_photo_cover', side_effect=ValueError('R10: weather/safety warning')), \
+                 patch.object(legacy, 'approved_architecture_background', side_effect=background), \
+                 redirect_stdout(out), redirect_stderr(err):
+                receipt = asyncio.run(send(historical, '@OFFLINE_PRIVATE_CHAT', date(2026, 11, 23),
+                    snapshot_candidate={'fixture': True}, production_snapshot_out=Path('snapshot.json'),
+                    production_chat_id='@OFFLINE_PRIVATE_CHAT'))
+            log = out.getvalue() + err.getvalue()
+            for forbidden in (private, '@OFFLINE_PRIVATE_CHAT', 'OFFLINE_PLACEHOLDER', str(path), historical):
+                assert forbidden not in log
+            return receipt, log
+
+        for render_mode in ('architecture', 'gradient'):
+            receipt, log = run()
+            assert receipt == 22 and events == ['text', 'snapshot', 'render', 'photo']
+            assert len(snapshots) == len(payloads) == 1
+            assert 'format=PNG mode=RGB width=1080 height=1350 decode=ok size_status=ok geometry=ok' in log
+            assert 'background=' + render_mode in log
+            assert 'event=photo_receipt renderer=legacy status=valid message_id=23' in log
+            print('OFFLINE', render_mode, 'PNG bytes=', payloads[0])
+        for response_error, category in (
+                ('Photo_invalid_dimensions', 'dimensions'), ('Image_process_failed', 'image_processing'),
+                ('File is too big', 'file_size'), ('Chat not found', 'destination'),
+                ('Photo_invalid_dimensions ' + private, 'unknown'), (private, 'unknown')):
+            receipt, log = run()
+            assert receipt == 22 and events == ['text', 'snapshot', 'render', 'photo']
+            assert len(snapshots) == len(payloads) == 1
+            assert 'event=photo_error phase=send error_type=BadRequest' in log
+            assert 'event=photo_bad_request reason=' + category in log
+            assert 'event=photo_receipt' not in log
+        response_error = 'Image_process_failed'
+        render_mode = 'corrupt'
+        receipt, log = run()
+        assert receipt == 22 and 'decode=failed' in log and len(payloads) == 1
+        render_mode = 'geometry'
+        receipt, log = run()
+        assert receipt == 22 and 'geometry=outside_limit' in log and 'decode=not_checked' in log and len(payloads) == 1
+        render_mode = 'large'
+        receipt, log = run()
+        assert receipt == 22 and 'size_status=outside_limit' in log and 'decode=not_checked' in log and len(payloads) == 1
+        render_mode = 'gradient'; response_error = None
+        receipt, log = run(flag='0')
+        assert receipt == 22 and events == ['render', 'photo', 'text', 'snapshot']
+        assert 'background=gradient' in log and len(payloads) == 1
+        response_error = 'Image_process_failed'
+        receipt, log = run(flag='0')
+        assert receipt == 22 and events == ['render', 'photo', 'text', 'snapshot']
+        assert 'event=photo_bad_request reason=image_processing' in log and len(payloads) == 1
+        FakeBot.text_reply = None
+        receipt, log = run()
+        assert receipt is None and events == ['text'] and not payloads and not snapshots
+        assert 'event=photo_payload' not in log
+    return 'historical legacy text, mocked R10 refusal, two PNG paths, multipart byte identity, safe reasons and delivery order'
+
+
 def test_workflow_and_scope_static():
     workflow=(ROOT/'.github/workflows/weekly_forecast.yml').read_text()
     assert "WEEKLY_PHOTO_COVER_ENABLED: ${{ vars.WEEKLY_PHOTO_COVER_ENABLED == '1' && '1' || '0' }}" in workflow
@@ -657,7 +813,8 @@ def main():
              test_r5a_adversarial_weather_truth_and_full_text_warnings,
              test_fallback_and_off_switch,test_three_photo_geometry_only_with_temporary_inmemory_approval,
              test_source_bound_real_wrapper_and_forged_text, test_delivery_order_and_fail_closed,
-             test_photo_delivery_observability_no_network,test_workflow_and_scope_static,
+             test_photo_delivery_observability_no_network,test_weekly_transport_diagnostics_no_network,
+             test_workflow_and_scope_static,
              test_r10_actual_partial_week_illustration_and_same_payload]
     for method in methods:
         ret=method()
